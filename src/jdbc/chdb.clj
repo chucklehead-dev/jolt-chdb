@@ -10,6 +10,22 @@
 
 (defrecord TypedParam [type value])
 
+(def ^:private hex-digits "0123456789ABCDEF")
+
+(defn- escaped-string-bytes
+  "Encode every input byte with ClickHouse's `\\xHH` parameter syntax. The
+  chDB parameter parser consumes backslash escapes before applying the declared
+  String type, so passing raw bytes would lose `0x5c` and make arbitrary binary
+  or strings containing backslashes impossible to round-trip."
+  [value]
+  (let [octets (if (bytes? value) value (.getBytes (str value) "UTF-8"))]
+    (apply str
+           (mapcat (fn [b]
+                     (let [n (bit-and (int b) 255)]
+                       [\\ \x (nth hex-digits (quot n 16))
+                        (nth hex-digits (mod n 16))]))
+                   octets))))
+
 (defn- balanced-type? [s]
   (and (re-matches #"[A-Za-z][A-Za-z0-9_(), ]*" s)
        (loop [xs (seq s) depth 0]
@@ -47,7 +63,7 @@
                   (nil? value) "\\N"
                   (true? value) "1"
                   (false? value) "0"
-                  (bytes? value) value
+                  (or (string? value) (bytes? value)) (escaped-string-bytes value)
                   :else (str value))]
     {:type inferred :value encoded}))
 

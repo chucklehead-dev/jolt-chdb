@@ -7,7 +7,11 @@
         {:git/url "https://github.com/seancorfield/honeysql.git"
          :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}}
  :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
-           :test {:extra-paths ["test"]
+           :test {:extra-deps
+                  {io.github.chucklehead-dev/jolt-hegel
+                   {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+                    :git/sha "53631c81cd927175935037699ddf687d98a44d24"}}
+                  :extra-paths ["test"]
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
          test "jolt -M:test"}}

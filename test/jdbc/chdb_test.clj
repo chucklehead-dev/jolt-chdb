@@ -3,6 +3,7 @@
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
             [jdbc.proto :as proto]))
 
@@ -29,6 +30,12 @@
            (jdbc/execute! conn ["insert into event values (?, ?)" 1 "one"]))
     (check "parameterized rows" [{:id 1 :name "one"}]
            (jdbc/fetch conn ["select id, name from event where id = ?" 1]))
+    (check "backslashes survive String parameter parsing" "a\\b"
+           (:value (jdbc/fetch-one conn ["select ? as value" "a\\b"])))
+    (check "all byte values use lossless ClickHouse escapes" "5C00FF"
+           (:value (jdbc/fetch-one
+                    conn
+                    ["select hex(?) as value" (byte-array [92 0 -1])])))
     (check "literal and comments do not consume placeholders" "ok"
            (:value (jdbc/fetch-one
                     conn
@@ -90,6 +97,7 @@
   (reset! failures 0)
   (run-query-checks)
   (run-storage-checks)
+  (property/run-properties!)
   (if (zero? @failures)
     (println "all checks passed")
     (throw (ex-info (str @failures " checks failed") {:failures @failures}))))
