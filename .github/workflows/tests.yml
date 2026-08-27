@@ -1,0 +1,31 @@
+name: tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.7.27
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.7.27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Jolt v0.7.27
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/jolt-bin"
+          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/v0.7.27/install \
+            | bash -s -- --dir "$install_dir" --version 0.7.27
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Assert Jolt version
+        run: test "$(jolt --version)" = "jolt v0.7.27"
+      - name: Install pinned chDB
+        run: jolt -M:setup-native
+      - name: Install pinned Hegel native library
+        run: jolt -A:test -m hegel.install
+      - name: Test
+        run: jolt -M:test

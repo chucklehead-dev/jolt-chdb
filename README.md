@@ -3,6 +3,14 @@
 An in-process chDB driver for Jolt's `jdbc.core` / `jolt-db` API. It uses
 `libchdb` directly through `jolt.ffi`; there is no server or sidecar.
 
+Add the library to `deps.edn`, pinning the exact commit you intend to deploy:
+
+```clojure
+{io.github.chucklehead-dev/jolt-chdb
+ {:git/url "https://github.com/chucklehead-dev/jolt-chdb.git"
+  :git/sha "<release-commit-sha>"}}
+```
+
 ```clojure
 (require '[db.jdbc]
          '[jdbc.chdb]
@@ -71,3 +79,25 @@ to retain invalid ClickHouse `ThreadStatus` state and report a fatal diagnostic
 when the connection closes. Use bounded `execute!` inserts instead; the OTel
 exporter does so. Re-enable streaming only after qualifying a fixed native
 release with the pseudo-terminal diagnostic probe.
+
+## Development
+
+Install the pinned native library and run the full driver suite:
+
+```sh
+jolt -M:setup-native
+jolt -M:test
+```
+
+The installer streams the large release archive through `curl`, verifies it
+with `sha256sum` on Linux or `shasum` on macOS (with `openssl` as a fallback),
+and extracts it with `tar`; these standard platform tools must be available.
+
+The tests include deterministic unit/integration coverage and shrinking
+`jolt-hegel` properties. CI currently exercises Linux x86-64, one of the
+platforms supported by the pinned chDB archive.
+
+## License
+
+Copyright © 2026 contributors. Distributed under the Eclipse Public License
+2.0; see `LICENSE`.

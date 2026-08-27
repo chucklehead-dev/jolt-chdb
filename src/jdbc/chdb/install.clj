@@ -3,13 +3,10 @@
   jdbc.chdb.native. Requiring the driver never downloads native code."
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [jdbc.chdb.native :as native]
-            [jolt.ffi :as ffi]))
+            [jdbc.chdb.native :as native]))
 
 (def ^:private release-base
-  (str "https://github.com/chdb-io/chdb/releases/download/v" native/version))
-
-(ffi/defcfn c-sha256 "SHA256" [:pointer :size_t :pointer] :pointer)
+  (str "https://github.com/chdb-io/chdb-core/releases/download/v" native/version))
 
 (defn- ensure-directory! [path]
   (let [file (java.io.File. path)]
@@ -22,42 +19,41 @@
     (when (and (.exists file) (not (.delete file)))
       (throw (ex-info (str "could not remove " path) {:path path})))))
 
-(defn- ensure-crypto! []
-  (let [candidates (if (= :darwin (:os (native/platform)))
-                     ["/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib"
-                      "/usr/local/opt/openssl@3/lib/libcrypto.dylib"
-                      "libcrypto.dylib"]
-                     ["libcrypto.so.3" "libcrypto.so.1.1" "libcrypto.so"])]
-    (when-not (some (fn [candidate]
-                      (try (ffi/load-library candidate) true
-                           (catch Throwable _ false)))
-                    candidates)
-      (throw (ex-info "could not load OpenSSL libcrypto to verify libchdb"
-                      {:type ::crypto-unavailable})))))
-
 (defn- sha256 [path]
-  (ensure-crypto!)
-  (with-open [input (java.io.FileInputStream. path)]
-    (let [data (.readAllBytes input)
-          size (alength data)
-          source (ffi/alloc (max 1 size))
-          digest (ffi/alloc 32)]
-      (try
-        (ffi/write-array source data)
-        (when (ffi/null? (c-sha256 source size digest))
-          (throw (ex-info (str "SHA256 failed for " path) {:path path})))
-        (apply str (map #(format "%02x" (bit-and % 0xff))
-                        (seq (ffi/read-array digest 32))))
-        (finally
-          (ffi/free digest)
-          (ffi/free source))))))
+  ;; Native release archives are hundreds of megabytes. Hash them with a
+  ;; streaming platform tool instead of materializing both a host byte array
+  ;; and an equally large FFI buffer. Linux ships sha256sum; macOS ships
+  ;; shasum, and openssl is a final portable fallback.
+  (let [commands (if (= :darwin (:os (native/platform)))
+                   [["shasum" "-a" "256" path]
+                    ["openssl" "dgst" "-sha256" path]]
+                   [["sha256sum" path]
+                    ["openssl" "dgst" "-sha256" path]])
+        result (some (fn [command]
+                       (let [{:keys [exit out] :as result}
+                             (apply shell/sh command)]
+                         (when (zero? exit) (assoc result :command command))))
+                     commands)
+        digest (some #(when (re-matches #"[0-9a-fA-F]{64}" %) %)
+                     (some-> result :out str/trim (str/split #"\s+")))]
+    (when-not (and digest (re-matches #"[0-9a-fA-F]{64}" digest))
+      (throw (ex-info (str "could not compute SHA-256 for " path)
+                      {:path path :commands commands})))
+    (str/lower-case digest)))
 
 (defn- fetch! [url path]
   (delete-file! path)
   (println "libchdb: downloading" url)
-  (let [fetch (requiring-resolve 'jolt.mvn-http/fetch)]
-    (when-not (fetch url path)
-      (throw (ex-info (str "failed to download " url) {:url url :path path}))))
+  ;; jolt.mvn-http intentionally buffers Maven-sized responses. libchdb's
+  ;; release archive is much larger, so curl it directly to disk with bounded
+  ;; memory and let the pinned digest below authenticate the completed file.
+  (let [{:keys [exit out err]}
+        (shell/sh "curl" "--fail" "--location" "--retry" "2"
+                  "--retry-all-errors" "--silent" "--show-error"
+                  "--output" path url)]
+    (when-not (zero? exit)
+      (throw (ex-info (str "failed to download " url)
+                      {:url url :path path :exit exit :out out :err err}))))
   (when-not (.isFile (java.io.File. path))
     (throw (ex-info (str "download does not exist: " path) {:path path})))
   path)
