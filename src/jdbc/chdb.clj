@@ -228,6 +228,48 @@
       (str/starts-with? path "//") (subs path 2)
       :else path)))
 
+(def ^:private max-database-name-length 255)
+
+(defn- spec-database [spec]
+  (when (map? spec)
+    (let [database (:database spec)]
+      (when-not (or (nil? database) (string? database) (keyword? database))
+        (throw (ex-info "chDB :database must be a string or keyword"
+                        {:database database :jdbc/sql-error true})))
+      (when (and (keyword? database) (namespace database))
+        (throw (ex-info "chDB :database keyword must be unqualified"
+                        {:database database :jdbc/sql-error true})))
+      (let [database (cond
+                       (keyword? database) (name database)
+                       (string? database) database
+                       :else nil)]
+        (when-not (str/blank? database)
+          ;; Keep interpolation into CREATE DATABASE and USE deliberately more
+          ;; restrictive than ClickHouse's full quoted-identifier grammar. A
+          ;; logical database in a dbspec is configuration, not raw SQL.
+          (when-not (and (<= (count database) max-database-name-length)
+                         (re-matches #"[A-Za-z_][A-Za-z0-9_]*" database))
+            (throw (ex-info "unsafe or invalid chDB logical database name"
+                            {:database database
+                             :max-length max-database-name-length
+                             :jdbc/sql-error true})))
+          database)))))
+
+(defn- open-spec! [spec]
+  ;; Validate the identifier before loading libchdb or claiming the process's
+  ;; one active storage path.
+  (let [database (spec-database spec)
+        handle (native/open! (spec-path spec))]
+    (try
+      (when database
+        (let [identifier (str "`" database "`")]
+          (execute-any handle (str "CREATE DATABASE IF NOT EXISTS " identifier) [])
+          (execute-any handle (str "USE " identifier) [])))
+      handle
+      (catch Throwable t
+        (native/close! handle)
+        (throw t)))))
+
 (def chdb-driver
   (reify driver/Driver
     (descriptor [_]
@@ -236,9 +278,12 @@
        :uri-prefixes ["chdb:"]
        :product-name "ClickHouse (chDB)"
        :capabilities {:transactions :none :generated-keys :none}
-       :constraints {:active-storage-paths :one-per-process}
+       :constraints {:active-storage-paths :one-per-process
+                     :logical-databases {:spec-key :database
+                                         :create-if-missing true
+                                         :identifier :ascii-simple}}
        :schema-sql nil})
-    (open-handle [_ spec] (native/open! (spec-path spec)))
+    (open-handle [_ spec] (open-spec! spec))
     (close-handle [_ handle] (native/close! handle))
     (execute-handle [_ handle sql params] (execute-any handle sql params))))
 

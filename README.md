@@ -43,6 +43,24 @@ Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 path may be active in a process at once, although multiple connections to that
 same path are supported.
 
+A map dbspec can select an isolated logical ClickHouse database while sharing
+that physical path:
+
+```clojure
+(jdbc/connection {:vendor "chdb"
+                  :name "/var/lib/my-app/chdb"
+                  :database "samizdat"})
+```
+
+On open, the driver creates the logical database if it is missing and selects
+it for that connection. Different connections on the active physical path may
+therefore use the same unqualified table names without colliding. `:database`
+accepts a string or unqualified keyword containing only an ASCII letter or
+underscore followed by ASCII letters, digits, or underscores (maximum 255
+characters); other values are rejected before native chDB is opened. URI
+dbspecs and map dbspecs without `:database` continue to use ClickHouse's
+`default` database.
+
 `jdbc.chdb/stream-insert!` is an optional chDB-specific API for incremental,
 format-encoded input. It accepts `String` or byte-array chunks, defaults to
 `JSONEachRow`, and exclusively occupies its connection until finalization.

@@ -1,5 +1,6 @@
 (ns jdbc.chdb-test
   (:require [db.jdbc]
+            [db.driver :as driver]
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
@@ -24,6 +25,8 @@
   (with-open [conn (jdbc/connection "chdb::memory:")]
     (check "database product metadata" "ClickHouse (chDB)"
            (.getDatabaseProductName (.getMetaData (proto/connection conn))))
+    (check "URI dbspec retains the default logical database" "default"
+           (:database (jdbc/fetch-one conn "select currentDatabase() database")))
     (check "DDL update count" 0
            (jdbc/execute! conn "create table event (id Int64, name String) engine=Memory"))
     (check "typed positional insert count" 1
@@ -77,6 +80,57 @@
     (check "close is idempotent and use-after-close fails" true
            (throws? #(jdbc/fetch conn "select 1")))))
 
+(defn- run-logical-database-checks []
+  (println "chDB logical database selection")
+  (check "descriptor advertises logical database dbspec support"
+         {:spec-key :database :create-if-missing true :identifier :ascii-simple}
+         (get-in (driver/driver-descriptor chdb/chdb-driver)
+                 [:constraints :logical-databases]))
+  (with-open [default-conn (jdbc/connection {:vendor "chdb" :name ":memory:"})]
+    (check "map dbspec without logical database retains default" "default"
+           (:database (jdbc/fetch-one default-conn
+                                      "select currentDatabase() database"))))
+  (let [base {:vendor "chdb" :name ":memory:"}
+        a (jdbc/connection (assoc base :database "logical_a"))
+        b (jdbc/connection (assoc base :database :logical_b))]
+    (try
+      (check "string logical database is selected" "logical_a"
+             (:database (jdbc/fetch-one a "select currentDatabase() database")))
+      (check "keyword logical database is selected" "logical_b"
+             (:database (jdbc/fetch-one b "select currentDatabase() database")))
+      (jdbc/execute! a "create table same_name (value String) engine=Memory")
+      (jdbc/execute! b "create table same_name (value String) engine=Memory")
+      (jdbc/execute! a ["insert into same_name values (?)" "from-a"])
+      (jdbc/execute! b ["insert into same_name values (?)" "from-b"])
+      (check "same table name is isolated in first logical database"
+             [{:value "from-a"}]
+             (jdbc/fetch a "select value from same_name"))
+      (check "same table name is isolated in second logical database"
+             [{:value "from-b"}]
+             (jdbc/fetch b "select value from same_name"))
+      (check "logical databases retain one physical storage claim" 2
+             (:references (native/active-storage)))
+      (finally
+        (.close b)
+        (.close a))))
+  (let [before (native/active-storage)]
+    (check "hostile logical database identifier is rejected" true
+           (throws? #(jdbc/connection
+                      {:vendor "chdb" :name ":memory:"
+                       :database "safe`; DROP DATABASE default; --"})))
+    (check "overlength logical database identifier is rejected" true
+           (throws? #(jdbc/connection
+                      {:vendor "chdb" :name ":memory:"
+                       :database (apply str (repeat 256 "a"))})))
+    (check "non-string logical database identifier is rejected" true
+           (throws? #(jdbc/connection
+                      {:vendor "chdb" :name ":memory:" :database 42})))
+    (check "namespaced keyword logical database is rejected" true
+           (throws? #(jdbc/connection
+                      {:vendor "chdb" :name ":memory:" :database :tenant/data})))
+    (check "invalid names are rejected before claiming native storage" before
+           (native/active-storage))))
+
 (defn- run-storage-checks []
   (println "chDB process storage ownership")
   (let [a (native/open! ":memory:")
@@ -96,6 +150,7 @@
 (defn -main [& _]
   (reset! failures 0)
   (run-query-checks)
+  (run-logical-database-checks)
   (run-storage-checks)
   (property/run-properties!)
   (if (zero? @failures)
