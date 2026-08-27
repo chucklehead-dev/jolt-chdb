@@ -43,5 +43,13 @@ Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 path may be active in a process at once, although multiple connections to that
 same path are supported.
 
-For bulk telemetry ingestion, `jdbc.chdb/stream-insert!` accepts bounded
-`String` or byte-array chunks and defaults to `JSONEachRow`.
+`jdbc.chdb/stream-insert!` is an optional chDB-specific API for incremental,
+format-encoded input. It accepts `String` or byte-array chunks, defaults to
+`JSONEachRow`, and exclusively occupies its connection until finalization.
+
+Do not use it with the packaged 26.7.0 native library in a long-running
+process: even a contract-compliant single-threaded C caller causes that build
+to retain invalid ClickHouse `ThreadStatus` state and report a fatal diagnostic
+when the connection closes. Use bounded `execute!` inserts instead; the OTel
+exporter does so. Re-enable streaming only after qualifying a fixed native
+release with the pseudo-terminal diagnostic probe.
