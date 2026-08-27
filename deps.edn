@@ -1,0 +1,13 @@
+{:paths ["src"]
+ :deps {io.github.jolt-lang/db
+        {:local/root "/home/chuck/ai-src/worktrees/db-embedded-spi"}
+        org.clojure/data.json
+        {:local/root "/home/chuck/ai-src/data.json"}
+        com.github.seancorfield/honeysql
+        {:git/url "https://github.com/seancorfield/honeysql.git"
+         :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}}
+ :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
+           :test {:extra-paths ["test"]
+                  :main-opts ["-m" "jdbc.chdb-test"]}}
+ :tasks {setup-native "jolt -M:setup-native"
+         test "jolt -M:test"}}

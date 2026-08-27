@@ -1,0 +1,4 @@
+.jolt/
+.cpcache/
+.native/
+*.chdb/
