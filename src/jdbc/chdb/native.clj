@@ -120,32 +120,12 @@
                  (assoc state :references (dec n)))
              state))))
 
-(defrecord ChdbHandle [owner connection path closed? lock executor worker-id])
-
-(defn- executor-call!
-  "Run `f` on an executor and rethrow its original failure on the caller."
-  [executor f]
-  (let [result (promise)]
-    (.execute executor
-              (fn []
-                (try
-                  (deliver result [:ok (f)])
-                  (catch Throwable t
-                    (deliver result [:error t])))))
-    (let [[status value] @result]
-      (if (= :ok status) value (throw value)))))
-
-(defn- handle-call! [handle f]
-  (if (= (:worker-id handle) (.getId (Thread/currentThread)))
-    (throw (ex-info "reentrant chDB connection use on its affinity thread"
-                    {:db.chdb/reentrant true :jdbc/sql-error true}))
-    (executor-call! (:executor handle) f)))
+(defrecord ChdbHandle [owner connection path closed? lock])
 
 (defn open! [path]
   (ensure-loaded!)
   (disable-signal-handlers!)
-  (let [path (claim-path! (normalized-path path))
-        executor (java.util.concurrent.Executors/newSingleThreadExecutor)]
+  (let [path (claim-path! (normalized-path path))]
     (try
       (let [connect (fn [argc argv]
                       (let [owner (chdb-connect argc argv)]
@@ -157,22 +137,15 @@
                             (chdb-close-conn owner)
                             (throw (ex-info "chDB returned a null connection"
                                             {:path path :jdbc/sql-error true})))
-                          {:owner owner :connection connection
-                           :worker-id (.getId (Thread/currentThread))})))
-            connected
+                          (->ChdbHandle owner connection path (atom false) (Object.)))))]
         ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
         ;; --path=:memory: creates a persistent directory literally named
         ;; :memory:, which is both surprising and unsafe for tests.
-            (executor-call!
-             executor
-             #(if (= path ":memory:")
-                (connect 0 ffi/null)
-                (ffi/with-c-string-array [argv 2] ["chdb" (str "--path=" path)]
-                  (connect 2 argv))))]
-        (->ChdbHandle (:owner connected) (:connection connected) path
-                      (atom false) (Object.) executor (:worker-id connected)))
+        (if (= path ":memory:")
+          (connect 0 ffi/null)
+          (ffi/with-c-string-array [argv 2] ["chdb" (str "--path=" path)]
+            (connect 2 argv))))
       (catch Throwable t
-        (.shutdownNow executor)
         (release-path! path)
         (throw t)))))
 
@@ -182,26 +155,15 @@
       ;; Keep the process-wide path claimed if the native destructor itself
       ;; fails; ownership would then be uncertain and opening a different path
       ;; would be unsound.
-      (try
-        (handle-call! handle #(chdb-close-conn (:owner handle)))
-        (release-path! (:path handle))
-        (finally
-          (.shutdown (:executor handle))
-          (when-not (.awaitTermination (:executor handle) 5000
-                                       java.util.concurrent.TimeUnit/MILLISECONDS)
-            (.shutdownNow (:executor handle)))))))
+      (chdb-close-conn (:owner handle))
+      (release-path! (:path handle))))
   nil)
 
 (defn with-live-handle [handle f]
-  ;; Check before acquiring the caller-owned serialization lock: the outer
-  ;; caller holds it while this affinity-thread callback runs.
-  (when (= (:worker-id handle) (.getId (Thread/currentThread)))
-    (throw (ex-info "reentrant chDB connection use on its affinity thread"
-                    {:db.chdb/reentrant true :jdbc/sql-error true})))
   (locking (:lock handle)
     (when @(:closed? handle)
       (throw (ex-info "chDB connection is closed"
                       {:db.chdb/closed true :jdbc/sql-error true})))
-    (handle-call! handle #(f (:connection handle)))))
+    (f (:connection handle))))
 
 (defn active-storage [] @storage-state)

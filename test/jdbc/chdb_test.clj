@@ -93,39 +93,10 @@
          {:path nil :references 0}
          (native/active-storage)))
 
-(defn- run-affinity-checks []
-  (println "chDB native thread affinity")
-  (let [handle (native/open! ":memory:")
-        worker-id (:worker-id handle)]
-    (try
-      (check "open and all native-adjacent work share one worker"
-             #{worker-id}
-             (set (cons (native/with-live-handle
-                         handle (fn [_] (.getId (Thread/currentThread))))
-                        (map deref
-                             (doall
-                              (repeatedly
-                               24
-                               #(future
-                                  (native/with-live-handle
-                                   handle
-                                   (fn [_] (.getId (Thread/currentThread)))))))))))
-      (check "reentrant connection use fails instead of deadlocking" true
-             (throws?
-              #(native/with-live-handle
-                handle
-                (fn [_]
-                  (native/with-live-handle handle (fn [_] :unreachable))))))
-      (finally
-        (native/close! handle)))
-    (check "close terminates the owned affinity executor" true
-           (.isTerminated (:executor handle)))))
-
 (defn -main [& _]
   (reset! failures 0)
   (run-query-checks)
   (run-storage-checks)
-  (run-affinity-checks)
   (property/run-properties!)
   (if (zero? @failures)
     (println "all checks passed")

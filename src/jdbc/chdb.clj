@@ -236,8 +236,7 @@
        :uri-prefixes ["chdb:"]
        :product-name "ClickHouse (chDB)"
        :capabilities {:transactions :none :generated-keys :none}
-       :constraints {:active-storage-paths :one-per-process
-                     :execution-affinity :handle-thread}
+       :constraints {:active-storage-paths :one-per-process}
        :schema-sql nil})
     (open-handle [_ spec] (native/open! (spec-path spec)))
     (close-handle [_ handle] (native/close! handle))
