@@ -83,6 +83,44 @@
          (require! "chdb/placeholders/value" value
                    (:value (jdbc/fetch-one conn [query value]))))))))
 
+(defn- encoded-query-bounds! []
+  (run-property!
+   "chdb/encoded-query-bounds"
+   {:test-cases 32}
+   (fn [_]
+     (let [format (h/draw! (g/sampled-from [:arrow :parquet :csv nil]))
+           max-rows (h/draw! (g/sampled-from
+                              [0 1 2 chdb/max-encoded-result-rows
+                               (inc chdb/max-encoded-result-rows)]))
+           max-bytes (h/draw! (g/sampled-from
+                               [0 1048576 chdb/max-encoded-result-bytes
+                                (inc chdb/max-encoded-result-bytes)]))
+           valid? (and (contains? #{:arrow :parquet} format)
+                       (<= 1 max-rows chdb/max-encoded-result-rows)
+                       (<= 1 max-bytes chdb/max-encoded-result-bytes))]
+       ;; Every case owns a fresh connection, so a failure and its shrink replay
+       ;; begin from equivalent native state.
+       (with-open [conn (jdbc/connection "chdb::memory:")]
+         (let [outcome (try
+                         {:result (chdb/query-bytes
+                                   conn ["select throwIf(? != 17), ? as value"
+                                         17 "property"]
+                                   {:format format :max-rows max-rows
+                                    :max-bytes max-bytes})}
+                         (catch Throwable error {:error error}))]
+           (require! "chdb/encoded-bounds/acceptance"
+                     valid? (contains? outcome :result))
+           (when valid?
+             (let [result (:result outcome)
+                   expected (if (= format :arrow) "ARROW1" "PAR1")
+                   width (count expected)
+                   actual (apply str
+                                 (map #(char (bit-and (int %) 255))
+                                      (take width (:bytes result))))]
+               (require! "chdb/encoded-bounds/format" expected actual)
+               (require! "chdb/encoded-bounds/owned-length"
+                         (:byte-count result) (alength (:bytes result)))))))))))
+
 (defn- stream-chunkings! []
   (run-property!
    "chdb/stream-chunkings"
@@ -142,5 +180,6 @@
   (println "chDB Hegel properties")
   (scalar-roundtrips!)
   (placeholder-lexing!)
+  (encoded-query-bounds!)
   (stream-chunkings!)
   (lifecycle-swarm!))

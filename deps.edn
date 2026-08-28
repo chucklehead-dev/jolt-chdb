@@ -16,4 +16,5 @@
                   :extra-paths ["test"]
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
-         test "jolt -M:test"}}
+         test "jolt -M:test"
+         test-threadstatus "bash test/encoded-threadstatus.sh"}}

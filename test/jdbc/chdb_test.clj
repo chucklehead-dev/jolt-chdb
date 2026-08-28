@@ -6,7 +6,8 @@
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
-            [jdbc.proto :as proto]))
+            [jdbc.proto :as proto]
+            [jolt.ffi :as ffi]))
 
 (def failures (atom 0))
 
@@ -19,6 +20,15 @@
 
 (defn- throws? [f]
   (try (f) false (catch Throwable _ true)))
+
+(defn- ascii [bytes]
+  (apply str (map #(char (bit-and (int %) 255)) bytes)))
+
+(defn- byte-prefix [bytes n]
+  (ascii (take n bytes)))
+
+(defn- byte-suffix [bytes n]
+  (ascii (take-last n bytes)))
 
 (defn- run-query-checks []
   (println "chDB query and compatibility checks")
@@ -79,6 +89,247 @@
     (.close conn)
     (check "close is idempotent and use-after-close fails" true
            (throws? #(jdbc/fetch conn "select 1")))))
+
+(defn- run-encoded-query-checks []
+  (println "chDB bounded Arrow/Parquet queries")
+  (with-open [conn (jdbc/connection "chdb::memory:")]
+    (let [arrow (chdb/query-bytes
+                 conn ["select throwIf(? != 7), ? as value" 7 "bound-arrow"]
+                 {:format :arrow :max-rows 10 :max-bytes 1048576})
+          parquet (chdb/query-bytes
+                   conn ["select throwIf(? != 8), ? as value" 8 "bound-parquet"]
+                   {:format :parquet :max-rows 10 :max-bytes 1048576})]
+      (check "Arrow metadata"
+             {:format :arrow :content-type "application/vnd.apache.arrow.file"
+              :extension "arrow"}
+             (select-keys arrow [:format :content-type :extension]))
+      (check "Arrow file prefix" "ARROW1" (byte-prefix (:bytes arrow) 6))
+      (check "Arrow file suffix" "ARROW1" (byte-suffix (:bytes arrow) 6))
+      (check "Arrow byte count owns exact copied array length"
+             (:byte-count arrow) (alength (:bytes arrow)))
+      (check "Parquet metadata"
+             {:format :parquet :content-type "application/vnd.apache.parquet"
+              :extension "parquet"}
+             (select-keys parquet [:format :content-type :extension]))
+      (check "Parquet file prefix" "PAR1" (byte-prefix (:bytes parquet) 4))
+      (check "Parquet file suffix" "PAR1" (byte-suffix (:bytes parquet) 4))
+      (check "Parquet byte count owns exact copied array length"
+             (:byte-count parquet) (alength (:bytes parquet))))
+
+    (check "HoneySQL formatted SQL vector exports unchanged" "PAR1"
+           (byte-prefix
+            (:bytes (chdb/query-bytes
+                     conn (sql/format {:select [[1 :one]]})
+                     {:format :parquet})) 4))
+
+    (check "row cap is enforced by ClickHouse before returning bytes" true
+           (throws? #(chdb/query-bytes conn "select number from numbers(2)"
+                                       {:format :arrow :max-rows 1
+                                        :max-bytes 1048576})))
+    (check "ordinary JDBC works after Arrow row-cap recovery" 9
+           (:n (jdbc/fetch-one conn "select 9 n")))
+    (check "byte cap is enforced by ClickHouse before returning bytes" true
+           (throws? #(chdb/query-bytes
+                      conn "select number, cityHash64(number) from numbers(100000)"
+                      {:format :parquet :max-rows 100000 :max-bytes 1000})))
+    (check "ordinary JDBC works after Parquet byte-cap recovery" 10
+           (:n (jdbc/fetch-one conn "select 10 n")))
+    (check "WITH SELECT is accepted by the read-only shape" "with-ok"
+           (let [result (chdb/query-bytes
+                         conn "with 'with-ok' as value select value"
+                         {:format :parquet})]
+             (when (= "PAR1" (byte-prefix (:bytes result) 4)) "with-ok")))
+    (check "semicolon inside a quoted value is not a statement separator" "PAR1"
+           (byte-prefix
+            (:bytes (chdb/query-bytes conn "select ';' as value"
+                                      {:format :parquet})) 4))
+    (check "unbalanced caller SQL cannot escape the bounded subquery" true
+           (throws? #(chdb/query-bytes
+                      conn "select 1) AS escaped; DROP TABLE encoded_escape; SELECT * FROM ("
+                      {:format :arrow})))
+    (check "DDL cannot occupy the encoded SELECT subquery" true
+           (throws? #(chdb/query-bytes
+                      conn "create table encoded_escape (n Int64) engine=Memory"
+                      {:format :parquet})))
+    (check "failed DDL did not create a table" 0
+           (:n (jdbc/fetch-one
+                conn
+                "select count() n from system.tables where database=currentDatabase() and name='encoded_escape'")))
+
+    ;; Count around the real destructor. These cases use real native results but
+    ;; force each Jolt-side failure edge after query execution.
+    (let [real-destroy native/chdb-destroy-query-result
+          destroys (atom 0)]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroys inc)
+                      (real-destroy result))]
+        (chdb/query-bytes conn "select 1" {:format :parquet})
+        (check "successful encoded result is destroyed exactly once" 1 @destroys)))
+
+    (let [real-destroy native/chdb-destroy-query-result
+          real-length native/chdb-result-length
+          destroys (atom 0)]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroys inc)
+                      (real-destroy result))
+                    native/chdb-result-length
+                    (fn [result]
+                      ;; Preserve a real result and only falsify its reported
+                      ;; serialized length beyond the caller cap.
+                      (inc (max 1024 (real-length result))))]
+        (check "post-serialization cap rejects before copying" true
+               (throws? #(chdb/query-bytes conn "select 1"
+                                           {:format :parquet :max-bytes 1024})))
+        (check "oversized encoded result is destroyed exactly once" 1 @destroys)))
+
+    (let [real-destroy native/chdb-destroy-query-result
+          destroys (atom 0)]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroys inc)
+                      (real-destroy result))
+                    native/chdb-result-length (fn [_] 0)
+                    native/chdb-result-buffer (fn [_] ffi/null)]
+        (let [result (chdb/query-bytes conn "select 1 where 0" {:format :arrow})]
+          (check "zero-length native result copies to an empty owned array"
+                 0 (alength (:bytes result))))
+        (check "zero-length encoded result is destroyed exactly once" 1 @destroys)))
+
+    (let [real-destroy native/chdb-destroy-query-result
+          destroys (atom 0)]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroys inc)
+                      (real-destroy result))
+                    native/chdb-result-buffer (fn [_] ffi/null)]
+        (check "positive encoded result rejects a null buffer" true
+               (throws? #(chdb/query-bytes conn "select 1" {:format :arrow})))
+        (check "null-buffer encoded result is destroyed exactly once" 1 @destroys)))
+
+    (let [real-destroy native/chdb-destroy-query-result
+          destroys (atom 0)]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroys inc)
+                      (real-destroy result))
+                    ffi/read-array (fn [& _] (throw (ex-info "injected copy failure" {})))]
+        (check "binary copy failure propagates" true
+               (throws? #(chdb/query-bytes conn "select 1" {:format :parquet})))
+        (check "copy-failed encoded result is destroyed exactly once" 1 @destroys)))
+
+    (let [real-destroy native/chdb-destroy-query-result
+          destroyed (atom [])]
+      (with-redefs [native/chdb-destroy-query-result
+                    (fn [result]
+                      (swap! destroyed conj result)
+                      (real-destroy result))]
+        (check "native query error propagates" true
+               (throws? #(chdb/query-bytes conn "select no_such_column"
+                                           {:format :arrow})))
+        ;; One failed user result and one successful stale-format reset result.
+        (check "native error and recovery results are each destroyed exactly once"
+               [1 1]
+               (sort (vals (frequencies @destroyed))))))
+
+    (let [native-calls (atom 0)]
+      (with-redefs [native/chdb-query-with-params-n
+                    (fn [& _] (swap! native-calls inc) ffi/null)]
+        (check "unsupported format fails" true
+               (throws? #(chdb/query-bytes conn "select 1" {:format :csv})))
+        (check "over-hard row cap fails" true
+               (throws? #(chdb/query-bytes
+                          conn "select 1"
+                          {:format :arrow
+                           :max-rows (inc chdb/max-encoded-result-rows)})))
+        (check "over-hard byte cap fails" true
+               (throws? #(chdb/query-bytes
+                          conn "select 1"
+                          {:format :parquet
+                           :max-bytes (inc chdb/max-encoded-result-bytes)})))
+        (check "invalid encoded options never invoke native query" 0 @native-calls)))
+
+    (let [copied (:bytes (chdb/query-bytes conn "select 42 n"
+                                           {:format :parquet}))]
+      (jdbc/fetch-one conn "select 43 n")
+      (check "owned bytes survive a later native result" "PAR1"
+             (byte-prefix copied 4))))
+
+  (let [conn (jdbc/connection "chdb::memory:")
+        copied (:bytes (chdb/query-bytes conn "select 44 n" {:format :arrow}))]
+    (.close conn)
+    (check "owned bytes survive connection close" "ARROW1"
+           (byte-prefix copied 6)))
+
+  (let [conn (jdbc/connection "chdb::memory:")
+        real-query native/chdb-query-with-params-n
+        real-destroy native/chdb-destroy-query-result
+        native-calls (atom 0)
+        user-result-destroyed? (atom false)
+        recovery-saw-destroy? (atom false)]
+    (try
+      (let [error
+            (with-redefs
+             [native/chdb-query-with-params-n
+              (fn [& args]
+                (let [call (swap! native-calls inc)]
+                  (if (= call 2)
+                    (do (reset! recovery-saw-destroy? @user-result-destroyed?)
+                        ffi/null)
+                    (apply real-query args))))
+              native/chdb-destroy-query-result
+              (fn [result]
+                (reset! user-result-destroyed? true)
+                (real-destroy result))]
+             (try
+               (chdb/query-bytes conn "select no_such_column"
+                                 {:format :parquet})
+               nil
+               (catch Throwable error error)))]
+        (check "failed encoded result is destroyed before recovery"
+               true @recovery-saw-destroy?)
+        (check "failed format recovery retires the connection"
+               true (:db.chdb/connection-retired (ex-data error)))
+        (check "recovery failure preserves the original native query error"
+               true (boolean (re-find #"no_such_column"
+                                      (:query-error (ex-data error)))))
+        (check "recovery failure remains available as the exception cause"
+               true (some? (ex-cause error)))
+        (check "retired connection rejects every later query"
+               true (throws? #(jdbc/fetch-one conn "select 1"))))
+      (finally (.close conn))))
+
+  (let [conn (jdbc/connection "chdb::memory:")
+        native-calls (atom 0)
+        destroys (atom 0)]
+    (try
+      (let [error
+            (with-redefs
+             [native/chdb-query-with-params-n
+              (fn [& _] (swap! native-calls inc) ffi/null)
+              native/chdb-destroy-query-result
+              (fn [_] (swap! destroys inc))]
+             (try
+               (chdb/query-bytes conn "select 1" {:format :arrow})
+               nil
+               (catch Throwable error error)))]
+        (check "null native encoded result fails" true (some? error))
+        (check "null native result was invoked once" 1 @native-calls)
+        (check "null native result is never passed to destroy" 0 @destroys)
+        (check "null native result retires the uncertain connection"
+               true (:db.chdb/connection-retired (ex-data error)))
+        (check "connection retired after null result rejects later JDBC"
+               true (throws? #(jdbc/fetch-one conn "select 1"))))
+      (finally (.close conn))))
+
+  (with-open [sqlite (jdbc/connection "sqlite::memory:")]
+    (check "encoded query rejects a non-chDB connection" true
+           (throws? #(chdb/query-bytes sqlite "select 1" {:format :arrow}))))
+  (let [closed (jdbc/connection "chdb::memory:")]
+    (.close closed)
+    (check "encoded query rejects a closed connection" true
+           (throws? #(chdb/query-bytes closed "select 1" {:format :arrow})))))
 
 (defn- run-logical-database-checks []
   (println "chDB logical database selection")
@@ -150,6 +401,7 @@
 (defn -main [& _]
   (reset! failures 0)
   (run-query-checks)
+  (run-encoded-query-checks)
   (run-logical-database-checks)
   (run-storage-checks)
   (property/run-properties!)
