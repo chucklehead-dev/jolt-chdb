@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [db.driver :as driver]
+            [db.export :as export]
             [db.jdbc-shim :as shim]
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto]
@@ -18,6 +19,14 @@
   "Hard serialized/native-result cap for one `query-bytes` call (64 MiB)."
   67108864)
 
+(def default-encoded-result-rows
+  "Default row cap for one encoded query. Currently equal to the hard cap."
+  max-encoded-result-rows)
+
+(def default-encoded-result-bytes
+  "Default byte cap for one encoded query. Currently equal to the hard cap."
+  max-encoded-result-bytes)
+
 (def ^:private encoded-formats
   {:arrow {:native-format "Arrow"
            :content-type "application/vnd.apache.arrow.file"
@@ -25,6 +34,19 @@
    :parquet {:native-format "Parquet"
              :content-type "application/vnd.apache.parquet"
              :extension "parquet"}})
+
+(def query-bytes-capability
+  "Neutral db.export capability advertised by the chDB driver."
+  {:version 1
+   :formats
+   (into {} (map (fn [[format metadata]]
+                   [format (select-keys metadata [:content-type :extension])]))
+         encoded-formats)
+   :limits {:max-rows max-encoded-result-rows
+            :max-bytes max-encoded-result-bytes
+            :default-max-rows default-encoded-result-rows
+            :default-max-bytes default-encoded-result-bytes}
+   :staging :memory})
 
 (def ^:private hex-digits "0123456789ABCDEF")
 
@@ -247,47 +269,6 @@
   (execute-native handle sql params "JSONCompactEachRowWithNamesAndTypes"
                   (fn [_ _ result] (consume-json-result result))))
 
-(defn- normalize-query [query]
-  (cond
-    (string? query) {:sql query :params []}
-    (and (vector? query) (seq query) (string? (first query)))
-    {:sql (first query) :params (subvec query 1)}
-    :else
-    (throw (ex-info "chDB encoded query must be a SQL string or non-empty SQL vector"
-                    {:query query :jdbc/sql-error true
-                     :db.chdb/query-bytes true}))))
-
-(defn- positive-cap [option value maximum]
-  (when-not (and (integer? value) (<= 1 value maximum))
-    (throw (ex-info "chDB encoded query cap is outside its hard bound"
-                    {:option option :value value :minimum 1 :maximum maximum
-                     :jdbc/sql-error true :db.chdb/query-bytes true})))
-  value)
-
-(defn- encoded-options [options]
-  (when-not (map? options)
-    (throw (ex-info "chDB encoded query options must be a map"
-                    {:options options :jdbc/sql-error true
-                     :db.chdb/query-bytes true})))
-  (when-let [unknown (seq (remove #{:format :max-rows :max-bytes} (keys options)))]
-    (throw (ex-info "chDB encoded query options contain unsupported keys"
-                    {:keys (vec (sort-by str unknown)) :jdbc/sql-error true
-                     :db.chdb/query-bytes true})))
-  (let [format (:format options)
-        format-info (get encoded-formats format)]
-    (when-not format-info
-      (throw (ex-info "chDB encoded query format must be :arrow or :parquet"
-                      {:format format :supported-formats [:arrow :parquet]
-                       :jdbc/sql-error true :db.chdb/query-bytes true})))
-    (merge format-info
-           {:format format
-            :max-rows (positive-cap :max-rows
-                                    (get options :max-rows max-encoded-result-rows)
-                                    max-encoded-result-rows)
-            :max-bytes (positive-cap :max-bytes
-                                     (get options :max-bytes max-encoded-result-bytes)
-                                     max-encoded-result-bytes)})))
-
 (defn- validate-encoded-sql! [sql]
   (let [trimmed (str/trim sql)
         n (count sql)]
@@ -407,8 +388,29 @@
                :query-error query-message
                :recovery-error (ex-message recovery-error)
                :db.chdb/connection-retired true}
-        close-error (assoc :close-error (ex-message close-error)))
+        ;; Preserve the throwable, not just its message: native close failures
+        ;; can carry structured cause data needed to diagnose an uncertain
+        ;; process-wide storage claim.
+        close-error (assoc :close-error close-error))
       recovery-error))))
+
+(defn- retire-after-result-destroy-failure!
+  [handle query-message destroy-error]
+  ;; A failed encoded result must be destroyed before the one-shot serializer
+  ;; reset. If destruction itself fails, resetting while that result may still
+  ;; be live is unsafe. Retire the handle under the encompassing reentrant
+  ;; with-live-handle lock and retain every diagnostic instead.
+  (let [close-error (try (native/close! handle) nil
+                         (catch Throwable error error))]
+    (throw
+     (ex-info
+      "chDB encoded query result destruction failed; connection retired"
+      (cond-> {:jdbc/sql-error true :db.chdb/query-bytes true
+               :query-error query-message
+               :destroy-error (ex-message destroy-error)
+               :db.chdb/connection-retired true}
+        close-error (assoc :close-error close-error))
+      destroy-error))))
 
 (defn- retire-after-null-result! [handle]
   ;; NULL provides neither an error object nor evidence that libchdb cleared
@@ -432,7 +434,11 @@
       ;; Destroy the failed user result before issuing another query on the
       ;; same native connection. The encompassing with-live-handle lock remains
       ;; held across destruction, recovery, and either throw path.
-      (native/chdb-destroy-query-result result)
+      (try
+        (native/chdb-destroy-query-result result)
+        (catch Throwable destroy-error
+          (retire-after-result-destroy-failure!
+           handle message destroy-error)))
       (try
         (reset-output-format-after-error! connection)
         (catch Throwable recovery-error
@@ -461,6 +467,16 @@
             :bytes (if (zero? length) (byte-array 0)
                        (ffi/read-array buffer length))}))))))
 
+(defn- execute-query-bytes-handle
+  [handle sql params {:keys [format max-rows max-bytes]}]
+  (let [native-format (get-in encoded-formats [format :native-format])
+        bounded-sql (bounded-select (validate-encoded-sql! sql)
+                                    max-rows max-bytes)]
+    ;; execute-native enters native/with-live-handle exactly once and retains
+    ;; that lock through result destruction and stale-format recovery.
+    (execute-native handle bounded-sql params native-format
+                    #(consume-encoded-result %1 %2 %3 max-bytes))))
+
 (defn query-bytes
   "Execute one result-bounded SELECT and return an owned Arrow or Parquet byte
   array. SQL is trusted application input; result caps do not bound arbitrary
@@ -472,17 +488,7 @@
   result and its buffer are destroyed before this function returns. No output
   path is accepted: filesystem and HTTP download policy belongs to the caller."
   [conn query options]
-  (let [{:keys [sql params]} (normalize-query query)
-        {:keys [format native-format content-type extension max-rows max-bytes]}
-        (encoded-options options)
-        bounded-sql (bounded-select (validate-encoded-sql! sql)
-                                    max-rows max-bytes)
-        shim-conn (proto/connection conn)
-        {:keys [handle]} (shim/driver-context shim-conn :chdb)
-        copied (execute-native handle bounded-sql params native-format
-                               #(consume-encoded-result %1 %2 %3 max-bytes))]
-    (merge {:format format :content-type content-type :extension extension}
-           copied)))
+  (export/query-bytes conn query options))
 
 (defn- spec-path [spec]
   (let [path (if (string? spec)
@@ -543,7 +549,8 @@
        :aliases #{"chdb"}
        :uri-prefixes ["chdb:"]
        :product-name "ClickHouse (chDB)"
-       :capabilities {:transactions :none :generated-keys :none}
+       :capabilities {:transactions :none :generated-keys :none
+                      :query-bytes query-bytes-capability}
        :constraints {:active-storage-paths :one-per-process
                      :logical-databases {:spec-key :database
                                          :create-if-missing true
@@ -551,7 +558,11 @@
        :schema-sql nil})
     (open-handle [_ spec] (open-spec! spec))
     (close-handle [_ handle] (native/close! handle))
-    (execute-handle [_ handle sql params] (execute-any handle sql params))))
+    (execute-handle [_ handle sql params] (execute-any handle sql params))
+
+    export/QueryBytesDriver
+    (query-bytes-handle [_ handle sql params options]
+      (execute-query-bytes-handle handle sql params options))))
 
 (driver/register! chdb-driver)
 

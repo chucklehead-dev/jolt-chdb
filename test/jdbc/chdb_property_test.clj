@@ -1,5 +1,6 @@
 (ns jdbc.chdb-property-test
   (:require [clojure.data.json :as json]
+            [db.export :as export]
             [hegel.core :as h]
             [hegel.generator :as g]
             [hegel.stateful :as hs]
@@ -89,6 +90,7 @@
    {:test-cases 32}
    (fn [_]
      (let [format (h/draw! (g/sampled-from [:arrow :parquet :csv nil]))
+           api (h/draw! (g/sampled-from [:compatibility :generic]))
            max-rows (h/draw! (g/sampled-from
                               [0 1 2 chdb/max-encoded-result-rows
                                (inc chdb/max-encoded-result-rows)]))
@@ -102,9 +104,12 @@
        ;; begin from equivalent native state.
        (with-open [conn (jdbc/connection "chdb::memory:")]
          (let [outcome (try
-                         {:result (chdb/query-bytes
-                                   conn ["select throwIf(? != 17), ? as value"
-                                         17 "property"]
+                         {:result ((case api
+                                     :compatibility chdb/query-bytes
+                                     :generic export/query-bytes)
+                                   conn
+                                   ["select throwIf(? != 17), ? as value"
+                                    17 "property"]
                                    {:format format :max-rows max-rows
                                     :max-bytes max-bytes})}
                          (catch Throwable error {:error error}))]
@@ -119,7 +124,10 @@
                                       (take width (:bytes result))))]
                (require! "chdb/encoded-bounds/format" expected actual)
                (require! "chdb/encoded-bounds/owned-length"
-                         (:byte-count result) (alength (:bytes result)))))))))))
+                         (:byte-count result) (alength (:bytes result)))
+               (require! "chdb/encoded-bounds/public-result-keys"
+                         #{:format :content-type :extension :byte-count :bytes}
+                         (set (keys result)))))))))))
 
 (defn- stream-chunkings! []
   (run-property!

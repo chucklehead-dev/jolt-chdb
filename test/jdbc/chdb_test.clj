@@ -1,6 +1,7 @@
 (ns jdbc.chdb-test
   (:require [db.jdbc]
             [db.driver :as driver]
+            [db.export :as export]
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
@@ -21,6 +22,15 @@
 (defn- throws? [f]
   (try (f) false (catch Throwable _ true)))
 
+(defn- rejected [f]
+  (try (f) nil (catch Throwable error error)))
+
+(defn- sql-exception? [error]
+  (instance? java.sql.SQLException error))
+
+(defn- cause-data [error]
+  (some-> error ex-cause ex-data))
+
 (defn- ascii [bytes]
   (apply str (map #(char (bit-and (int %) 255)) bytes)))
 
@@ -29,6 +39,16 @@
 
 (defn- byte-suffix [bytes n]
   (ascii (take-last n bytes)))
+
+(def expected-query-bytes-capability
+  {:version 1
+   :formats {:arrow {:content-type "application/vnd.apache.arrow.file"
+                     :extension "arrow"}
+             :parquet {:content-type "application/vnd.apache.parquet"
+                       :extension "parquet"}}
+   :limits {:max-rows 100000 :max-bytes 67108864
+            :default-max-rows 100000 :default-max-bytes 67108864}
+   :staging :memory})
 
 (defn- run-query-checks []
   (println "chDB query and compatibility checks")
@@ -92,13 +112,25 @@
 
 (defn- run-encoded-query-checks []
   (println "chDB bounded Arrow/Parquet queries")
+  (check "public capability has truthful formats, staging, defaults, and limits"
+         expected-query-bytes-capability chdb/query-bytes-capability)
+  (check "descriptor advertises the exact neutral query-bytes capability"
+         expected-query-bytes-capability
+         (export/query-bytes-capability chdb/chdb-driver))
+  (check "advertising driver implements QueryBytesDriver" true
+         (satisfies? export/QueryBytesDriver chdb/chdb-driver))
   (with-open [conn (jdbc/connection "chdb::memory:")]
     (let [arrow (chdb/query-bytes
                  conn ["select throwIf(? != 7), ? as value" 7 "bound-arrow"]
                  {:format :arrow :max-rows 10 :max-bytes 1048576})
-          parquet (chdb/query-bytes
+          parquet (export/query-bytes
                    conn ["select throwIf(? != 8), ? as value" 8 "bound-parquet"]
-                   {:format :parquet :max-rows 10 :max-bytes 1048576})]
+                   {:format :parquet :max-rows 10 :max-bytes 1048576})
+          public-keys #{:format :content-type :extension :byte-count :bytes}]
+      (check "compatibility wrapper returns exactly the neutral five keys"
+             public-keys (set (keys arrow)))
+      (check "generic SPI returns exactly the neutral five keys"
+             public-keys (set (keys parquet)))
       (check "Arrow metadata"
              {:format :arrow :content-type "application/vnd.apache.arrow.file"
               :extension "arrow"}
@@ -115,6 +147,23 @@
       (check "Parquet file suffix" "PAR1" (byte-suffix (:bytes parquet) 4))
       (check "Parquet byte count owns exact copied array length"
              (:byte-count parquet) (alength (:bytes parquet))))
+
+    (let [error (rejected
+                 #(export/query-bytes
+                   conn "select 1" {:format :arrow :unknown true}))]
+      (check "neutral option failure is a SQLException" true
+             (sql-exception? error))
+      (check "neutral option failure preserves boundary cause data" true
+             (:db.export/query-bytes (cause-data error))))
+
+    (let [error (rejected
+                 #(chdb/query-bytes
+                   conn "create table forbidden (n Int64) engine=Memory"
+                   {:format :parquet}))]
+      (check "compatibility wrapper driver rejection is a SQLException" true
+             (sql-exception? error))
+      (check "compatibility wrapper preserves chDB cause data" true
+             (:db.chdb/query-bytes (cause-data error))))
 
     (check "HoneySQL formatted SQL vector exports unchanged" "PAR1"
            (byte-prefix
@@ -263,8 +312,49 @@
            (byte-prefix copied 6)))
 
   (let [conn (jdbc/connection "chdb::memory:")
+        real-close-conn native/chdb-close-conn
+        native-close-calls (atom 0)
+        destroy-calls (atom 0)
+        destroy-error (ex-info "injected failed-result destruction" {:stage :destroy})]
+    (try
+      (with-redefs
+       [native/chdb-destroy-query-result
+        (fn [_]
+          (swap! destroy-calls inc)
+          (throw destroy-error))
+        native/chdb-close-conn
+        (fn [owner]
+          (swap! native-close-calls inc)
+          (real-close-conn owner))]
+       (let [error (rejected
+                    #(chdb/query-bytes conn "select no_such_column"
+                                       {:format :arrow}))]
+         (check "failed-result destruction failure is a SQLException"
+                true (sql-exception? error))
+         (check "failed-result destruction is attempted exactly once"
+                1 @destroy-calls)
+         (check "failed-result destruction failure closes native state once"
+                1 @native-close-calls)
+         (check "destruction retirement preserves the native query error"
+                true (boolean (re-find #"no_such_column"
+                                       (:query-error (cause-data error)))))
+         (check "destruction retirement preserves the destructor throwable"
+                true (identical? destroy-error
+                                 (some-> error ex-cause ex-cause)))
+         (check "destruction retirement rejects every later query"
+                true (throws? #(jdbc/fetch-one conn "select 1")))
+         (.close conn)
+         (check "explicit close after destruction retirement is idempotent"
+                1 @native-close-calls)))
+      (finally (.close conn))))
+
+  (let [conn (jdbc/connection "chdb::memory:")
         real-query native/chdb-query-with-params-n
         real-destroy native/chdb-destroy-query-result
+        real-close native/close!
+        close-error (ex-info "injected retirement close failure"
+                             {:stage :close}
+                             (ex-info "nested close cause" {:native :close}))
         native-calls (atom 0)
         user-result-destroyed? (atom false)
         recovery-saw-destroy? (atom false)]
@@ -281,7 +371,11 @@
               native/chdb-destroy-query-result
               (fn [result]
                 (reset! user-result-destroyed? true)
-                (real-destroy result))]
+                (real-destroy result))
+              native/close!
+              (fn [handle]
+                (real-close handle)
+                (throw close-error))]
              (try
                (chdb/query-bytes conn "select no_such_column"
                                  {:format :parquet})
@@ -289,13 +383,20 @@
                (catch Throwable error error)))]
         (check "failed encoded result is destroyed before recovery"
                true @recovery-saw-destroy?)
+        (check "failed format recovery is a SQLException" true
+               (sql-exception? error))
         (check "failed format recovery retires the connection"
-               true (:db.chdb/connection-retired (ex-data error)))
+               true (:db.chdb/connection-retired (cause-data error)))
         (check "recovery failure preserves the original native query error"
                true (boolean (re-find #"no_such_column"
-                                      (:query-error (ex-data error)))))
-        (check "recovery failure remains available as the exception cause"
-               true (some? (ex-cause error)))
+                                      (:query-error (cause-data error)))))
+        (check "recovery failure retains its nested recovery cause"
+               true (some? (some-> error ex-cause ex-cause)))
+        (check "recovery retirement retains the close throwable and its cause"
+               true
+               (let [retained (:close-error (cause-data error))]
+                 (and (identical? close-error retained)
+                      (= {:native :close} (some-> retained ex-cause ex-data)))))
         (check "retired connection rejects every later query"
                true (throws? #(jdbc/fetch-one conn "select 1"))))
       (finally (.close conn))))
@@ -317,8 +418,10 @@
         (check "null native encoded result fails" true (some? error))
         (check "null native result was invoked once" 1 @native-calls)
         (check "null native result is never passed to destroy" 0 @destroys)
+        (check "null native result is a SQLException" true
+               (sql-exception? error))
         (check "null native result retires the uncertain connection"
-               true (:db.chdb/connection-retired (ex-data error)))
+               true (:db.chdb/connection-retired (cause-data error)))
         (check "connection retired after null result rejects later JDBC"
                true (throws? #(jdbc/fetch-one conn "select 1"))))
       (finally (.close conn))))

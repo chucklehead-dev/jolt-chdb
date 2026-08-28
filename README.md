@@ -13,6 +13,7 @@ Add the library to `deps.edn`, pinning the exact commit you intend to deploy:
 
 ```clojure
 (require '[db.jdbc]
+         '[db.export :as db-export]
          '[jdbc.chdb]
          '[jdbc.core :as jdbc])
 
@@ -73,12 +74,14 @@ dbspecs and map dbspecs without `:database` continue to use ClickHouse's
 format-encoded input. It accepts `String` or byte-array chunks, defaults to
 `JSONEachRow`, and exclusively occupies its connection until finalization.
 
-`jdbc.chdb/query-bytes` is the result-bounded SELECT counterpart for exporting
-a query result as an owned Arrow IPC file or Parquet byte array:
+The driver advertises the neutral `db.export` query-bytes v1 capability with
+Arrow IPC file and Parquet formats, in-memory staging, and truthful default and
+hard limits. Use `db.export/query-bytes` to export a result-bounded SELECT as an
+owned byte array through the shared SPI:
 
 ```clojure
 (let [{:keys [bytes content-type extension byte-count]}
-      (jdbc.chdb/query-bytes
+      (db-export/query-bytes
        conn
        ["select * from events where id >= ? order by id" 100]
        {:format :parquet
@@ -87,6 +90,11 @@ a query result as an owned Arrow IPC file or Parquet byte array:
   ;; bytes is independent of the native result and remains valid after close.
   )
 ```
+
+`jdbc.chdb/query-bytes` remains as a compatibility wrapper and delegates to
+`db.export/query-bytes`; it has no separate execution or ownership path. Both
+functions return exactly `:format`, `:content-type`, `:extension`,
+`:byte-count`, and `:bytes`.
 
 `:format` must be `:arrow` or `:parquet`. `:max-rows` defaults to, and may not
 exceed, 100,000; `:max-bytes` defaults to, and may not exceed, 64 MiB. Both are
@@ -106,13 +114,21 @@ closed selection/filter contract to SQL rather than accepting SQL text.
 The function never accepts or writes a path. An HTTP endpoint or application
 must own filename, authorization, overwrite, and filesystem-root policy.
 
+Validation and native failures are reported as `java.sql.SQLException` at the
+public boundary. For a driver-originated failure, `(ex-cause error)` retains
+the original chDB exception and its structured `ex-data`, including recovery
+or connection-retirement diagnostics.
+
 The pinned libchdb retains a failed Arrow/Parquet output format for one later
 query. The driver destroys the failed user result, then consumes that stale
 state with an internal successful zero-row result before propagating the
 original encoded-query error. If recovery fails, it retires the connection
-rather than exposing uncertain serializer state and reports both errors. Tests
-prove that ordinary JDBC remains usable after successful row/byte overflow
-recovery. The recovery result and original result are each destroyed once.
+rather than exposing uncertain serializer state and reports both errors. If
+destroying the failed result itself fails, the driver does not attempt recovery
+while that result may remain live; it retires the connection and preserves the
+query, destruction, and close diagnostics. Tests prove that ordinary JDBC
+remains usable after successful row/byte overflow recovery. The recovery result
+and original result are each destroyed once on the ordinary error path.
 
 Do not use `stream-insert!` with the packaged 26.7.0 native library in a long-running
 process: even a contract-compliant single-threaded C caller causes that build
