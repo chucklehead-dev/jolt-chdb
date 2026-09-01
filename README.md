@@ -34,6 +34,10 @@ positional parameter API:
                      :where [:= :id 1]}))
 ```
 
+Jolt 0.8.0 or newer is required. The driver uses the value-before-offset
+`jolt.ffi/write` signature introduced in 0.8.0, and declares that floor with
+`:jolt/min-version` so an incompatible runtime rejects the dependency graph.
+
 `nil` has no inferable ClickHouse type. Use `(jdbc.chdb/typed-param
 "Nullable(String)" nil)` when binding it. Transactions and generated keys are
 reported as unsupported before executing SQL.
