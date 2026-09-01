@@ -2,7 +2,7 @@
  :jolt/min-version "0.8.0"
  :deps {io.github.casselc/db
         {:git/url "https://github.com/casselc/db.git"
-         :git/sha "1111e71faff5e1b89f39d8359913e13089d346d7"}
+         :git/sha "a5bf25d9e141e8dcf28d6d07cd053fceb0019563"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
          :git/sha "932444043c0c06f9e295ba4963419b2481e9dd07"}
