@@ -5,7 +5,7 @@
          :git/sha "1111e71faff5e1b89f39d8359913e13089d346d7"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
-         :git/sha "fce6fbd5a7dc233319b2e3e4193050b9ea1d568b"}
+         :git/sha "932444043c0c06f9e295ba4963419b2481e9dd07"}
         com.github.seancorfield/honeysql
         {:git/url "https://github.com/seancorfield/honeysql.git"
          :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}}
