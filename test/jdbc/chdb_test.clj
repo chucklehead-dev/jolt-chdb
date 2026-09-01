@@ -40,6 +40,28 @@
 (defn- byte-suffix [bytes n]
   (ascii (take-last n bytes)))
 
+(defn- run-ffi-write-order-checks []
+  (println "chDB FFI write argument order")
+  (let [allocated (atom [])
+        writes (atom [])
+        buffers [{:pointer 101 :length 11}
+                 {:pointer 202 :length 22}]]
+    (with-redefs [ffi/alloc (fn [_] :array-pointer)
+                  ffi/sizeof (fn [_] 8)
+                  ffi/write (fn [pointer type value offset]
+                              (swap! writes conj [pointer type value offset]))]
+      (#'chdb/pointer-array! allocated buffers)
+      (check "pointer array writes values before offsets"
+             [[:array-pointer :pointer 101 0]
+              [:array-pointer :pointer 202 8]]
+             @writes)
+      (reset! writes [])
+      (#'chdb/length-array! allocated buffers)
+      (check "length array writes values before offsets"
+             [[:array-pointer :size_t 11 0]
+              [:array-pointer :size_t 22 8]]
+             @writes))))
+
 (def expected-query-bytes-capability
   {:version 1
    :formats {:arrow {:content-type "application/vnd.apache.arrow.file"
@@ -503,6 +525,7 @@
 
 (defn -main [& _]
   (reset! failures 0)
+  (run-ffi-write-order-checks)
   (run-query-checks)
   (run-encoded-query-checks)
   (run-logical-database-checks)
