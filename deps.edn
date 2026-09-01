@@ -2,7 +2,7 @@
  :jolt/min-version "0.8.0"
  :deps {io.github.casselc/db
         {:git/url "https://github.com/casselc/db.git"
-         :git/sha "0c559d78d839f2f9c8cc1a7326a639134134bfac"}
+         :git/sha "1111e71faff5e1b89f39d8359913e13089d346d7"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
          :git/sha "8a6dc9668e5c3596a335759defeb7ec80cd3b5f8"}
@@ -13,7 +13,7 @@
            :test {:extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-                    :git/sha "53631c81cd927175935037699ddf687d98a44d24"}}
+                    :git/sha "bcc4d8da54f51d79044d9ad6bcfb09049f9ac27e"}}
                   :extra-paths ["test"]
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
