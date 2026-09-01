@@ -187,7 +187,7 @@
           ptr (ffi/alloc (* width (count buffers)))]
       (swap! allocated conj ptr)
       (doseq [[i buffer] (map-indexed vector buffers)]
-        (ffi/write ptr :pointer (* i width) (:pointer buffer)))
+        (ffi/write ptr :pointer (:pointer buffer) (* i width)))
       ptr)))
 
 (defn- length-array! [allocated buffers]
@@ -197,7 +197,7 @@
           ptr (ffi/alloc (* width (count buffers)))]
       (swap! allocated conj ptr)
       (doseq [[i buffer] (map-indexed vector buffers)]
-        (ffi/write ptr :size_t (* i width) (:length buffer)))
+        (ffi/write ptr :size_t (:length buffer) (* i width)))
       ptr)))
 
 (defn- decode-compact-json [data]
