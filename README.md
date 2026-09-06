@@ -64,6 +64,13 @@ production pin will move only after upstream publishes a stable release with
 the required symbols. See [`docs/durable-abi.md`](docs/durable-abi.md) for exact
 provenance.
 
+The first runtime-neutral control-plane component is the strict Durable V1
+`head.json` codec in `jdbc.chdb.durable.head`. It preserves unknown fields,
+separates read-only from writer feature compatibility, and validates immutable
+reference integrity metadata before later backend or engine work. It is a
+foundation, not a Durable-open API or conformance claim. See
+[`docs/durable-head.md`](docs/durable-head.md).
+
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
 
@@ -156,6 +163,7 @@ Install the pinned native library and run the full driver suite:
 ```sh
 jolt -M:setup-native
 jolt -M:abi-test
+jolt -M:durable-head-test
 jolt -M:test
 jolt test-threadstatus
 ```
