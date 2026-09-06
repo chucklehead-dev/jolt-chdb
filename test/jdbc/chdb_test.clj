@@ -75,6 +75,11 @@
             :default-max-rows 100000 :default-max-bytes 67108864}
    :staging :memory})
 
+(def query-statistics-keys
+  #{:elapsed-seconds :result-rows :result-bytes
+    :storage-rows-read :storage-bytes-read
+    :rows-written :bytes-written})
+
 (defn- run-query-checks []
   (println "chDB query and compatibility checks")
   (with-open [conn (jdbc/connection "chdb::memory:")]
@@ -86,6 +91,91 @@
            (jdbc/execute! conn "create table event (id Int64, name String) engine=Memory"))
     (check "typed positional insert count" 1
            (jdbc/execute! conn ["insert into event values (?, ?)" 1 "one"]))
+    (let [accessor (fn [_]
+                     (throw (ex-info "statistics accessor ran" {})))]
+      (with-redefs [native/chdb-result-elapsed accessor
+                    native/chdb-result-rows-read accessor
+                    native/chdb-result-bytes-read accessor
+                    native/chdb-result-storage-rows-read accessor
+                    native/chdb-result-storage-bytes-read accessor
+                    native/chdb-result-rows-written accessor
+                    native/chdb-result-bytes-written accessor]
+        (check "unobserved success performs no statistics FFI calls" 1
+               (:n (jdbc/fetch-one conn "select 1 n")))
+        (check "active collector performs statistics FFI calls" true
+               (throws? #(chdb/with-query-statistics
+                          (fn [] (jdbc/fetch-one conn "select 1 n")))))))
+    (let [{:keys [result queries]}
+          (chdb/with-query-statistics
+           #(jdbc/fetch conn "select id, name from event order by id"))
+          statistics (first queries)]
+      (check "statistics collector preserves the JDBC result"
+             [{:id 1 :name "one"}] result)
+      (check "one native query produces one statistics record" 1
+             (count queries))
+      (check "result statistics expose the complete stable C API"
+             query-statistics-keys
+             (set (keys statistics)))
+      (check "SELECT statistics report its result row" 1
+             (:result-rows statistics))
+      (check "SELECT statistics report serialized result bytes" true
+             (pos? (:result-bytes statistics)))
+      (check "SELECT statistics do not claim writes" [0 0]
+             [(:rows-written statistics) (:bytes-written statistics)])
+      (check "native elapsed time is a plausible double" true
+             (let [elapsed (:elapsed-seconds statistics)]
+               (and (number? elapsed) (<= 0.0 elapsed) (< elapsed 60.0)))))
+    (let [statistics
+          (-> (chdb/with-query-statistics
+               #(jdbc/fetch-one conn
+                                "select sum(number) total from numbers(1000)"))
+              :queries first)]
+      (check "native statistics distinguish result from storage rows"
+             [1 1000]
+             [(:result-rows statistics) (:storage-rows-read statistics)])
+      (check "native statistics report exact generated storage bytes"
+             8000 (:storage-bytes-read statistics)))
+    (let [{:keys [result queries]}
+          (chdb/with-query-statistics
+           #(jdbc/execute! conn ["insert into event values (?, ?)" 2 "two"]))
+          statistics (first queries)]
+      (check "statistics collector preserves the update count" 1 result)
+      (check "INSERT statistics report one written row" 1
+             (:rows-written statistics))
+      (check "INSERT statistics report native written bytes" true
+             (pos? (:bytes-written statistics))))
+    (let [capture
+          (chdb/with-query-statistics
+           #(do (jdbc/fetch-one conn "select 1 n")
+                (jdbc/fetch-one conn "select 2 n")
+                :complete))]
+      (check "collector preserves an arbitrary thunk result" :complete
+             (:result capture))
+      (check "collector retains native query order" 2
+             (count (:queries capture))))
+    (let [outer
+          (chdb/with-query-statistics
+           #(chdb/with-query-statistics
+             #(jdbc/fetch-one conn "select 3 n")))]
+      (check "nested collectors both observe the query" [1 1]
+             [(count (:queries outer))
+              (count (get-in outer [:result :queries]))]))
+    (let [data (try
+                 (chdb/with-query-statistics
+                  #(jdbc/fetch conn "select no_such_column"))
+                 nil
+                 (catch Throwable error (cause-data error)))]
+      (check "failed native query retains its statistics" true
+             (= query-statistics-keys
+                (set (keys (:db.chdb/query-statistics data))))))
+    (let [data (try
+                 (chdb/with-query-statistics
+                  #(do (jdbc/fetch-one conn "select 1 n")
+                       (jdbc/fetch conn "select no_such_column")))
+                 nil
+                 (catch Throwable error (cause-data error)))]
+      (check "throwing thunk retains all completed query statistics" 2
+             (count (:db.chdb/query-statistics-collected data))))
     (check "parameterized rows" [{:id 1 :name "one"}]
            (jdbc/fetch conn ["select id, name from event where id = ?" 1]))
     (check "backslashes survive String parameter parsing" "a\\b"
@@ -306,6 +396,26 @@
         (check "native error and recovery results are each destroyed exactly once"
                [1 1]
                (sort (vals (frequencies @destroyed))))))
+
+    (let [error (rejected
+                 #(chdb/query-bytes conn "select no_such_column"
+                                    {:format :arrow}))
+          statistics (:db.chdb/query-statistics (cause-data error))]
+      (check "failed encoded query retains complete native statistics"
+             query-statistics-keys (set (keys statistics))))
+
+    (let [capture
+          (chdb/with-query-statistics
+           #(try
+              (chdb/query-bytes conn "select no_such_column"
+                                {:format :parquet})
+              (catch Throwable _ :handled)))]
+      (check "collector observes one failed encoded user query"
+             [:handled 1]
+             [(:result capture) (count (:queries capture))])
+      (check "collector does not expose the internal format-reset query"
+             query-statistics-keys
+             (set (keys (first (:queries capture))))))
 
     (let [native-calls (atom 0)]
       (with-redefs [native/chdb-query-with-params-n

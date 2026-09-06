@@ -56,6 +56,29 @@
    {:symbol "chdb_version" :args [] :return :string
     :contracts [:driver :durable-v1]}})
 
+(def expected-result-statistics-functions
+  {:result-elapsed
+   {:symbol "chdb_result_elapsed" :args [:pointer] :return :double
+    :contracts [:driver]}
+   :result-rows-read
+   {:symbol "chdb_result_rows_read" :args [:pointer] :return :uint64
+    :contracts [:driver]}
+   :result-bytes-read
+   {:symbol "chdb_result_bytes_read" :args [:pointer] :return :uint64
+    :contracts [:driver]}
+   :result-storage-rows-read
+   {:symbol "chdb_result_storage_rows_read" :args [:pointer] :return :uint64
+    :contracts [:driver]}
+   :result-storage-bytes-read
+   {:symbol "chdb_result_storage_bytes_read" :args [:pointer] :return :uint64
+    :contracts [:driver]}
+   :result-rows-written
+   {:symbol "chdb_result_rows_written" :args [:pointer] :return :uint64
+    :contracts [:driver]}
+   :result-bytes-written
+   {:symbol "chdb_result_bytes_written" :args [:pointer] :return :uint64
+    :contracts [:driver]}})
+
 (defn- run-descriptor-checks []
   (println "chDB versioned ABI descriptor")
   (let [descriptor (abi/descriptor)]
@@ -65,6 +88,10 @@
            expected-source (abi/source-provenance))
     (check "Durable signatures independently match the pinned chdb.h oracle"
            expected-durable-functions (abi/contract-functions :durable-v1))
+    (check "result statistics signatures match the pinned chdb.h oracle"
+           expected-result-statistics-functions
+           (select-keys (abi/contract-functions :driver)
+                        (keys expected-result-statistics-functions)))
     (check "Durable contract is explicitly V1 at the first native release"
            {:version 1 :minimum-native-version "26.7.2"}
            (abi/contract-spec :durable-v1))

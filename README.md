@@ -164,6 +164,43 @@ when the connection closes. Use bounded `execute!` inserts instead; the OTel
 exporter does so. Re-enable streaming only after qualifying a fixed native
 release with the pseudo-terminal diagnostic probe.
 
+## Native query statistics
+
+`with-query-statistics` observes every completed chDB user query, successful or
+failed, synchronously on the calling thread without changing its JDBC return
+value:
+
+```clojure
+(chdb/with-query-statistics
+  #(jdbc/fetch-one conn "select sum(number) from numbers(1000)"))
+;; => {:result {...}
+;;     :queries [{:elapsed-seconds ...
+;;                :result-rows 1
+;;                :result-bytes ...
+;;                :storage-rows-read 1000
+;;                :storage-bytes-read 8000
+;;                :rows-written 0
+;;                :bytes-written 0}]}
+```
+
+The scalar values come from libchDB's stable result API and are copied before
+the native result is destroyed; no result pointer escapes. A thunk may issue
+multiple queries, whose statistics are returned in execution order. Nested
+collectors both observe the queries. Failed native results, including failed
+Arrow/Parquet exports, retain their statistics under
+`:db.chdb/query-statistics` in exception data. Internal serializer-recovery
+queries are deliberately excluded. When a native query failure terminates a
+collector's thunk after one or more results complete, the same exception data
+also retains every result observed in that scope under
+`:db.chdb/query-statistics-collected`.
+
+These counters measure ClickHouse query work. Compare `:elapsed-seconds` with
+an outer monotonic wall-time bracket to estimate Jolt/JDBC/FFI overhead. They
+do not report process RSS or all native allocation; use OS/native profiling for
+that. Embedded chDB also exposes cumulative `system.events`, instantaneous
+`system.metrics`, and storage state in `system.parts`, but does not provide the
+server's persistent `system.query_log` in the pinned 26.7.0 build.
+
 ## Development
 
 Install the pinned native library and run the full driver suite:

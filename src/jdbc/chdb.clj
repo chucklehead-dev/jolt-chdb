@@ -27,6 +27,27 @@
   "Default byte cap for one encoded query. Currently equal to the hard cap."
   max-encoded-result-bytes)
 
+(def ^:dynamic ^:private *query-statistics-sink* nil)
+
+(defn with-query-statistics
+  "Run zero-argument `f` and return `{:result value :queries [stats ...]}`.
+  One statistics map is copied from each completed native query result,
+  successful or failed, before that result is destroyed. Nested collectors
+  both receive the same values; no native pointer escapes. Collection is
+  synchronous and thread-bound. This chDB-specific observation surface does
+  not change generic JDBC return values."
+  [f]
+  (let [queries (atom [])
+        parent *query-statistics-sink*]
+    (binding [*query-statistics-sink*
+              (fn
+                ([] @queries)
+                ([statistics]
+                 (swap! queries conj statistics)
+                 (when parent (parent statistics))))]
+      (let [result (f)]
+        {:result result :queries @queries}))))
+
 (def ^:private encoded-formats
   {:arrow {:native-format "Arrow"
            :content-type "application/vnd.apache.arrow.file"
@@ -216,6 +237,25 @@
                             {:labels labels :types types :jdbc/sql-error true})))
           {:labels labels :rows rows})))))
 
+(defn- result-statistics [result]
+  {:elapsed-seconds (native/chdb-result-elapsed result)
+   :result-rows (native/chdb-result-rows-read result)
+   :result-bytes (native/chdb-result-bytes-read result)
+   :storage-rows-read (native/chdb-result-storage-rows-read result)
+   :storage-bytes-read (native/chdb-result-storage-bytes-read result)
+   :rows-written (native/chdb-result-rows-written result)
+   :bytes-written (native/chdb-result-bytes-written result)})
+
+(defn- observe-statistics! [statistics]
+  (when *query-statistics-sink*
+    (*query-statistics-sink* statistics))
+  statistics)
+
+(defn- statistics-diagnostics [statistics]
+  (cond-> {:db.chdb/query-statistics statistics}
+    *query-statistics-sink*
+    (assoc :db.chdb/query-statistics-collected (*query-statistics-sink*))))
+
 (defn- with-owned-result
   "Consume a non-null native result while owning its destruction. `f` must not
   let the result or any pointer derived from it escape."
@@ -223,9 +263,19 @@
   (when (ffi/null? result)
     (throw (ex-info "chDB returned a null result" {:jdbc/sql-error true})))
   (try
-    (when-let [message (native/chdb-result-error result)]
-      (throw (ex-info (str "chDB query failed: " message) {:jdbc/sql-error true})))
-    (f result)
+    (let [message (native/chdb-result-error result)
+          ;; Preserve the unobserved success hot path: the seven additional
+          ;; native accessors run only inside a collector or for an error whose
+          ;; diagnostics retain the statistics.
+          statistics
+          (when (or *query-statistics-sink* message)
+            (result-statistics result))]
+      (when statistics (observe-statistics! statistics))
+      (when message
+        (throw (ex-info (str "chDB query failed: " message)
+                        (merge {:jdbc/sql-error true}
+                               (statistics-diagnostics statistics)))))
+      (f result))
     (finally (native/chdb-destroy-query-result result))))
 
 (defn- consume-json-result [result]
@@ -374,7 +424,8 @@
             (finally
               (native/chdb-destroy-query-result result))))))))
 
-(defn- retire-after-recovery-failure! [handle query-message recovery-error]
+(defn- retire-after-recovery-failure!
+  [handle query-message query-statistics recovery-error]
   ;; Once the one-shot format reset fails, no later query may observe this
   ;; connection's uncertain serializer state. native/close! marks the handle
   ;; closed before invoking the C destructor, so even a close failure remains
@@ -384,10 +435,11 @@
     (throw
      (ex-info
       "chDB encoded query failed and its output-format recovery failed; connection retired"
-      (cond-> {:jdbc/sql-error true :db.chdb/query-bytes true
-               :query-error query-message
-               :recovery-error (ex-message recovery-error)
-               :db.chdb/connection-retired true}
+      (cond-> (merge {:jdbc/sql-error true :db.chdb/query-bytes true
+                      :query-error query-message
+                      :recovery-error (ex-message recovery-error)
+                      :db.chdb/connection-retired true}
+                     (statistics-diagnostics query-statistics))
         ;; Preserve the throwable, not just its message: native close failures
         ;; can carry structured cause data needed to diagnose an uncertain
         ;; process-wide storage claim.
@@ -395,7 +447,7 @@
       recovery-error))))
 
 (defn- retire-after-result-destroy-failure!
-  [handle query-message destroy-error]
+  [handle query-message query-statistics destroy-error]
   ;; A failed encoded result must be destroyed before the one-shot serializer
   ;; reset. If destruction itself fails, resetting while that result may still
   ;; be live is unsafe. Retire the handle under the encompassing reentrant
@@ -405,10 +457,11 @@
     (throw
      (ex-info
       "chDB encoded query result destruction failed; connection retired"
-      (cond-> {:jdbc/sql-error true :db.chdb/query-bytes true
-               :query-error query-message
-               :destroy-error (ex-message destroy-error)
-               :db.chdb/connection-retired true}
+      (cond-> (merge {:jdbc/sql-error true :db.chdb/query-bytes true
+                      :query-error query-message
+                      :destroy-error (ex-message destroy-error)
+                      :db.chdb/connection-retired true}
+                     (statistics-diagnostics query-statistics))
         close-error (assoc :close-error close-error))
       destroy-error))))
 
@@ -430,7 +483,7 @@
   (when (ffi/null? result)
     (retire-after-null-result! handle))
   (if-let [message (native/chdb-result-error result)]
-    (do
+    (let [statistics (observe-statistics! (result-statistics result))]
       ;; Destroy the failed user result before issuing another query on the
       ;; same native connection. The encompassing with-live-handle lock remains
       ;; held across destruction, recovery, and either throw path.
@@ -438,13 +491,15 @@
         (native/chdb-destroy-query-result result)
         (catch Throwable destroy-error
           (retire-after-result-destroy-failure!
-           handle message destroy-error)))
+           handle message statistics destroy-error)))
       (try
         (reset-output-format-after-error! connection)
         (catch Throwable recovery-error
-          (retire-after-recovery-failure! handle message recovery-error)))
+          (retire-after-recovery-failure!
+           handle message statistics recovery-error)))
       (throw (ex-info (str "chDB query failed: " message)
-                      {:jdbc/sql-error true :db.chdb/query-bytes true})))
+                      (merge {:jdbc/sql-error true :db.chdb/query-bytes true}
+                             (statistics-diagnostics statistics)))))
     (with-owned-result
      result
      (fn [result]
