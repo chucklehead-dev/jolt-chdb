@@ -76,7 +76,8 @@ provider are documented in
 [`docs/durable-backend.md`](docs/durable-backend.md). The oracle is paired with
 bounded Chiasmus/Z3 controls and a Hegel stale-ETag property. The local provider
 adds real cross-process exclusion, synced atomic publication, and crash tests;
-it remains a four-operation foundation rather than a complete Durable-open API.
+it now covers the complete six-operation storage seam, including bounded-memory
+file upload/download, but is not yet a complete Durable-open API.
 
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
@@ -174,6 +175,8 @@ jolt -M:durable-head-test
 jolt -M:durable-backend-test
 jolt -M:durable-local-test
 jolt durable-local-posix-test
+# manual retained-allocation comparison; supply fresh root/output and 1/32 MiB files
+jolt -M:durable-file-allocation <root> <output> <small-file> <large-file>
 jolt -M:test
 jolt test-threadstatus
 ```

@@ -1,7 +1,7 @@
 (ns jdbc.chdb-durable-local-test
   (:require [jdbc.chdb.durable.backend :as backend])
   (:import [java.io File]
-           [java.nio.file Files OpenOption Path]
+           [java.nio.file Files OpenOption Path StandardOpenOption]
            [java.nio.file.attribute FileAttribute]))
 
 (def failures (atom 0))
@@ -26,6 +26,34 @@
       (delete-tree! child)))
   (.delete file))
 
+(defn- skip-exact! [input offset buffer]
+  (loop [remaining offset]
+    (when (pos? remaining)
+      (let [n (.read input buffer 0 (min remaining (alength buffer)))]
+        (when (not (pos? n))
+          (throw (ex-info "test source is shorter than its offset" {})))
+        (recur (- remaining n))))))
+
+(defn- test-copy-file-range! [source target source-offset target-offset]
+  (when-not (= target-offset (Files/size target))
+    (throw (ex-info "test target offset does not match its size" {})))
+  (let [buffer (byte-array 65536)
+        output-options (if (zero? target-offset)
+                         (into-array OpenOption
+                                     [StandardOpenOption/TRUNCATE_EXISTING
+                                      StandardOpenOption/WRITE])
+                         (into-array OpenOption [StandardOpenOption/APPEND]))]
+    (with-open [input (Files/newInputStream source (into-array OpenOption []))
+                output (Files/newOutputStream target output-options)]
+      (skip-exact! input source-offset buffer)
+      (loop [total 0]
+        (let [n (.read input buffer 0 (alength buffer))]
+          (cond
+            (neg? n) total
+            (zero? n) (throw (ex-info "test source returned a zero-byte read" {}))
+            :else (do (.write output buffer 0 n)
+                      (recur (+ total n)))))))))
+
 (deftype TestDurability [lock events]
   backend/LocalDurability
   (with-exclusive-lock [_ _ f]
@@ -41,10 +69,41 @@
     true)
   (create-private-temp-file! [_ parent]
     (Files/createTempFile parent ".jchdb-" ".tmp"
-                          (into-array FileAttribute []))))
+                          (into-array FileAttribute [])))
+  (create-private-file! [_ path]
+    (if (Files/exists path (make-array java.nio.file.LinkOption 0))
+      false
+      (do (Files/createFile path (into-array FileAttribute [])) true)))
+  (copy-file-range! [_ source target source-offset target-offset]
+    (test-copy-file-range! source target source-offset target-offset)))
+
+(deftype FailFileSyncDurability [lock]
+  backend/LocalDurability
+  (with-exclusive-lock [_ _ f] (locking lock (f)))
+  (sync-file! [_ _]
+    (throw (ex-info "injected file sync failure" {:type ::injected-sync})))
+  (sync-directory! [_ _] nil)
+  (create-private-directory! [_ path]
+    (Files/createDirectory path (into-array FileAttribute []))
+    true)
+  (create-private-temp-file! [_ parent]
+    (Files/createTempFile parent ".jchdb-" ".tmp"
+                          (into-array FileAttribute [])))
+  (create-private-file! [_ path]
+    (if (Files/exists path (make-array java.nio.file.LinkOption 0))
+      false
+      (do (Files/createFile path (into-array FileAttribute [])) true)))
+  (copy-file-range! [_ source target source-offset target-offset]
+    (test-copy-file-range! source target source-offset target-offset)))
 
 (defn- octets [store key]
   (some-> (backend/get-bytes store key) vec))
+
+(defn- patterned-bytes [length]
+  (let [result (byte-array length)]
+    (doseq [i (range length)]
+      (aset-byte result i (byte (- (mod i 251) 125))))
+    result))
 
 (defn run-checks! []
   (reset! failures 0)
@@ -85,10 +144,56 @@
           (check "replacement advances opaque ETag" false
                  (= etag (:etag winner)))))
 
+      (let [source (.resolve root "checkpoint-source.bin")
+            target (.resolve root "checkpoint-download.bin")
+            payload (patterned-bytes (+ (* 2 65536) 17))]
+        (Files/write source payload (into-array OpenOption []))
+        (check "streaming file upload conditionally creates" :created
+               (:status (backend/put-file-if-absent!
+                         store "checkpoints/one.tar" source)))
+        (Files/write source (byte-array [99]) (into-array OpenOption []))
+        (check "streaming download reports exact payload bytes"
+               {:status :downloaded :byte-count (alength payload)}
+               (backend/download-to-file!
+                store "checkpoints/one.tar" target))
+        (check "uploaded file is independent of later source mutation"
+               (vec payload) (vec (Files/readAllBytes target)))
+        (let [error (caught #(backend/download-to-file!
+                              store "checkpoints/one.tar" target))]
+          (check "download never overwrites an existing path"
+                 ::backend/destination-exists (:type (ex-data error)))
+          (check "rejected overwrite preserves the destination"
+                 (vec payload) (vec (Files/readAllBytes target))))
+        (let [missing (.resolve root "missing-download.bin")]
+          (check "missing object download is explicit"
+                 {:status :not-found}
+                 (backend/download-to-file! store "missing.bin" missing))
+          (check "missing object does not create a destination" false
+                 (Files/exists missing
+                               (make-array java.nio.file.LinkOption 0))))
+        (let [failing (backend/local-backend
+                       root (FailFileSyncDurability. (Object.)))
+              failed-target (.resolve root "failed-sync-download.bin")]
+          (check "injected download sync failure is observable"
+                 ::injected-sync
+                 (error-type #(backend/download-to-file!
+                               failing "checkpoints/one.tar" failed-target)))
+          (check "sync-failed download removes its partial destination" false
+                 (Files/exists failed-target
+                               (make-array java.nio.file.LinkOption 0)))))
+
       (let [corrupt (.resolve (.resolve root "objects") "corrupt.bin")]
         (Files/write corrupt (byte-array [1 2 3]) (into-array OpenOption []))
         (check "truncated envelope fails closed" ::backend/invalid-envelope
-               (error-type #(backend/get-bytes store "corrupt.bin"))))
+               (error-type #(backend/get-bytes store "corrupt.bin")))
+        (let [target (.resolve root "corrupt-download.bin")]
+          (check "corrupt streaming download fails closed"
+                 ::backend/invalid-envelope
+                 (error-type #(backend/download-to-file!
+                               store "corrupt.bin" target)))
+          (check "failed download removes its partial destination" false
+                 (Files/exists target
+                               (make-array java.nio.file.LinkOption 0)))))
 
       (let [object (.resolve (.resolve root "objects") "wal/0001.bin")
             corrupt (Files/readAllBytes object)]

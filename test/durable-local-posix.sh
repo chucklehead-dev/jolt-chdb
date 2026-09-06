@@ -10,6 +10,11 @@ trap cleanup EXIT
 
 run_jolt=("$wrapper" jolt -M:durable-local-worker "$test_root")
 
+if [[ $("${run_jolt[@]}" partial-write-probe) != ":ok" ]]; then
+  echo "FAIL partial-write retry did not preserve the unwritten suffix" >&2
+  exit 1
+fi
+
 etag=$("${run_jolt[@]}" create 0)
 if [[ ! $etag =~ ^[0-9a-f-]{36}$ ]]; then
   echo "FAIL create did not return an opaque UUID ETag" >&2
@@ -49,6 +54,28 @@ if [[ $escape_type != ":jdbc.chdb.durable.backend/unsafe-local-root" ]]; then
   exit 1
 fi
 rm "$test_root/objects/escape"
+
+upload_source="$test_root/upload-source.bin"
+download_target="$test_root/download-target.bin"
+dd if=/dev/zero of="$upload_source" bs=65536 count=3 status=none
+printf x >>"$upload_source"
+if [[ $("${run_jolt[@]}" put-file "$upload_source") != ":created" ]]; then
+  echo "FAIL streaming file upload did not create the object" >&2
+  exit 1
+fi
+download_result=$("${run_jolt[@]}" download "$download_target")
+if [[ $download_result != "{:status :downloaded, :byte-count 196609}" ]]; then
+  echo "FAIL streaming download result was: $download_result" >&2
+  exit 1
+fi
+if ! cmp -s "$upload_source" "$download_target"; then
+  echo "FAIL streamed upload/download bytes differ" >&2
+  exit 1
+fi
+if [[ $(stat_mode "$download_target") != 600 ]]; then
+  echo "FAIL streamed download target is not private" >&2
+  exit 1
+fi
 
 "${run_jolt[@]}" replace "$etag" 1 >"$test_root/a.out" &
 writer_a=$!
@@ -103,6 +130,8 @@ fi
 echo "ok cross-process CAS has exactly one winner"
 echo "ok lock, hierarchy, and object modes are private"
 echo "ok intermediate symbolic links fail closed"
+echo "ok EINTR and repeated partial writes preserve the unwritten suffix"
+echo "ok multi-buffer file upload/download is byte-exact and private"
 echo "ok process death releases the kernel lock"
 echo "ok crash recovery preserves the committed object"
 echo "all Durable local POSIX checks passed"

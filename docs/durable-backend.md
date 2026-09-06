@@ -1,11 +1,9 @@
 # Durable V1 backend contract
 
-`jdbc.chdb.durable.backend/ObjectBackend` begins the six-operation storage seam
-from the frozen Durable V1 backend contract with the four byte-oriented
-operations needed to prove conditional publication:
-`get-bytes`, `get-with-etag`, `put-bytes-if-absent!`, and
-`replace-if-match!`. File upload and download remain part of the subsequent
-local-filesystem provider slice.
+`jdbc.chdb.durable.backend/ObjectBackend` implements the six-operation storage
+seam from the frozen Durable V1 backend contract: `get-bytes`,
+`get-with-etag`, `put-file-if-absent!`, `put-bytes-if-absent!`,
+`replace-if-match!`, and `download-to-file!`.
 
 The protocol source is chDB commit
 `db10b548a3e1e21e51c213baf863cb1050963d9c`,
@@ -17,8 +15,10 @@ only compared or returned.
 `memory-backend` is a runtime-neutral semantic oracle, not advertised durable
 storage. It uses one atom CAS for each successful publication, returns owned
 byte arrays, advances the ETag on every replacement, and rejects stale tokens
-without changing the stored value. Unsafe relative keys and non-byte values
-fail closed without copying the supplied key into public error data.
+without changing the stored value. Its file operations intentionally
+materialize bytes; only advertised providers must stream archives. Unsafe
+relative keys and non-byte values fail closed without copying the supplied key
+into public error data.
 
 ## Bounded formal evidence
 
@@ -42,7 +42,7 @@ model.
 
 ## Local filesystem provider
 
-`jdbc.chdb.durable.local-posix/local-backend` implements the four byte-oriented
+`jdbc.chdb.durable.local-posix/local-backend` implements all six backend
 operations for a private, single-host filesystem root. It is intended for one
 machine with any number of cooperating Jolt processes, not for NFS, SMB, or a
 directory modified by software that ignores the provider lock.
@@ -77,8 +77,40 @@ implementation.
 Jolt's `StandardCopyOption/ATOMIC_MOVE` currently reaches its same-filesystem
 rename implementation rather than checking the option independently. This
 provider therefore creates staging files in the destination directory and
-advertises only filesystems qualified by the process-race/crash suite. Direct
-FFI bulk I/O remains a benchmark candidate, not a separate semantic path.
+advertises only filesystems qualified by the process-race/crash suite. The
+shared provider isolates bulk transfer behind the same host edge as locking and
+durability; native POSIX I/O is therefore an adapter, not a second semantic
+path.
+
+`put-file-if-absent!` and `download-to-file!` route payload transfer through the
+host adapter. Jolt POSIX reuses one 64 KiB native buffer and advances its native
+address across partial `write(2)` results, avoiding the proportional managed
+allocation observed through the Java-shaped stream bridge. A deterministic
+adapter probe injects `EINTR` and repeated short writes and proves that the
+unwritten suffix is emitted exactly once. Upload uses the same atomic
+conditional publication as byte-array create. Download never overwrites its
+local path and removes a partial file after a failed copy or sync. Per the
+frozen protocol, the caller supplies a unique scratch path, verifies the
+returned file against the manifest size and SHA-256, and only then atomically
+publishes it at the final scratch location. The backend cannot do that content
+verification itself because the expected digest belongs to the manifest/state
+machine layer rather than the object-store operation.
+
+The manual `:durable-file-allocation` alias measures
+`jolt.host/bytes-allocated + jolt.host/gc-bytes` around isolated operations; it
+is evidence rather than a GC-sensitive CI gate. Before changing the transfer
+edge, the target was that a 32 MiB upload allocate less than 2 MiB more than a
+1 MiB upload. The Java-shaped loop missed badly: 2,320,768 and 68,660,416 bytes.
+The final POSIX adapter measured 187,712 and 264,976 bytes, a 77,264-byte
+growth. Downloads measured 146,512 and 278,560 bytes, a 132,048-byte growth.
+The source sizes were exactly 1,048,576 and 33,554,432 bytes on Linux x86-64;
+these figures are a recorded sample, not universal performance promises.
+
+That boundary also leaves a clean comparison point for a portable
+`babashka.fs`-shaped implementation, JVM `FileChannel`, and Jolt native I/O.
+Candidate adapters must pass the same byte-exact and failure-cleanup contract;
+allocation, throughput, and scheduler impact can then be compared without
+forking the CAS/envelope implementation.
 
 Current executable evidence on Linux ext2/ext3-family storage proves:
 
@@ -87,10 +119,12 @@ Current executable evidence on Linux ext2/ext3-family storage proves:
 - killing a process while it owns the lock releases the kernel lock and leaves
   the last committed envelope readable;
 - lock, object-directory, and object modes are private; and
-- successful publication leaves no staging file.
+- successful publication leaves no staging file; and
+- a multi-buffer file upload/download round trip is byte-exact, reports the
+  exact payload count, and creates the download at mode `0600`.
 
-This is not yet the complete six-operation Durable backend: streaming file
-upload/download and real object-storage provider validation remain separate
-slices. The object provider will be tested against a pinned local
+This completes the storage protocol shape, not a Durable-open implementation.
+State-machine integration and real object-storage provider validation remain
+separate slices. The object provider will be tested against a pinned local
 S3-compatible binary or container selected by capability probes, not against
 the in-memory oracle.

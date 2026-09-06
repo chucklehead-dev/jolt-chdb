@@ -1,7 +1,9 @@
 (ns jdbc.chdb-durable-backend-test
   (:require [hegel.core :as h]
             [hegel.generator :as g]
-            [jdbc.chdb.durable.backend :as backend]))
+            [jdbc.chdb.durable.backend :as backend])
+  (:import [java.nio.file Files OpenOption]
+           [java.nio.file.attribute FileAttribute]))
 
 (def failures (atom 0))
 
@@ -75,7 +77,30 @@
            (error-type #(backend/get-bytes (backend/memory-backend) key))))
   (check "non-byte value fails closed" ::backend/invalid-bytes
          (error-type #(backend/put-bytes-if-absent!
-                       (backend/memory-backend) "head.json" [1 2 3]))))
+                       (backend/memory-backend) "head.json" [1 2 3])))
+
+  (let [source (Files/createTempFile "jchdb-oracle-upload-" ".bin"
+                                     (into-array FileAttribute []))
+        target (Files/createTempFile "jchdb-oracle-download-" ".bin"
+                                     (into-array FileAttribute []))
+        store (backend/memory-backend)]
+    (try
+      (Files/write source (byte-array [7 8 9]) (into-array OpenOption []))
+      (Files/deleteIfExists target)
+      (check "oracle file upload uses conditional-create semantics" :created
+             (:status (backend/put-file-if-absent!
+                       store "checkpoints/one.bin" source)))
+      (check "oracle file upload cannot overwrite" :precondition-failed
+             (:status (backend/put-file-if-absent!
+                       store "checkpoints/one.bin" source)))
+      (check "oracle file download reports exact bytes"
+             {:status :downloaded :byte-count 3}
+             (backend/download-to-file! store "checkpoints/one.bin" target))
+      (check "oracle file download writes the payload" [7 8 9]
+             (vec (Files/readAllBytes target)))
+      (finally
+        (Files/deleteIfExists source)
+        (Files/deleteIfExists target)))))
 
 (defn- run-cas-property! []
   (println "Durable backend Hegel CAS property")
