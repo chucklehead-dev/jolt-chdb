@@ -34,9 +34,9 @@ positional parameter API:
                      :where [:= :id 1]}))
 ```
 
-Jolt 0.8.0 or newer is required. The driver uses the value-before-offset
-`jolt.ffi/write` signature introduced in 0.8.0, and declares that floor with
-`:jolt/min-version` so an incompatible runtime rejects the dependency graph.
+Jolt 0.8.3 or newer is required. The repository uses the released unboxed-array,
+block-copy, and current FFI contracts directly and declares that floor with
+`:jolt/min-version`; there is no older-Jolt compatibility lane.
 
 `nil` has no inferable ClickHouse type. Use `(jdbc.chdb/typed-param
 "Nullable(String)" nil)` when binding it. Transactions and generated keys are
@@ -55,6 +55,14 @@ Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 `JOLT_CHDB_CACHE_DIR` to choose the installer destination. Only one chDB storage
 path may be active in a process at once, although multiple connections to that
 same path are supported.
+
+The source also carries a versioned descriptor for the Durable V1 C ABI first
+published by chDB core 26.7.2-rc.2. The stable 26.7.0 production pin does not
+export that surface: `jdbc.chdb.native/durable-capability` reports a typed,
+structured unsupported result while ordinary JDBC remains available. The
+production pin will move only after upstream publishes a stable release with
+the required symbols. See [`docs/durable-abi.md`](docs/durable-abi.md) for exact
+provenance.
 
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
@@ -147,6 +155,7 @@ Install the pinned native library and run the full driver suite:
 
 ```sh
 jolt -M:setup-native
+jolt -M:abi-test
 jolt -M:test
 jolt test-threadstatus
 ```

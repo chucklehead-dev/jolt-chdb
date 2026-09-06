@@ -1,6 +1,7 @@
 (ns jdbc.chdb.native
   "Owned libchdb v26.7.0 binding. Application code should use jdbc.chdb."
   (:require [clojure.string :as str]
+            [jdbc.chdb.abi :as abi]
             [jolt.ffi :as ffi]))
 
 (def version "26.7.0")
@@ -64,27 +65,66 @@
                 (reset! loaded-library library)
                 library))))))
 
-(ffi/defcfn chdb-version "chdb_version" [] :string)
-(ffi/defcfn chdb-set-signal-handlers-enabled "chdb_set_signal_handlers_enabled" [:int] :void)
-(ffi/defcfn chdb-connect "chdb_connect" [:int :pointer] :pointer :blocking)
-(ffi/defcfn chdb-close-conn "chdb_close_conn" [:pointer] :void :blocking)
-(ffi/defcfn chdb-query-with-params-n "chdb_query_with_params_n"
-  [:pointer :pointer :size_t :pointer :size_t
-   :pointer :pointer :pointer :pointer :size_t]
-  :pointer :blocking)
-(ffi/defcfn chdb-destroy-query-result "chdb_destroy_query_result" [:pointer] :void :blocking)
-(ffi/defcfn chdb-result-buffer "chdb_result_buffer" [:pointer] :pointer)
-(ffi/defcfn chdb-result-length "chdb_result_length" [:pointer] :size_t)
-(ffi/defcfn chdb-result-rows-written "chdb_result_rows_written" [:pointer] :uint64)
-(ffi/defcfn chdb-result-error "chdb_result_error" [:pointer] :string)
+(abi/defjoltfn chdb-version :version)
+(abi/defjoltfn chdb-set-signal-handlers-enabled :set-signal-handlers-enabled)
+(abi/defjoltfn chdb-connect :connect)
+(abi/defjoltfn chdb-close-conn :close-conn)
+(abi/defjoltfn chdb-query-with-params-n :query-with-params-n)
+(abi/defjoltfn chdb-destroy-query-result :destroy-query-result)
+(abi/defjoltfn chdb-result-buffer :result-buffer)
+(abi/defjoltfn chdb-result-length :result-length)
+(abi/defjoltfn chdb-result-rows-written :result-rows-written)
+(abi/defjoltfn chdb-result-error :result-error)
+(abi/defjoltfn chdb-stream-insert-n :stream-insert-n)
+(abi/defjoltfn chdb-stream-append :stream-append)
+(abi/defjoltfn chdb-stream-done :stream-done)
+(abi/defjoltfn chdb-stream-cancel-insert :stream-cancel-insert)
+(abi/defjoltfn chdb-stream-insert-error :stream-insert-error)
+(abi/defjoltfn chdb-destroy-insert-stream :destroy-insert-stream)
 
-(ffi/defcfn chdb-stream-insert-n "chdb_stream_insert_n"
-  [:pointer :pointer :size_t :pointer :size_t] :pointer :blocking)
-(ffi/defcfn chdb-stream-append "chdb_stream_append" [:pointer :pointer :size_t] :int :blocking)
-(ffi/defcfn chdb-stream-done "chdb_stream_done" [:pointer] :pointer :blocking)
-(ffi/defcfn chdb-stream-cancel-insert "chdb_stream_cancel_insert" [:pointer] :void :blocking)
-(ffi/defcfn chdb-stream-insert-error "chdb_stream_insert_error" [:pointer] :string)
-(ffi/defcfn chdb-destroy-insert-stream "chdb_destroy_insert_stream" [:pointer] :void :blocking)
+;; These bindings remain lazy on the stable 26.7.0 production library. Public
+;; Durable wrappers must call durable-capability first and must never reach a
+;; missing symbol. Keeping them here makes the descriptor-to-Jolt signature
+;; path compile-checked before the native pin moves.
+(abi/defjoltfn ^:private chdb-backup-database-n :backup-database-n)
+(abi/defjoltfn ^:private chdb-restore-database-n :restore-database-n)
+(abi/defjoltfn ^:private chdb-classify-query-n :classify-query-n)
+
+(def query-analysis-layout
+  "Compiled mirror of chdb_query_analysis_v1 from the pinned chdb.h."
+  (abi/jolt-layout :query-analysis-v1))
+
+(defn contract-capability
+  "Report whether the loaded libchdb exports every symbol in `contract-id`.
+  Missing optional contracts are data, not namespace-load failures."
+  [contract-id]
+  (let [functions (abi/contract-functions contract-id)
+        contract (abi/contract-spec contract-id)]
+    ;; Validate the requested descriptor contract before native loading so an
+    ;; invalid contract cannot be masked by an installation or loader error.
+    (ensure-loaded!)
+    (let [symbols (into (sorted-map)
+                        (map (fn [[function-id {:keys [symbol]}]]
+                               [function-id
+                                {:symbol symbol
+                                 :available? (boolean (ffi/find-symbol symbol))}]))
+                        functions)
+          missing (into []
+                        (keep (fn [[function-id {:keys [available?]}]]
+                                (when-not available? function-id)))
+                        symbols)]
+      (cond-> {:status (if (empty? missing) :supported :unsupported)
+               :contract contract-id
+               :native-version (chdb-version)
+               :minimum-native-version (:minimum-native-version contract)
+               :symbols symbols
+               :provenance (abi/source-provenance)}
+        (seq missing) (assoc :type ::unsupported-core :missing missing)))))
+
+(defn durable-capability
+  "Report Durable V1 availability without making it a production requirement."
+  []
+  (contract-capability :durable-v1))
 
 (defonce ^:private signals-disabled? (atom false))
 (defonce ^:private storage-state (atom {:path nil :references 0}))

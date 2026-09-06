@@ -1,0 +1,85 @@
+{:schema 1
+ :source
+ {:repository "https://github.com/chdb-io/chdb-core.git"
+  :release "v26.7.2-rc.2"
+  :commit "30488a59b2700188ee36ecbced7713081a909f56"
+  :header "programs/local/chdb.h"
+  :c-oracle "examples/chdbDurableAbiTest.c"
+  :python-oracle "tests/test_durable_backup_restore_classify.py"}
+ :contracts
+ {:driver {:minimum-native-version "26.7.0"}
+  :durable-v1 {:version 1 :minimum-native-version "26.7.2"}}
+ :enums
+ {:query-class {:read-only 0
+                :mutating 1
+                :mutating-global 2
+                :control 3
+                :unknown 4}
+  :query-analysis-flag {:has-secrets 1
+                        :writes-only-target-database 2
+                        :changes-database-lifecycle 4}}
+ :types
+ {:query-analysis-v1
+  {:kind :struct
+   :size 16
+   :fields [[:struct-size :uint32]
+            [:statement-count :uint32]
+            [:flags :uint32]
+            [:query-class :uint32]]}}
+ :functions
+ {:version {:symbol "chdb_version" :args [] :return :string
+            :contracts [:driver :durable-v1]}
+  :set-signal-handlers-enabled
+  {:symbol "chdb_set_signal_handlers_enabled" :args [:int] :return :void
+   :contracts [:driver]}
+  :connect {:symbol "chdb_connect" :args [:int :pointer] :return :pointer
+            :blocking? true :contracts [:driver :durable-v1]}
+  :close-conn {:symbol "chdb_close_conn" :args [:pointer] :return :void
+               :blocking? true :contracts [:driver :durable-v1]}
+  :query-with-params-n
+  {:symbol "chdb_query_with_params_n"
+   :args [:pointer :pointer :size_t :pointer :size_t
+          :pointer :pointer :pointer :pointer :size_t]
+   :return :pointer :blocking? true :contracts [:driver]}
+  :destroy-query-result
+  {:symbol "chdb_destroy_query_result" :args [:pointer] :return :void
+   :blocking? true :contracts [:driver :durable-v1]}
+  :result-buffer {:symbol "chdb_result_buffer" :args [:pointer] :return :pointer
+                  :contracts [:driver]}
+  :result-length {:symbol "chdb_result_length" :args [:pointer] :return :size_t
+                  :contracts [:driver]}
+  :result-rows-written
+  {:symbol "chdb_result_rows_written" :args [:pointer] :return :uint64
+   :contracts [:driver]}
+  :result-error {:symbol "chdb_result_error" :args [:pointer] :return :string
+                 :contracts [:driver :durable-v1]}
+  :stream-insert-n
+  {:symbol "chdb_stream_insert_n"
+   :args [:pointer :pointer :size_t :pointer :size_t]
+   :return :pointer :blocking? true :contracts [:driver]}
+  :stream-append
+  {:symbol "chdb_stream_append" :args [:pointer :pointer :size_t]
+   :return :int :blocking? true :contracts [:driver]}
+  :stream-done {:symbol "chdb_stream_done" :args [:pointer] :return :pointer
+                :blocking? true :contracts [:driver]}
+  :stream-cancel-insert
+  {:symbol "chdb_stream_cancel_insert" :args [:pointer] :return :void
+   :blocking? true :contracts [:driver]}
+  :stream-insert-error
+  {:symbol "chdb_stream_insert_error" :args [:pointer] :return :string
+   :contracts [:driver]}
+  :destroy-insert-stream
+  {:symbol "chdb_destroy_insert_stream" :args [:pointer] :return :void
+   :blocking? true :contracts [:driver]}
+  :backup-database-n
+  {:symbol "chdb_backup_database_n"
+   :args [:pointer :pointer :size_t :pointer :size_t :pointer :size_t]
+   :return :pointer :blocking? true :contracts [:durable-v1]}
+  :restore-database-n
+  {:symbol "chdb_restore_database_n"
+   :args [:pointer :pointer :size_t :pointer :size_t]
+   :return :pointer :blocking? true :contracts [:durable-v1]}
+  :classify-query-n
+  {:symbol "chdb_classify_query_n"
+   :args [:pointer :pointer :size_t :pointer :size_t :pointer]
+   :return :int :contracts [:durable-v1]}}}
