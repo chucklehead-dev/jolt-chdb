@@ -19,6 +19,23 @@
               :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-head-test"]}
+           :durable-backend-test
+           {:extra-deps
+            {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-backend-test"]}
+           :durable-backend-jvm-test
+           {:extra-deps
+            {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}
+             io.github.babashka/ffi
+             {:git/url "https://github.com/babashka/ffi.git"
+              :git/sha "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-backend-test"]}
            :test {:extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
@@ -28,5 +45,6 @@
  :tasks {setup-native "jolt -M:setup-native"
          abi-test "jolt -M:abi-test"
          durable-head-test "jolt -M:durable-head-test"
+         durable-backend-test "jolt -M:durable-backend-test"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}

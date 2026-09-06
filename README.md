@@ -71,6 +71,11 @@ reference integrity metadata before later backend or engine work. It is a
 foundation, not a Durable-open API or conformance claim. See
 [`docs/durable-head.md`](docs/durable-head.md).
 
+The backend seam and its in-memory atomic-CAS semantic oracle are documented in
+[`docs/durable-backend.md`](docs/durable-backend.md). The oracle is paired with
+bounded Chiasmus/Z3 controls and a Hegel stale-ETag property; it is not a local
+filesystem provider or a durability claim.
+
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
 
@@ -164,6 +169,7 @@ Install the pinned native library and run the full driver suite:
 jolt -M:setup-native
 jolt -M:abi-test
 jolt -M:durable-head-test
+jolt -M:durable-backend-test
 jolt -M:test
 jolt test-threadstatus
 ```
