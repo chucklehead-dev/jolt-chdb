@@ -29,5 +29,7 @@ jobs:
         run: jolt -M:abi-test
       - name: Install pinned Hegel native library
         run: jolt -A:test -m hegel.install
+      - name: Test Durable local POSIX process semantics
+        run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test
         run: jolt -M:test

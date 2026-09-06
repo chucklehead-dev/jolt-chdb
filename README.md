@@ -71,10 +71,12 @@ reference integrity metadata before later backend or engine work. It is a
 foundation, not a Durable-open API or conformance claim. See
 [`docs/durable-head.md`](docs/durable-head.md).
 
-The backend seam and its in-memory atomic-CAS semantic oracle are documented in
+The backend seam, in-memory atomic-CAS semantic oracle, and first local POSIX
+provider are documented in
 [`docs/durable-backend.md`](docs/durable-backend.md). The oracle is paired with
-bounded Chiasmus/Z3 controls and a Hegel stale-ETag property; it is not a local
-filesystem provider or a durability claim.
+bounded Chiasmus/Z3 controls and a Hegel stale-ETag property. The local provider
+adds real cross-process exclusion, synced atomic publication, and crash tests;
+it remains a four-operation foundation rather than a complete Durable-open API.
 
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
@@ -170,6 +172,8 @@ jolt -M:setup-native
 jolt -M:abi-test
 jolt -M:durable-head-test
 jolt -M:durable-backend-test
+jolt -M:durable-local-test
+jolt durable-local-posix-test
 jolt -M:test
 jolt test-threadstatus
 ```
