@@ -36,6 +36,12 @@
               :git/sha "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-backend-test"]}
+           :durable-local-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-local-test"]}
+           :durable-local-worker
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-local-worker"]}
            :test {:extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
@@ -46,5 +52,7 @@
          abi-test "jolt -M:abi-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-backend-test "jolt -M:durable-backend-test"
+         durable-local-test "jolt -M:durable-local-test"
+         durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}
