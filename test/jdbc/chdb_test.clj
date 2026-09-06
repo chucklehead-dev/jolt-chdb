@@ -5,6 +5,7 @@
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb-durable-head-test :as durable-head]
+            [jdbc.chdb-durable-backend-test :as durable-backend]
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
@@ -532,6 +533,7 @@
   (run-logical-database-checks)
   (run-storage-checks)
   (durable-head/run-checks!)
+  (durable-backend/run-checks!)
   (property/run-properties!)
   (if (zero? @failures)
     (println "all checks passed")

@@ -1,0 +1,20 @@
+; Bounded claim: with an absent (-1) or revision-zero head and two attempts
+; based on the same snapshot, atomic conditional replacement cannot let both
+; attempts succeed. Verified with Chiasmus/Z3: UNSAT.
+(declare-const initial Int)
+(declare-const observed_a Int)
+(declare-const observed_b Int)
+(declare-const after_a Int)
+(declare-const after_b Int)
+(declare-const a_success Bool)
+(declare-const b_success Bool)
+(declare-const violation Bool)
+(assert (! (or (= initial (- 1)) (= initial 0)) :named bounded_initial))
+(assert (! (= observed_a initial) :named same_snapshot_a))
+(assert (! (= observed_b initial) :named same_snapshot_b))
+(assert (! (= a_success (= observed_a initial)) :named atomic_first_condition))
+(assert (! (= after_a (ite a_success (+ initial 1) initial)) :named first_transition))
+(assert (! (= b_success (= observed_b after_a)) :named atomic_second_condition))
+(assert (! (= after_b (ite b_success (+ after_a 1) after_a)) :named second_transition))
+(assert (! (= violation (and a_success b_success)) :named violation_definition))
+(assert (! violation :named queried_double_success))
