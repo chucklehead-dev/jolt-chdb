@@ -27,6 +27,24 @@
   "Default byte cap for one encoded query. Currently equal to the hard cap."
   max-encoded-result-bytes)
 
+(def ^:dynamic ^:private *query-statistics-sink* nil)
+
+(defn with-query-statistics
+  "Run zero-argument `f` and return `{:result value :queries [stats ...]}`.
+  One statistics map is copied from each successfully consumed native query
+  result before that result is destroyed. Nested collectors both receive the
+  same values; no native pointer escapes. This chDB-specific observation
+  surface does not change generic JDBC return values."
+  [f]
+  (let [queries (atom [])
+        parent *query-statistics-sink*]
+    (binding [*query-statistics-sink*
+              (fn [statistics]
+                (swap! queries conj statistics)
+                (when parent (parent statistics)))]
+      (let [result (f)]
+        {:result result :queries @queries}))))
+
 (def ^:private encoded-formats
   {:arrow {:native-format "Arrow"
            :content-type "application/vnd.apache.arrow.file"
@@ -223,15 +241,31 @@
   (when (ffi/null? result)
     (throw (ex-info "chDB returned a null result" {:jdbc/sql-error true})))
   (try
-    (when-let [message (native/chdb-result-error result)]
-      (throw (ex-info (str "chDB query failed: " message) {:jdbc/sql-error true})))
-    (f result)
+    (let [message (native/chdb-result-error result)
+          ;; Preserve the unobserved success hot path: the seven additional
+          ;; native accessors run only inside a collector or for an error whose
+          ;; diagnostics retain the statistics.
+          statistics
+          (when (or *query-statistics-sink* message)
+            {:elapsed-seconds (native/chdb-result-elapsed result)
+             :result-rows (native/chdb-result-rows-read result)
+             :result-bytes (native/chdb-result-bytes-read result)
+             :storage-rows-read (native/chdb-result-storage-rows-read result)
+             :storage-bytes-read (native/chdb-result-storage-bytes-read result)
+             :rows-written (native/chdb-result-rows-written result)
+             :bytes-written (native/chdb-result-bytes-written result)})]
+      (when *query-statistics-sink* (*query-statistics-sink* statistics))
+      (when message
+        (throw (ex-info (str "chDB query failed: " message)
+                        {:jdbc/sql-error true
+                         :db.chdb/query-statistics statistics})))
+      (f result statistics))
     (finally (native/chdb-destroy-query-result result))))
 
 (defn- consume-json-result [result]
   (with-owned-result
    result
-   (fn [result]
+   (fn [result _statistics]
      (let [length (native/chdb-result-length result)
            buffer (native/chdb-result-buffer result)
            data (if (zero? length) "" (ffi/read-bytes buffer length))
@@ -447,7 +481,7 @@
                       {:jdbc/sql-error true :db.chdb/query-bytes true})))
     (with-owned-result
      result
-     (fn [result]
+     (fn [result _statistics]
        ;; The engine-side max_result_bytes setting bounds the native materialized
        ;; result. Recheck the serialized size before allocating the Jolt-owned
        ;; copy because format overhead can differ from ClickHouse's accounting.

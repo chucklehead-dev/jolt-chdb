@@ -123,6 +123,37 @@ owned byte array through the shared SPI:
 functions return exactly `:format`, `:content-type`, `:extension`,
 `:byte-count`, and `:bytes`.
 
+### Native query statistics
+
+`with-query-statistics` observes every chDB query successfully consumed
+synchronously by a thunk without changing its JDBC return value:
+
+```clojure
+(chdb/with-query-statistics
+  #(jdbc/fetch-one conn "select sum(number) from numbers(1000)"))
+;; => {:result {...}
+;;     :queries [{:elapsed-seconds ...
+;;                :result-rows 1
+;;                :result-bytes ...
+;;                :storage-rows-read 1000
+;;                :storage-bytes-read 8000
+;;                :rows-written 0
+;;                :bytes-written 0}]}
+```
+
+The scalar values come from libchDB's stable result API and are copied before
+the native result is destroyed; no result pointer escapes. A thunk may issue
+multiple queries, whose statistics are returned in execution order. Nested
+collectors both observe the queries. Failed native results retain their
+statistics under `:db.chdb/query-statistics` in exception data.
+
+These counters measure ClickHouse query work. Compare `:elapsed-seconds` with
+an outer monotonic wall-time bracket to estimate Jolt/JDBC/FFI overhead. They
+do not report process RSS or all native allocation; use OS/native profiling for
+that. Embedded chDB also exposes cumulative `system.events`, instantaneous
+`system.metrics`, and storage state in `system.parts`, but does not provide the
+server's persistent `system.query_log` in the pinned 26.7.0 build.
+
 `:format` must be `:arrow` or `:parquet`. `:max-rows` defaults to, and may not
 exceed, 100,000; `:max-bytes` defaults to, and may not exceed, 64 MiB. Both are
 enforced by ClickHouse before it returns the materialized result and the byte

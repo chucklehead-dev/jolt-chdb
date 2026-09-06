@@ -11,7 +11,7 @@
 (def descriptor-resource "jdbc/chdb/abi.edn")
 
 (def ^:private scalar-types
-  #{:void :int :uint32 :uint64 :size_t :pointer :string})
+  #{:void :int :uint32 :uint64 :size_t :double :pointer :string})
 
 (defn- invalid! [message data]
   (throw (ex-info message (assoc data :type ::invalid-descriptor))))

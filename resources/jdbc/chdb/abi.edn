@@ -48,8 +48,26 @@
                   :contracts [:driver]}
   :result-length {:symbol "chdb_result_length" :args [:pointer] :return :size_t
                   :contracts [:driver]}
+  :result-elapsed
+  {:symbol "chdb_result_elapsed" :args [:pointer] :return :double
+   :contracts [:driver]}
+  :result-rows-read
+  {:symbol "chdb_result_rows_read" :args [:pointer] :return :uint64
+   :contracts [:driver]}
+  :result-bytes-read
+  {:symbol "chdb_result_bytes_read" :args [:pointer] :return :uint64
+   :contracts [:driver]}
+  :result-storage-rows-read
+  {:symbol "chdb_result_storage_rows_read" :args [:pointer] :return :uint64
+   :contracts [:driver]}
+  :result-storage-bytes-read
+  {:symbol "chdb_result_storage_bytes_read" :args [:pointer] :return :uint64
+   :contracts [:driver]}
   :result-rows-written
   {:symbol "chdb_result_rows_written" :args [:pointer] :return :uint64
+   :contracts [:driver]}
+  :result-bytes-written
+  {:symbol "chdb_result_bytes_written" :args [:pointer] :return :uint64
    :contracts [:driver]}
   :result-error {:symbol "chdb_result_error" :args [:pointer] :return :string
                  :contracts [:driver :durable-v1]}
