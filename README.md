@@ -164,7 +164,7 @@ when the connection closes. Use bounded `execute!` inserts instead; the OTel
 exporter does so. Re-enable streaming only after qualifying a fixed native
 release with the pseudo-terminal diagnostic probe.
 
-### Native query statistics
+## Native query statistics
 
 `with-query-statistics` observes every completed chDB user query, successful or
 failed, synchronously on the calling thread without changing its JDBC return
@@ -189,9 +189,10 @@ multiple queries, whose statistics are returned in execution order. Nested
 collectors both observe the queries. Failed native results, including failed
 Arrow/Parquet exports, retain their statistics under
 `:db.chdb/query-statistics` in exception data. Internal serializer-recovery
-queries are deliberately excluded. When a collector's thunk throws after one
-or more native results complete, the same exception data also retains every
-result observed in that scope under `:db.chdb/query-statistics-collected`.
+queries are deliberately excluded. When a native query failure terminates a
+collector's thunk after one or more results complete, the same exception data
+also retains every result observed in that scope under
+`:db.chdb/query-statistics-collected`.
 
 These counters measure ClickHouse query work. Compare `:elapsed-seconds` with
 an outer monotonic wall-time bracket to estimate Jolt/JDBC/FFI overhead. They
