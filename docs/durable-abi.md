@@ -19,9 +19,18 @@ structure is caller-owned and passed by pointer, never by value.
 
 The Jolt adapter derives its literal FFI declarations and compiled layout from
 that descriptor. Focused tests independently restate the pinned header contract
-and include wrong-schema, wrong-size, wrong-type, wrong-enum, duplicate-symbol,
-and missing-symbol mutants. This makes descriptor drift and vacuous capability
-tests fail locally rather than surfacing as native memory corruption.
+and include wrong-schema, wrong-size, wrong-type, wrong-enum, unknown-flag,
+duplicate-symbol, and missing-symbol mutants. This makes descriptor drift and
+vacuous capability tests fail locally rather than surfacing as native memory
+corruption.
+
+`scripts/qualify-durable-native.sh DIRECTORY` authenticates the matching rc.2
+asset on each of the four published platforms, compiles and runs the exact
+pinned upstream C oracle, and then runs the independent Jolt classification and
+backup/restore suite against that same library. The hosted qualification gate
+currently exercises Linux x86-64. The other asset mappings are pinned so the
+same gate can run unchanged when those runners are added; they are not yet a
+cross-platform conformance claim.
 
 ## Release boundary
 
@@ -32,8 +41,8 @@ library, resolves every symbol named by the versioned contract, and reports
 missing symbols as `:jdbc.chdb.native/unsupported-core`. It does not invoke a
 missing binding and ordinary JDBC remains usable.
 
-This is an ABI foundation, not the Durable control plane. It does not implement
-object layout, WAL segments, storage, leases, CAS, backup policy, or replay.
+This remains below the Durable control plane. It does not implement object
+layout, WAL segments, storage, leases, CAS, backup policy, or replay.
 The native production pin must not move to this prerelease. Once a stable chDB
 release carries the ABI, its assets and checksums must be pinned and the upstream
 C oracle plus independent Jolt classification and backup/restore tests must pass

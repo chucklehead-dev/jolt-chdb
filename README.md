@@ -208,6 +208,8 @@ Install the pinned native library and run the full driver suite:
 ```sh
 jolt -M:setup-native
 jolt -M:abi-test
+# downloads/authenticates rc.2 and runs its C oracle plus the Jolt ABI suite
+bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable-qualification
 jolt -M:durable-head-test
 jolt -M:durable-backend-test
 jolt -M:durable-local-test
