@@ -105,6 +105,12 @@ paths expose bounded Arrow/Parquet `query-bytes` through the generic export
 SPI. See [`docs/durable-open.md`](docs/durable-open.md)
 and [`docs/durable-writer.md`](docs/durable-writer.md).
 
+The S3-compatible namespace backend semantics, atomic preconditions, retry and
+error mapping, and streaming transport contract are documented in
+[`docs/durable-s3.md`](docs/durable-s3.md). Its default libcurl transport and
+real AWS/MinIO qualification are still pending, so this is not yet a production
+S3 conformance claim.
+
 Its executable formal companion is the literate specification
 [`formal/quint/durable-head-cas.md`](formal/quint/durable-head-cas.md).
 The Quint model shares one transition engine between the corrected protocol,

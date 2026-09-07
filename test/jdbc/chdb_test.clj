@@ -12,6 +12,7 @@
             [jdbc.chdb-durable-writer-test :as durable-writer]
             [jdbc.chdb-durable-open-test :as durable-open]
             [jdbc.chdb-durable-local-test :as durable-local]
+            [jdbc.chdb-durable-s3-test :as durable-s3]
             [jdbc.chdb-durable-policy-test :as durable-policy]
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
@@ -664,6 +665,7 @@
   (durable-writer/run-checks!)
   (durable-open/run-checks!)
   (durable-local/run-checks!)
+  (durable-s3/run-checks!)
   (durable-policy/run-checks!)
   (property/run-properties!)
   (if (zero? @failures)
