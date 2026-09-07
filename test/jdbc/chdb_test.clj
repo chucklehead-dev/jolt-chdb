@@ -7,6 +7,7 @@
             [jdbc.chdb-durable-head-test :as durable-head]
             [jdbc.chdb-durable-backend-test :as durable-backend]
             [jdbc.chdb-durable-local-test :as durable-local]
+            [jdbc.chdb-durable-policy-test :as durable-policy]
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
@@ -646,6 +647,7 @@
   (durable-head/run-checks!)
   (durable-backend/run-checks!)
   (durable-local/run-checks!)
+  (durable-policy/run-checks!)
   (property/run-properties!)
   (if (zero? @failures)
     (println "all checks passed")
