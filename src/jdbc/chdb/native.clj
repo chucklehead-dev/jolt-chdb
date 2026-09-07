@@ -168,10 +168,16 @@
 
 (defrecord ChdbHandle [owner connection path closed? lock])
 
-(defn open! [path]
-  (ensure-loaded!)
-  (disable-signal-handlers!)
-  (let [path (claim-path! (normalized-path path))]
+(defn open!
+  ([path] (open! path {}))
+  ([path {:keys [backups-allowed-path]}]
+   (when (and (= path ":memory:") backups-allowed-path)
+     (throw (ex-info "backups.allowed_path requires a persistent chDB path"
+                     {:type ::invalid-open-options
+                      :path path :option :backups-allowed-path})))
+   (ensure-loaded!)
+   (disable-signal-handlers!)
+   (let [path (claim-path! (normalized-path path))]
     (try
       (let [connect (fn [argc argv]
                       (let [owner (chdb-connect argc argv)]
@@ -189,11 +195,15 @@
         ;; :memory:, which is both surprising and unsafe for tests.
         (if (= path ":memory:")
           (connect 0 ffi/null)
-          (ffi/with-c-string-array [argv 2] ["chdb" (str "--path=" path)]
-            (connect 2 argv))))
+          (let [args (cond-> ["chdb" (str "--path=" path)]
+                       backups-allowed-path
+                       (conj (str "--backups.allowed_path="
+                                  (normalized-path backups-allowed-path))))]
+            (ffi/with-c-string-array [argv (count args)] args
+              (connect (count args) argv)))))
       (catch Throwable t
         (release-path! path)
-        (throw t)))))
+        (throw t))))))
 
 (defn close! [handle]
   (locking (:lock handle)
@@ -213,3 +223,158 @@
     (f (:connection handle))))
 
 (defn active-storage [] @storage-state)
+
+(def ^:private query-classes
+  {0 :read-only
+   1 :mutating
+   2 :mutating-global
+   3 :control
+   4 :unknown})
+
+(def ^:private query-analysis-flags
+  {1 :has-secrets
+   2 :writes-only-target-database
+   4 :changes-database-lifecycle})
+
+(defonce ^:private durable-support
+  ;; A process cannot replace the library after ffi/load-library. Resolve the
+  ;; optional contract once so the per-statement classification path does not
+  ;; repeat eight symbol lookups.
+  (delay (durable-capability)))
+
+(defn- require-durable! []
+  (let [capability @durable-support]
+    (when-not (= :supported (:status capability))
+      (throw (ex-info "loaded libchdb does not provide Durable V1"
+                      capability)))
+    capability))
+
+(defn- allocated-utf8! [allocated value]
+  (let [bytes (.getBytes (str value) "UTF-8")
+        length (alength bytes)
+        pointer (ffi/alloc (max 1 length))]
+    (swap! allocated conj pointer)
+    (when (pos? length) (ffi/write-array pointer bytes))
+    {:pointer pointer :length length}))
+
+(defn- validate-query-analysis
+  [{:keys [struct-size statement-count flags query-class] :as raw}]
+  (let [known-flags (reduce bit-or 0 (keys query-analysis-flags))
+        unknown-flags (bit-and flags (bit-not known-flags))
+        class (get query-classes query-class)]
+    (when-not (= 16 struct-size)
+      (throw (ex-info "chDB returned an incompatible query-analysis layout"
+                      {:type ::invalid-query-analysis :analysis raw})))
+    (when-not class
+      (throw (ex-info "chDB returned an unknown query class"
+                      {:type ::invalid-query-analysis :analysis raw})))
+    (when-not (zero? unknown-flags)
+      (throw (ex-info "chDB returned unknown query-analysis flags"
+                      {:type ::invalid-query-analysis
+                       :unknown-flags unknown-flags :analysis raw})))
+    {:query-class class
+     :statement-count statement-count
+     :flags (into #{} (keep (fn [[mask flag]]
+                              (when-not (zero? (bit-and flags mask)) flag)))
+                  query-analysis-flags)
+     :has-secrets (not (zero? (bit-and flags 1)))
+     :writes-only-target-database (not (zero? (bit-and flags 2)))
+     :changes-database-lifecycle (not (zero? (bit-and flags 4)))}))
+
+(defn classify-query!
+  "Classify SQL with the connection's parser without executing it. A nil
+  target database skips write-containment analysis. Unknown ABI values fail
+  closed instead of being treated as a permitted statement."
+  [handle sql target-database]
+  (require-durable!)
+  (with-live-handle
+   handle
+   (fn [connection]
+     (let [allocated (atom [])]
+       (try
+         (let [sql-buffer (allocated-utf8! allocated sql)
+               target-buffer (when-not (nil? target-database)
+                               (allocated-utf8! allocated target-database))
+               analysis (ffi/alloc (ffi/layout-size query-analysis-layout))]
+           (swap! allocated conj analysis)
+           (ffi/write-array analysis (byte-array 16))
+           (ffi/write-field analysis query-analysis-layout [:struct-size] 16)
+           (when-not
+            (zero?
+             (chdb-classify-query-n
+              connection
+              (:pointer sql-buffer) (:length sql-buffer)
+              (if target-buffer (:pointer target-buffer) ffi/null)
+              (if target-buffer (:length target-buffer) 0)
+              analysis))
+             (throw (ex-info "chDB query classification failed"
+                             {:type ::classification-failed
+                              :jdbc/sql-error true})))
+           (validate-query-analysis
+            {:struct-size (ffi/read-field analysis query-analysis-layout [:struct-size])
+             :statement-count (ffi/read-field analysis query-analysis-layout [:statement-count])
+             :flags (ffi/read-field analysis query-analysis-layout [:flags])
+             :query-class (ffi/read-field analysis query-analysis-layout [:query-class])}))
+         (finally
+           (doseq [pointer (reverse @allocated)] (ffi/free pointer))))))))
+
+(defn- consume-durable-result! [operation result]
+  (when (ffi/null? result)
+    (throw (ex-info (str "chDB " (name operation) " returned a null result")
+                    {:type ::durable-null-result :operation operation
+                     :jdbc/sql-error true})))
+  (try
+    (when-let [message (chdb-result-error result)]
+      (throw (ex-info (str "chDB " (name operation) " failed: " message)
+                      {:type ::durable-operation-failed :operation operation
+                       :jdbc/sql-error true})))
+    nil
+    (finally (chdb-destroy-query-result result))))
+
+(defn backup-database!
+  "Back up one database to an absolute archive path. Optional base-file-path
+  requests an incremental backup. Database and paths remain separate ABI
+  arguments and are never interpolated into SQL."
+  ([handle database file-path]
+   (backup-database! handle database file-path nil))
+  ([handle database file-path base-file-path]
+   (require-durable!)
+   (with-live-handle
+    handle
+    (fn [connection]
+      (let [allocated (atom [])]
+        (try
+          (let [database-buffer (allocated-utf8! allocated database)
+                file-buffer (allocated-utf8! allocated file-path)
+                base-buffer (when base-file-path
+                              (allocated-utf8! allocated base-file-path))]
+            (consume-durable-result!
+             :backup
+             (chdb-backup-database-n
+              connection
+              (:pointer database-buffer) (:length database-buffer)
+              (:pointer file-buffer) (:length file-buffer)
+              (if base-buffer (:pointer base-buffer) ffi/null)
+              (if base-buffer (:length base-buffer) 0))))
+          (finally
+            (doseq [pointer (reverse @allocated)] (ffi/free pointer)))))))))
+
+(defn restore-database!
+  "Restore one database from an archive produced by backup-database!."
+  [handle database file-path]
+  (require-durable!)
+  (with-live-handle
+   handle
+   (fn [connection]
+     (let [allocated (atom [])]
+       (try
+         (let [database-buffer (allocated-utf8! allocated database)
+               file-buffer (allocated-utf8! allocated file-path)]
+           (consume-durable-result!
+            :restore
+            (chdb-restore-database-n
+             connection
+             (:pointer database-buffer) (:length database-buffer)
+             (:pointer file-buffer) (:length file-buffer))))
+         (finally
+           (doseq [pointer (reverse @allocated)] (ffi/free pointer))))))))

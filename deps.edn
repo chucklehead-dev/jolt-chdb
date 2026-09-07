@@ -12,6 +12,9 @@
  :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
+           :durable-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-native-test"]}
            :durable-head-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
@@ -53,6 +56,7 @@
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
          abi-test "jolt -M:abi-test"
+         durable-native-test "jolt -M:durable-native-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-backend-test "jolt -M:durable-backend-test"
          durable-local-test "jolt -M:durable-local-test"
