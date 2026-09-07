@@ -1,41 +1,47 @@
 {:schema :jolt-chdb/formal-evidence-v1
  :recorded-at "2026-09-06T21:51:34-07:00"
- :updated-at "2026-09-07T15:27:27-07:00"
+ :updated-at "2026-09-07T16:00:33-07:00"
  :status :validated-local-commits
  :authority {:chdb-commit "db10b548a3e1e21e51c213baf863cb1050963d9c"
              :section "docs/durable/protocol-v1.mdx#state-machine"
              :oracle-copy-sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"}
- :checkout {:jolt-chdb-implementation "463aab3db620eddcbe14164338f807ad6b59998c"
-            :jolt-chdb-parent "edc86af07d5982a185c4ef953c19c848a719da0e"
+ :checkout {:jolt-chdb-implementation "e504c28066435a6a2fb885b6cf527df916f3f6d4"
+            :jolt-chdb-parent "9004717c58e093ae276834fd7e2f74a801558a74"
             :jolt-otel-clickhouse "ca267f5adbcb74c899f592fe4681825fb1631df7"
             :oscope "d20afee60c29e8c795d4d5bd2ed701ec4aa8df40"
-            :jolt-aspect-packs "f8003e9114e651086638601637f7455e9045d621"
+            :jolt-aspect-packs "a1ad263ed3746e54af3747595ca8155c65b0d932"
             :publication :unpublished}
  :artifacts
  {"formal/quint/durable-head-cas.md"
-  "a6b18cc96849609398dd5620fe6b4d24fea3c8138285440d3d4f05554167fbc8"
+  "1fcd685bf8bdd077ecf652f9b142e00f63c4672685587b8da1ad65a11372bded"
   "target/formal/quint/durableHeadCas.qnt"
   "47957d618e64364f2a6c9371d1599026acded2bbc42df4df93d997147288cfaf"
   "target/formal/quint/durableHeadCasTest.qnt"
   "db7c5232901d96382013fc2e7fc57dee3922a9077dff5ae5f4da2bb3f5395be4"
+  "target/formal/quint/durablePublicationAck.qnt"
+  "7319d1f82a55943144290bceb08ce05f99f8f1a03f21a939e02f694b324a65c4"
+  "target/formal/quint/durablePublicationAckTest.qnt"
+  "79a81e3c6777a3cc54719e0f12ec68be33d41cb19abde42f847ce82c444020d6"
   "formal/quint/traces/corrected-mbt.itf.json"
   "347d7fe8b764495b2c3327ff57b98158f73f13c4d341e0f2f7538ac909e4d1b2"
   "scripts/check-durable-head-quint.sh"
-  "d604b76132a515df7e9d28ca216f4383e9b0e3e531f512e5925657a6ba95b517"
+  "386fe28ead4ca63936bdba4158e700146eefd1d79f9d4b52ae2ef8696f8e382e"
   "scripts/generate-durable-head-itf.sh"
   "81d9191337bafe95fb4e56d48ff48ba22ea415d045cecf7fb1c7e321f0ccf49d"
   "scripts/check-durable-head-itf-corpus.sh"
-  "58662d95d529f90dc522bf2d01cfdb09ce442af58f56c1b65a83153cf2a14daf"
+  "c1ff7903da67722d9cd366f80103adbd000eccf1233ca66c155741ad8350c72e"
   "scripts/durable-head-itf-commands.jq"
   "e4bba75669a9f8da2deb0feb5ad0bc1c6767bb68e39017f4db85a1a5d6eaaa15"
   "test/jdbc/chdb_durable_itf_test.clj"
   "90f5981442452ba5de51bcbfaf7eb2600b0a920f53984c39c6abe4bc62fdd294"
   "test/jdbc/chdb_durable_control_test.clj"
-  "c8d48a3ff59619ea0e3a1f6bb10eb9649f1a6383699c2dbbcaae28d975f18108"
+  "230186441a079b3a998d58959eb8a95f10d427e1ba97719880ca9b215d385f66"
   "docs/durable-trace-validation.md"
   "4f21c162470212a35aee980f33928e95086bc766f6a79bb98276c7ae3614cc25"
   "docs/durable-control.md"
-  "08707a0e6ee3cabd1d7a7b59d8b069696c38e6979063479ca5a60ad40272d6f8"
+  "5702a0edeb542ac7a49584059b197773e9db846bdfc819ca520b6bdbe0484488"
+  "docs/durable-backend.md"
+  "299197747a7b5e6b2679cbdc79626e80a1685b976bef117e6cba5f608f7cafae"
   "docs/durable-writer.md"
   "cc6653c32197a1fd4e8227f344256d291942c4356c2b04fd135e072030b750fa"
   "docs/durable-open.md"
@@ -50,8 +56,10 @@
   "c0626e7f33ba2e5b3b969fd735e325de5d730c8729a6b1e0c6ae5a42232ffc77"
   "formal/durable-head-cas-boundary.smt2"
   "0780f501baa0abecaa35331d673bf0a7900086f53f9c484b0d76e7846f5e7358"
+  "src/jdbc/chdb/durable/backend.clj"
+  "c2767c0c2384bbdf298d745ff919e283747a631963835512c7d2bb9f361f9670"
   "src/jdbc/chdb/durable/control.clj"
-  "5d6dda91747e2cfbe9b710122394b92861cad8238e126da453a9666aa9be83e0"
+  "aae01f7628955394dc021635be50b1c7993e6b301f79908746eaa89145dac98e"
   "src/jdbc/chdb/durable/writer.clj"
   "20a14a0c70d5824b2b9e04e503fd668e0a71ad70eab09c2c0a23b95a68f40f43"
   "test/jdbc/chdb_durable_writer_test.clj"
@@ -76,7 +84,7 @@
  :bounds {:writers 2 :objects 2 :attempts 6 :max-steps 6
           :max-generation 7 :max-sequence 6}
  :results
- {:typecheck {:model :pass :tests :pass}
+ {:typecheck {:model :pass :tests :pass :publication-acknowledgement :pass}
   :deterministic {:corrected {:status :pass :tests 5}
                   :mutant-witnesses {:status :pass
                                      :stale-ownership 1
@@ -89,17 +97,36 @@
   {:backend :typescript
    :status :no-counterexample
    :traces 10000
-   :elapsed-ms 101091
-   :seed "0x1a9d621bd488f1"
-   :witness-counts {:acquisition 9201
-                    :publication 5545
-                    :confirmed-commit 40
-                    :reconciled-commit 572
-                    :ambiguous-drop 24
-                    :stale-rejected 7233
-                    :release 3095
-                    :renewal-during-reconciliation 407
-                    :post-renewal-reconciliation 136}}
+   :elapsed-ms 66598
+   :seed "0x6883f7e8e62ed"
+   :witness-counts {:acquisition 9126
+                    :publication 5382
+                    :confirmed-commit 22
+                    :reconciled-commit 547
+                    :ambiguous-drop 27
+                    :stale-rejected 7331
+                    :release 3098
+                    :renewal-during-reconciliation 353
+                    :post-renewal-reconciliation 127}}
+  :publication-acknowledgement
+  {:sampled {:backend :typescript
+             :status :no-counterexample
+             :traces 1000
+             :elapsed-ms 405
+             :seed "0x1d56a5f619e7cb"
+             :witness-counts {:ambiguous-landed 201
+                              :ambiguous-dropped 189}}
+   :bounded-corrected {:backend :apalache
+                       :invariant "publicationAcknowledgementIsSound"
+                       :status :no-counterexample-through-bound
+                       :max-steps 1
+                       :elapsed-ms 15461}
+   :bounded-mutant {:backend :apalache
+                    :invariant "publicationAcknowledgementIsSound"
+                    :status :counterexample
+                    :max-steps 1
+                    :elapsed-ms 14045
+                    :itf "target/formal/quint/publication-ack-mutant.itf.json"}}
   :model-based-testing
   {:status :pass
    :format :itf-adr-015
@@ -115,6 +142,7 @@
    :format :itf-adr-015
    :traces 64
    :seed "0xd17ab1e"
+   :step "legacyStep"
    :state-oracle :every-step
    :event-contract ["hegel.operation-events" "1"]}
   :bounded
@@ -182,7 +210,7 @@
                     :detail "Rust evaluator output failed Quint JSON decoding"}
   :z3 {:corrected :unsat :stale-mutant :sat :boundary :sat}
   :jolt-focused {:status :pass
-                 :deterministic-checks 37
+                 :deterministic-checks 43
                  :hegel-valid-cases 40
                  :hegel-seed 1037901374147896074}
   :writer-focused {:status :pass
@@ -245,7 +273,8 @@
                    :compiler "5d56b9e5d295fe0968df07e535c45353050611f7"
                    :provider-assertions 42
                    :woven-commands 7
-                   :woven-effect-subjects 1535
+                   :woven-effect-subjects 1538
+                   :plain-effect-subjects 1522
                    :plain-erasure true
                    :privacy-shaped true
                    :multi-object-partition true
@@ -256,7 +285,7 @@
                               :native-release "26.7.2-rc.2"
                               :app-assertions 40
                               :woven-commands 19
-                              :woven-effect-subjects 5613
+                              :woven-effect-subjects 5616
                               :release-build true
                               :offline-transition-validation true}
   :itf-replay {:status :pass
@@ -275,6 +304,8 @@
   "quint verify target/formal/quint/durableHeadCas.qnt --main durableHeadCasStaleMutant --invariant staleWriterCannotChangeHead --max-steps 6 --backend apalache --apalache-version 0.56.1 --out-itf target/formal/quint/stale-mutant.itf.json --verbosity 1"
   "quint verify target/formal/quint/durableHeadCas.qnt --main durableHeadCasCorrected --invariant ambiguousLandedUsesOperationSpecificReconciliation --max-steps 6 --backend apalache --apalache-version 0.56.1 --verbosity 1"
   "quint verify target/formal/quint/durableHeadCas.qnt --main durableHeadCasWholeHeadReconciliationMutant --invariant ambiguousLandedUsesOperationSpecificReconciliation --max-steps 6 --backend apalache --apalache-version 0.56.1 --out-itf target/formal/quint/whole-head-reconciliation-mutant.itf.json --verbosity 1"
+  "quint verify target/formal/quint/durablePublicationAck.qnt --main durablePublicationAckCorrected --invariant publicationAcknowledgementIsSound --max-steps 1 --backend apalache --apalache-version 0.56.1 --verbosity 1"
+  "quint verify target/formal/quint/durablePublicationAck.qnt --main durablePublicationAckDroppedAsReconciledMutant --invariant publicationAcknowledgementIsSound --max-steps 1 --backend apalache --apalache-version 0.56.1 --out-itf target/formal/quint/publication-ack-mutant.itf.json --verbosity 1"
   "/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:durable-control-test"
   "/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:durable-writer-test"
   "/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:durable-open-test"
