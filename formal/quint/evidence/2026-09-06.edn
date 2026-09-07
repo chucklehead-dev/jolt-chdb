@@ -1,18 +1,20 @@
 {:schema :jolt-chdb/formal-evidence-v1
  :recorded-at "2026-09-06T21:51:34-07:00"
- :updated-at "2026-09-07T16:00:33-07:00"
+ :updated-at "2026-09-07T16:23:41-07:00"
  :status :validated-local-commits
  :authority {:chdb-commit "db10b548a3e1e21e51c213baf863cb1050963d9c"
              :section "docs/durable/protocol-v1.mdx#state-machine"
              :oracle-copy-sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"}
- :checkout {:jolt-chdb-implementation "e504c28066435a6a2fb885b6cf527df916f3f6d4"
-            :jolt-chdb-parent "9004717c58e093ae276834fd7e2f74a801558a74"
+ :checkout {:jolt-chdb-implementation "935f3c7f569aa249aab9398bb185ff9f9faf1c29"
+            :jolt-chdb-parent "9b35027bafae27e7c7f8442ec814e8ea161d05af"
             :jolt-otel-clickhouse "ca267f5adbcb74c899f592fe4681825fb1631df7"
             :oscope "d20afee60c29e8c795d4d5bd2ed701ec4aa8df40"
-            :jolt-aspect-packs "a1ad263ed3746e54af3747595ca8155c65b0d932"
+            :jolt-aspect-packs "64f387e569ff03bb666815e5142dcf416df977c1"
             :publication :unpublished}
- :artifacts
- {"formal/quint/durable-head-cas.md"
+  :artifacts
+ {"README.md"
+  "9bed673c7ac43a2efd5b43017b7c25dd2e577f1ee9627aa23b3e32f33fbce354"
+  "formal/quint/durable-head-cas.md"
   "1fcd685bf8bdd077ecf652f9b142e00f63c4672685587b8da1ad65a11372bded"
   "target/formal/quint/durableHeadCas.qnt"
   "47957d618e64364f2a6c9371d1599026acded2bbc42df4df93d997147288cfaf"
@@ -45,7 +47,7 @@
   "docs/durable-writer.md"
   "cc6653c32197a1fd4e8227f344256d291942c4356c2b04fd135e072030b750fa"
   "docs/durable-open.md"
-  "bc4b90c819597072d47b4e065a402322c89880dc58ba9342a6e335ab5e8cfb35"
+  "ce875484b175b372bae4daa3108640949e0ed5c51f2080b445e36e648db639f3"
   "deps.edn"
   "a2e6dbbee156034fcc353a054a3c09e9f128cc49ac99de808216fa10885570e8"
   ".github/workflows/durable-head-quint.yml"
@@ -57,7 +59,7 @@
   "formal/durable-head-cas-boundary.smt2"
   "0780f501baa0abecaa35331d673bf0a7900086f53f9c484b0d76e7846f5e7358"
   "src/jdbc/chdb/durable/backend.clj"
-  "c2767c0c2384bbdf298d745ff919e283747a631963835512c7d2bb9f361f9670"
+  "1b1d25a6e2a6409d626d3c73e3f41a30387cf51937eab3a6647bd0a13e45cb82"
   "src/jdbc/chdb/durable/control.clj"
   "aae01f7628955394dc021635be50b1c7993e6b301f79908746eaa89145dac98e"
   "src/jdbc/chdb/durable/writer.clj"
@@ -65,11 +67,15 @@
   "test/jdbc/chdb_durable_writer_test.clj"
   "d7f690eaf3ec79c5258dd0675984f92074e7ce7bda67384882e5db461964b649"
   "src/jdbc/chdb/durable.clj"
-  "5889b84f5232b908a7ba620497f5fc209e14e7c53599ecfb46ef4233a742e125"
+  "0fbb7a987d7175ccf8ea1a084040f6644aa1c9d27a511d82fadcd1cc31575365"
   "src/jdbc/chdb/durable/reader.clj"
   "268f6e0ddfa41f1f6b869fbf92ae3b3b832d16e5b91aa04d6e671dac7814fbff"
   "test/jdbc/chdb_durable_open_test.clj"
-  "a1189c509d715391b77fdfbdef91cf734144b964f356ad26bde99fbad52ef6db"
+  "faf4d0b000a0067d74a1db380afddbb6c73a45e87fefa48befd4cc57ffdf5974"
+  "test/jdbc/chdb_durable_backend_test.clj"
+  "4d9d66a5bd6297645b54d51c0a33b2b0afd9be9787a8b3ab781baa810aed9a81"
+  "test/jdbc/chdb_durable_local_test.clj"
+  "1784a3951c21090b8ccaa1f3f88260e3f077d8e71828b74f4758f68228ec1163"
   "test/jdbc/chdb_durable_native_test.clj"
   "ecf7824fb04b88c0c447234eeafcffa9983a7b063057c26a6a8ffe1ac81f2eb6"
   "formal/quint/publication-attempt-refinement-plan.md"
@@ -218,12 +224,20 @@
                    :hegel-valid-cases 30
                    :hegel-seed 4495331089787377742}
   :open-focused {:status :pass
-                 :deterministic-checks 31
+                 :deterministic-checks 36
                  :writer-recovery true
                  :reader-snapshot-recovery true
                  :query-bytes true
                  :checkpoint-publication :streaming
                  :jdbc-adapter true}
+  :namespace-object-api {:status :pass
+                         :object-id :validated-single-component
+                         :direct-open true
+                         :jdbc-open true
+                         :sibling-isolation true
+                         :wal-recovery true
+                         :local-streaming-checkpoint true
+                         :backend-and-namespace-mutually-exclusive true}
   :native-durable-focused {:status :pass
                            :release "26.7.2-rc.2"
                            :symbols :resolved
@@ -273,8 +287,8 @@
                    :compiler "5d56b9e5d295fe0968df07e535c45353050611f7"
                    :provider-assertions 42
                    :woven-commands 7
-                   :woven-effect-subjects 1538
-                   :plain-effect-subjects 1522
+                   :woven-effect-subjects 1542
+                   :plain-effect-subjects 1526
                    :plain-erasure true
                    :privacy-shaped true
                    :multi-object-partition true
@@ -285,9 +299,22 @@
                               :native-release "26.7.2-rc.2"
                               :app-assertions 40
                               :woven-commands 19
-                              :woven-effect-subjects 5616
+                              :woven-effect-subjects 5622
                               :release-build true
                               :offline-transition-validation true}
+  :aspect-process-crash-cuts
+  {:status :pass
+   :repo "../jolt-aspect-packs"
+   :compiler-control-opt-in true
+   :woven-effect-subjects 2046
+   :sigkill-count 3
+   :cuts
+   {:before-upload {:manifest-sequence 0 :wal-count 0
+                    :replayed-statements 0 :physical-wal-objects 0}
+    :after-upload {:manifest-sequence 0 :wal-count 0
+                   :replayed-statements 0 :physical-wal-objects 1}
+    :after-head-cas {:manifest-sequence 1 :wal-count 1
+                     :replayed-statements 1 :physical-wal-objects 1}}}
   :itf-replay {:status :pass
                :steps 6
                :lifecycle-events 12
@@ -315,4 +342,5 @@
   "cd ../oscope && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:test-durable-dev"
   "cd ../jolt-aspect-packs && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:chdb-durable-test"
   "cd ../jolt-aspect-packs && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 make JOLT_ASPECT_JOLT=/home/chuck/ai-src/worktrees/jolt-aspects-v083-sync/target/release/jolt chdb-durable-aspect-smoke chdb-durable-plain-smoke"
+  "cd ../jolt-aspect-packs && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 make JOLT_ASPECT_JOLT=/home/chuck/ai-src/worktrees/jolt-aspects-v083-sync/target/release/jolt chdb-durable-crash-smoke"
   "cd ../oscope && env JOLT_ASPECT_JOLT=/home/chuck/ai-src/worktrees/jolt-aspects-v083-sync/target/release/jolt JOLT_CHDB_LIB=/tmp/jolt-chdb-durable-script-gate/native/libchdb.so test/durable_aspect_smoke.sh"]}
