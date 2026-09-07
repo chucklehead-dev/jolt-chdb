@@ -82,6 +82,35 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- ambiguous-publication-backend [delegate mode]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (if (= control/head-key key)
+        (backend/put-file-if-absent! delegate key path)
+        (case mode
+          :land (do (backend/put-file-if-absent! delegate key path)
+                    {:status :ambiguous})
+          :conflict (do (backend/put-bytes-if-absent!
+                         delegate key (.getBytes "different" "UTF-8"))
+                        {:status :ambiguous})
+          :drop {:status :ambiguous})))
+    (put-bytes-if-absent! [_ key bytes]
+      (if (= control/head-key key)
+        (backend/put-bytes-if-absent! delegate key bytes)
+        (case mode
+          :land (do (backend/put-bytes-if-absent! delegate key bytes)
+                    {:status :ambiguous})
+          :conflict (do (backend/put-bytes-if-absent!
+                         delegate key (.getBytes "different" "UTF-8"))
+                        {:status :ambiguous})
+          :drop {:status :ambiguous})))
+    (replace-if-match! [_ key bytes etag]
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- land-then-renew-backend [delegate token renewed-expiry]
   (reify backend/ObjectBackend
     (get-bytes [_ key] (backend/get-bytes delegate key))
@@ -316,7 +345,48 @@
               store token (.getBytes "abc" "UTF-8"))))
     (check "publication rejects non-byte payloads before the backend"
            ::control/invalid-options
-           (error-type #(control/publish-wal-bytes! store token "abc")))))
+           (error-type #(control/publish-wal-bytes! store token "abc"))))
+
+  (doseq [[label mode expected]
+          [["landed ambiguous WAL publication reconciles" :land :reconciled]
+           ["conflicting ambiguous WAL publication is rejected"
+            :conflict ::control/object-unverified]
+           ["dropped ambiguous WAL publication stays unprovable"
+            :drop ::control/commit-ambiguous]]]
+    (let [delegate (backend/memory-backend)
+          store (ambiguous-publication-backend delegate mode)
+          token (:token (control/acquire! store base-options))]
+      (check label expected
+             (if (#{:land} mode)
+               (:status (control/publish-wal-bytes!
+                         store token (.getBytes "abc" "UTF-8")))
+               (error-type #(control/publish-wal-bytes!
+                             store token (.getBytes "abc" "UTF-8")))))))
+
+  (let [checkpoint (java.nio.file.Files/createTempFile
+                    "jolt-chdb-ambiguous-" ".tar.gz"
+                    (make-array java.nio.file.attribute.FileAttribute 0))]
+    (try
+      (java.nio.file.Files/write checkpoint (.getBytes "abc" "UTF-8")
+                                 (make-array java.nio.file.OpenOption 0))
+      (doseq [[label mode expected]
+              [["landed ambiguous checkpoint publication reconciles"
+                :land :reconciled]
+               ["conflicting ambiguous checkpoint publication is rejected"
+                :conflict ::control/object-unverified]
+               ["dropped ambiguous checkpoint publication stays unprovable"
+                :drop ::control/commit-ambiguous]]]
+        (let [delegate (backend/memory-backend)
+              store (ambiguous-publication-backend delegate mode)
+              token (:token (control/acquire! store base-options))]
+          (check label expected
+                 (if (#{:land} mode)
+                   (:status (control/publish-checkpoint-file!
+                             store token checkpoint))
+                   (error-type #(control/publish-checkpoint-file!
+                                 store token checkpoint))))))
+      (finally
+        (java.nio.file.Files/deleteIfExists checkpoint)))))
 
 (def durable-event-rule
   (ht/event-model

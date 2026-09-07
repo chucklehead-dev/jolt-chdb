@@ -19,10 +19,13 @@
 (def protocol-source
   (assoc head/protocol-source :section "state-machine"))
 
-(defn- fail! [type message]
-  ;; Owner, instance, keys, paths, head bytes, and provider results are
-  ;; deliberately absent. All can contain deployment identity or secrets.
-  (throw (ex-info message {:type type})))
+(defn- fail!
+  ([type message]
+   (fail! type message nil))
+  ([type message data]
+   ;; Owner, instance, keys, paths, head bytes, and provider results are
+   ;; deliberately absent. All can contain deployment identity or secrets.
+   (throw (ex-info message (assoc (or data {}) :type type)))))
 
 (defn- finite-number? [value]
   (and (number? value)
@@ -340,6 +343,30 @@
 
 (declare verify-byte-reference!)
 
+(defn- reconcile-publication!
+  [status verify-reference! verify-created?]
+  (case status
+    :created
+    (do
+      (when verify-created? (verify-reference!))
+      :published)
+    :precondition-failed
+    (do
+      (verify-reference!)
+      :already-published)
+    :ambiguous
+    (try
+      (verify-reference!)
+      :reconciled
+      (catch Throwable error
+        (if (and (= ::object-unverified (:type (ex-data error)))
+                 (= :missing (:reason (ex-data error))))
+          (fail! ::commit-ambiguous
+                 "The immutable Durable publication outcome is unprovable")
+          (throw error))))
+    (fail! ::backend-contract
+           "The Durable backend returned an unsupported publication result")))
+
 (defn- unique-object-token []
   (let [uuid (UUID/randomUUID)]
     (when-not (= 4 (.version uuid))
@@ -376,17 +403,12 @@
                      "sha256" digest}
           result (backend/put-bytes-if-absent!
                   store (get reference "key") bytes)]
-      (case (:status result)
-        :created {:status :published
-                  :reference reference
-                  :etag (:etag result)}
-        :precondition-failed
-        (do
-          (verify-byte-reference! store reference)
-          {:status :already-published
-           :reference reference})
-        (fail! ::backend-contract
-               "The Durable backend returned an unsupported publication result")))))
+      {:status (reconcile-publication!
+                (:status result)
+                #(verify-byte-reference! store reference)
+                false)
+       :reference reference
+       :etag (:etag result)})))
 
 (defn verify-byte-reference!
   "Verify a bounded in-memory immutable object against a V1 reference.
@@ -397,13 +419,16 @@
   [store reference]
   (let [bytes (backend/get-bytes store (get reference "key"))]
     (when-not bytes
-      (fail! ::object-unverified "The immutable Durable object is missing"))
+      (fail! ::object-unverified "The immutable Durable object is missing"
+             {:reason :missing}))
     (when-not (= (get reference "size") (alength bytes))
-      (fail! ::object-unverified "The immutable Durable object size differs"))
+      (fail! ::object-unverified "The immutable Durable object size differs"
+             {:reason :integrity}))
     (let [actual (sha256 bytes)]
       (when-not (= (get reference "sha256") actual)
         (fail! ::object-unverified
-               "The immutable Durable object digest differs")))
+               "The immutable Durable object digest differs"
+               {:reason :integrity})))
     reference))
 
 (defn verify-file-reference!
@@ -415,12 +440,18 @@
     (try
       (let [result (backend/download-to-file!
                     store (get reference "key") path)]
-        (when-not (and (= :downloaded (:status result))
-                       (= (get reference "size") (:byte-count result))
+        (when-not (= :downloaded (:status result))
+          (fail! ::object-unverified
+                 "The immutable Durable file object is missing"
+                 {:reason (if (= :not-found (:status result))
+                            :missing
+                            :integrity)}))
+        (when-not (and (= (get reference "size") (:byte-count result))
                        (= (get reference "size") (Files/size path))
                        (= (get reference "sha256") (sha256-file path)))
           (fail! ::object-unverified
-                 "The immutable Durable file object could not be verified"))
+                 "The immutable Durable file object could not be verified"
+                 {:reason :integrity}))
         reference)
       (finally
         (Files/deleteIfExists path)
@@ -448,16 +479,10 @@
                        "sha256" (sha256-file path)}
             result (backend/put-file-if-absent!
                     store (get reference "key") path)]
-        (case (:status result)
-          :created nil
-          :precondition-failed nil
-          :ambiguous nil
-          (fail! ::backend-contract
-                 "The Durable backend returned an unsupported publication result"))
-        (verify-file-reference! store reference)
-        {:status (if (= :created (:status result))
-                   :published
-                   :already-published)
+        {:status (reconcile-publication!
+                  (:status result)
+                  #(verify-file-reference! store reference)
+                  true)
          :reference reference
          :etag (:etag result)}))))
 

@@ -1497,3 +1497,172 @@ module durableHeadCasWholeHeadReconciliationMutantTest {
       })
 }
 ```
+
+## Immutable-create acknowledgement refinement
+
+Remote providers can lose a conditional-create response after the immutable
+object landed. This small refinement keeps that provider acknowledgement
+separate from head CAS: exact reread evidence is the only path from an
+ambiguous acknowledgement to success. A dropped request remains ambiguous,
+and a known conflicting object is an integrity failure.
+
+```quint target/formal/quint/durablePublicationAck.qnt +=
+module durablePublicationAck {
+  type PublicationMode =
+    | ConfirmedCreate
+    | MatchingPrecondition
+    | ConflictingPrecondition
+    | AmbiguousLanded
+    | AmbiguousDropped
+
+  type StoredObject = Missing | ExactObject | DifferentObject
+
+  type PublicationResult =
+    | PublishedResult
+    | AlreadyPublishedResult
+    | ReconciledResult
+    | ObjectUnverifiedResult
+    | CommitAmbiguousResult
+
+  type PublicationState = {
+    mode: PublicationMode,
+    before: StoredObject,
+    after: StoredObject,
+    result: PublicationResult,
+  }
+
+  const USE_DROPPED_AS_RECONCILED_MUTANT: bool
+
+  var publicationState: PublicationState
+
+  pure def transitionFor(mode: PublicationMode): PublicationState =
+    match mode {
+      | ConfirmedCreate => {
+          mode: mode, before: Missing, after: ExactObject,
+          result: PublishedResult,
+        }
+      | MatchingPrecondition => {
+          mode: mode, before: ExactObject, after: ExactObject,
+          result: AlreadyPublishedResult,
+        }
+      | ConflictingPrecondition => {
+          mode: mode, before: DifferentObject, after: DifferentObject,
+          result: ObjectUnverifiedResult,
+        }
+      | AmbiguousLanded => {
+          mode: mode, before: Missing, after: ExactObject,
+          result: ReconciledResult,
+        }
+      | AmbiguousDropped => {
+          mode: mode, before: Missing, after: Missing,
+          result:
+            if (USE_DROPPED_AS_RECONCILED_MUTANT) ReconciledResult
+            else CommitAmbiguousResult,
+        }
+    }
+
+  action init: bool =
+    publicationState' = transitionFor(ConfirmedCreate)
+
+  action attempt(mode: PublicationMode): bool =
+    publicationState' = transitionFor(mode)
+
+  action step: bool = {
+    nondet mode = Set(
+      ConfirmedCreate,
+      MatchingPrecondition,
+      ConflictingPrecondition,
+      AmbiguousLanded,
+      AmbiguousDropped
+    ).oneOf()
+    attempt(mode)
+  }
+
+  pure def acknowledgementIsSound(s: PublicationState): bool =
+    match s.mode {
+      | ConfirmedCreate =>
+          s.before == Missing and s.after == ExactObject
+            and s.result == PublishedResult
+      | MatchingPrecondition =>
+          s.before == ExactObject and s.after == ExactObject
+            and s.result == AlreadyPublishedResult
+      | ConflictingPrecondition =>
+          s.before == DifferentObject and s.after == DifferentObject
+            and s.result == ObjectUnverifiedResult
+      | AmbiguousLanded =>
+          s.before == Missing and s.after == ExactObject
+            and s.result == ReconciledResult
+      | AmbiguousDropped =>
+          s.before == Missing and s.after == Missing
+            and s.result == CommitAmbiguousResult
+    }
+
+  val publicationAcknowledgementIsSound: bool =
+    acknowledgementIsSound(publicationState)
+
+  val ambiguousLandedReached: bool =
+    publicationState.mode == AmbiguousLanded
+
+  val ambiguousDroppedReached: bool =
+    publicationState.mode == AmbiguousDropped
+}
+
+module durablePublicationAckCorrected {
+  import durablePublicationAck(
+    USE_DROPPED_AS_RECONCILED_MUTANT = false
+  ).* from "./durablePublicationAck"
+}
+
+module durablePublicationAckMutant {
+  import durablePublicationAck(
+    USE_DROPPED_AS_RECONCILED_MUTANT = true
+  ).* from "./durablePublicationAck"
+}
+```
+
+```quint target/formal/quint/durablePublicationAckTest.qnt +=
+module durablePublicationAckCorrectedTest {
+  import durablePublicationAck(
+    USE_DROPPED_AS_RECONCILED_MUTANT = false
+  ).* from "./durablePublicationAck"
+
+  run ambiguousLandedRequiresExactObjectTest =
+    init
+      .then(attempt(AmbiguousLanded))
+      .expect(and {
+        publicationState.after == ExactObject,
+        publicationState.result == ReconciledResult,
+        publicationAcknowledgementIsSound,
+      })
+
+  run ambiguousDroppedStaysUnprovableTest =
+    init
+      .then(attempt(AmbiguousDropped))
+      .expect(and {
+        publicationState.after == Missing,
+        publicationState.result == CommitAmbiguousResult,
+        publicationAcknowledgementIsSound,
+      })
+
+  run matchingAndConflictingObjectsStayDistinctTest =
+    init
+      .then(attempt(MatchingPrecondition))
+      .expect(publicationState.result == AlreadyPublishedResult)
+      .then(attempt(ConflictingPrecondition))
+      .expect(and {
+        publicationState.result == ObjectUnverifiedResult,
+        publicationAcknowledgementIsSound,
+      })
+}
+
+module durablePublicationAckMutantTest {
+  import durablePublicationAck(
+    USE_DROPPED_AS_RECONCILED_MUTANT = true
+  ).* from "./durablePublicationAck"
+
+  run droppedAsReconciledMutantWitnessTest =
+    init
+      .then(attempt(AmbiguousDropped))
+      .expect(not(publicationAcknowledgementIsSound))
+}
+```

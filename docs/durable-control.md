@@ -49,6 +49,14 @@ proves the same object. A stale writer may leave an unreachable old-generation
 immutable object, as the Quint model permits, but cannot commit it; a future
 generation that no acquisition could have issued is rejected.
 
+Remote conditional creates may return `:ambiguous` when the response is lost.
+The publisher rereads that one unique immutable key: exact size and SHA-256
+prove `:reconciled`, a known different object fails integrity verification, and
+an absent object remains `commit-ambiguous`. It never treats a transport
+failure as proof that the create did not land. Streaming checkpoint publication
+uses the same reconciliation rule and also verifies a confirmed create before
+allowing its reference to reach the head CAS.
+
 This byte-materializing function is intentionally not a checkpoint API.
 Checkpoint publication still requires the streaming file/hash slice.
 

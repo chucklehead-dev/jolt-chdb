@@ -34,6 +34,7 @@ trap 'rm -rf "$corpus_dir"' EXIT
 
 quint run "$model" \
   --main durableHeadCasCorrected \
+  --step legacyStep \
   --max-steps 6 \
   --max-samples "$trace_count" \
   --n-traces "$trace_count" \

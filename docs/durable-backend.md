@@ -5,6 +5,12 @@ seam from the frozen Durable V1 backend contract: `get-bytes`,
 `get-with-etag`, `put-file-if-absent!`, `put-bytes-if-absent!`,
 `replace-if-match!`, and `download-to-file!`.
 
+Both conditional-create operations and conditional replace may report
+`{:status :ambiguous}` when a remote provider cannot prove whether a request
+landed. This is not a negative acknowledgement. The control plane reconciles a
+create by rereading its unique immutable key and a replace by rereading
+`head.json`; only exact operation-specific state proves success.
+
 The protocol source is chDB commit
 `db10b548a3e1e21e51c213baf863cb1050963d9c`,
 `docs/durable/protocol-v1.mdx#backend-contract`. In particular, conditional

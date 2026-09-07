@@ -6,6 +6,8 @@ literate_spec="$repo_root/formal/quint/durable-head-cas.md"
 target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
 tests="$target/durableHeadCasTest.qnt"
+publication_model="$target/durablePublicationAck.qnt"
+publication_tests="$target/durablePublicationAckTest.qnt"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
@@ -37,6 +39,8 @@ mkdir -p "$target"
 
 quint typecheck "$model"
 quint typecheck "$tests"
+quint typecheck "$publication_model"
+quint typecheck "$publication_tests"
 
 quint test "$tests" \
   --main durableHeadCasCorrectedTest \
@@ -80,6 +84,18 @@ quint test "$tests" \
   --backend typescript \
   --verbosity 1
 
+quint test "$publication_tests" \
+  --main durablePublicationAckCorrectedTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$publication_tests" \
+  --main durablePublicationAckMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
 "$repo_root/scripts/generate-durable-head-itf.sh"
 cmp "$target/corrected-mbt.itf.json" \
   "$repo_root/formal/quint/traces/corrected-mbt.itf.json"
@@ -103,6 +119,26 @@ do
   if ! rg -q "^${witness} was witnessed in [1-9][0-9]* trace" "$sample_log"
   then
     echo "required witness was not reached: $witness" >&2
+    exit 1
+  fi
+done
+
+publication_sample_log="$target/publication-ack-sampled.log"
+quint run "$publication_model" \
+  --main durablePublicationAckCorrected \
+  --invariant publicationAcknowledgementIsSound \
+  --witnesses ambiguousLandedReached ambiguousDroppedReached \
+  --max-steps 1 \
+  --max-samples 1000 \
+  --backend typescript \
+  --verbosity 1 | tee "$publication_sample_log"
+
+for witness in ambiguousLandedReached ambiguousDroppedReached
+do
+  if ! rg -q "^${witness} was witnessed in [1-9][0-9]* trace" \
+    "$publication_sample_log"
+  then
+    echo "required publication witness was not reached: $witness" >&2
     exit 1
   fi
 done
@@ -201,3 +237,34 @@ expect_violation durableHeadCasCommitAttemptMutant \
   headReferenceWasPublished commit-attempt-mutant
 expect_violation durableHeadCasWholeHeadReconciliationMutant \
   ambiguousLandedUsesOperationSpecificReconciliation whole-head-reconciliation-mutant
+
+quint verify "$publication_model" \
+  --main durablePublicationAckCorrected \
+  --invariant publicationAcknowledgementIsSound \
+  --max-steps 1 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+publication_mutant_log="$target/publication-ack-mutant.log"
+set +e
+quint verify "$publication_model" \
+  --main durablePublicationAckMutant \
+  --invariant publicationAcknowledgementIsSound \
+  --max-steps 1 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --out-itf "$target/publication-ack-mutant.itf.json" \
+  --verbosity 1 >"$publication_mutant_log" 2>&1
+publication_mutant_status=$?
+set -e
+
+if [[ $publication_mutant_status -eq 0 ]] || \
+  ! rg -q '^\[violation\] Found an issue' "$publication_mutant_log"
+then
+  cat "$publication_mutant_log" >&2
+  echo "publication acknowledgement mutant did not produce a counterexample" >&2
+  exit 1
+fi
+
+cat "$publication_mutant_log"

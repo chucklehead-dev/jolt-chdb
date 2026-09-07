@@ -12,10 +12,12 @@
     "Return {:bytes owned-bytes :etag opaque-token}, or nil.")
   (put-file-if-absent! [backend key local-path]
     "Atomically create key by streaming local-path, returning {:status
-    :created :etag token} or {:status :precondition-failed}.")
+    :created :etag token}, {:status :precondition-failed}, or {:status
+    :ambiguous} when a remote provider cannot prove whether the create landed.")
   (put-bytes-if-absent! [backend key bytes]
     "Atomically create key, returning {:status :created :etag token} or
-    {:status :precondition-failed}.")
+    {:status :precondition-failed}, or {:status :ambiguous} when a remote
+    provider cannot prove whether the create landed.")
   (replace-if-match! [backend key bytes etag]
     "Atomically replace key only when its opaque ETag still matches, returning
     {:status :replaced :etag token}, {:status :precondition-failed}, or
