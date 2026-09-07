@@ -99,15 +99,17 @@
                       (swap! calls conj [:execute sql])
                       {:sql sql})})
 
-(defn- prepared-raw-wal-store [payload]
-  (let [store (backend/memory-backend)
-        token (:token (control/acquire! store initial-options))
+(defn- prepare-raw-wal-store! [store payload]
+  (let [token (:token (control/acquire! store initial-options))
         publication (control/publish-wal-bytes! store token payload)]
     (control/commit-reference!
      store token {:kind :wal :reference (:reference publication)
                   :verify-reference! control/verify-byte-reference!})
     (control/release! store token)
     store))
+
+(defn- prepared-raw-wal-store [payload]
+  (prepare-raw-wal-store! (backend/memory-backend) payload))
 
 (defn- prepared-wal-store []
   (prepared-raw-wal-store
@@ -161,6 +163,45 @@
           #(durable/check-engine-compatibility!
             {"engine" {"backup_format" 1 "min_reader" "26.8.0"}}
             "26.7.2")))
+
+  (let [namespace (backend/memory-backend)
+        alpha-store (backend/object-backend namespace "alpha")
+        _ (prepare-raw-wal-store!
+           alpha-store
+           (.getBytes "{\"sql\":\"INSERT INTO t VALUES (7)\"}\n" "UTF-8"))
+        calls (atom [])
+        clocks (atom [0M])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        operations (fake-open-operations calls clocks close-count cleanup-count)]
+    (let [opened (durable/open-reader!
+                  {:namespace-backend namespace
+                   :object-id "alpha"
+                   :operations operations})]
+      (check "namespace/object open recovers the selected object's WAL"
+             ["INSERT INTO t VALUES (7)"]
+             (mapv second (filter #(= :execute (first %)) @calls)))
+      (reader/close! opened))
+    (check "a sibling object remains absent"
+           ::durable/not-found
+           (error-type #(durable/open-reader!
+                         {:namespace-backend namespace
+                          :object-id "beta"
+                          :operations operations})))
+    (check "sibling lookup does not create a head"
+           nil (backend/get-with-etag namespace "beta/head.json"))
+    (check "namespace/object cannot be combined with an already-scoped store"
+           ::durable/invalid-options
+           (error-type #(durable/open-reader!
+                         {:store alpha-store
+                          :namespace-backend namespace
+                          :object-id "alpha"
+                          :operations operations})))
+    (check "namespace and object identity are an indivisible pair"
+           ::durable/invalid-options
+           (error-type #(durable/open-reader!
+                         {:namespace-backend namespace
+                          :operations operations}))))
 
   (let [store (prepared-wal-store)
         calls (atom [])
@@ -221,7 +262,8 @@
            [@close-count @cleanup-count
             (get-in (:head (control/read-head! store)) ["lease" "owner"])]))
 
-  (let [store (backend/memory-backend)
+  (let [namespace (backend/memory-backend)
+        store (backend/object-backend namespace "jdbc-object")
         calls (atom [])
         clocks (atom [0M 1M])
         close-count (atom 0)
@@ -235,7 +277,8 @@
                (fn [_ _] {:labels [] :rows [] :count 0}))]
     (with-open [connection
                 (jdbc/connection
-                 {:vendor "chdb-durable" :backend store
+                 {:vendor "chdb-durable"
+                  :namespace-backend namespace :object-id "jdbc-object"
                   :owner "jdbc-writer" :instance "jdbc-instance"
                   :database "default" :lease-ttl-ms 300M
                   :operations operations})]

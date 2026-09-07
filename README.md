@@ -79,7 +79,9 @@ adds real cross-process exclusion, synced atomic publication, and crash tests;
 it now covers the complete six-operation storage seam, including bounded-memory
 file upload/download. The public Durable reader/writer APIs below compose that
 seam; applications select the local provider explicitly with
-`jdbc.chdb.durable.local-posix/local-backend`.
+`jdbc.chdb.durable.local-posix/local-backend`, then pass it as
+`:namespace-backend` together with one safe `:object-id`. Advanced callers may
+still pass an already object-scoped `:store` directly.
 
 The first state-machine integration slice is documented in
 [`docs/durable-control.md`](docs/durable-control.md). It implements generation

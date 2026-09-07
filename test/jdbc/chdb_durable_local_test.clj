@@ -182,6 +182,35 @@
                  (Files/exists failed-target
                                (make-array java.nio.file.LinkOption 0)))))
 
+      (let [alpha (backend/object-backend store "alpha")
+            beta (backend/object-backend store "beta")
+            source (.resolve root "alpha-checkpoint-source.bin")
+            target (.resolve root "alpha-checkpoint-download.bin")]
+        (check "local namespace publishes an object-scoped head" :created
+               (:status (backend/put-bytes-if-absent!
+                         alpha "head.json" (byte-array [21]))))
+        (check "local sibling cannot observe another object's head" nil
+               (backend/get-bytes beta "head.json"))
+        (check "local namespace stores the scoped physical key" [21]
+               (octets store "alpha/head.json"))
+        (Files/write source (byte-array [22 23]) (into-array OpenOption []))
+        (check "object-scoped checkpoint upload stays streaming" :created
+               (:status (backend/put-file-if-absent!
+                         alpha "checkpoints/one.tar" source)))
+        (check "sibling object cannot download the checkpoint"
+               {:status :not-found}
+               (backend/download-to-file!
+                beta "checkpoints/one.tar" target))
+        (check "missing sibling checkpoint creates no destination" false
+               (Files/exists target
+                             (make-array java.nio.file.LinkOption 0)))
+        (check "selected object downloads its exact checkpoint"
+               {:status :downloaded :byte-count 2}
+               (backend/download-to-file!
+                alpha "checkpoints/one.tar" target))
+        (check "selected object checkpoint bytes remain exact" [22 23]
+               (vec (Files/readAllBytes target))))
+
       (let [corrupt (.resolve (.resolve root "objects") "corrupt.bin")]
         (Files/write corrupt (byte-array [1 2 3]) (into-array OpenOption []))
         (check "truncated envelope fails closed" ::backend/invalid-envelope

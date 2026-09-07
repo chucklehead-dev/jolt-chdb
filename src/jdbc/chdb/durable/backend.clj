@@ -143,6 +143,43 @@
   []
   (MemoryBackend. (atom {})))
 
+(defn- checked-object-id [object-id]
+  (when-not (and (string? object-id)
+                 (not (str/blank? object-id))
+                 (not (contains? #{"." ".."} object-id))
+                 (not (str/includes? object-id "/"))
+                 (not (str/includes? object-id "\\"))
+                 (<= (alength (.getBytes object-id "UTF-8")) 255))
+    (fail! ::invalid-object-id
+           "Durable object id must be one safe nonblank path component"))
+  object-id)
+
+(deftype ^:private ObjectScopedBackend [delegate prefix]
+  ObjectBackend
+  (get-bytes [_ key]
+    (get-bytes delegate (str prefix (checked-key key))))
+  (get-with-etag [_ key]
+    (get-with-etag delegate (str prefix (checked-key key))))
+  (put-file-if-absent! [_ key local-path]
+    (put-file-if-absent! delegate (str prefix (checked-key key)) local-path))
+  (put-bytes-if-absent! [_ key bytes]
+    (put-bytes-if-absent! delegate (str prefix (checked-key key)) bytes))
+  (replace-if-match! [_ key bytes etag]
+    (replace-if-match! delegate (str prefix (checked-key key)) bytes etag))
+  (download-to-file! [_ key local-path]
+    (download-to-file! delegate (str prefix (checked-key key)) local-path)))
+
+(defn object-backend
+  "Scope a namespace backend to one Durable object id.
+
+  The object id is exactly one safe path component. Every protocol key is
+  mapped below `<object-id>/`, so sibling objects share provider resources but
+  cannot observe one another through the returned backend."
+  [namespace-backend object-id]
+  (when-not (satisfies? ObjectBackend namespace-backend)
+    (fail! ::invalid-backend "Durable namespace backend is required"))
+  (ObjectScopedBackend. namespace-backend (str (checked-object-id object-id) "/")))
+
 ;; The local provider stores the value and its opaque generation token in one
 ;; atomically published file. A fixed-size token keeps parsing independent of a
 ;; host byte-buffer implementation.

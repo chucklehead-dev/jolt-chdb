@@ -209,6 +209,26 @@
   (when-not (fn? (get operations key))
     (fail! ::invalid-options "Durable open operations must be functions")))
 
+(defn- resolve-store!
+  [{:keys [store namespace-backend object-id]}]
+  (cond
+    (and store (or namespace-backend object-id))
+    (fail! ::invalid-options
+           "Choose either store or namespace-backend with object-id")
+
+    store store
+
+    (and namespace-backend object-id)
+    (backend/object-backend namespace-backend object-id)
+
+    (or namespace-backend object-id)
+    (fail! ::invalid-options
+           "namespace-backend and object-id must be supplied together")
+
+    :else
+    (fail! ::invalid-options
+           "store or namespace-backend with object-id is required")))
+
 (defn- default-open-operations []
   {:now-ms #(System/currentTimeMillis)
    :durable-capability native/durable-capability
@@ -270,10 +290,11 @@
 
 (defn open-reader!
   "Open one immutable Durable V1 head snapshot without acquiring a lease."
-  [{:keys [store scratch-parent operations]
-    :or {scratch-parent (System/getProperty "java.io.tmpdir")}}]
-  (when-not store (fail! ::invalid-options "store is required"))
-  (let [operations (merge (default-open-operations) operations)]
+  [{:keys [scratch-parent operations]
+    :or {scratch-parent (System/getProperty "java.io.tmpdir")}
+    :as options}]
+  (let [store (resolve-store! options)
+        operations (merge (default-open-operations) operations)]
     (doseq [key (concat [:durable-capability :classification-sql!
                          :query-native!
                          :query-bytes-native!]
@@ -308,16 +329,17 @@
 
 (defn open-writer!
   "Acquire, recover, renew, and return a serialized Durable V1 writer."
-  [{:keys [store owner instance database lease-ttl-ms clock-skew-ms force?
+  [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
            heartbeat-interval-ms scratch-parent operations]
     :or {lease-ttl-ms default-lease-ttl-ms
          clock-skew-ms default-clock-skew-ms
          force? false
-         scratch-parent (System/getProperty "java.io.tmpdir")}}]
-  (when-not store (fail! ::invalid-options "store is required"))
+         scratch-parent (System/getProperty "java.io.tmpdir")}
+    :as options}]
   (when-not (and (number? lease-ttl-ms) (pos? lease-ttl-ms))
     (fail! ::invalid-options "lease-ttl-ms must be positive"))
-  (let [operations
+  (let [store (resolve-store! options)
+        operations
         (merge (default-open-operations) operations)
         required [:now-ms :durable-capability :create-scratch! :cleanup-scratch!
                   :open-native! :close-native! :restore-database!
@@ -430,6 +452,8 @@
       (when-not (map? spec)
         (fail! ::invalid-options "Durable chDB requires a map dbspec"))
       (let [common {:store (:backend spec)
+                    :namespace-backend (:namespace-backend spec)
+                    :object-id (:object-id spec)
                     :scratch-parent (or (:scratch-parent spec)
                                         (System/getProperty "java.io.tmpdir"))
                     :operations (:operations spec)}]

@@ -5,6 +5,13 @@ implemented writer path. It checks the running Durable ABI and chDB release
 precedence, rejects unsupported backup formats and minimum-reader versions,
 then acquires the object lease.
 
+Callers select object identity explicitly. `:namespace-backend` names a shared
+provider namespace and `:object-id` names one validated path component within
+it; the same pair is accepted by the `chdb-durable` JDBC dbspec. Every backend
+operation is scoped below `<object-id>/`, including `head.json`, WALs, and
+checkpoints. Supplying only half of the pair, or combining it with the legacy
+already-scoped `:store` option (`:backend` in a JDBC dbspec), fails closed.
+
 Recovery creates a mode-0700 scratch directory, opens chDB on its private data
 path, streams each referenced object to a unique temporary file, verifies size
 and SHA-256, and atomically publishes the verified scratch file. A base archive
