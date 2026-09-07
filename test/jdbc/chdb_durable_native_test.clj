@@ -1,6 +1,7 @@
 (ns jdbc.chdb-durable-native-test
   (:require [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.durable.policy :as policy]
             [jolt.ffi :as ffi]))
 
 (def failures (atom 0))
@@ -60,7 +61,34 @@
          "3" (scalar handle "SELECT count() FROM mem.t"))
   (native/classify-query! handle "USE other" nil)
   (check "classification does not change the current database"
-         "default" (scalar handle "SELECT currentDatabase()")))
+         "default" (scalar handle "SELECT currentDatabase()"))
+  (check "real read crosses the query policy" :read-only
+         (:query-class (policy/analyze-query! handle "SELECT 1" "mem")))
+  (check "real contained mutation crosses the execute policy" :mutating
+         (:query-class
+          (policy/analyze-execute! handle "INSERT INTO mem.t VALUES (4)" "mem")))
+  (check "execute admission analysis does not execute the mutation" "3"
+         (scalar handle "SELECT count() FROM mem.t"))
+  (doseq [[label operation reason]
+          [["real multi-statement query"
+            #(policy/analyze-query! handle "SELECT 1; SELECT 2" "mem") :statement-count]
+           ["real cross-database mutation"
+            #(policy/analyze-execute! handle "INSERT INTO other.t VALUES (1)" "mem")
+            :target-database]
+           ["real global mutation"
+            #(policy/analyze-execute! handle "CREATE FUNCTION f AS (x) -> x + 1" "mem")
+            :query-class]
+           ["real control statement"
+            #(policy/analyze-execute! handle "USE other" "mem") :query-class]
+           ["real secret-bearing mutation"
+            #(policy/analyze-execute!
+              handle
+              "CREATE NAMED COLLECTION nc AS access_key_id = 'AKIA', secret_access_key = 's3cr3t'"
+              "mem")
+            :query-class]]]
+    (let [data (some-> (rejected operation) ex-data)]
+      (check (str label " fails closed") ::policy/rejected (:type data))
+      (check (str label " reports the policy boundary") reason (:reason data)))))
 
 (defn- run-layout-mutants []
   (println "Durable query-analysis fail-closed controls")
