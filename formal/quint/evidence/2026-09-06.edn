@@ -1,12 +1,16 @@
 {:schema :jolt-chdb/formal-evidence-v1
  :recorded-at "2026-09-06T21:51:34-07:00"
- :updated-at "2026-09-07T14:30:06-07:00"
- :status :working-tree-pilot
+ :updated-at "2026-09-07T15:27:27-07:00"
+ :status :validated-local-commits
  :authority {:chdb-commit "db10b548a3e1e21e51c213baf863cb1050963d9c"
              :section "docs/durable/protocol-v1.mdx#state-machine"
              :oracle-copy-sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"}
- :checkout {:jolt-chdb-head "edc86af07d5982a185c4ef953c19c848a719da0e"
-            :dirty true}
+ :checkout {:jolt-chdb-implementation "463aab3db620eddcbe14164338f807ad6b59998c"
+            :jolt-chdb-parent "edc86af07d5982a185c4ef953c19c848a719da0e"
+            :jolt-otel-clickhouse "ca267f5adbcb74c899f592fe4681825fb1631df7"
+            :oscope "d20afee60c29e8c795d4d5bd2ed701ec4aa8df40"
+            :jolt-aspect-packs "f8003e9114e651086638601637f7455e9045d621"
+            :publication :unpublished}
  :artifacts
  {"formal/quint/durable-head-cas.md"
   "a6b18cc96849609398dd5620fe6b4d24fea3c8138285440d3d4f05554167fbc8"
@@ -41,11 +45,11 @@
   ".github/workflows/durable-head-quint.yml"
   "3434f6e20a61ba9ad4dab71f772bd06457d3add983d9bc7fe8e8f99bd1543381"
   "formal/durable-head-cas.smt2"
-  "a9611730087f1a94830836d0a5e349d984f44e21ae55fe087de9b81700fdeefc"
+  "6d4f98997a2cd9d3135323638bff1f6337223f5a292d5f6971c0d5dcba2a2d6a"
   "formal/durable-head-cas-stale-mutant.smt2"
-  "0bebc476df19106e0ff0d39017ceeb3361fb940ff30d4834cb58da5012aaf958"
+  "c0626e7f33ba2e5b3b969fd735e325de5d730c8729a6b1e0c6ae5a42232ffc77"
   "formal/durable-head-cas-boundary.smt2"
-  "41110b7fe65b07cc9a60f370f8393bb0640a111ed9e25776d4b00348bb9704b1"
+  "0780f501baa0abecaa35331d673bf0a7900086f53f9c484b0d76e7846f5e7358"
   "src/jdbc/chdb/durable/control.clj"
   "5d6dda91747e2cfbe9b710122394b92861cad8238e126da453a9666aa9be83e0"
   "src/jdbc/chdb/durable/writer.clj"
@@ -85,17 +89,17 @@
   {:backend :typescript
    :status :no-counterexample
    :traces 10000
-   :elapsed-ms 66460
-   :seed "0x5939c9fd191ab"
-   :witness-counts {:acquisition 9114
-                    :publication 5594
-                    :confirmed-commit 28
-                    :reconciled-commit 543
-                    :ambiguous-drop 36
-                    :stale-rejected 7330
-                    :release 3105
-                    :renewal-during-reconciliation 404
-                    :post-renewal-reconciliation 148}}
+   :elapsed-ms 101091
+   :seed "0x1a9d621bd488f1"
+   :witness-counts {:acquisition 9201
+                    :publication 5545
+                    :confirmed-commit 40
+                    :reconciled-commit 572
+                    :ambiguous-drop 24
+                    :stale-rejected 7233
+                    :release 3095
+                    :renewal-during-reconciliation 407
+                    :post-renewal-reconciliation 136}}
   :model-based-testing
   {:status :pass
    :format :itf-adr-015
@@ -198,8 +202,8 @@
                            :checkpoint-reopen true
                            :reader-query-bytes :arrow}
   :oscope-durable-integration {:status :pass
-                               :assertions 34
-                               :suite-assertions 190
+                               :assertions 40
+                               :suite-assertions 216
                                :backend :local-posix
                                :provider-reconstructed true
                                :real-loopback-http true
@@ -216,24 +220,43 @@
                                :writer-flush true
                                :reader-recovery true
                                :query-bytes :parquet
+                               :live-owner-rejected true
+                               :forced-takeover true
+                               :stale-token-fenced true
+                               :corrupt-head-before-ingress true
+                               :operator-diagnostics [:lease-held
+                                                      :lease-fenced
+                                                      :corrupt-head
+                                                      :engine-incompatible]
+                               :diagnostics-redacted true
                                :native-mode :qualified-durable-rc
                                :stable-pin-control {:status :integration-skipped
-                                                    :suite-assertions 156}}
+                                                    :suite-assertions 176}}
+  :oscope-process-crash {:status :pass
+                         :standalone-build true
+                         :sigkill-count 2
+                         :http-ack-after-flush true
+                         :ordinary-expiry-takeover true
+                         :forced-takeover false
+                         :recovered-spans 2
+                         :independent-read-only-verifier true}
   :aspect-history {:status :pass
                    :repo "../jolt-aspect-packs"
                    :compiler "5d56b9e5d295fe0968df07e535c45353050611f7"
-                   :provider-assertions 29
+                   :provider-assertions 42
                    :woven-commands 7
                    :woven-effect-subjects 1535
                    :plain-erasure true
                    :privacy-shaped true
+                   :multi-object-partition true
+                   :partition-mutation-controls 2
                    :offline-transition-validation true}
   :oscope-aspect-integration {:status :pass
                               :repo "../oscope"
                               :native-release "26.7.2-rc.2"
-                              :app-assertions 34
-                              :woven-commands 11
-                              :woven-effect-subjects 5607
+                              :app-assertions 40
+                              :woven-commands 19
+                              :woven-effect-subjects 5613
                               :release-build true
                               :offline-transition-validation true}
   :itf-replay {:status :pass
@@ -257,6 +280,7 @@
   "/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:durable-open-test"
   "env JOLT_CHDB_LIB=/tmp/jolt-chdb-durable-script-gate/native/libchdb.so /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:durable-native-test"
   "cd ../oscope && env JOLT_CHDB_LIB=/tmp/jolt-chdb-durable-script-gate/native/libchdb.so /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:test-durable-dev"
+  "cd ../oscope && env JOLT_CHDB_LIB=/tmp/jolt-chdb-durable-script-gate/native/libchdb.so test/durable_crash_reopen.sh"
   "cd ../oscope && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:test-durable-dev"
   "cd ../jolt-aspect-packs && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -M:chdb-durable-test"
   "cd ../jolt-aspect-packs && /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 make JOLT_ASPECT_JOLT=/home/chuck/ai-src/worktrees/jolt-aspects-v083-sync/target/release/jolt chdb-durable-aspect-smoke chdb-durable-plain-smoke"
