@@ -123,8 +123,9 @@ Current executable evidence on Linux ext2/ext3-family storage proves:
 - a multi-buffer file upload/download round trip is byte-exact, reports the
   exact payload count, and creates the download at mode `0600`.
 
-This completes the storage protocol shape, not a Durable-open implementation.
-State-machine integration and real object-storage provider validation remain
-separate slices. The object provider will be tested against a pinned local
-S3-compatible binary or container selected by capability probes, not against
-the in-memory oracle.
+The public `jdbc.chdb.durable/open-writer!` and `open-reader!` APIs now compose
+this storage protocol with native recovery, serialized SQL, lease renewal,
+checkpointing, and cleanup. The POSIX provider is therefore the first usable
+single-host Durable backend. A remote object provider remains a separate slice
+and will be tested against a pinned local S3-compatible binary or container
+selected by capability probes, not against the in-memory oracle.

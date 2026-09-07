@@ -18,7 +18,9 @@
     {:status :precondition-failed}.")
   (replace-if-match! [backend key bytes etag]
     "Atomically replace key only when its opaque ETag still matches, returning
-    {:status :replaced :etag token} or {:status :precondition-failed}.")
+    {:status :replaced :etag token}, {:status :precondition-failed}, or
+    {:status :ambiguous} when a remote provider cannot prove whether its
+    conditional write landed. Callers must reconcile the latter by reread.")
   (download-to-file! [backend key local-path]
     "Stream key into a caller-owned unique local path without overwriting it,
     returning {:status :downloaded :byte-count n}, or {:status :not-found}."))

@@ -77,7 +77,41 @@ provider are documented in
 bounded Chiasmus/Z3 controls and a Hegel stale-ETag property. The local provider
 adds real cross-process exclusion, synced atomic publication, and crash tests;
 it now covers the complete six-operation storage seam, including bounded-memory
-file upload/download, but is not yet a complete Durable-open API.
+file upload/download. The public Durable reader/writer APIs below compose that
+seam; applications select the local provider explicitly with
+`jdbc.chdb.durable.local-posix/local-backend`.
+
+The first state-machine integration slice is documented in
+[`docs/durable-control.md`](docs/durable-control.md). It implements generation
+lease acquisition/takeover, heartbeat, release, stale-writer fencing,
+writer-aware bounded WAL publication, publication-before-head-CAS, and
+reference/sequence-based ambiguous-CAS reconciliation over the backend
+seam. Its Chiasmus models include both a SAT stale-writer mutant and a reachable
+valid path; the focused Hegel state machine exercises the same contract.
+
+`jdbc.chdb.durable/open-writer!` now composes compatibility checks, lease
+acquisition, private scratch creation, verified checkpoint/WAL recovery,
+post-recovery renewal, an independent heartbeat, local-expiry self-fencing,
+and ordered close cleanup. Its returned `jdbc.chdb.durable.writer` owns the
+bounded FIFO and implements classified single-statement query/execute,
+buffered statement WAL, and confirmed flush. This is usable with a core that
+exports the Durable ABI. Its queued checkpoint operation creates a full native
+backup, streams and verifies immutable publication, then atomically replaces
+the base and clears covered WAL. `open-reader!` restores one immutable first
+head snapshot without taking a lease and admits only serialized reads. Both
+paths expose bounded Arrow/Parquet `query-bytes` through the generic export
+SPI. See [`docs/durable-open.md`](docs/durable-open.md)
+and [`docs/durable-writer.md`](docs/durable-writer.md).
+
+Its executable formal companion is the literate specification
+[`formal/quint/durable-head-cas.md`](formal/quint/durable-head-cas.md).
+The Quint model shares one transition engine between the corrected protocol,
+the stale-ownership mutant, and deterministic boundary traces; see the
+specification for its precise six-step scope and evidence limits. The check
+script tangles generated `.qnt` files under `target/formal/quint/` before it
+typechecks, tests, samples, and optionally model-checks them.
+The implementation replay and observation-only aspect contract are
+described in [`docs/durable-trace-validation.md`](docs/durable-trace-validation.md).
 
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:
@@ -212,6 +246,11 @@ jolt -M:abi-test
 bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable-qualification
 jolt -M:durable-head-test
 jolt -M:durable-backend-test
+jolt -M:durable-control-test
+jolt -M:durable-itf-test
+jolt -M:durable-writer-test
+jolt -M:durable-open-test
+scripts/check-durable-head-quint.sh
 jolt -M:durable-local-test
 jolt durable-local-posix-test
 # manual retained-allocation comparison; supply fresh root/output and 1/32 MiB files

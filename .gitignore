@@ -2,3 +2,5 @@
 .cpcache/
 .native/
 *.chdb/
+target/formal/quint/
+_apalache-out/
