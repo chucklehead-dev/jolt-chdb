@@ -5,8 +5,14 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-curl :as s3-curl])
   (:import [java.nio.file Files OpenOption]
-           [java.nio.file.attribute FileAttribute]
+           [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util.concurrent CountDownLatch]))
+
+(def ^:private private-directory-attributes
+  (into-array
+   FileAttribute
+   [(PosixFilePermissions/asFileAttribute
+     (PosixFilePermissions/fromString "rwx------"))]))
 
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
@@ -105,18 +111,17 @@
                  [(get-in (:head committed) ["manifest" "seq"])
                   (count (get-in (:head committed) ["manifest" "wal"]))])))
 
-      (let [source (Files/createTempFile
-                    "jchdb-provider-upload-" ".bin"
-                    (make-array FileAttribute 0))
-            target (Files/createTempFile
-                    "jchdb-provider-download-" ".bin"
-                    (make-array FileAttribute 0))
+      ;; Match real Durable recovery: file destinations live beneath an owned
+      ;; mode-0700 scratch directory, never directly in a shared temp parent.
+      (let [scratch (Files/createTempDirectory
+                     "jchdb-provider-" private-directory-attributes)
+            source (.resolve scratch "upload.bin")
+            target (.resolve scratch "download.bin")
             payload (byte-array (* 2 1024 1024))]
         (try
           (dotimes [i (alength payload)]
             (aset-byte payload i (byte (- (mod i 251) 125))))
           (Files/write source payload (make-array OpenOption 0))
-          (Files/deleteIfExists target)
           (check "file uses real streaming conditional upload"
                  :created
                  (:status (backend/put-file-if-absent!
@@ -130,7 +135,8 @@
                  (java.util.Arrays/equals payload (Files/readAllBytes target)))
           (finally
             (Files/deleteIfExists source)
-            (Files/deleteIfExists target)))))
+            (Files/deleteIfExists target)
+            (Files/deleteIfExists scratch)))))
 
     (when-not (zero? @failures)
       (throw (ex-info (str @failures " provider conformance checks failed")
