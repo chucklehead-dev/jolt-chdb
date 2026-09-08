@@ -74,7 +74,7 @@ the loopback provider, withholds the response past libcurl's deadline, observes
 `CURLE_OPERATION_TIMEDOUT`, and proves that the ordinary Durable ambiguity
 reconciliation can reread, verify, and commit exactly that object. The test
 also loses the acknowledgement after an applied head CAS and proves exact-head
-reconciliation, one manifest advance, later-writer recovery, and stale-owner
+reconciliation, one manifest advance, subsequent-writer handoff, and stale-owner
 fencing. Its negative control times out a head CAS before applying it and
 requires an explicit `commit-ambiguous` result with an unchanged manifest.
 Both paths reuse the native transport afterward and scan captured diagnostics

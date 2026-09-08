@@ -9,6 +9,10 @@
 
 (def failures (atom 0))
 
+(def ^:private timeout-access-key "JOLT-ACCESS-KEY-CANARY-9A4C")
+(def ^:private timeout-secret-key "JOLT-SECRET-KEY-CANARY-72ED")
+(def ^:private timeout-session-token "JOLT-SESSION-TOKEN-CANARY-B813")
+
 (defn- check [label expected actual]
   (if (= expected actual)
     (println "  ok  " label)
@@ -26,9 +30,9 @@
      :bucket "bucket"
      :prefix prefix
      :region "us-east-1"
-     :access-key "ACCESS"
-     :secret-key "PRIVATE-SECRET"
-     :session-token "SESSION"
+     :access-key timeout-access-key
+     :secret-key timeout-secret-key
+     :session-token timeout-session-token
      :max-attempts 1
      :request!
      (fn [request]
@@ -161,7 +165,8 @@
              false
              (leaks-private-data?
               @transport-errors
-              ["PRIVATE-SECRET" endpoint "timeout-after-commit"
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-after-commit" "timeout-recovery"
                (get reference "key")]))
       (check "exactly one native transfer failure required reconciliation"
              1 (count @transport-errors)))
@@ -228,7 +233,8 @@
              false
              (leaks-private-data?
               @transport-errors
-              ["PRIVATE-SECRET" endpoint "timeout-after-cas"
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-after-cas" "head-cas-timeout"
                (get reference "key")]))
       (check "exactly one head-CAS transfer failure required reconciliation"
              1 (count @transport-errors)))
@@ -258,6 +264,12 @@
              [(get-in captured [:data :curl-code])
               (get-in captured [:data :category])
               (get-in captured [:data :definitely-not-sent?])])
+      (check "before-CAS negative control reached its provider fault branch"
+             "request-reached-before-cas"
+             (String.
+              (backend/get-bytes timed-store
+                                 "fixture-timeout-before-cas-hit")
+              "UTF-8"))
       (check "the dropped-CAS transport remains readable without poisoning"
              "head-cas-not-applied"
              (String. (backend/get-bytes timed-store (get reference "key"))
@@ -266,7 +278,8 @@
              false
              (leaks-private-data?
               @transport-errors
-              ["PRIVATE-SECRET" endpoint "timeout-before-cas"
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-before-cas" "head-cas-not-applied"
                (get reference "key")]))
       (check "negative control visits exactly one native timeout"
              1 (count @transport-errors)))

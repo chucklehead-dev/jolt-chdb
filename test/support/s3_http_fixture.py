@@ -24,11 +24,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def authenticated(self):
         authorization = self.headers.get("Authorization", "")
+        known_access_key = (
+            "Credential=ACCESS/" in authorization
+            or "Credential=JOLT-ACCESS-KEY-CANARY-9A4C/" in authorization
+        )
+        known_session_token = self.headers.get("x-amz-security-token") in {
+            "SESSION",
+            "JOLT-SESSION-TOKEN-CANARY-B813",
+        }
         return (
             authorization.startswith("AWS4-HMAC-SHA256 ")
-            and "Credential=ACCESS/" in authorization
+            and known_access_key
             and self.headers.get("x-amz-content-sha256") is not None
-            and self.headers.get("x-amz-security-token") == "SESSION"
+            and known_session_token
         )
 
     def answer(self, status, body=b"", object_etag=None):
@@ -81,6 +89,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # The request reached the provider, but this controlled branch
             # never applies its conditional replacement. Withholding any
             # response still leaves the client with an ambiguous timeout.
+            marker_key = key.rsplit("/", 1)[0] + "/fixture-timeout-before-cas-hit"
+            marker_body = b"request-reached-before-cas"
+            with LOCK:
+                OBJECTS[marker_key] = (marker_body, etag(marker_body))
             time.sleep(0.4)
             self.close_connection = True
             return
