@@ -55,7 +55,7 @@ measure() {
     echo "FAIL $label qualification worker failed" >&2
     return 1
   fi
-  rg -q '^QUALIFICATION ' "$output"
+  grep -q '^QUALIFICATION ' "$output"
 }
 
 max_rss() {
@@ -76,7 +76,7 @@ field() {
   baseline "$endpoint" unused "$scratch_root" >/dev/null
 measure baseline baseline unused
 baseline_rss_kib=$(max_rss "$qualification_root/baseline.time")
-baseline_record=$(rg '^QUALIFICATION ' "$qualification_root/baseline.out")
+baseline_record=$(grep '^QUALIFICATION ' "$qualification_root/baseline.out")
 stream_limit_kib=$((baseline_rss_kib + rss_allowance_kib))
 
 declare -a records=()
@@ -131,8 +131,8 @@ for size_mib in "${sizes_mib[@]}"; do
   if (( stream_rss_kib > stream_max_rss_kib )); then
     stream_max_rss_kib=$stream_rss_kib
   fi
-  records+=("$(rg '^QUALIFICATION ' "$stream_output")")
-  records+=("$(rg '^QUALIFICATION ' "$retained_output")")
+  records+=("$(grep '^QUALIFICATION ' "$stream_output")")
+  records+=("$(grep '^QUALIFICATION ' "$retained_output")")
   records+=("CALIBRATION size_mib=$size_mib stream_max_rss_kib=$stream_rss_kib retained_max_rss_kib=$retained_rss_kib stream_end_live_bytes=$stream_end_live stream_end_reserved_bytes=$stream_end_reserved")
 done
 
