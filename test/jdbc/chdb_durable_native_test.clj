@@ -3,6 +3,7 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.local-posix :as local-posix]
             [jdbc.chdb.native :as native]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
@@ -70,6 +71,72 @@
                 6))
         (finally
           (reader/close! opened))))))
+
+(defn- run-durable-local-recovery-e2e []
+  (println "Durable native local object WAL and checkpoint recovery")
+  (let [root-file (java.io.File/createTempFile "jolt-chdb-recovery-" "")
+        _ (.delete root-file)
+        _ (.mkdirs root-file)
+        namespace (local-posix/local-backend (.getAbsolutePath root-file))
+        object-id "native-recovery"
+        database "数据库-α"]
+    (try
+      (let [opened (durable/open-writer!
+                    {:namespace-backend namespace :object-id object-id
+                     :owner "wal-writer" :instance "wal-instance"
+                     :database database :lease-ttl-ms 30000})]
+        (try
+          (writer/execute!
+           opened
+           "CREATE TABLE `данные` (id UInt32) ENGINE = MergeTree ORDER BY id")
+          (writer/execute! opened "INSERT INTO `данные` VALUES (10)")
+          (check "WAL-only flush commits"
+                 :committed (:status (writer/flush! opened)))
+          (finally
+            (writer/close! opened))))
+      (let [head (:head (control/read-head-read-only!
+                         (backend/object-backend namespace object-id)))]
+        (check "WAL-only head has no base and one ordered WAL"
+               [1 nil 1]
+               [(get-in head ["manifest" "seq"])
+                (get-in head ["manifest" "base"])
+                (count (get-in head ["manifest" "wal"]))]))
+      (let [opened (durable/open-reader!
+                    {:namespace-backend namespace :object-id object-id})]
+        (try
+          (check "fresh reader replays WAL-only mutation"
+                 10 (-> (reader/query! opened "SELECT sum(id) FROM `данные`" [])
+                        :rows first first))
+          (finally
+            (reader/close! opened))))
+      (let [opened (durable/open-writer!
+                    {:namespace-backend namespace :object-id object-id
+                     :owner "checkpoint-writer" :instance "checkpoint-instance"
+                     :database "ignored-for-existing" :lease-ttl-ms 30000})]
+        (try
+          (writer/execute! opened "INSERT INTO `данные` VALUES (20)")
+          (check "checkpoint after WAL commits"
+                 :committed (:status (writer/checkpoint! opened)))
+          (finally
+            (writer/close! opened))))
+      (let [head (:head (control/read-head-read-only!
+                         (backend/object-backend namespace object-id)))]
+        (check "checkpoint folds prior and pending WAL into one base"
+               [2 true [] database]
+               [(get-in head ["manifest" "seq"])
+                (boolean (get-in head ["manifest" "base"]))
+                (get-in head ["manifest" "wal"])
+                (get-in head ["manifest" "db"])]))
+      (let [opened (durable/open-reader!
+                    {:namespace-backend namespace :object-id object-id})]
+        (try
+          (check "fresh reader restores the folded checkpoint"
+                 30 (-> (reader/query! opened "SELECT sum(id) FROM `данные`" [])
+                        :rows first first))
+          (finally
+            (reader/close! opened))))
+      (finally
+        (delete-tree! root-file)))))
 
 (defn- run-analysis-checks [handle]
   (println "Durable native query classification")
@@ -273,6 +340,7 @@
     (check "restore on a closed handle fails without a native call"
            true (boolean (rejected #(native/restore-database! closed "mem" "/tmp/x")))))
   (run-durable-object-e2e)
+  (run-durable-local-recovery-e2e)
   (if (zero? @failures)
     (println "all Durable native checks passed")
     (throw (ex-info (str @failures " Durable native checks failed")
