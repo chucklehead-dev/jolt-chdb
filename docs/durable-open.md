@@ -60,7 +60,9 @@ parser, but values never enter classifier input, errors, traces, or the WAL.
 `jdbc.chdb.durable/flush!` and `checkpoint!` expose these persistence boundaries
 for a Durable `jdbc.core` connection without exposing its native handle. Both
 reject another driver type or a read-only Durable connection at the JDBC
-extension boundary. Oscope uses `checkpoint!` after its sole schema owner has
+extension boundary. `connection-role` provides the corresponding non-publishing
+preflight for integrations that must reject the wrong connection before schema
+mutation. Oscope uses `checkpoint!` after its sole schema owner has
 applied migrations and before ingress, then uses `flush!` before acknowledging
 each accepted OTLP batch.
 

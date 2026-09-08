@@ -388,6 +388,19 @@
                 (try ((:cleanup-scratch! operations) @scratch) (catch Throwable _)))
               (throw primary))))))))
 
+(defn connection-role
+  "Return `:writer` or `:reader` for an open Durable JDBC connection.
+
+  Other driver types and closed connections fail at the JDBC extension
+  boundary. This is a non-publishing capability check for integrations that
+  must reject the wrong connection before performing schema or data writes."
+  [connection]
+  (shim/extension-operation
+   #(let [shim-connection (proto/connection connection)
+          {:keys [handle]}
+          (shim/driver-context shim-connection :chdb-durable)]
+      (if (reader/reader? handle) :reader :writer))))
+
 (defn- jdbc-writer-handle [connection]
   (let [shim-connection (proto/connection connection)
         {:keys [handle]}
