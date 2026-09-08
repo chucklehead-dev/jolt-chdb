@@ -3,6 +3,7 @@ import hashlib
 import http.server
 import sys
 import threading
+import time
 import urllib.parse
 
 
@@ -30,13 +31,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
 
     def answer(self, status, body=b"", object_etag=None):
-        self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
-        if object_etag is not None:
-            self.send_header("ETag", object_etag)
-        self.end_headers()
-        if body:
-            self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            if object_etag is not None:
+                self.send_header("ETag", object_etag)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Timeout tests deliberately close the client side before the
+            # fixture is allowed to acknowledge a committed write.
+            pass
 
     def key(self):
         return urllib.parse.urlsplit(self.path).path
@@ -81,6 +87,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 current_etag = etag(body)
                 OBJECTS[key] = (body, current_etag)
                 status = 200
+        if "/timeout-after-commit/object/wal/" in key and status == 200:
+            # The object is visible before the acknowledgement is withheld.
+            # ThreadingHTTPServer lets the client's reconciliation GET proceed
+            # while this request remains blocked past its libcurl deadline.
+            time.sleep(0.4)
         self.answer(status, object_etag=current_etag)
 
 

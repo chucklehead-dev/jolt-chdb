@@ -1,5 +1,7 @@
 (ns jdbc.chdb-durable-s3-curl-test
-  (:require [jdbc.chdb.durable.backend :as backend]
+  (:require [clojure.string :as str]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-curl :as s3-curl])
   (:import [java.nio.file Files OpenOption StandardOpenOption]
@@ -16,6 +18,17 @@
 
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
+
+(def acquisition-options
+  {:owner "writer-timeout"
+   :instance "instance-timeout"
+   :expires-at 200M
+   :now 100M
+   :clock-skew 5M
+   :database "default"
+   :engine-version "26.7.2-rc.2"
+   :backup-format 1
+   :min-reader "26.7.2-rc.2"})
 
 (defn -main [endpoint]
   (reset! failures 0)
@@ -80,6 +93,70 @@
                        store "head.json" first-bytes etag))))
     (check "replaced bytes remain exact"
            "second" (String. (backend/get-bytes store "head.json") "UTF-8"))
+    (let [transport-errors (atom [])
+          timed-namespace
+          (s3/s3-backend
+           {:endpoint endpoint
+            :bucket "bucket"
+            :prefix "timeout-after-commit"
+            :region "us-east-1"
+            :access-key "ACCESS"
+            :secret-key "PRIVATE-SECRET"
+            :session-token "SESSION"
+            :max-attempts 1
+            :request!
+            (fn [request]
+              (try
+                (s3-curl/request!
+                 (assoc request
+                        :connect-timeout-ms 2000
+                        :timeout-ms 100))
+                (catch Throwable error
+                  (swap! transport-errors conj
+                         {:message (.getMessage error)
+                          :data (ex-data error)})
+                  (throw error))))})
+          timed-store (backend/object-backend timed-namespace "object")
+          token (:token (control/acquire! timed-store acquisition-options))
+          wal-bytes (.getBytes "timeout-recovery" "UTF-8")
+          started (System/nanoTime)
+          publication (control/publish-wal-bytes!
+                       timed-store token wal-bytes)
+          elapsed-ms (/ (- (System/nanoTime) started) 1000000.0)
+          reference (:reference publication)
+          committed (control/commit-reference!
+                     timed-store token
+                     {:kind :wal
+                      :reference reference
+                      :verify-reference! control/verify-byte-reference!})
+          captured (first @transport-errors)
+          rendered (pr-str @transport-errors)]
+      (check "real libcurl timeout after immutable create is observed"
+             [28 :transport false]
+             [(get-in captured [:data :curl-code])
+              (get-in captured [:data :category])
+              (get-in captured [:data :definitely-not-sent?])])
+      (check "ambiguous immutable create reconciles through an exact reread"
+             :reconciled (:status publication))
+      (check "reconciled transport state remains usable for head commit"
+             [:committed 1 [reference]]
+             [(:status committed)
+              (get-in (:head committed) ["manifest" "seq"])
+              (get-in (:head committed) ["manifest" "wal"])])
+      (check "post-timeout read returns the exact immutable payload"
+             "timeout-recovery"
+             (String. (backend/get-bytes timed-store (get reference "key"))
+                      "UTF-8"))
+      (check "timeout and reconciliation complete within a bounded interval"
+             true (< elapsed-ms 3000.0))
+      (check "native timeout diagnostics retain no credential, URL, or key"
+             false
+             (boolean
+              (some #(str/includes? rendered %)
+                    ["PRIVATE-SECRET" endpoint "timeout-after-commit"
+                     (get reference "key")])))
+      (check "exactly one native transfer failure required reconciliation"
+             1 (count @transport-errors)))
     (let [source (Files/createTempFile
                   "jchdb-curl-upload-" ".bin" (make-array FileAttribute 0))
           target (Files/createTempFile
