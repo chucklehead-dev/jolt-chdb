@@ -39,7 +39,9 @@ permissions:
 jobs:
   literate-model:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Apalache's bounded checks are deliberately exhaustive and the corrected
+    # invariants alone can take more than 25 minutes on a hosted runner.
+    timeout-minutes: 90
     env:
       JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.3
       JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
