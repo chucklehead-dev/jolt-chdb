@@ -7,12 +7,12 @@
   the returned opaque ETag exactly once."
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.head :as head])
-  (:import [java.io FileInputStream]
-           [java.nio.file Files Path Paths]
+  (:import [java.nio.file Files Path Paths]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.security MessageDigest]
-           [java.util Arrays UUID]))
+           [java.util UUID]))
 
 (def head-key "head.json")
 
@@ -303,19 +303,6 @@
          (map byte->hex
               (.digest (MessageDigest/getInstance "SHA-256") bytes))))
 
-(defn- sha256-file [path]
-  (let [digest (MessageDigest/getInstance "SHA-256")
-        buffer (byte-array 65536)]
-    (with-open [input (FileInputStream. (.toFile ^Path path))]
-      (loop []
-        (let [n (.read input buffer)]
-          (when (pos? n)
-            (.update digest (if (= n (alength buffer))
-                              buffer
-                              (Arrays/copyOf buffer n)))
-            (recur)))))
-    (apply str (map byte->hex (.digest digest)))))
-
 (def ^:private private-directory-attributes
   (into-array
    FileAttribute
@@ -448,7 +435,7 @@
                             :integrity)}))
         (when-not (and (= (get reference "size") (:byte-count result))
                        (= (get reference "size") (Files/size path))
-                       (= (get reference "sha256") (sha256-file path)))
+                       (= (get reference "sha256") (digest/sha256-file path)))
           (fail! ::object-unverified
                  "The immutable Durable file object could not be verified"
                  {:reason :integrity}))
@@ -476,7 +463,7 @@
       (let [reference {"key" (str "checkpoints/" generation "-" sequence "-"
                                    (unique-object-token) ".tar.gz")
                        "size" (Files/size path)
-                       "sha256" (sha256-file path)}
+                       "sha256" (digest/sha256-file path)}
             result (backend/put-file-if-absent!
                     store (get reference "key") path)]
         {:status (reconcile-publication!

@@ -51,7 +51,12 @@ credential option, signs an optional `x-amz-security-token`, retains only the
 response ETag, and never includes credential-bearing curl messages in public
 exceptions. `:connect-timeout-ms` defaults to 10000, `:timeout-ms` to 300000,
 and bounded byte responses default to 128 MiB via `:max-response-bytes`.
-Checkpoint file transfers are streamed without payload-sized buffering.
+Checkpoint file bodies stay in native stdio: libcurl's default `fread` and
+`fwrite` callbacks receive private `FILE*` handles instead of copying every
+chunk through a managed callback. Checkpoint SHA-256 uses an incremental
+OpenSSL EVP context on Jolt. This is required because the compatibility
+`MessageDigest.update` contract snapshots caller bytes until `digest`; using it
+for a file loop would retain and later concatenate the whole checkpoint.
 
 The checked-in semantic transport test is deliberately adversarial: it checks
 conditional headers, opaque ETags, retry bounds, credential redaction,
@@ -66,6 +71,26 @@ jolt -M:durable-s3-test
 bash test/durable-s3-curl.sh jolt
 bash test/durable-s3-minio.sh jolt
 ```
+
+Linux maintainers can run the bounded-memory qualification through the pinned
+Jolt toolchain wrapper:
+
+```sh
+bash test/durable-large-checkpoint.sh \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1
+```
+
+It runs fresh isolated processes over deterministic 32, 64, and 128 MiB files.
+Each production sample must visit one file upload and three file downloads
+(post-create verification, pre-CAS verification, and read-only recovery), and
+the disk-backed fixture moves at most 64 KiB per read/write. The gate records
+GNU `time -v` peak RSS plus collected Jolt live/reserved heap at start and end;
+`bytes-allocated` is treated as live heap, never as a cumulative counter. Peak
+RSS must stay within baseline plus a fixed 96 MiB and plateau within 64 MiB
+across the three sizes; collected live heap may grow by at most 16 MiB. A
+separate `Files/readAllBytes` process must grow both collected live heap and
+peak RSS with at least three quarters of the file size, proving that the
+measurement would detect payload retention.
 
 The loopback transport gate verifies real libcurl signing, upload and download
 callbacks, conditional headers, opaque ETags, response bodies, and failed-file
@@ -84,10 +109,12 @@ The MinIO gate is pinned to image digest
 `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`
 (`RELEASE.2025-09-07T16-13-09Z`) and checks real service authentication,
 concurrent conditional creators, stale ETags, lease contention, verified WAL
-commit, and streaming file transfer. This slice does **not** yet claim complete
+commit, and streaming file transfer. The Linux workflow also runs the
+isolated-process large-checkpoint memory gate described above. This slice does
+**not** yet claim complete
 production S3 qualification: additional real-transport timeout boundaries, a
-broader corrupt/partial-download matrix, large-checkpoint memory evidence, and
-additional compatible-service coverage remain. The current real-transport
+broader corrupt/partial-download matrix, and additional compatible-service
+coverage remain. The current real-transport
 faults cover timeout after immutable-object commit plus before and after head
 CAS. Additional connect, partial-request, and live-service failure cuts remain.
 

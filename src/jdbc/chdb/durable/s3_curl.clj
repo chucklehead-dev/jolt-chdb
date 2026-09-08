@@ -4,7 +4,7 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
-           [java.nio.file Files OpenOption StandardOpenOption]))
+           [java.nio.file Files]))
 
 ;; These values are the public ABI from curl 7.75+ (the first release with
 ;; CURLOPT_AWS_SIGV4). Keep the option kind in the binding used below: libcurl's
@@ -50,6 +50,8 @@
   "curl_slist_append" [:pointer :string] :pointer)
 (ffi/defcfn curl-slist-free-all
   "curl_slist_free_all" [:pointer] :void)
+(ffi/defcfn c-fopen "fopen" [:string :string] :pointer)
+(ffi/defcfn c-fclose "fclose" [:pointer] :int)
 
 (def ^:private initialized
   (delay
@@ -111,7 +113,7 @@
 (defn- response-writer [response-body max-response-bytes]
   (cond
     (nil? response-body)
-    {:write! (fn [_] nil)
+    {:write-pointer! (fn [_ _] nil)
      :result (fn [] {})
      :close! (fn [] nil)
      :cleanup! (fn [] nil)}
@@ -120,12 +122,13 @@
     (let [output (ByteArrayOutputStream.)
           count (atom 0)]
       {:output output
-       :write! (fn [bytes]
-                 (let [new-count (+ @count (alength bytes))]
+       :write-pointer! (fn [pointer n]
+                 (let [new-count (+ @count n)]
                    (when (> new-count max-response-bytes)
                      (throw (ex-info "S3 byte response exceeded its bound" {})))
-                   (.write output bytes 0 (alength bytes))
-                   (reset! count new-count)))
+                   (let [bytes (ffi/read-array pointer n)]
+                     (.write output bytes 0 (alength bytes))
+                     (reset! count new-count))))
        :result (fn [] {:body (.toByteArray output)})
        :close! (fn [] nil)
        :cleanup! (fn [] nil)})
@@ -134,22 +137,32 @@
     (let [{:keys [file create-new?]} response-body]
       (when-not (and file create-new?)
         (transport-failure! "invalid libcurl response destination" true))
-      (let [output (try
-                     (Files/newOutputStream
-                      file
-                      (into-array OpenOption
-                                  [StandardOpenOption/CREATE_NEW
-                                   StandardOpenOption/WRITE]))
-                     (catch Throwable _
+      (let [stream
+            (try
+              ;; Preserve CREATE_NEW before handing the already-private scratch
+              ;; path to stdio. Libcurl's default write callback is fwrite, so
+              ;; checkpoint bytes never cross into a managed callback buffer.
+              (Files/createFile file
+                                (make-array java.nio.file.attribute.FileAttribute 0))
+              (let [stream (c-fopen (str file) "wb")]
+                (when (ffi/null? stream)
+                  (transport-failure!
+                   "S3 response destination could not be opened" true))
+                stream)
+              (catch Throwable error
+                (Files/deleteIfExists file)
+                (if (:category (ex-data error))
+                  (throw error)
+                  (transport-failure!
+                   "S3 response destination could not be created" true))))
+            closed? (atom false)]
+        {:write-data stream
+         :result (fn [] {:byte-count (Files/size file)})
+         :close! (fn []
+                   (when (compare-and-set! closed? false true)
+                     (when-not (zero? (c-fclose stream))
                        (transport-failure!
-                        "S3 response destination could not be created" true)))
-            count (atom 0)]
-        {:output output
-         :write! (fn [bytes]
-                   (.write output bytes 0 (alength bytes))
-                   (swap! count + (alength bytes)))
-         :result (fn [] {:byte-count @count})
-         :close! (fn [] (.close output))
+                        "S3 response destination could not be closed" false))))
          :cleanup! (fn [] (Files/deleteIfExists file))}))))
 
 (defn- request-reader [request-body]
@@ -157,17 +170,32 @@
     (let [{:keys [bytes file byte-count]} request-body]
       (when-not (and (integer? byte-count) (not (neg? byte-count)))
         (transport-failure! "invalid libcurl request body length" true))
-      (let [input (try
-                    (cond
-                      (bytes? bytes) (ByteArrayInputStream. bytes)
-                      file (Files/newInputStream
-                            file (make-array OpenOption 0))
-                      :else (transport-failure!
-                             "invalid libcurl request body" true))
-                    (catch Throwable _
-                      (transport-failure!
-                       "S3 request source could not be opened" true)))]
-        {:input input :byte-count byte-count :close! (fn [] (.close input))}))))
+      (try
+        (cond
+          (bytes? bytes)
+          (let [input (ByteArrayInputStream. bytes)]
+            {:input input :byte-count byte-count
+             :close! (fn [] (.close input))})
+
+          file
+          (let [stream (c-fopen (str file) "rb")
+                closed? (atom false)]
+            (when (ffi/null? stream)
+              (transport-failure! "S3 request source could not be opened" true))
+            ;; Libcurl's default read callback is fread. Keeping the FILE* on
+            ;; the native side avoids one managed allocation per upload chunk.
+            {:read-data stream :byte-count byte-count
+             :close! (fn []
+                       (when (compare-and-set! closed? false true)
+                         (c-fclose stream)))})
+
+          :else
+          (transport-failure! "invalid libcurl request body" true))
+        (catch Throwable error
+          (if (:category (ex-data error))
+            (throw error)
+            (transport-failure!
+             "S3 request source could not be opened" true)))))))
 
 (defn- parse-header! [headers bytes]
   (let [line (str/trim (String. bytes "ISO-8859-1"))
@@ -246,7 +274,7 @@
                    (fn [pointer size nitems _]
                      (let [n (callback-size size nitems)]
                        (try
-                         ((:write! response-sink) (ffi/read-array pointer n))
+                         ((:write-pointer! response-sink) pointer n)
                          n
                          (catch Throwable error
                            (reset! callback-error error)
@@ -274,9 +302,12 @@
               (set-long! handle curlopt-connecttimeout-ms
                          connect-timeout-ms :connect-timeout)
               (set-long! handle curlopt-timeout-ms timeout-ms :timeout)
-              (set-pointer! handle curlopt-writedata ffi/null :write-data)
-              (set-pointer! handle curlopt-writefunction
-                            write-callback :write-callback)
+              (if-let [write-data (:write-data response-sink)]
+                (set-pointer! handle curlopt-writedata write-data :write-data)
+                (do
+                  (set-pointer! handle curlopt-writedata ffi/null :write-data)
+                  (set-pointer! handle curlopt-writefunction
+                                write-callback :write-callback)))
               (set-pointer! handle curlopt-headerdata ffi/null :header-data)
               (set-pointer! handle curlopt-headerfunction
                             header-callback :header-callback)
@@ -288,9 +319,12 @@
                   (transport-failure! "PUT request omitted its body" true))
                 (set-long! handle curlopt-upload 1 :upload)
                 (set-string! handle curlopt-customrequest "PUT" :method)
-                (set-pointer! handle curlopt-readdata ffi/null :read-data)
-                (set-pointer! handle curlopt-readfunction
-                              read-callback :read-callback)
+                (if-let [read-data (:read-data request-source)]
+                  (set-pointer! handle curlopt-readdata read-data :read-data)
+                  (do
+                    (set-pointer! handle curlopt-readdata ffi/null :read-data)
+                    (set-pointer! handle curlopt-readfunction
+                                  read-callback :read-callback)))
                 (set-off-t! handle curlopt-infilesize-large
                             (:byte-count request-source) :content-length))
               (let [perform-code (curl-easy-perform handle)]

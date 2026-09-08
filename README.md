@@ -262,6 +262,9 @@ jolt -M:durable-open-test
 scripts/check-durable-head-quint.sh
 jolt -M:durable-local-test
 jolt durable-local-posix-test
+# Linux isolated-process checkpoint RSS, live-heap, and retention-control gate
+bash test/durable-large-checkpoint.sh \
+  /home/chuck/ai-src/tools/jolt-with-chez-10.4.1
 # manual retained-allocation comparison; supply fresh root/output and 1/32 MiB files
 jolt -M:durable-file-allocation <root> <output> <small-file> <large-file>
 jolt -M:test
