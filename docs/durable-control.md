@@ -14,8 +14,9 @@ implements:
 
 The normative source is chDB commit
 `db10b548a3e1e21e51c213baf863cb1050963d9c`,
-`docs/durable/protocol-v1.mdx#state-machine`. This is one bounded control-plane
-milestone, not a complete Durable-open API or a conformance claim.
+`docs/durable/protocol-v1.mdx#state-machine`. This control layer is composed by
+the public Durable reader/writer API; its formal bounds are narrower than that
+complete runtime path and are described below.
 
 ## Ownership and time
 
@@ -29,7 +30,8 @@ Normal takeover becomes eligible only when
 `now >= expires_at + clock_skew`. Explicit force can take over an unexpired
 lease. A new lease expiry must be later than the acquisition time, and a
 heartbeat must strictly extend the existing expiry. Scheduling heartbeats at no
-more than one third of the TTL belongs to the later operation-worker slice.
+more than one third of the TTL is owned by the public writer's independent
+heartbeat worker.
 
 All desired heads are encoded and decoded before CAS. That is a correctness
 boundary, not cosmetic normalization: JSON may serialize an integral decimal
@@ -112,12 +114,14 @@ The literate executable companion in `formal/quint/` expresses the same bounded
 corrected, mutant, and boundary shapes as a Quint state machine.
 Its fast gate typechecks both modules, runs deterministic traces, and samples
 10,000 six-step executions while requiring every major action witness to be
-nonzero. The checked-in evidence record distinguishes sampled results from the
-critical invariant's bounded Apalache result and records a combined-invariant
-`UNKNOWN` as tool-blocked rather than proof.
+nonzero. The checked-in
+[evidence record](../formal/quint/evidence/2026-09-06.edn) distinguishes those
+sampled results from separate bounded Apalache results for each named invariant.
+A solver `UNKNOWN`, interrupted run, or timeout is not recorded as proof.
 It additionally checks that a committed reference never names a future lease
-generation, exactly matches manifest sequence, and that each exact transition
-refines the content-level view. Independent generation- and sequence-mismatch
+generation, exactly matches manifest sequence, and that publication satisfies
+both full attempt-bearing and attempt-erased checks. Commit validity separately
+checks its content projection. Independent generation- and sequence-mismatch
 mutants are required to fail those checks.
 
 The checked ADR-015 trace is replayed against this namespace with
@@ -135,9 +139,9 @@ valid commits, and stale attempts. Its explicit event model checks monotonic
 generation/sequence, publication before commit, and no head change after a
 stale attempt.
 
-`jdbc.chdb.durable.writer` now supplies the serialized operation worker,
-statement buffering and limits, confirmed WAL flush, and ordered close cleanup
-for an already-acquired, already-recovered handle. Still outside the composed
-Durable `open!`: compatibility gates, scratch restore/replay, heartbeat
-scheduling and self-fencing, streaming checkpoint publication/hashing, bounded
-persistence retry, and open-failure cleanup.
+`jdbc.chdb.durable.writer` supplies the serialized operation worker, statement
+buffering and limits, confirmed WAL flush, checkpoint publication, heartbeat,
+and ordered close cleanup. `jdbc.chdb.durable/open-writer!` composes that worker
+with compatibility gates, scratch restore/replay, lease acquisition and
+self-fencing, and open-failure cleanup. See [Durable storage](durable.md) for
+the current end-to-end status and remaining qualification work.

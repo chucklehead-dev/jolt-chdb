@@ -59,14 +59,9 @@ streaming descriptors, sibling scoping, timeout-after-object-create
 reconciliation, and timeout-after-head-CAS reconciliation.
 
 ```sh
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-s3-test
-
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  bash test/durable-s3-curl.sh jolt
-
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  bash test/durable-s3-minio.sh jolt
+jolt -M:durable-s3-test
+bash test/durable-s3-curl.sh jolt
+bash test/durable-s3-minio.sh jolt
 ```
 
 The loopback transport gate verifies real libcurl signing, upload and download

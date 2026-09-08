@@ -56,71 +56,68 @@ Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 path may be active in a process at once, although multiple connections to that
 same path are supported.
 
-The source also carries a versioned descriptor for the Durable V1 C ABI first
-published by chDB core 26.7.2-rc.2. The stable 26.7.0 production pin does not
-export that surface: `jdbc.chdb.native/durable-capability` reports a typed,
-structured unsupported result while ordinary JDBC remains available. The
-production pin will move only after upstream publishes a stable release with
-the required symbols. See [`docs/durable-abi.md`](docs/durable-abi.md) for exact
-provenance.
+## Durable storage (experimental)
 
-The first runtime-neutral control-plane component is the strict Durable V1
-`head.json` codec in `jdbc.chdb.durable.head`. It preserves unknown fields,
-separates read-only from writer feature compatibility, and validates immutable
-reference integrity metadata before later backend or engine work. It is a
-foundation, not a Durable-open API or conformance claim. See
-[`docs/durable-head.md`](docs/durable-head.md).
+Durable mode stores a database checkpoint and later statement WAL segments in
+an object namespace. A small `head.json` manifest chooses the current objects
+with an atomic compare-and-swap. This lets a new process recover committed
+writes instead of relying on one chDB data directory surviving intact.
 
-The backend seam, in-memory atomic-CAS semantic oracle, and first local POSIX
-provider are documented in
-[`docs/durable-backend.md`](docs/durable-backend.md). The oracle is paired with
-bounded Chiasmus/Z3 controls and a Hegel stale-ETag property. The local provider
-adds real cross-process exclusion, synced atomic publication, and crash tests;
-it now covers the complete six-operation storage seam, including bounded-memory
-file upload/download. The public Durable reader/writer APIs below compose that
-seam; applications select the local provider explicitly with
-`jdbc.chdb.durable.local-posix/local-backend`, then pass it as
-`:namespace-backend` together with one safe `:object-id`. Advanced callers may
-still pass an already object-scoped `:store` directly.
+The reader, single-writer lease, WAL flush, checkpoint, recovery, local POSIX
+backend, and S3-compatible backend are implemented. The local backend has
+cross-process and native WAL/checkpoint recovery tests on Linux. The S3 backend
+has protocol, libcurl, and pinned-MinIO tests. Durable is still experimental:
+the stable 26.7.0 library installed by `-M:setup-native` does not expose the
+required ABI, hosted native qualification covers only Linux x86-64, and real
+AWS plus a broader crash/corruption and platform matrix remain unfinished.
 
-The first state-machine integration slice is documented in
-[`docs/durable-control.md`](docs/durable-control.md). It implements generation
-lease acquisition/takeover, heartbeat, release, stale-writer fencing,
-writer-aware bounded WAL publication, publication-before-head-CAS, and
-reference/sequence-based ambiguous-CAS reconciliation over the backend
-seam. Its Chiasmus models include both a SAT stale-writer mutant and a reachable
-valid path; the focused Hegel state machine exercises the same contract.
+Choose Durable now when you can pin and qualify chDB 26.7.2-rc.2 yourself and
+want to evaluate explicit persistence boundaries on one POSIX host or an
+S3-compatible test deployment. Do not choose it yet when you need a stable
+native dependency, broad platform/provider qualification, parameterized or
+streaming mutations, or a production-ready remote durability claim.
 
-`jdbc.chdb.durable/open-writer!` now composes compatibility checks, lease
-acquisition, private scratch creation, verified checkpoint/WAL recovery,
-post-recovery renewal, an independent heartbeat, local-expiry self-fencing,
-and ordered close cleanup. Its returned `jdbc.chdb.durable.writer` owns the
-bounded FIFO and implements classified single-statement query/execute,
-buffered statement WAL, and confirmed flush. This is usable with a core that
-exports the Durable ABI. Its queued checkpoint operation creates a full native
-backup, streams and verifies immutable publication, then atomically replaces
-the base and clears covered WAL. `open-reader!` restores one immutable first
-head snapshot without taking a lease and admits only serialized reads. Both
-paths expose bounded Arrow/Parquet `query-bytes` through the generic export
-SPI. See [`docs/durable-open.md`](docs/durable-open.md)
-and [`docs/durable-writer.md`](docs/durable-writer.md).
+To try the local backend, first point `JOLT_CHDB_LIB` at a qualified
+26.7.2-rc.2 library. The qualification script downloads the checksum-pinned
+asset and runs the upstream C oracle plus the Jolt native suite:
 
-The S3-compatible namespace backend semantics, atomic preconditions, retry and
-error mapping, and streaming transport contract are documented in
-[`docs/durable-s3.md`](docs/durable-s3.md). Its Jolt-native default libcurl
-SigV4 transport has loopback and pinned-MinIO integration gates; real AWS and
-large-transfer qualification are still pending, so this is not yet a complete
-production S3 conformance claim.
+```sh
+bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable
+export JOLT_CHDB_LIB=/tmp/jolt-chdb-durable/native/libchdb.so
+```
 
-Its executable formal companion is the literate specification
-[`formal/quint/durable-head-cas.md`](formal/quint/durable-head-cas.md).
-The Quint model shares one transition engine between the corrected protocol,
-the stale-ownership mutant, and deterministic boundary traces; see the
-specification for its precise six-step scope and evidence limits. The check
-script tangles generated `.qnt` files under `target/formal/quint/` before it
-typechecks, tests, samples, and optionally model-checks them.
-The implementation replay and observation-only aspect contract are
-described in [`docs/durable-trace-validation.md`](docs/durable-trace-validation.md).
+Then select the Durable JDBC driver and give the namespace a separate object
+ID. `:owner` identifies the service; `:instance` must identify this particular
+process or writer attempt.
+
+```clojure
+(require '[jdbc.chdb.durable :as durable]
+         '[jdbc.chdb.durable.local-posix :as durable-local]
+         '[jdbc.core :as jdbc])
+
+(def storage (durable-local/local-backend "/var/lib/my-app/chdb-objects"))
+
+(with-open [conn (jdbc/connection
+                  {:vendor "chdb-durable"
+                   :namespace-backend storage
+                   :object-id "primary"
+                   :owner "my-app"
+                   :instance (str (java.util.UUID/randomUUID))
+                   :database "default"})]
+  (jdbc/execute! conn "INSERT INTO events VALUES (1, 'accepted')")
+  ;; Do this before acknowledging the write to another system.
+  (durable/flush! conn))
+```
+
+Mutations are durable only after `flush!`, `checkpoint!`, or a successful close
+has committed the new manifest. Read-only opens use the same backend and object
+ID with `:read-only? true`; they restore one fixed manifest snapshot and do not
+take the writer lease.
+
+See [Durable storage](docs/durable.md) for configuration, recovery and
+acknowledgement behavior, provider status, and the modeling/testing method.
+The lower-level ABI, head, backend, control, writer, open/recovery, S3, and trace
+documents are linked from that guide.
 
 A map dbspec can select an isolated logical ClickHouse database while sharing
 that physical path:

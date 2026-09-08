@@ -49,11 +49,11 @@ mutations must be fully materialized strings rather than parameter vectors or
 streaming inserts. Read queries and `query-bytes` retain native bound
 parameters because they never enter the WAL.
 
-Run the focused gate through the workspace's pinned Chez wrapper:
+Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
+workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 
 ```sh
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-writer-test
+jolt -M:durable-writer-test
 ```
 
 The deterministic suite covers queue ordering, admission-before-execution,
