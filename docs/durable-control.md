@@ -14,8 +14,9 @@ implements:
 
 The normative source is chDB commit
 `db10b548a3e1e21e51c213baf863cb1050963d9c`,
-`docs/durable/protocol-v1.mdx#state-machine`. This is one bounded control-plane
-milestone, not a complete Durable-open API or a conformance claim.
+`docs/durable/protocol-v1.mdx#state-machine`. This control layer is composed by
+the public Durable reader/writer API; its formal bounds are narrower than that
+complete runtime path and are described below.
 
 ## Ownership and time
 
@@ -29,7 +30,8 @@ Normal takeover becomes eligible only when
 `now >= expires_at + clock_skew`. Explicit force can take over an unexpired
 lease. A new lease expiry must be later than the acquisition time, and a
 heartbeat must strictly extend the existing expiry. Scheduling heartbeats at no
-more than one third of the TTL belongs to the later operation-worker slice.
+more than one third of the TTL is owned by the public writer's independent
+heartbeat worker.
 
 All desired heads are encoded and decoded before CAS. That is a correctness
 boundary, not cosmetic normalization: JSON may serialize an integral decimal
@@ -135,9 +137,9 @@ valid commits, and stale attempts. Its explicit event model checks monotonic
 generation/sequence, publication before commit, and no head change after a
 stale attempt.
 
-`jdbc.chdb.durable.writer` now supplies the serialized operation worker,
-statement buffering and limits, confirmed WAL flush, and ordered close cleanup
-for an already-acquired, already-recovered handle. Still outside the composed
-Durable `open!`: compatibility gates, scratch restore/replay, heartbeat
-scheduling and self-fencing, streaming checkpoint publication/hashing, bounded
-persistence retry, and open-failure cleanup.
+`jdbc.chdb.durable.writer` supplies the serialized operation worker, statement
+buffering and limits, confirmed WAL flush, checkpoint publication, heartbeat,
+and ordered close cleanup. `jdbc.chdb.durable/open-writer!` composes that worker
+with compatibility gates, scratch restore/replay, lease acquisition and
+self-fencing, and open-failure cleanup. See [Durable storage](durable.md) for
+the current end-to-end status and remaining qualification work.

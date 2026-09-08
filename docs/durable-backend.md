@@ -132,6 +132,7 @@ Current executable evidence on Linux ext2/ext3-family storage proves:
 The public `jdbc.chdb.durable/open-writer!` and `open-reader!` APIs now compose
 this storage protocol with native recovery, serialized SQL, lease renewal,
 checkpointing, and cleanup. The POSIX provider is therefore the first usable
-single-host Durable backend. A remote object provider remains a separate slice
-and will be tested against a pinned local S3-compatible binary or container
-selected by capability probes, not against the in-memory oracle.
+single-host Durable backend. The remote S3-compatible provider is implemented
+separately and tested against semantic and loopback transports plus pinned
+MinIO; real-provider qualification remains pending. See
+[Durable storage](durable.md) for the current provider matrix.
