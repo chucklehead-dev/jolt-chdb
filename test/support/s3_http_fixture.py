@@ -8,6 +8,7 @@ import urllib.parse
 
 
 OBJECTS = {}
+AFTER_CAS_TIMEOUTS = set()
 LOCK = threading.Lock()
 
 
@@ -73,6 +74,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
+        if (
+            "/timeout-before-cas/object/head.json" in key
+            and self.headers.get("If-Match") is not None
+        ):
+            # The request reached the provider, but this controlled branch
+            # never applies its conditional replacement. Withholding any
+            # response still leaves the client with an ambiguous timeout.
+            time.sleep(0.4)
+            self.close_connection = True
+            return
+        delay_after_cas = False
         with LOCK:
             current = OBJECTS.get(key)
             if self.headers.get("If-None-Match") == "*" and current is not None:
@@ -87,10 +99,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 current_etag = etag(body)
                 OBJECTS[key] = (body, current_etag)
                 status = 200
+                if (
+                    "/timeout-after-cas/object/head.json" in key
+                    and self.headers.get("If-Match") is not None
+                    and key not in AFTER_CAS_TIMEOUTS
+                ):
+                    AFTER_CAS_TIMEOUTS.add(key)
+                    delay_after_cas = True
         if "/timeout-after-commit/object/wal/" in key and status == 200:
             # The object is visible before the acknowledgement is withheld.
             # ThreadingHTTPServer lets the client's reconciliation GET proceed
             # while this request remains blocked past its libcurl deadline.
+            time.sleep(0.4)
+        if delay_after_cas:
+            # The matching replacement and its new ETag are already visible;
+            # only the acknowledgement is lost, and only once for this head.
             time.sleep(0.4)
         self.answer(status, object_etag=current_etag)
 

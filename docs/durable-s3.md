@@ -73,21 +73,26 @@ cleanup, including a truncated response. It also commits an immutable WAL in
 the loopback provider, withholds the response past libcurl's deadline, observes
 `CURLE_OPERATION_TIMEDOUT`, and proves that the ordinary Durable ambiguity
 reconciliation can reread, verify, and commit exactly that object. The test
-then reads the object again through the same transport and scans captured
-diagnostics for credential, endpoint, prefix, and object-key canaries. The
-MinIO gate is pinned to image
-digest `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`
+also loses the acknowledgement after an applied head CAS and proves exact-head
+reconciliation, one manifest advance, later-writer recovery, and stale-owner
+fencing. Its negative control times out a head CAS before applying it and
+requires an explicit `commit-ambiguous` result with an unchanged manifest.
+Both paths reuse the native transport afterward and scan captured diagnostics
+for credential, endpoint, prefix, and object-key canaries.
+
+The MinIO gate is pinned to image digest
+`sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`
 (`RELEASE.2025-09-07T16-13-09Z`) and checks real service authentication,
 concurrent conditional creators, stale ETags, lease contention, verified WAL
 commit, and streaming file transfer. This slice does **not** yet claim complete
 production S3 qualification: additional real-transport timeout boundaries, a
 broader corrupt/partial-download matrix, large-checkpoint memory evidence, and
 additional compatible-service coverage remain. The current real-transport
-fault covers timeout after immutable-object commit; timeout before commit and
-timeout after head CAS remain separate qualification cuts.
+faults cover timeout after immutable-object commit plus before and after head
+CAS. Additional connect, partial-request, and live-service failure cuts remain.
 
-The service principal needs
-object read and conditional write permission for the configured bucket/prefix;
+The service principal needs object read and conditional write permission for
+the configured bucket/prefix;
 listing and deletion are not part of Durable V1.
 
 ## AWS OIDC qualification
