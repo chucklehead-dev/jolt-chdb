@@ -379,8 +379,8 @@
            :phase (if (:thrown? result) :throw :return)
            :value {:outcome (:outcome result) :head head}})))
 
-(defn- seed-state []
-  (let [store (backend/memory-backend)
+(defn- seed-state [fresh-store]
+  (let [store (fresh-store)
         acquired (control/acquire!
                   store
                   (assoc base-options
@@ -391,11 +391,11 @@
      :attempt->physical {} :physical->attempt {}
      :events []}))
 
-(defn- replay-trace! [trace]
+(defn- replay-trace! [trace fresh-store]
   (let [model-var (one-model-var trace)
         states (get trace "states")
         initial-model (get (first states) model-var)
-        initial-state (seed-state)]
+        initial-state (seed-state fresh-store)]
     (when (get trace "loop")
       (fail! "lasso ITF traces are not replayable by this finite driver"
              {:loop (get trace "loop")}))
@@ -441,8 +441,11 @@
        :journal (:events final)
        :head (actual-head final)})))
 
-(defn replay! [path]
-  (replay-trace! (read-trace path)))
+(defn replay!
+  ([path]
+   (replay! path backend/memory-backend))
+  ([path fresh-store]
+   (replay-trace! (read-trace path) fresh-store)))
 
 (defn- rejected? [f]
   (try (f) false (catch Throwable _ true)))
@@ -451,7 +454,8 @@
   (println "Durable Quint ITF implementation replay")
   (let [trace (read-trace fixture-path)
         model-var (one-model-var trace)
-        result (replay-trace! trace)
+        fresh-store backend/memory-backend
+        result (replay-trace! trace fresh-store)
         publish-state-indexes
         (vec
          (keep-indexed
@@ -463,7 +467,7 @@
     (when-not (rejected?
                #(replay-trace!
                  (assoc-in trace ["states" 1 "mbt::actionTaken"]
-                           "UnknownAction")))
+                           "UnknownAction") fresh-store))
       (fail! "unknown MBT action mutation was accepted" {}))
     (println "  ok   unknown MBT action mutation rejected")
     (when-not (rejected?
@@ -471,7 +475,7 @@
                  (assoc-in trace
                            ["states" 1 model-var "head"
                             "generation" "#bigint"]
-                           "99")))
+                           "99") fresh-store))
       (fail! "model-state mutation was accepted" {}))
     (println "  ok   model-state mutation rejected")
     (when (< (count publish-state-indexes) 2)
@@ -487,7 +491,7 @@
           (assoc-in trace
                     ["states" second-publish
                      "mbt::nondetPicks" "attemptId"]
-                    first-attempt)))
+                    first-attempt) fresh-store))
         (fail! "reused model publication attempt was accepted" {})))
     (println "  ok   reused publication attempt mutation rejected")
     (when-not (rejected? #(validate-journal! (pop (:journal result))))

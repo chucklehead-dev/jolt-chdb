@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import hashlib
 import http.server
+import json
+import re
 import sys
 import threading
 import time
@@ -10,6 +12,17 @@ import urllib.parse
 OBJECTS = {}
 AFTER_CAS_TIMEOUTS = set()
 LOCK = threading.Lock()
+REQUEST_COUNTS = {"authenticated_requests": 0, "gets": 0, "puts": 0}
+ITF_NAMESPACES = set()
+
+
+def record_request(method, path):
+    match = re.match(r"^/bucket/durable-itf/(trace-[0-9]{3})/object/", path)
+    with LOCK:
+        REQUEST_COUNTS["authenticated_requests"] += 1
+        REQUEST_COUNTS[method] += 1
+        if match:
+            ITF_NAMESPACES.add(match.group(1))
 
 
 def etag(body):
@@ -60,6 +73,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.authenticated():
             self.answer(403)
             return
+        if self.key() == "/__fixture__/stats":
+            with LOCK:
+                report = {
+                    "authenticated-requests": REQUEST_COUNTS["authenticated_requests"],
+                    "gets": REQUEST_COUNTS["gets"],
+                    "puts": REQUEST_COUNTS["puts"],
+                    "namespaces": len(ITF_NAMESPACES),
+                }
+            self.answer(200, json.dumps(report, sort_keys=True).encode("ascii"))
+            return
+        record_request("gets", self.key())
         if self.key().endswith("/truncated"):
             self.send_response(200)
             self.send_header("Content-Length", "10")
@@ -79,6 +103,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.authenticated():
             self.answer(403)
             return
+        record_request("puts", self.key())
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()

@@ -7,6 +7,13 @@ target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
 seed="${QUINT_ITF_CORPUS_SEED:-0xd17ab1e}"
 trace_count="${QUINT_ITF_TRACE_COUNT:-64}"
+replay_mode="${1:-}"
+
+if [[ -n "$replay_mode" && "$replay_mode" != "--with-s3" ]]
+then
+  echo "usage: $0 [--with-s3]" >&2
+  exit 2
+fi
 
 if ! [[ "$trace_count" =~ ^[1-9][0-9]*$ ]] || ((trace_count > 256))
 then
@@ -58,10 +65,21 @@ done
 
 if [[ -x "$repo_root/../tools/jolt-with-chez-10.4.1" ]]
 then
-  jolt_command=("$repo_root/../tools/jolt-with-chez-10.4.1" jolt)
+  jolt_wrapper="$repo_root/../tools/jolt-with-chez-10.4.1"
+  jolt_command=("$jolt_wrapper" jolt)
 else
+  jolt_wrapper=""
   jolt_command=(jolt)
 fi
 
 "${jolt_command[@]}" -M:durable-itf-test "${traces[@]}"
+if [[ "$replay_mode" == "--with-s3" ]]
+then
+  if [[ -n "$jolt_wrapper" ]]
+  then
+    "$jolt_wrapper" bash test/durable-s3-itf.sh jolt "${traces[@]}"
+  else
+    bash test/durable-s3-itf.sh jolt "${traces[@]}"
+  fi
+fi
 echo "Durable Quint ITF corpus: $trace_count trace(s), seed $seed"
