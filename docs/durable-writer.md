@@ -62,10 +62,13 @@ jolt -M:durable-writer-test
 
 The deterministic suite covers queue ordering, admission-before-execution,
 ordered WAL serialization, checkpoint fallback, empty and successful flush,
-close, limits, and ambiguous-commit retention. A Hegel state machine checks
-pending statements, checkpoint requirements, and manifest sequence agreement
-over generated materialized execute, parameterized execute, query, and flush
-traces.
+close, limits, and ambiguous-commit retention. Checkpoint-fallback fault cuts
+also cover backup failure, failed or ambiguous immutable upload, and ownership
+takeover after publication: each failed boundary retains the checkpoint marker
+and covered statement WAL, while a stale generation cannot make its published
+checkpoint reachable. A Hegel state machine checks pending statements,
+checkpoint requirements, and manifest sequence agreement over generated
+materialized execute, parameterized execute, query, and flush traces.
 
 Read-only open is implemented by `jdbc.chdb.durable/open-reader!` and shares
 the verified recovery path without participating in lease state.

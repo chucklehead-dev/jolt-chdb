@@ -74,6 +74,47 @@
                {:status :published :reference reference}))
            :verify-checkpoint-reference! control/verify-byte-reference!)))
 
+(defn- checkpoint-fault-operations
+  [calls close-count fault-state published-reference]
+  (let [base (model-checkpoint-operations calls close-count)
+        create-checkpoint! (:create-checkpoint! base)
+        publish-checkpoint! (:publish-checkpoint! base)]
+    (assoc
+     base
+     :create-checkpoint!
+     (fn [handle database]
+       (swap! calls conj [:backup])
+       (if (= :backup-failure @fault-state)
+         (throw (ex-info "checkpoint backup failed"
+                         {:type ::backup-failure}))
+         (create-checkpoint! handle database)))
+     :delete-checkpoint!
+     (fn [_] (swap! calls conj [:delete-checkpoint]))
+     :publish-checkpoint!
+     (fn [store token path]
+       (swap! calls conj [:publish-checkpoint])
+       (case @fault-state
+         :upload-failure
+         (throw (ex-info "checkpoint upload failed"
+                         {:type ::control/object-unverified}))
+
+         :upload-ambiguous
+         (throw (ex-info "checkpoint upload outcome is ambiguous"
+                         {:type ::control/commit-ambiguous}))
+
+         :ownership-takeover
+         (let [publication (publish-checkpoint! store token path)]
+           (when-not @published-reference
+             (reset! published-reference (:reference publication))
+             (control/acquire!
+              store
+              (assoc base-options
+                     :owner "writer-2" :instance "instance-2"
+                     :now 1000M :expires-at 2000M)))
+           publication)
+
+         (publish-checkpoint! store token path))))))
+
 (defn- ambiguous-head-store [delegate]
   (reify backend/ObjectBackend
     (get-bytes [_ key] (backend/get-bytes delegate key))
@@ -309,6 +350,88 @@
            ::control/commit-ambiguous
            (error-type #(writer/close! writer)))
     (check "failed close retains recovery state and closes the engine once"
+           [:closed true 1 1]
+           (let [status (writer/status writer)]
+             [(:lifecycle status) (:checkpoint-required? status)
+              (:pending-statements status) @close-count])))
+
+  (doseq [[fault expected-error expected-calls]
+          [[:backup-failure ::backup-failure
+            [[:backup]]]
+           [:upload-failure ::control/object-unverified
+            [[:backup] [:publish-checkpoint] [:delete-checkpoint]]]
+           [:upload-ambiguous ::control/commit-ambiguous
+            [[:backup] [:publish-checkpoint] [:delete-checkpoint]]]]]
+    (let [calls (atom [])
+          close-count (atom 0)
+          fault-state (atom fault)
+          published-reference (atom nil)
+          operations (checkpoint-fault-operations
+                      calls close-count fault-state published-reference)
+          {:keys [store writer]} (new-writer calls close-count operations)]
+      (writer/execute! writer "INSERT INTO t VALUES (1)")
+      (writer/sql! writer "INSERT INTO t VALUES (?)" [2])
+      (check (str (name fault) " returns its exact failure category")
+             expected-error
+             (error-type #(writer/flush! writer)))
+      (check (str (name fault) " retains both recovery obligations")
+             [true 1 0]
+             (let [status (writer/status writer)]
+               [(:checkpoint-required? status)
+                (:pending-statements status)
+                (get-in (:head (control/read-head! store))
+                        ["manifest" "seq"])]))
+      (check (str (name fault) " reaches only its expected checkpoint stages")
+             expected-calls
+             (filterv #(contains? #{:backup :publish-checkpoint
+                                    :delete-checkpoint}
+                                  (first %))
+                      @calls))
+      (reset! fault-state nil)
+      (check (str (name fault) " retained state commits on retry")
+             :committed (:status (writer/flush! writer)))
+      (check (str (name fault) " retry clears obligations after head commit")
+             [false 0 1 true]
+             (let [status (writer/status writer)]
+               [(:checkpoint-required? status)
+                (:pending-statements status)
+                (get-in (:head (control/read-head! store))
+                        ["manifest" "seq"])
+                (boolean
+                 (get-in (:head (control/read-head! store))
+                         ["manifest" "base"]))]))
+      (writer/close! writer)))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        fault-state (atom :ownership-takeover)
+        published-reference (atom nil)
+        operations (checkpoint-fault-operations
+                    calls close-count fault-state published-reference)
+        {:keys [store writer]} (new-writer calls close-count operations)]
+    (writer/execute! writer "INSERT INTO t VALUES (1)")
+    (writer/sql! writer "INSERT INTO t VALUES (?)" [2])
+    (check "takeover during checkpoint publication fences the stale writer"
+           ::control/lease-fenced
+           (error-type #(writer/flush! writer)))
+    (let [status (writer/status writer)
+          head (:head (control/read-head! store))]
+      (check "fenced checkpoint fallback retains both recovery obligations"
+             [true 1 0 "writer-2" 2]
+             [(:checkpoint-required? status)
+              (:pending-statements status)
+              (get-in head ["manifest" "seq"])
+              (get-in head ["lease" "owner"])
+              (get-in head ["lease" "generation"])]))
+    (check "takeover leaves the old generation checkpoint unreachable"
+           [true nil]
+           [(some? (backend/get-bytes
+                    store (get @published-reference "key")))
+            (get-in (:head (control/read-head! store)) ["manifest" "base"])])
+    (check "fenced close returns the ownership failure"
+           ::control/lease-fenced
+           (error-type #(writer/close! writer)))
+    (check "fenced close cleans the native handle without clearing recovery state"
            [:closed true 1 1]
            (let [status (writer/status writer)]
              [(:lifecycle status) (:checkpoint-required? status)
