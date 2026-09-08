@@ -1,0 +1,3704 @@
+{
+  "#meta": {
+    "format": "ITF",
+    "format-description": "https://apalache-mc.org/docs/adr/015adr-trace.html",
+    "source": "formal/quint/durable-head-cas.md",
+    "seed": "0x51a7e",
+    "status": "ok"
+  },
+  "vars": [
+    "durableHeadCasCorrected::durableHeadCas::state",
+    "mbt::actionTaken",
+    "mbt::nondetPicks"
+  ],
+  "states": [
+    {
+      "#meta": {
+        "index": 0
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [],
+        "head": {
+          "generation": {
+            "#bigint": "1"
+          },
+          "leaseRevision": {
+            "#bigint": "0"
+          },
+          "owner": {
+            "tag": "Released",
+            "value": {
+              "#tup": []
+            }
+          },
+          "reference": {
+            "tag": "NoReference",
+            "value": {
+              "#tup": []
+            }
+          },
+          "sequence": {
+            "#bigint": "0"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": []
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": []
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "init",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "mode": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "objectId": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "writer": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 1
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "NoReference",
+            "value": {
+              "#tup": []
+            }
+          },
+          "sequence": {
+            "#bigint": "0"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": []
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": []
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "chooseAcquire",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "mode": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "objectId": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer2",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 2
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": []
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": []
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "NoReference",
+            "value": {
+              "#tup": []
+            }
+          },
+          "sequence": {
+            "#bigint": "0"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": [
+            {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          ]
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": [
+            {
+              "tag": "Attempt6",
+              "value": {
+                "#tup": []
+              }
+            }
+          ]
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "choosePublish",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Attempt6",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "mode": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "objectId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Object1",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer2",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 3
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": []
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": []
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "NoReference",
+            "value": {
+              "#tup": []
+            }
+          },
+          "sequence": {
+            "#bigint": "0"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": [
+            {
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          ]
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": [
+            {
+              "tag": "Attempt2",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt6",
+              "value": {
+                "#tup": []
+              }
+            }
+          ]
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "choosePublish",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Attempt2",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "mode": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "objectId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Object2",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer2",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 4
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": []
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": []
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "CommitAttempted",
+            "value": {
+              "acknowledged": true,
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "desiredHead": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "exactReferenceWasPublished": true,
+              "landed": true,
+              "mode": {
+                "tag": "AmbiguousLanded",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "operationSpecificProofHeld": true,
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "referenceWasPublished": true,
+              "result": {
+                "tag": "Reconciled",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "wholeHeadProofHeld": true,
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "SomeReference",
+            "value": {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          },
+          "sequence": {
+            "#bigint": "1"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": [
+            {
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          ]
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": [
+            {
+              "tag": "Attempt2",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt6",
+              "value": {
+                "#tup": []
+              }
+            }
+          ]
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "chooseCommit",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Attempt6",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "mode": {
+          "tag": "Some",
+          "value": {
+            "tag": "AmbiguousLanded",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "objectId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Object1",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer2",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 5
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": []
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": []
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "CommitAttempted",
+            "value": {
+              "acknowledged": true,
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "desiredHead": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "exactReferenceWasPublished": true,
+              "landed": true,
+              "mode": {
+                "tag": "AmbiguousLanded",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "operationSpecificProofHeld": true,
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "referenceWasPublished": true,
+              "result": {
+                "tag": "Reconciled",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "wholeHeadProofHeld": true,
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "2"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "2"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt1",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "SomeReference",
+            "value": {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          },
+          "sequence": {
+            "#bigint": "1"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": [
+            {
+              "attemptId": {
+                "tag": "Attempt1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "2"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          ]
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": [
+            {
+              "tag": "Attempt1",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt2",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt6",
+              "value": {
+                "#tup": []
+              }
+            }
+          ]
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "choosePublish",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Attempt1",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "mode": {
+          "tag": "None",
+          "value": {
+            "#tup": []
+          }
+        },
+        "objectId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Object1",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer2",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 6
+      },
+      "durableHeadCasCorrected::durableHeadCas::state": {
+        "events": [
+          {
+            "tag": "Acquired",
+            "value": {
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "1"
+                },
+                "leaseRevision": {
+                  "#bigint": "0"
+                },
+                "owner": {
+                  "tag": "Released",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": []
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": []
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "CommitAttempted",
+            "value": {
+              "acknowledged": true,
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "NoReference",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "0"
+                }
+              },
+              "desiredHead": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "exactReferenceWasPublished": true,
+              "landed": true,
+              "mode": {
+                "tag": "AmbiguousLanded",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "operationSpecificProofHeld": true,
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt6",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "referenceWasPublished": true,
+              "result": {
+                "tag": "Reconciled",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "wholeHeadProofHeld": true,
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "Published",
+            "value": {
+              "after": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "2"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "attemptId": {
+                "tag": "Attempt1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "#set": [
+                  {
+                    "attemptId": {
+                      "tag": "Attempt2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object2",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  },
+                  {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                ]
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "2"
+                },
+                "objectId": {
+                  "tag": "Object1",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "2"
+                }
+              },
+              "tokenGeneration": {
+                "tag": "SomeGeneration",
+                "value": {
+                  "#bigint": "2"
+                }
+              },
+              "usedAfter": {
+                "#set": [
+                  {
+                    "tag": "Attempt1",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "usedBefore": {
+                "#set": [
+                  {
+                    "tag": "Attempt2",
+                    "value": {
+                      "#tup": []
+                    }
+                  },
+                  {
+                    "tag": "Attempt6",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                ]
+              },
+              "writer": {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          },
+          {
+            "tag": "CommitAttempted",
+            "value": {
+              "acknowledged": false,
+              "after": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "attemptId": {
+                "tag": "Attempt4",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "before": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "desiredHead": {
+                "generation": {
+                  "#bigint": "2"
+                },
+                "leaseRevision": {
+                  "#bigint": "1"
+                },
+                "owner": {
+                  "tag": "HeldBy",
+                  "value": {
+                    "tag": "Writer2",
+                    "value": {
+                      "#tup": []
+                    }
+                  }
+                },
+                "reference": {
+                  "tag": "SomeReference",
+                  "value": {
+                    "attemptId": {
+                      "tag": "Attempt6",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "generation": {
+                      "#bigint": "2"
+                    },
+                    "objectId": {
+                      "tag": "Object1",
+                      "value": {
+                        "#tup": []
+                      }
+                    },
+                    "sequence": {
+                      "#bigint": "1"
+                    }
+                  }
+                },
+                "sequence": {
+                  "#bigint": "1"
+                }
+              },
+              "exactReferenceWasPublished": false,
+              "landed": false,
+              "mode": {
+                "tag": "AmbiguousLanded",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "operationSpecificProofHeld": false,
+              "reference": {
+                "attemptId": {
+                  "tag": "Attempt4",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "generation": {
+                  "#bigint": "0"
+                },
+                "objectId": {
+                  "tag": "Object2",
+                  "value": {
+                    "#tup": []
+                  }
+                },
+                "sequence": {
+                  "#bigint": "2"
+                }
+              },
+              "referenceWasPublished": false,
+              "result": {
+                "tag": "LeaseFenced",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "tokenGeneration": {
+                "tag": "NoGeneration",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "wholeHeadProofHeld": false,
+              "writer": {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              }
+            }
+          }
+        ],
+        "head": {
+          "generation": {
+            "#bigint": "2"
+          },
+          "leaseRevision": {
+            "#bigint": "1"
+          },
+          "owner": {
+            "tag": "HeldBy",
+            "value": {
+              "tag": "Writer2",
+              "value": {
+                "#tup": []
+              }
+            }
+          },
+          "reference": {
+            "tag": "SomeReference",
+            "value": {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          },
+          "sequence": {
+            "#bigint": "1"
+          }
+        },
+        "lastTransitionRefinesContentView": true,
+        "lastTransitionRefinesExactView": true,
+        "pendingReconciliation": {
+          "tag": "NoPendingReconciliation",
+          "value": {
+            "#tup": []
+          }
+        },
+        "published": {
+          "#set": [
+            {
+              "attemptId": {
+                "tag": "Attempt1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "2"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            },
+            {
+              "attemptId": {
+                "tag": "Attempt6",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "generation": {
+                "#bigint": "2"
+              },
+              "objectId": {
+                "tag": "Object1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              "sequence": {
+                "#bigint": "1"
+              }
+            }
+          ]
+        },
+        "renewedWhilePending": false,
+        "usedAttempts": {
+          "#set": [
+            {
+              "tag": "Attempt1",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt2",
+              "value": {
+                "#tup": []
+              }
+            },
+            {
+              "tag": "Attempt6",
+              "value": {
+                "#tup": []
+              }
+            }
+          ]
+        },
+        "writers": {
+          "#map": [
+            [
+              {
+                "tag": "Writer1",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "NoGeneration",
+                  "value": {
+                    "#tup": []
+                  }
+                }
+              }
+            ],
+            [
+              {
+                "tag": "Writer2",
+                "value": {
+                  "#tup": []
+                }
+              },
+              {
+                "rememberedGeneration": {
+                  "tag": "SomeGeneration",
+                  "value": {
+                    "#bigint": "2"
+                  }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      "mbt::actionTaken": "chooseCommit",
+      "mbt::nondetPicks": {
+        "attemptId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Attempt4",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "mode": {
+          "tag": "Some",
+          "value": {
+            "tag": "AmbiguousLanded",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "objectId": {
+          "tag": "Some",
+          "value": {
+            "tag": "Object2",
+            "value": {
+              "#tup": []
+            }
+          }
+        },
+        "writer": {
+          "tag": "Some",
+          "value": {
+            "tag": "Writer1",
+            "value": {
+              "#tup": []
+            }
+          }
+        }
+      }
+    }
+  ]
+}

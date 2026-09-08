@@ -5,6 +5,12 @@ seam from the frozen Durable V1 backend contract: `get-bytes`,
 `get-with-etag`, `put-file-if-absent!`, `put-bytes-if-absent!`,
 `replace-if-match!`, and `download-to-file!`.
 
+Both conditional-create operations and conditional replace may report
+`{:status :ambiguous}` when a remote provider cannot prove whether a request
+landed. This is not a negative acknowledgement. The control plane reconciles a
+create by rereading its unique immutable key and a replace by rereading
+`head.json`; only exact operation-specific state proves success.
+
 The protocol source is chDB commit
 `db10b548a3e1e21e51c213baf863cb1050963d9c`,
 `docs/durable/protocol-v1.mdx#backend-contract`. In particular, conditional
@@ -123,8 +129,9 @@ Current executable evidence on Linux ext2/ext3-family storage proves:
 - a multi-buffer file upload/download round trip is byte-exact, reports the
   exact payload count, and creates the download at mode `0600`.
 
-This completes the storage protocol shape, not a Durable-open implementation.
-State-machine integration and real object-storage provider validation remain
-separate slices. The object provider will be tested against a pinned local
-S3-compatible binary or container selected by capability probes, not against
-the in-memory oracle.
+The public `jdbc.chdb.durable/open-writer!` and `open-reader!` APIs now compose
+this storage protocol with native recovery, serialized SQL, lease renewal,
+checkpointing, and cleanup. The POSIX provider is therefore the first usable
+single-host Durable backend. A remote object provider remains a separate slice
+and will be tested against a pinned local S3-compatible binary or container
+selected by capability probes, not against the in-memory oracle.

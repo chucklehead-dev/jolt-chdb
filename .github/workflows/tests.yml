@@ -31,5 +31,7 @@ jobs:
         run: jolt -A:test -m hegel.install
       - name: Test Durable local POSIX process semantics
         run: bash test/durable-local-posix.sh /usr/bin/env
+      - name: Test Durable libcurl SigV4 transport
+        run: bash test/durable-s3-curl.sh jolt
       - name: Test
         run: jolt -M:test

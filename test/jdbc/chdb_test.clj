@@ -1,12 +1,18 @@
 (ns jdbc.chdb-test
-  (:require [db.jdbc]
+  (:require [clojure.string :as str]
+            [db.jdbc]
             [db.driver :as driver]
             [db.export :as export]
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb-durable-head-test :as durable-head]
             [jdbc.chdb-durable-backend-test :as durable-backend]
+            [jdbc.chdb-durable-control-test :as durable-control]
+            [jdbc.chdb-durable-itf-test :as durable-itf]
+            [jdbc.chdb-durable-writer-test :as durable-writer]
+            [jdbc.chdb-durable-open-test :as durable-open]
             [jdbc.chdb-durable-local-test :as durable-local]
+            [jdbc.chdb-durable-s3-test :as durable-s3]
             [jdbc.chdb-durable-policy-test :as durable-policy]
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
@@ -83,6 +89,14 @@
 
 (defn- run-query-checks []
   (println "chDB query and compatibility checks")
+  (check "classification SQL retains types but no parameter values"
+         "select {p1:Int64}, {p2:String}"
+         (chdb/classification-sql "select ?, ?" [42 "private-value"]))
+  (check "classification SQL does not expose a secret parameter"
+         false
+         (str/includes?
+          (chdb/classification-sql "select ?" ["private-value"])
+          "private-value"))
   (with-open [conn (jdbc/connection "chdb::memory:")]
     (check "database product metadata" "ClickHouse (chDB)"
            (.getDatabaseProductName (.getMetaData (proto/connection conn))))
@@ -646,7 +660,12 @@
   (run-storage-checks)
   (durable-head/run-checks!)
   (durable-backend/run-checks!)
+  (durable-control/run-checks!)
+  (durable-itf/run-checks!)
+  (durable-writer/run-checks!)
+  (durable-open/run-checks!)
   (durable-local/run-checks!)
+  (durable-s3/run-checks!)
   (durable-policy/run-checks!)
   (property/run-properties!)
   (if (zero? @failures)

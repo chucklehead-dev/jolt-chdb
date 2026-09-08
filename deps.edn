@@ -8,7 +8,10 @@
          :git/sha "932444043c0c06f9e295ba4963419b2481e9dd07"}
         com.github.seancorfield/honeysql
         {:git/url "https://github.com/seancorfield/honeysql.git"
-         :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}}
+         :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}
+        jolt-lang/jolt-crypto
+        {:git/url "https://github.com/jolt-lang/jolt-crypto.git"
+         :git/sha "5effcc89a3258499a79a2a3d69edad9e7800d1bf"}}
  :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
@@ -18,25 +21,49 @@
            :durable-policy-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-policy-test"]}
-           :durable-head-test
+           :durable-control-test
+           {:extra-deps
+           {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-control-test"]}
+           :durable-itf-test
+           {:extra-deps
+           {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-itf-test"]}
+           :durable-writer-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
              {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-              :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-writer-test"]}
+           :durable-open-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
+           :durable-head-test
+           {:extra-deps
+           {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-head-test"]}
            :durable-backend-test
            {:extra-deps
-            {io.github.chucklehead-dev/jolt-hegel
+           {io.github.chucklehead-dev/jolt-hegel
              {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-              :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-backend-test"]}
            :durable-backend-jvm-test
            {:extra-deps
-            {io.github.chucklehead-dev/jolt-hegel
+           {io.github.chucklehead-dev/jolt-hegel
              {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-              :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}
              io.github.babashka/ffi
              {:git/url "https://github.com/babashka/ffi.git"
               :git/sha "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}}
@@ -45,6 +72,15 @@
            :durable-local-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-local-test"]}
+           :durable-s3-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-s3-test"]}
+           :durable-s3-curl-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-s3-curl-test"]}
+           :durable-s3-minio-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-s3-minio-test"]}
            :durable-local-worker
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-local-worker"]}
@@ -54,16 +90,23 @@
            :test {:extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-                    :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}
+                    :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
                   :extra-paths ["test"]
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
          abi-test "jolt -M:abi-test"
          durable-native-test "jolt -M:durable-native-test"
          durable-policy-test "jolt -M:durable-policy-test"
+         durable-control-test "jolt -M:durable-control-test"
+         durable-itf-test "jolt -M:durable-itf-test"
+         durable-writer-test "jolt -M:durable-writer-test"
+         durable-open-test "jolt -M:durable-open-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-backend-test "jolt -M:durable-backend-test"
          durable-local-test "jolt -M:durable-local-test"
+         durable-s3-test "jolt -M:durable-s3-test"
+         durable-s3-curl-test "bash test/durable-s3-curl.sh jolt"
+         durable-s3-minio-test "bash test/durable-s3-minio.sh jolt"
          durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}

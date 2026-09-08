@@ -1,0 +1,75 @@
+name: durable-head-quint
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/durable-head-quint.yml
+      - formal/durable-head-cas*.smt2
+      - formal/quint/**
+      - scripts/durable-head-itf-commands.jq
+      - scripts/generate-durable-head-itf.sh
+      - scripts/check-durable-head-itf-corpus.sh
+      - scripts/check-durable-head-quint.sh
+      - deps.edn
+      - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_durable_control_test.clj
+      - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_writer_test.clj
+  push:
+    paths:
+      - .github/workflows/durable-head-quint.yml
+      - formal/durable-head-cas*.smt2
+      - formal/quint/**
+      - scripts/durable-head-itf-commands.jq
+      - scripts/generate-durable-head-itf.sh
+      - scripts/check-durable-head-itf-corpus.sh
+      - scripts/check-durable-head-quint.sh
+      - deps.edn
+      - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_durable_control_test.clj
+      - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_writer_test.clj
+
+permissions:
+  contents: read
+
+jobs:
+  literate-model:
+    runs-on: ubuntu-latest
+    # Apalache's bounded checks are deliberately exhaustive and the corrected
+    # invariants alone can take more than 25 minutes on a hosted runner.
+    timeout-minutes: 90
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.3
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - name: Install pinned Quint and literate tangler
+        run: |
+          npm install --global @informalsystems/quint@0.32.0
+          go install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
+      - name: Install Jolt v0.8.3
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/jolt-bin"
+          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/v0.8.3/install \
+            | bash -s -- --dir "$install_dir" --version 0.8.3
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Assert tool versions
+        run: |
+          test "$(quint --version)" = "0.32.0"
+          test "$(jolt --version)" = "jolt v0.8.3"
+          test "$(go version -m "$(command -v lmt)" | awk '$1 == "mod" { print $3 }')" = "v0.0.0-20210421124901-62fe18f2f6a6"
+      - name: Replay a deterministic Quint ITF corpus against Jolt
+        run: scripts/check-durable-head-itf-corpus.sh
+      - name: Tangle, test, sample, and bounded-check the model
+        run: scripts/check-durable-head-quint.sh --verify

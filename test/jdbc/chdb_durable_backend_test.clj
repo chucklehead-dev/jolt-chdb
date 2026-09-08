@@ -79,6 +79,32 @@
          (error-type #(backend/put-bytes-if-absent!
                        (backend/memory-backend) "head.json" [1 2 3])))
 
+  (let [namespace (backend/memory-backend)
+        alpha (backend/object-backend namespace "alpha")
+        beta (backend/object-backend namespace "beta")
+        created (backend/put-bytes-if-absent!
+                 alpha "head.json" (byte-array [11]))
+        replaced (backend/replace-if-match!
+                  alpha "head.json" (byte-array [12]) (:etag created))]
+    (check "object backend preserves conditional replacement" :replaced
+           (:status replaced))
+    (check "object backend prefixes the namespace key" [12]
+           (vec (backend/get-bytes namespace "alpha/head.json")))
+    (check "sibling object cannot observe scoped bytes" nil
+           (backend/get-bytes beta "head.json")))
+
+  (doseq [object-id [nil "" "." ".." "alpha/beta" "alpha\\beta"
+                     (apply str (repeat 256 "a"))]]
+    (check "unsafe object id fails closed" ::backend/invalid-object-id
+           (error-type #(backend/object-backend
+                         (backend/memory-backend) object-id))))
+  (check "object scoping requires a namespace backend"
+         ::backend/invalid-backend
+         (error-type #(backend/object-backend nil "alpha")))
+  (check "object scoping rejects a non-backend namespace"
+         ::backend/invalid-backend
+         (error-type #(backend/object-backend {} "alpha")))
+
   (let [source (Files/createTempFile "jchdb-oracle-upload-" ".bin"
                                      (into-array FileAttribute []))
         target (Files/createTempFile "jchdb-oracle-download-" ".bin"

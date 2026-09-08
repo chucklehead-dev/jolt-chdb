@@ -1,0 +1,447 @@
+(ns jdbc.chdb-durable-writer-test
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
+            [hegel.core :as h]
+            [hegel.stateful :as hs]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.writer :as writer]
+            [jolt.fibers :as fibers]))
+
+(def failures (atom 0))
+
+(def ^:private base-options
+  {:owner "writer-1"
+   :instance "instance-1"
+   :expires-at 1000M
+   :now 0M
+   :clock-skew 0M
+   :database "default"
+   :engine-version "26.7.2-rc.2"
+   :backup-format 1
+   :min-reader "26.7.2-rc.2"})
+
+(defn- check [label expected actual]
+  (if (= expected actual)
+    (println "  ok  " label)
+    (do
+      (swap! failures inc)
+      (println "  FAIL" label "- expected" (pr-str expected)
+               "got" (pr-str actual)))))
+
+(defn- error-type [f]
+  (try (f) nil (catch Throwable error (:type (ex-data error)))))
+
+(defn- fake-operations [calls close-count]
+  {:classification-sql! (fn [sql _] sql)
+   :classify! (fn [_ sql _]
+                {:query-class (if (str/starts-with? sql "SELECT")
+                                :read-only :mutating)
+                 :statement-count 1 :has-secrets false
+                 :writes-only-target-database true
+                 :changes-database-lifecycle false})
+   :analyze-query! (fn [_ sql database]
+                     (swap! calls conj [:analyze-query sql database]))
+   :analyze-execute! (fn [_ sql database]
+                       (swap! calls conj [:analyze-execute sql database]))
+   :execute-native! (fn [_ sql]
+                      (swap! calls conj [:execute sql])
+                      {:sql sql})
+   :query-native! (fn [_ sql _]
+                    (swap! calls conj [:execute sql])
+                    {:sql sql})
+   :close-native! (fn [_] (swap! close-count inc))
+   :cleanup-scratch! (fn [] nil)})
+
+(defn- ambiguous-head-store [delegate]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (if (= control/head-key key)
+        {:status :ambiguous}
+        (backend/replace-if-match! delegate key bytes etag)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- new-writer
+  ([] (new-writer (atom []) (atom 0)))
+  ([calls close-count]
+   (new-writer calls close-count (fake-operations calls close-count)))
+  ([calls close-count operations]
+   (let [store (backend/memory-backend)
+         acquired (control/acquire! store base-options)]
+     {:store store
+      :calls calls
+      :close-count close-count
+      :writer
+      (writer/start!
+       {:store store
+        :token (:token acquired)
+        :handle :fake-handle
+        :database "default"
+        :operations operations})})))
+
+(defn- stored-wal-lines [store]
+  (let [head (:head (control/read-head! store))]
+    (mapv
+     (fn [reference]
+       (->> (String. (backend/get-bytes store (get reference "key")) "UTF-8")
+            str/split-lines
+            (mapv #(json/read-str %))))
+     (get-in head ["manifest" "wal"]))))
+
+(defn- run-deterministic-checks! []
+  (println "Durable V1 serialized writer operations")
+  (let [{:keys [store calls close-count writer]} (new-writer)]
+    (check "read query crosses classification before execution"
+           {:sql "SELECT 1"}
+           (writer/query! writer "SELECT 1"))
+    (check "query does not enter the statement WAL"
+           {:lifecycle :open :writable? true
+            :pending-wal-bytes 0 :pending-statements 0}
+           (writer/status writer))
+    (writer/execute! writer "INSERT INTO t VALUES (1)")
+    (writer/execute! writer "INSERT INTO t VALUES (2)")
+    (check "successful mutations remain pending before flush"
+           2 (:pending-statements (writer/status writer)))
+    (check "flush commits the complete pending segment"
+           :committed (:status (writer/flush! writer)))
+    (check "flush clears only the committed pending segment"
+           0 (:pending-statements (writer/status writer)))
+    (check "committed WAL preserves statement and line order"
+           [[{"sql" "INSERT INTO t VALUES (1)"}
+             {"sql" "INSERT INTO t VALUES (2)"}]]
+           (stored-wal-lines store))
+    (check "empty flush does not advance the manifest"
+           [:empty 1]
+           [(:status (writer/flush! writer))
+            (get-in (:head (control/read-head! store)) ["manifest" "seq"])])
+    (writer/execute! writer "INSERT INTO t VALUES (3)")
+    (writer/close! writer)
+    (writer/close! writer)
+    (check "close flushes, releases, and closes exactly once"
+           [2 nil 1 :closed]
+           [(get-in (:head (control/read-head! store)) ["manifest" "seq"])
+            (get-in (:head (control/read-head! store)) ["lease" "owner"])
+            @close-count
+            (:lifecycle (writer/status writer))])
+    (check "operations after close fail with the public closed category"
+           ::writer/closed
+           (error-type #(writer/query! writer "SELECT 1")))
+    (check "classification precedes every engine call"
+           [[:analyze-query "SELECT 1" "default"]
+            [:execute "SELECT 1"]
+            [:analyze-execute "INSERT INTO t VALUES (1)" "default"]
+            [:execute "INSERT INTO t VALUES (1)"]]
+           (subvec @calls 0 4)))
+
+  (let [{:keys [writer calls]} (new-writer)]
+    (try
+      (with-redefs [writer/max-statement-bytes 3]
+        (check "statement limit rejects before classification and execution"
+               ::writer/limit-exceeded
+               (error-type #(writer/execute! writer "1234"))))
+      (check "limit rejection has no engine side effect" [] @calls)
+      (finally (writer/close! writer))))
+
+  (let [{:keys [writer]} (new-writer)]
+    (try
+      (check "generic SQL routing preserves read-only parameters"
+             {:sql "SELECT ?"}
+             (writer/sql! writer "SELECT ?" [42]))
+      (check "parameterized mutations fail before engine execution"
+             ::writer/parameters-not-durable
+             (error-type #(writer/sql! writer "INSERT INTO t VALUES (?)" [42])))
+      (check "rejected mutation parameters append no WAL"
+             0 (:pending-statements (writer/status writer)))
+      (writer/sql! writer "INSERT INTO t VALUES (42)" [])
+      (check "materialized mutations route through the WAL path"
+             1 (:pending-statements (writer/status writer)))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        first-sql "x\\y"
+        second-sql "β"
+        first-line-bytes (alength (.getBytes
+                                   (str (json/write-str {"sql" first-sql}) "\n")
+                                   "UTF-8"))
+        {:keys [writer]} (new-writer calls close-count)]
+    (try
+      (with-redefs [writer/max-wal-segment-bytes first-line-bytes]
+        (writer/execute! writer first-sql)
+        (check "an escaped WAL record may exactly fill the segment limit"
+               first-line-bytes (:pending-wal-bytes (writer/status writer)))
+        (check "a multibyte record that crosses the cumulative limit is rejected"
+               ::writer/limit-exceeded
+               (error-type #(writer/execute! writer second-sql)))
+        (check "segment rejection preserves the prior WAL and has no new engine call"
+               [1 [[:analyze-execute first-sql "default"] [:execute first-sql]]]
+               [(:pending-statements (writer/status writer)) @calls]))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        classifier-error (ex-info "classified failure" {:type ::classified-failure})
+        operations (assoc (fake-operations calls close-count)
+                          :analyze-execute!
+                          (fn [_ _ _] (throw classifier-error)))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (try
+      (check "classifier failure is returned unchanged"
+             ::classified-failure
+             (error-type #(writer/execute! writer "INSERT INTO t VALUES (1)")))
+      (check "classifier failure reaches neither engine nor WAL"
+             [0 []]
+             [(:pending-statements (writer/status writer)) @calls])
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        operations (assoc (fake-operations calls close-count)
+                          :execute-native!
+                          (fn [_ sql]
+                            (swap! calls conj [:execute sql])
+                            (throw (ex-info "engine failure" {:type ::engine-failure}))))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (try
+      (check "engine mutation failure is returned unchanged"
+             ::engine-failure
+             (error-type #(writer/execute! writer "INSERT INTO t VALUES (1)")))
+      (check "engine mutation failure appends no WAL record"
+             0 (:pending-statements (writer/status writer)))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        entered (promise)
+        release-first (promise)
+        operations
+        (assoc (fake-operations calls close-count)
+               :execute-native!
+               (fn [_ sql]
+                 (swap! calls conj [:begin sql])
+                 (when (= sql "first")
+                   (deliver entered true)
+                   @release-first)
+                 (swap! calls conj [:end sql])
+                 sql))
+        {:keys [writer]} (new-writer calls close-count operations)
+        first-call (fibers/spawn #(writer/execute! writer "first"))]
+    @entered
+    (let [second-call (fibers/spawn #(writer/execute! writer "second"))]
+      (loop [remaining 1000]
+        (when (and (pos? remaining) (zero? (.size (:queue writer))))
+          (Thread/yield)
+          (recur (dec remaining))))
+      (deliver release-first true)
+      (fibers/join first-call)
+      (fibers/join second-call)
+      (check "the explicit queue executes concurrent calls in FIFO order"
+             [[:begin "first"] [:end "first"]
+              [:begin "second"] [:end "second"]]
+             (filterv #(contains? #{:begin :end} (first %)) @calls)))
+    (writer/close! writer))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        calls (atom [])
+        close-count (atom 0)
+        now (atom 1000M)
+        writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations
+          (assoc (fake-operations calls close-count)
+                 :now-ms #(deref now)
+                 :await-heartbeat! (fn [stop _] @stop :stop))})]
+    (check "a locally expired lease fences a mutation before engine access"
+           ::control/lease-fenced
+           (error-type #(writer/execute! writer "INSERT INTO t VALUES (1)")))
+    (check "local self-fencing is visible without exposing lease identity"
+           [false []]
+           [(:writable? (writer/status writer)) @calls])
+    (check "self-fenced close still performs cleanup"
+           ::control/lease-fenced
+           (error-type #(writer/close! writer)))
+    (check "self-fenced cleanup closes the engine exactly once"
+           1 @close-count))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        calls (atom [])
+        close-count (atom 0)
+        entered (promise)
+        release-execute (promise)
+        heartbeat-tick (promise)
+        heartbeat-renewed (promise)
+        waits (atom 0)
+        operations
+        (-> (fake-operations calls close-count)
+            (assoc :now-ms (fn [] 100M)
+                   :create-checkpoint!
+                   (fn [_ _]
+                     (deliver entered true)
+                     @release-execute
+                     :checkpoint-path)
+                   :delete-checkpoint! (fn [_] nil)
+                   :publish-checkpoint!
+                   (fn [_ _ _]
+                     {:status :published
+                      :reference {"key" "checkpoints/1-1-00000011.tar.gz"
+                                  "size" 3
+                                  "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}})
+                   :commit-reference! (fn [_ _ _] {:status :committed})
+                   :await-heartbeat!
+                   (fn [stop _]
+                     (if (= 1 (swap! waits inc))
+                       (do @heartbeat-tick :tick)
+                       (do @stop :stop)))
+                   :renew!
+                   (fn [store token expiry]
+                     (let [result (control/renew! store token expiry)]
+                       (deliver heartbeat-renewed result)
+                       result))))
+        writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})
+        executing (fibers/spawn #(writer/checkpoint! writer))]
+    @entered
+    (deliver heartbeat-tick true)
+    @heartbeat-renewed
+    (check "heartbeat renews while a long checkpoint is in flight"
+           1001 (get-in (:head (control/read-head! store))
+                        ["lease" "expires_at"]))
+    (deliver release-execute true)
+    (fibers/join executing)
+    (writer/close! writer))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        close-count (atom 0)
+        writer
+        (writer/start!
+         {:store (ambiguous-head-store delegate)
+          :token (:token acquired)
+          :handle :fake-handle
+          :database "default"
+          :operations (fake-operations (atom []) close-count)})]
+    (writer/execute! writer "INSERT INTO t VALUES (1)")
+    (check "unprovable flush failure is distinguishable"
+           ::control/commit-ambiguous
+           (error-type #(writer/flush! writer)))
+    (check "failed flush retains the complete pending WAL"
+           1 (:pending-statements (writer/status writer)))
+    (check "failed close still closes the native engine"
+           ::control/commit-ambiguous
+           (error-type #(writer/close! writer)))
+    (check "failed close reaches the terminal lifecycle exactly once"
+           [:closed 1]
+           [(:lifecycle (writer/status writer)) @close-count])
+    (check "a repeated failed close returns the same persistence category"
+           ::control/commit-ambiguous
+           (error-type #(writer/close! writer)))
+    (check "a repeated failed close does not repeat native cleanup"
+           1 @close-count))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        take-entered (promise)
+        release-take (promise)
+        terminal (ex-info "worker queue failed" {:type ::worker-failed})
+        operations
+        (assoc (fake-operations calls close-count)
+               :take-request!
+               (fn [_]
+                 (deliver take-entered true)
+                 @release-take
+                 (throw terminal)))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    @take-entered
+    (let [waiting (fibers/spawn
+                   #(error-type #(writer/query! writer "SELECT 1")))]
+      (loop [remaining 1000]
+        (when (and (pos? remaining) (zero? (.size (:queue writer))))
+          (Thread/yield)
+          (recur (dec remaining))))
+      (deliver release-take true)
+      (check "terminal worker failure resolves an already queued caller"
+             ::worker-failed (fibers/join waiting)))
+    (check "terminal worker failure closes and cleans the writer"
+           [:closed 1]
+           [(:lifecycle (writer/status writer)) @close-count])
+    (check "close after terminal worker failure returns the same cause"
+           ::worker-failed
+           (error-type #(writer/close! writer)))))
+
+(defn- model-valid? [state]
+  (let [status (writer/status (:writer state))
+        head (:head (control/read-head! (:store state)))]
+    (and (= (:pending state) (:pending-statements status))
+         (= (:committed state) (get-in head ["manifest" "seq"])))))
+
+(defn- execute-step [state]
+  (writer/execute! (:writer state)
+                   (str "INSERT INTO t VALUES (" (:next-id state) ")"))
+  (-> state (update :pending inc) (update :next-id inc)))
+
+(defn- query-step [state]
+  (writer/query! (:writer state) "SELECT 1")
+  state)
+
+(defn- flush-step [state]
+  (let [had-pending? (pos? (:pending state))]
+    (writer/flush! (:writer state))
+    (cond-> (assoc state :pending 0)
+      had-pending? (update :committed inc))))
+
+(defn- run-stateful-property! []
+  (println "Durable writer Hegel queue/WAL state machine")
+  (let [result
+        (h/run-test!
+         {:name "chdb/durable-writer-queue-wal"
+          :database ""
+          :derandomize? true
+          :verbosity :quiet
+          :test-cases 30
+          :stateful-step-count 16}
+         (fn [_]
+           (let [{:keys [writer store]} (new-writer)]
+             (try
+               (hs/run!
+                {:initial-state {:writer writer :store store
+                                 :pending 0 :committed 0 :next-id 1}
+                 :rules [(hs/rule :execute execute-step)
+                         (hs/rule :query query-step)
+                         (hs/rule :flush flush-step)]
+                 :invariants [(hs/invariant :model-matches-writer
+                                            model-valid?)]})
+               (finally (writer/close! writer))))))]
+    (println "  hegel writer seed" (:seed result)
+             "valid" (:valid-test-cases result))
+    (when-not (and (:passed? result) (not (:flaky? result)))
+      (swap! failures inc)
+      (println "  FAIL writer property" (pr-str result)))))
+
+(defn run-checks! []
+  (reset! failures 0)
+  (run-deterministic-checks!)
+  (run-stateful-property!)
+  (when-not (zero? @failures)
+    (throw (ex-info (str @failures " Durable writer checks failed")
+                    {:failures @failures})))
+  (println "all Durable writer checks passed")
+  true)
+
+(defn -main [& _]
+  (run-checks!))

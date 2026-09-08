@@ -189,6 +189,16 @@
                 :else
                 (recur (inc i) mode block-depth pindex (conj! out c))))))))))
 
+(defn classification-sql
+  "Return the value-free SQL shape executed for a parameterized query.
+
+  Parameter values remain out of the returned string; only validated native
+  parameter types appear in named placeholders. Durable policy uses this form
+  so the core classifier sees the same parseable statement shape that native
+  execution receives."
+  [sql params]
+  (:sql (rewrite-placeholders sql params)))
+
 (defn- allocate-encoded! [allocated value]
   (if (bytes? value)
     (let [n (alength value)
@@ -522,7 +532,8 @@
             :bytes (if (zero? length) (byte-array 0)
                        (ffi/read-array buffer length))}))))))
 
-(defn- execute-query-bytes-handle
+(defn execute-query-bytes-handle
+  "Low-level owned-handle implementation used by serialized driver adapters."
   [handle sql params {:keys [format max-rows max-bytes]}]
   (let [native-format (get-in encoded-formats [format :native-format])
         bounded-sql (bounded-select (validate-encoded-sql! sql)

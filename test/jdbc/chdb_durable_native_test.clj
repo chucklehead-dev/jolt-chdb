@@ -1,7 +1,12 @@
 (ns jdbc.chdb-durable-native-test
   (:require [jdbc.chdb :as chdb]
+            [jdbc.chdb.durable :as durable]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.native :as native]
             [jdbc.chdb.durable.policy :as policy]
+            [jdbc.chdb.durable.reader :as reader]
+            [jdbc.chdb.durable.writer :as writer]
             [jolt.ffi :as ffi]))
 
 (def failures (atom 0))
@@ -24,6 +29,47 @@
 
 (defn- scalar [handle sql]
   (-> (chdb/execute-any handle sql []) :rows first first str))
+
+(defn- unsigned-prefix [bytes length]
+  (mapv #(bit-and 255 %) (take length bytes)))
+
+(defn- run-durable-object-e2e []
+  (println "Durable native object checkpoint and read-only reopen")
+  (let [store (backend/memory-backend)
+        opened (durable/open-writer!
+                {:store store :owner "native-e2e-writer"
+                 :instance "native-e2e-instance" :database "snapshot"
+                 :lease-ttl-ms 30000})]
+    (try
+      (writer/execute! opened
+                       "CREATE TABLE t (id UInt32) ENGINE = MergeTree ORDER BY id")
+      (writer/execute! opened "INSERT INTO t VALUES (1),(2),(3)")
+      (check "full writer checkpoint commits"
+             :committed (:status (writer/checkpoint! opened)))
+      (finally
+        (writer/close! opened)))
+    (let [head (:head (control/read-head! store))]
+      (check "checkpoint head has one base and no WAL"
+             [1 true [] nil]
+             [(get-in head ["manifest" "seq"])
+              (boolean (get-in head ["manifest" "base"]))
+              (get-in head ["manifest" "wal"])
+              (get-in head ["lease" "owner"])]))
+    (let [opened (durable/open-reader! {:store store})]
+      (try
+        (check "read-only reopen restores checkpoint rows"
+               3 (-> (reader/query! opened "SELECT count() n FROM t" [])
+                     :rows first first))
+        (check "read-only reopen exports owned Arrow bytes"
+               [65 82 82 79 87 49]
+               (unsigned-prefix
+                (:bytes (reader/query-bytes!
+                         opened "SELECT * FROM t ORDER BY id" []
+                         {:format :arrow :max-rows 10
+                          :max-bytes (* 4 1024 1024)}))
+                6))
+        (finally
+          (reader/close! opened))))))
 
 (defn- run-analysis-checks [handle]
   (println "Durable native query classification")
@@ -226,6 +272,7 @@
            true (boolean (rejected #(native/backup-database! closed "mem" "/tmp/x"))))
     (check "restore on a closed handle fails without a native call"
            true (boolean (rejected #(native/restore-database! closed "mem" "/tmp/x")))))
+  (run-durable-object-e2e)
   (if (zero? @failures)
     (println "all Durable native checks passed")
     (throw (ex-info (str @failures " Durable native checks failed")

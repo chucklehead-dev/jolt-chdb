@@ -1,0 +1,23 @@
+{:schema :jolt-chdb/durable-head-trace-v1
+ :source {:tool "quint"
+          :version "0.32.0"
+          :backend "apalache"
+          :backend-version "0.56.1"
+          :module "durableHeadCasStaleMutant"
+          :invariant "staleWriterCannotChangeHead"
+          :max-steps 6}
+ :expected :counterexample
+ :operations [{:op :acquire :writer :writer-1}
+              {:op :acquire :writer :writer-2}
+              {:op :commit-attempt
+               :writer :writer-1
+               :object :object-1
+               :mode :confirmed}]
+ :observation {:generation 3
+               :owner :writer-2
+               :sequence 0
+               :reference nil
+               :result :object-unverified
+               :expected-result :lease-fenced
+               :head-changed? false}
+ :note "The mutant lets a stale writer reach object verification; correct code fences first."}

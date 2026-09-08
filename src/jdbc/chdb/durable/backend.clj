@@ -12,13 +12,17 @@
     "Return {:bytes owned-bytes :etag opaque-token}, or nil.")
   (put-file-if-absent! [backend key local-path]
     "Atomically create key by streaming local-path, returning {:status
-    :created :etag token} or {:status :precondition-failed}.")
+    :created :etag token}, {:status :precondition-failed}, or {:status
+    :ambiguous} when a remote provider cannot prove whether the create landed.")
   (put-bytes-if-absent! [backend key bytes]
     "Atomically create key, returning {:status :created :etag token} or
-    {:status :precondition-failed}.")
+    {:status :precondition-failed}, or {:status :ambiguous} when a remote
+    provider cannot prove whether the create landed.")
   (replace-if-match! [backend key bytes etag]
     "Atomically replace key only when its opaque ETag still matches, returning
-    {:status :replaced :etag token} or {:status :precondition-failed}.")
+    {:status :replaced :etag token}, {:status :precondition-failed}, or
+    {:status :ambiguous} when a remote provider cannot prove whether its
+    conditional write landed. Callers must reconcile the latter by reread.")
   (download-to-file! [backend key local-path]
     "Stream key into a caller-owned unique local path without overwriting it,
     returning {:status :downloaded :byte-count n}, or {:status :not-found}."))
@@ -138,6 +142,43 @@
   atomic conditional semantics without filesystem or object-store behavior."
   []
   (MemoryBackend. (atom {})))
+
+(defn- checked-object-id [object-id]
+  (when-not (and (string? object-id)
+                 (not (str/blank? object-id))
+                 (not (contains? #{"." ".."} object-id))
+                 (not (str/includes? object-id "/"))
+                 (not (str/includes? object-id "\\"))
+                 (<= (alength (.getBytes object-id "UTF-8")) 255))
+    (fail! ::invalid-object-id
+           "Durable object id must be one safe nonblank path component"))
+  object-id)
+
+(deftype ^:private ObjectScopedBackend [delegate prefix]
+  ObjectBackend
+  (get-bytes [_ key]
+    (get-bytes delegate (str prefix (checked-key key))))
+  (get-with-etag [_ key]
+    (get-with-etag delegate (str prefix (checked-key key))))
+  (put-file-if-absent! [_ key local-path]
+    (put-file-if-absent! delegate (str prefix (checked-key key)) local-path))
+  (put-bytes-if-absent! [_ key bytes]
+    (put-bytes-if-absent! delegate (str prefix (checked-key key)) bytes))
+  (replace-if-match! [_ key bytes etag]
+    (replace-if-match! delegate (str prefix (checked-key key)) bytes etag))
+  (download-to-file! [_ key local-path]
+    (download-to-file! delegate (str prefix (checked-key key)) local-path)))
+
+(defn object-backend
+  "Scope a namespace backend to one Durable object id.
+
+  The object id is exactly one safe path component. Every protocol key is
+  mapped below `<object-id>/`, so sibling objects share provider resources but
+  cannot observe one another through the returned backend."
+  [namespace-backend object-id]
+  (when-not (satisfies? ObjectBackend namespace-backend)
+    (fail! ::invalid-backend "Durable namespace backend is required"))
+  (ObjectScopedBackend. namespace-backend (str (checked-object-id object-id) "/")))
 
 ;; The local provider stores the value and its opaque generation token in one
 ;; atomically published file. A fixed-size token keeps parsing independent of a
