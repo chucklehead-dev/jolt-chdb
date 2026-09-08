@@ -4,7 +4,8 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
-           [java.nio.file Files OpenOption StandardOpenOption]))
+           [java.nio.file Files LinkOption OpenOption]
+           [java.nio.file.attribute PosixFilePermission]))
 
 ;; These values are the public ABI from curl 7.75+ (the first release with
 ;; CURLOPT_AWS_SIGV4). Keep the option kind in the binding used below: libcurl's
@@ -29,6 +30,21 @@
 (def ^:private curlinfo-response-code 0x200002)
 (def ^:private curl-readfunc-abort 0x10000000)
 (def ^:private curl-global-default 3)
+(def ^:private mode-0600 384)
+(def ^:private eintr 4)
+(def ^:private no-link-options (make-array LinkOption 0))
+
+;; Jolt 0.8.3's modeled Files/newOutputStream does not implement CREATE_NEW.
+;; Use an atomic Linux fd for file destinations and write it from our callback;
+;; unlike FILE*, an fd has no cross-CRT ownership contract with libcurl. Other
+;; hosts fail closed until their callback/error/fd path is qualified.
+(ffi/load-library)
+(ffi/defcfn c-open "open" [:string :int :int] :int
+  {:capture-native-error true})
+(ffi/defcfn c-write "write" [:int :pointer :size_t] :ssize_t
+  {:blocking true :capture-native-error true})
+(ffi/defcfn c-close "close" [:int] :int
+  {:capture-native-error true})
 
 (ffi/load-system-library "curl")
 
@@ -108,6 +124,58 @@
   (let [n (* size nitems)]
     (if (> n Integer/MAX_VALUE) Integer/MAX_VALUE (int n))))
 
+(defn- posix-file-flags []
+  (let [os-name (str/lower-case (or (System/getProperty "os.name") ""))]
+    (if (str/includes? os-name "linux")
+      (bit-or (bit-or 1 64) (bit-or 128 (bit-or 131072 524288)))
+      ;; O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC
+      (transport-failure!
+       "S3 streamed file destinations are unsupported on this host" true))))
+
+(defn- discard-owned-file! [fd file]
+  ;; Called only after this request's O_EXCL create succeeded. Always attempt
+  ;; both close and cleanup, and do not retain either native/path exception.
+  (let [[close-result _] (c-close fd)
+        deleted? (try
+                   (Files/deleteIfExists file)
+                   true
+                   (catch Throwable _ false))]
+    (when (or (neg? close-result) (not deleted?))
+      (transport-failure!
+       "S3 response destination setup cleanup failed" true))))
+
+(defn- secure-destination-parent! [file]
+  (try
+    (let [parent (.getParent file)]
+      (when-not (and parent
+                     (Files/isDirectory parent no-link-options)
+                     (not (Files/isSymbolicLink parent)))
+        (transport-failure!
+         "S3 response destination requires a real parent directory" true))
+      ;; Cleanup is necessarily name-based after libcurl returns. Refuse a
+      ;; directory in which another OS principal can replace that name.
+      (let [permissions (Files/getPosixFilePermissions parent no-link-options)]
+        (when (or (.contains permissions PosixFilePermission/GROUP_WRITE)
+                  (.contains permissions PosixFilePermission/OTHERS_WRITE))
+          (transport-failure!
+           "S3 response destination requires a private parent directory"
+           true))))
+    (catch Throwable error
+      (if (= :transport (:category (ex-data error)))
+        (throw error)
+        (transport-failure!
+         "S3 response destination parent could not be verified" true)))))
+
+(defn- write-all-fd! [fd pointer length]
+  (loop [offset 0]
+    (when (< offset length)
+      (let [[n errno] (c-write fd (+ pointer offset) (- length offset))]
+        (cond
+          (pos? n) (recur (+ offset n))
+          (= eintr errno) (recur offset)
+          :else (transport-failure! "S3 response destination write failed"
+                                    false))))))
+
 (defn- response-writer [response-body max-response-bytes]
   (cond
     (nil? response-body)
@@ -134,23 +202,32 @@
     (let [{:keys [file create-new?]} response-body]
       (when-not (and file create-new?)
         (transport-failure! "invalid libcurl response destination" true))
-      (let [output (try
-                     (Files/newOutputStream
-                      file
-                      (into-array OpenOption
-                                  [StandardOpenOption/CREATE_NEW
-                                   StandardOpenOption/WRITE]))
-                     (catch Throwable _
-                       (transport-failure!
-                        "S3 response destination could not be created" true)))
-            count (atom 0)]
-        {:output output
-         :write! (fn [bytes]
-                   (.write output bytes 0 (alength bytes))
-                   (swap! count + (alength bytes)))
-         :result (fn [] {:byte-count @count})
-         :close! (fn [] (.close output))
-         :cleanup! (fn [] (Files/deleteIfExists file))}))))
+      ;; Select or reject the host before invoking POSIX permission shims.
+      (let [flags (posix-file-flags)]
+        (secure-destination-parent! file)
+        (let [[fd _] (c-open (str file) flags mode-0600)]
+          (when (neg? fd)
+            (transport-failure!
+             "S3 response destination could not be created" true))
+          (try
+            (let [count (atom 0)
+                  closed? (atom false)]
+              {:write-pointer! (fn [pointer n]
+                                 (write-all-fd! fd pointer n)
+                                 (swap! count + n))
+               :result (fn [] {:byte-count @count})
+               :close! (fn []
+                         (when (compare-and-set! closed? false true)
+                           (let [[result _] (c-close fd)]
+                             (when (neg? result)
+                               (transport-failure!
+                                "S3 response destination could not be closed"
+                                false)))))
+               :cleanup! (fn [] (Files/deleteIfExists file))})
+            (catch Throwable _
+              (discard-owned-file! fd file)
+              (transport-failure!
+               "S3 response destination setup failed" true))))))))
 
 (defn- request-reader [request-body]
   (when request-body
@@ -246,7 +323,9 @@
                    (fn [pointer size nitems _]
                      (let [n (callback-size size nitems)]
                        (try
-                         ((:write! response-sink) (ffi/read-array pointer n))
+                         (if-let [write-pointer! (:write-pointer! response-sink)]
+                           (write-pointer! pointer n)
+                           ((:write! response-sink) (ffi/read-array pointer n)))
                          n
                          (catch Throwable error
                            (reset! callback-error error)

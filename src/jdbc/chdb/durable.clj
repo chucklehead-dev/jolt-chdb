@@ -8,15 +8,15 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto])
-  (:import [java.io File FileInputStream]
+  (:import [java.io File]
            [java.nio.file CopyOption Files Path Paths StandardCopyOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
-           [java.security MessageDigest]
            [java.util UUID]))
 
 (def reader-backup-format 1)
@@ -141,23 +141,6 @@
                            :cause-class (some-> error class str)}))))))
   nil)
 
-(defn- sha256-file [path]
-  (let [digest (MessageDigest/getInstance "SHA-256")
-        buffer (byte-array 65536)]
-    (with-open [input (FileInputStream. (.toFile ^Path path))]
-      (loop []
-        (let [n (.read input buffer)]
-          (when (pos? n)
-            ;; Jolt's current MessageDigest shim implements the byte-array
-            ;; overload portably; keep recovery streaming by copying only the
-            ;; live portion of this bounded chunk.
-            (.update digest (if (= n (alength buffer))
-                              buffer
-                              (java.util.Arrays/copyOf buffer n)))
-            (recur)))))
-    (apply str
-           (map #(format "%02x" (bit-and (int %) 255)) (.digest digest)))))
-
 (defn- download-reference! [store scratch label reference max-bytes]
   (let [size (get reference "size")]
     (when (and max-bytes (> size max-bytes))
@@ -172,7 +155,7 @@
           (when-not (and (= size (:byte-count result))
                          (= size (Files/size attempt)))
             (fail! ::corrupt "A Durable recovery object has the wrong size"))
-          (when-not (= (get reference "sha256") (sha256-file attempt))
+          (when-not (= (get reference "sha256") (digest/sha256-file attempt))
             (fail! ::corrupt "A Durable recovery object has the wrong digest"))
           (Files/move attempt final atomic-move-options)
           final)

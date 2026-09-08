@@ -38,8 +38,9 @@ Important limits:
   processes. It is not qualified for NFS, SMB, or external writers.
 - The S3 path is checked against a semantic transport, a loopback libcurl
   server, pinned MinIO, and an environment-protected live AWS OIDC lane.
-  Large-checkpoint memory evidence, injected real-transport timeout boundaries,
-  and more corruption cases remain work in progress.
+  The loopback path also has bounded-memory 32/64/128 MiB checkpoint evidence.
+  Additional injected real-transport timeout boundaries and more corruption
+  cases remain work in progress.
 - WAL records contain complete SQL strings. Parameterized mutations are
   supported through full-checkpoint fallback; streaming inserts remain outside
   the Durable writer contract. Reads also support bound parameters.
@@ -206,7 +207,7 @@ path until your provider and failure boundaries have been qualified.
 | `:lease-ttl-ms` | Writer lease lifetime; defaults to 30 seconds. |
 | `:heartbeat-interval-ms` | Renewal interval; defaults to one third of the TTL and may not exceed that bound. |
 | `:clock-skew-ms` | Extra time before normal expired-lease takeover; defaults to zero. |
-| `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. |
+| `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
 
 ## Persistence and recovery
@@ -468,7 +469,7 @@ Current CI separates the claims:
   properties, the local POSIX process checks, and the loopback libcurl gate on
   Linux;
 - [`durable-s3-qualification`](../.github/workflows/durable-s3.yml) adds the
-  semantic S3 suite and pinned MinIO;
+  semantic S3 suite, bounded-memory large-checkpoint gate, and pinned MinIO;
 - [`durable-native-qualification`](../.github/workflows/durable-native.yml)
   runs the upstream C oracle and the Jolt native ABI, classification,
   backup/restore, and local WAL/checkpoint recovery suite against chDB
@@ -483,8 +484,8 @@ Current CI separates the claims:
   passed the live provider suite.
 
 The next confidence-building work is a larger process-crash and corruption
-matrix around flush/checkpoint cuts, large-transfer memory evidence, injected
-real-transport failures, and the remaining native platform runners. Those are
+matrix around flush/checkpoint cuts, injected real-transport failures, and the
+remaining native platform runners. Those are
 pending tests and qualifications, not hidden features of the current
 implementation.
 

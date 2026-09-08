@@ -91,6 +91,9 @@
            :durable-s3-provider-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-s3-provider-test"]}
+           :durable-large-checkpoint-qualification
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-large-checkpoint-qualification"]}
            :durable-local-worker
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-local-worker"]}

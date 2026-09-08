@@ -5,7 +5,7 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-curl :as s3-curl])
   (:import [java.nio.file Files OpenOption StandardOpenOption]
-           [java.nio.file.attribute FileAttribute]))
+           [java.nio.file.attribute FileAttribute PosixFilePermissions]))
 
 (def failures (atom 0))
 
@@ -283,15 +283,21 @@
                (get reference "key")]))
       (check "negative control visits exactly one native timeout"
              1 (count @transport-errors)))
-    (let [source (Files/createTempFile
-                  "jchdb-curl-upload-" ".bin" (make-array FileAttribute 0))
-          target (Files/createTempFile
-                  "jchdb-curl-download-" ".bin" (make-array FileAttribute 0))
-          missing (Files/createTempFile
-                   "jchdb-curl-missing-" ".bin" (make-array FileAttribute 0))
-          truncated (Files/createTempFile
-                     "jchdb-curl-truncated-" ".bin"
-                     (make-array FileAttribute 0))]
+    (let [directory (Files/createTempDirectory
+                     "jchdb-curl-files-" (make-array FileAttribute 0))
+          _ (Files/setPosixFilePermissions
+             directory (PosixFilePermissions/fromString "rwx------"))
+          unsafe-directory (Files/createTempDirectory
+                            "jchdb-curl-unsafe-"
+                            (make-array FileAttribute 0))
+          _ (Files/setPosixFilePermissions
+             unsafe-directory (PosixFilePermissions/fromString "rwxrwx---"))
+          source (.resolve directory "upload.bin")
+          target (.resolve directory "download.bin")
+          missing (.resolve directory "missing.bin")
+          truncated (.resolve directory "truncated.bin")
+          unsupported (.resolve directory "unsupported.bin")
+          unsafe-target (.resolve unsafe-directory "download.bin")]
       (try
         (Files/write source (byte-array [1 2 3 4 5])
                      (make-array OpenOption 0))
@@ -308,6 +314,28 @@
                 store "checkpoints/test.tar" target))
         (check "streamed file bytes remain exact"
                [1 2 3 4 5] (vec (Files/readAllBytes target)))
+        (check "download collision preserves the existing destination"
+               [::s3/transport [1 2 3 4 5]]
+               [(error-type #(backend/download-to-file!
+                              store "checkpoints/test.tar" target))
+                (vec (Files/readAllBytes target))])
+        (check "streamed download rejects a writable shared parent"
+               [::s3/transport false]
+               [(error-type #(backend/download-to-file!
+                              store "checkpoints/test.tar" unsafe-target))
+                (Files/exists unsafe-target
+                              (make-array java.nio.file.LinkOption 0))])
+        (let [original-os-name (System/getProperty "os.name")]
+          (try
+            (System/setProperty "os.name" "Windows")
+            (check "unsupported streamed destination fails sanitized and clean"
+                   [::s3/transport false]
+                   [(error-type #(backend/download-to-file!
+                                  store "checkpoints/test.tar" unsupported))
+                    (Files/exists unsupported
+                                  (make-array java.nio.file.LinkOption 0))])
+            (finally
+              (System/setProperty "os.name" original-os-name))))
         (check "404 download is reported without a destination artifact"
                [{:status :not-found} false]
                [(backend/download-to-file! store "missing" missing)
@@ -322,7 +350,13 @@
           (Files/deleteIfExists source)
           (Files/deleteIfExists target)
           (Files/deleteIfExists missing)
-          (Files/deleteIfExists truncated)))))
+          (Files/deleteIfExists truncated)
+          (Files/deleteIfExists unsupported)
+          (Files/deleteIfExists directory)
+          (Files/setPosixFilePermissions
+           unsafe-directory (PosixFilePermissions/fromString "rwx------"))
+          (Files/deleteIfExists unsafe-target)
+          (Files/deleteIfExists unsafe-directory)))))
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " libcurl transport checks failed")
                     {:failures @failures})))
