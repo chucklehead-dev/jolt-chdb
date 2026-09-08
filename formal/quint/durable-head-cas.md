@@ -196,8 +196,34 @@ match an implementation defect.
 
 ## Executable model
 
-The following block tangles to the generated model consumed by the check script.
-Do not edit the generated file; edit this document and rerun the script.
+The following sections tangle, in order, to the generated model consumed by the
+check script. Repeated `+=` fence targets append to the same file. This keeps the
+explanation close to the code without creating separate semantic modules or
+changing the generated Quint.
+
+Do not edit the generated file. Edit these sections and rerun the script. For a
+user-facing view of the runtime around this state machine, start with
+[Durable storage](../../docs/durable.md).
+
+### Types, bounds, and state
+
+The model uses two symbolic writers, two symbolic object contents, and six
+publication attempts. These are finite identities, not strings or UUID
+implementations. The `Reference` type keeps all four facts that make an
+immutable publication safe to commit: content, fresh attempt, lease generation,
+and manifest sequence.
+
+`Head` is the shared `head.json` register at the level needed for the safety
+properties. `WriterState` remembers each writer's fencing generation.
+`PendingReconciliation` represents the interval after an ambiguous CAS is known
+to have landed but before its response is reconciled. `Event` retains complete
+before/after data so properties are checked at the transition where they
+happened, rather than inferred from a later state.
+
+The boolean constants are mutation switches. Every concrete module below binds
+exactly one switch, or none for the corrected model. `MAX_GENERATION` and
+`MAX_SEQUENCE` close the state space at values reachable within the six-step
+analysis; they are model bounds, not runtime limits.
 
 ```quint target/formal/quint/durableHeadCas.qnt +=
 // Durable V1 lease/head-CAS model.
@@ -363,6 +389,22 @@ module durableHeadCas {
 
   var state: State
 
+```
+
+### Acquisition and immutable publication
+
+Acquisition increments the shared generation and stores the same generation in
+the chosen writer's token. This is the abstract fencing event: another acquire
+can make that remembered token stale without changing the older writer's local
+state.
+
+Publication creates an exact immutable reference and records the attempt as
+used. It deliberately does not change `head`. Publication-before-commit is
+therefore visible in the state, and attempt reuse can be isolated as its own
+mutant. The runtime UUID is represented only by `AttemptId`; random generation,
+key encoding, hashing, and provider I/O do not affect these invariants.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   pure def applyAcquire(s: State, writer: WriterId): State = {
     val nextHead = {
       ...s.head,
@@ -440,6 +482,23 @@ module durableHeadCas {
     }
   }
 
+```
+
+### Ownership and commit evaluation
+
+`tokenOwns` is the corrected fencing rule: both writer identity and remembered
+generation must match the current head. The stale-ownership mutant changes only
+that decision, making it possible to distinguish a useful red control from an
+unrelated broken model.
+
+The two projection functions erase information in stages. First they remove the
+physical publication attempt, leaving content plus generation and sequence;
+then they reduce a reference to content alone. The commit evaluator records
+whether ownership and publication proofs held, whether the CAS applied, and
+the resulting head. Keeping these facts in the event is what lets later
+invariants prove the transition rather than merely inspect its final value.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   pure def tokenOwns(
     snapshot: Head,
     writer: WriterId,
@@ -563,6 +622,22 @@ module durableHeadCas {
     }
   }
 
+```
+
+### Ambiguous CAS, renewal, and release
+
+A normal confirmed or dropped commit is evaluated in one model transition. A
+landed ambiguous commit is split into begin, optional same-owner renewal, and
+reconcile transitions. This split is essential: it checks that reconciliation
+uses the expected reference, sequence, and current ownership rather than exact
+equality with an old whole-head snapshot whose lease revision may legitimately
+have changed.
+
+Release uses the same token rule and preserves generation. None of these
+functions models retries or elapsed time; it models only the state visible at
+the provider's serialized decision points.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   pure def applyBeginAmbiguousLanded(
     s: State,
     writer: WriterId,
@@ -672,6 +747,22 @@ module durableHeadCas {
     }
   }
 
+```
+
+### Initial state and protocol actions
+
+The initial head is released at generation one with no committed reference.
+All writer tokens, publication attempts, and event history start empty. This is
+the same initial boundary as the SMT model; missing-head creation and lease
+expiry eligibility are intentionally outside this model.
+
+The actions below are thin wrappers around the pure transition functions. Their
+guards disable invalid actions: a publication attempt cannot be reused in the
+corrected model, an ambiguous reconciliation must already be pending, and no
+other operation can interleave where the model intentionally requires a single
+serialized decision.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   action init: bool = all {
     state' = {
       head: {
@@ -759,6 +850,21 @@ module durableHeadCas {
     state' = applyRelease(state, evaluateRelease(state, writer)),
   }
 
+```
+
+### Event predicates and per-transition safety
+
+These pure predicates explain what a single recorded event is allowed to do.
+They check acquisition, publication freshness, generation and sequence changes,
+stale rejection, acknowledged and failed commits, release, and the two
+information-erasing refinement steps.
+
+Because every event contains its own before/after snapshots, a later
+publication cannot retroactively make an earlier invalid commit appear safe.
+The predicates are also reusable by deterministic tests and reachability
+witnesses; they do not mutate model state.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   pure def isAcquisition(event: Event): bool =
     match event {
       | Acquired(_) => true
@@ -976,6 +1082,23 @@ module durableHeadCas {
         }
     }
 
+```
+
+### State invariants and refinement monitors
+
+The `val` definitions lift the per-event checks over the reachable history and
+check the current head. The central safety statements are that stale writers
+cannot change the head, every committed reference names a prior exact
+publication, sequences do not regress, and an acknowledged commit has the
+operation-specific result it claims.
+
+`lastTransitionRefinesExactView` and
+`lastTransitionRefinesContentView` are local inductive monitors. They check each
+exact transition against the two simpler views without quantifying over every
+possible history. Passing them means refinement held for every transition in
+the bounded reachable state graph; it is not an unbounded proof of the runtime.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   val generationWithinBound: bool =
     state.head.generation >= 1 and state.head.generation <= MAX_GENERATION
 
@@ -1049,6 +1172,22 @@ module durableHeadCas {
             == SomeGeneration(state.head.generation)
     }
 
+```
+
+### Reachability and the ITF command boundary
+
+Safety checks are useful only when the important actions can actually happen.
+The reachability values require acquisition, publication, both confirmed and
+reconciled commit, an unprovable ambiguous drop, stale rejection, release, and
+renewal during reconciliation to appear in sampled traces.
+
+The `choose...` actions supply finite nondeterministic parameters. `step` is the
+full analysis transition relation, including the multi-step ambiguous path.
+`legacyStep` keeps the four-command model-based-testing vocabulary consumed by
+the ADR-015 ITF adapter. It intentionally collapses provider internals so each
+ITF state maps to one implementation command and its nondeterministic picks.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
   val acquisitionReached: bool =
     state.events.indices().exists(i => isAcquisition(state.events.nth(i)))
 
@@ -1135,6 +1274,18 @@ module durableHeadCas {
   }
 }
 
+```
+
+### Corrected and single-fault modules
+
+The generic module cannot run until all bounds and mutation switches are bound.
+`durableHeadCasCorrected` disables every fault. Each remaining module enables
+exactly one fault while keeping the same bounds and transition engine. The test
+and model-checking commands therefore compare like with like: a corrected
+property must pass while its matching mutant produces a concrete witness or
+counterexample.
+
+```quint target/formal/quint/durableHeadCas.qnt +=
 module durableHeadCasCorrected {
   import durableHeadCas(
     MAX_GENERATION = 7,
@@ -1229,8 +1380,12 @@ module durableHeadCasWholeHeadReconciliationMutant {
 
 ## Executable boundary and mutation tests
 
-These deterministic traces tangle beside the generated model so relative imports
-remain stable.
+These deterministic traces tangle beside the generated model so relative
+imports remain stable. The corrected examples make the expected boundary
+behavior concrete: acquire/publish/commit, stale rejection, ambiguous landing
+with an intervening renewal, ambiguous drop, and release. Each example checks
+both the visible head and the relevant safety predicate, so it is more than a
+reachability demonstration.
 
 ```quint target/formal/quint/durableHeadCasTest.qnt +=
 // Deterministic boundaries and mutation witnesses for durableHeadCas.qnt.
@@ -1334,6 +1489,21 @@ module durableHeadCasCorrectedTest {
       })
 }
 
+```
+
+### Deterministic mutation witnesses
+
+The modules below are deliberately expected to exhibit bad behavior. Each uses
+the same transition engine and switches on one fault: stale ownership, wrong
+reference generation, wrong sequence, attempt reuse, committing a different
+attempt, or reconciling by whole-head equality. A witness test passes only when
+that named fault is reachable. The bounded verification gate separately
+requires the corresponding invariant to produce a counterexample.
+
+These red controls matter because a corrected invariant that also passes after
+its fault is injected is probably too weak or unreachable.
+
+```quint target/formal/quint/durableHeadCasTest.qnt +=
 module durableHeadCasMutantTest {
   import durableHeadCas(
     MAX_GENERATION = 7,
@@ -1506,6 +1676,12 @@ separate from head CAS: exact reread evidence is the only path from an
 ambiguous acknowledgement to success. A dropped request remains ambiguous,
 and a known conflicting object is an integrity failure.
 
+This smaller model has one state variable because it describes a single object
+publication attempt, not the lease/head protocol. `PublicationMode` is the
+provider outcome, `StoredObject` is what a reread can prove, and
+`PublicationResult` is the result visible to the control plane. The mutation
+switch changes only the ambiguous-dropped result.
+
 ```quint target/formal/quint/durablePublicationAck.qnt +=
 module durablePublicationAck {
   type PublicationMode =
@@ -1535,6 +1711,17 @@ module durablePublicationAck {
 
   var publicationState: PublicationState
 
+```
+
+### Publication transition and safety property
+
+`transitionFor` spells out all five provider outcomes. In particular,
+`AmbiguousLanded` succeeds only because reread finds the exact object, while
+`AmbiguousDropped` remains unprovable. `acknowledgementIsSound` restates that
+case split independently as the invariant checked by simulation and Apalache.
+The two witnesses ensure both ambiguous paths are reachable.
+
+```quint target/formal/quint/durablePublicationAck.qnt +=
   pure def transitionFor(mode: PublicationMode): PublicationState =
     match mode {
       | ConfirmedCreate => {
@@ -1607,6 +1794,15 @@ module durablePublicationAck {
     publicationState.mode == AmbiguousDropped
 }
 
+```
+
+### Corrected and acknowledgement-mutant instances
+
+As in the main model, the corrected and mutant modules share all state and
+transition definitions. The mutant incorrectly reports a dropped request as
+reconciled, which must violate `publicationAcknowledgementIsSound`.
+
+```quint target/formal/quint/durablePublicationAck.qnt +=
 module durablePublicationAckCorrected {
   import durablePublicationAck(
     USE_DROPPED_AS_RECONCILED_MUTANT = false
@@ -1619,6 +1815,10 @@ module durablePublicationAckMutant {
   ).* from "./durablePublicationAck"
 }
 ```
+
+The corrected tests exercise landed, dropped, matching-existing, and
+conflicting-existing objects. The final test is a positive witness for the
+single fault: it succeeds only when the mutant violates the soundness property.
 
 ```quint target/formal/quint/durablePublicationAckTest.qnt +=
 module durablePublicationAckCorrectedTest {
@@ -1655,6 +1855,15 @@ module durablePublicationAckCorrectedTest {
       })
 }
 
+```
+
+### Publication mutation witness
+
+Keeping this witness in its own module prevents the intentionally invalid
+result from being confused with the corrected examples or selected by their
+test command.
+
+```quint target/formal/quint/durablePublicationAckTest.qnt +=
 module durablePublicationAckMutantTest {
   import durablePublicationAck(
     USE_DROPPED_AS_RECONCILED_MUTANT = true

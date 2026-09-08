@@ -49,6 +49,60 @@ These limits make Durable useful for development, qualification, and controlled
 single-host trials. They also mean it should not yet be presented as a broadly
 qualified production durability layer.
 
+## How the pieces fit
+
+The application uses the ordinary JDBC boundary. Durable owns recovery and the
+serialized reader/writer lifecycle, calls the native chDB ABI for database work,
+and uses one backend interface for local or remote objects. The formal models
+and test tools are external checks on those seams; they are not part of a
+production request.
+
+```mermaid
+flowchart LR
+  subgraph application["Application"]
+    app["Service or application"] --> jdbc["jdbc.core<br/>chdb-durable driver"]
+  end
+
+  subgraph process["Jolt process"]
+    subgraph library["jolt-chdb Durable"]
+      open["Open and recovery"]
+      worker["Reader or writer queue"]
+      control["Lease, fencing, and head CAS"]
+      backend["ObjectBackend"]
+      jdbc --> open
+      open --> worker
+      worker --> control
+      control --> backend
+    end
+    native["Native chDB<br/>query, backup, restore"]
+    scratch[("Private scratch database")]
+    open --> native
+    worker --> native
+    native --> scratch
+  end
+
+  local["Local POSIX provider"]
+  s3["S3-compatible provider<br/>libcurl SigV4"]
+  objects[("Object namespace<br/>head.json, checkpoints, WALs")]
+  backend --> local --> objects
+  backend --> s3 --> objects
+
+  subgraph evidence["External verification"]
+    models["SMT and Quint models"]
+    traces["ITF replay and Hegel"]
+    gates["Native, provider, and fault CI"]
+  end
+  models -.-> control
+  traces -.-> worker
+  traces -.-> control
+  gates -.-> native
+  gates -.-> backend
+```
+
+The arrows from verification tools mean “checks this boundary,” not runtime
+calls. The same `ObjectBackend` contract keeps the lease and manifest code
+independent of the selected provider.
+
 ## Enabling Durable
 
 First qualify the checksum-pinned chDB 26.7.2-rc.2 asset and select it. On
@@ -173,6 +227,36 @@ Opening a writer follows this order:
 4. Run serialized database operations on a bounded queue while an independent
    heartbeat renews the lease.
 
+After a crash, recovery trusts only objects named by the committed head. It
+downloads into private scratch paths, verifies every size and SHA-256 digest,
+then restores the checkpoint and replays WAL statements in manifest order.
+
+```mermaid
+flowchart TD
+  crash["Process exits or crashes"] --> reopen["Open the Durable object"]
+  reopen --> capability{"Durable ABI and<br/>manifest compatible?"}
+  capability -- No --> reject["Fail before engine recovery"]
+  capability -- Yes --> head["Read and validate committed head.json"]
+  head --> role{"Writer open?"}
+  role -- Yes --> lease["Acquire or take over lease<br/>with a new generation"]
+  role -- No --> snapshot["Pin this read-only snapshot"]
+  lease --> scratch["Create private scratch directory"]
+  snapshot --> scratch
+  scratch --> download["Download referenced checkpoint and WALs"]
+  download --> verify{"Sizes and SHA-256<br/>all match?"}
+  verify -- No --> cleanup["Fail, close, and clean scratch"]
+  verify -- Yes --> restore["Restore checkpoint or create database"]
+  restore --> replay["Replay WALs in manifest order"]
+  replay --> readyRole{"Writer?"}
+  readyRole -- Yes --> renew["Renew lease after recovery"]
+  readyRole -- No --> ready["Return immutable reader"]
+  renew --> readyWriter["Return serialized writer"]
+```
+
+An upload that was never committed into `head.json` is unreachable and is not
+replayed. A writer is not returned until recovery finishes and its lease is
+renewed; a reader never changes lease state.
+
 Every mutation and flush checks locally known lease expiry before it changes
 state. Every manifest update rereads ownership and requires the same owner,
 instance, and generation. Once that read shows an older generation, the writer
@@ -202,6 +286,57 @@ successfully return from `flush!` (or `checkpoint!`) first. A crash before that
 boundary can lose the in-process WAL buffer. A crash after an immutable object
 upload but before its manifest commit may leave an unreachable object, but
 recovery ignores anything not referenced by the committed head.
+
+The acknowledgement path has two conditional publications. First the WAL
+object must exist with the exact expected bytes. Then `head.json` must point to
+that reference at the next sequence. A lost provider response is reconciled by
+rereading state; it is never treated as proof of failure or success by itself.
+
+```mermaid
+sequenceDiagram
+  participant A as Application
+  participant W as Writer queue
+  participant C as Durable control
+  participant B as Object backend
+
+  A->>W: execute mutation
+  W->>W: apply locally and buffer SQL
+  A->>W: flush!
+  W->>C: publish WAL bytes
+  C->>B: conditional create immutable WAL
+  alt create response is confirmed
+    B-->>C: created or matching existing object
+  else create response is uncertain
+    B--xC: response lost
+    C->>B: reread unique WAL key
+    B-->>C: exact, missing, or different object
+  end
+  C->>B: read head.json and current ETag
+  B-->>C: head, ownership, and ETag
+  C->>B: verify referenced WAL
+  B-->>C: exact size and digest
+  C->>B: replace head.json with If-Match
+  alt head CAS response is confirmed
+    B-->>C: replaced
+    C-->>W: committed
+  else head CAS response is uncertain
+    B--xC: response lost
+    C->>B: reread head.json
+    alt expected reference, sequence, and ownership are present
+      B-->>C: exact committed state
+      C-->>W: reconciled
+    else intended transition cannot be proved
+      B-->>C: missing, changed, or newly owned state
+      C--xW: ambiguous or lease-fenced error
+    end
+  end
+  W->>W: clear buffer only after proof
+  W-->>A: flush succeeded
+```
+
+Error branches stop before “flush succeeded.” On an unprovable result the
+buffer remains available to the writer, while changed ownership permanently
+fences it.
 
 ## Storage and lease safety
 
