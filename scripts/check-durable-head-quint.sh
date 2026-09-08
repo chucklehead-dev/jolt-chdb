@@ -116,7 +116,7 @@ for witness in \
   staleCommitRejectedReached releaseReached \
   renewalDuringReconciliationReached postRenewalReconciliationReached
 do
-  if ! rg -q "^${witness} was witnessed in [1-9][0-9]* trace" "$sample_log"
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" "$sample_log"
   then
     echo "required witness was not reached: $witness" >&2
     exit 1
@@ -135,7 +135,7 @@ quint run "$publication_model" \
 
 for witness in ambiguousLandedReached ambiguousDroppedReached
 do
-  if ! rg -q "^${witness} was witnessed in [1-9][0-9]* trace" \
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
     "$publication_sample_log"
   then
     echo "required publication witness was not reached: $witness" >&2
@@ -215,7 +215,7 @@ expect_violation() {
   status=$?
   set -e
 
-  if [[ $status -eq 0 ]] || ! rg -q '^\[violation\] Found an issue' "$log"
+  if [[ $status -eq 0 ]] || ! grep -Eq '^\[violation\] Found an issue' "$log"
   then
     cat "$log" >&2
     echo "$slug did not produce the expected counterexample" >&2
@@ -260,7 +260,7 @@ publication_mutant_status=$?
 set -e
 
 if [[ $publication_mutant_status -eq 0 ]] || \
-  ! rg -q '^\[violation\] Found an issue' "$publication_mutant_log"
+  ! grep -Eq '^\[violation\] Found an issue' "$publication_mutant_log"
 then
   cat "$publication_mutant_log" >&2
   echo "publication acknowledgement mutant did not produce a counterexample" >&2
