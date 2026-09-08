@@ -1,0 +1,55 @@
+name: durable-aws-qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  s3-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: aws-durable-ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate AWS qualification configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          REGION: ${{ vars.AWS_DURABLE_REGION }}
+        run: |
+          test -n "$ROLE_ARN"
+          test -n "$BUCKET"
+          test -n "$REGION"
+      - name: Install Jolt v0.8.3
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/jolt-bin"
+          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/v0.8.3/install \
+            | bash -s -- --dir "$install_dir" --version 0.8.3
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Assert Jolt version
+        run: test "$(jolt --version)" = "jolt v0.8.3"
+      - name: Assume the jolt-chdb Durable CI role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          role-session-name: jolt-chdb-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ vars.AWS_DURABLE_REGION }}
+      - name: Qualify Durable semantics against AWS S3
+        env:
+          JOLT_CHDB_S3_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$AWS_SESSION_TOKEN"
+          export JOLT_CHDB_S3_ENDPOINT="https://s3.${AWS_REGION}.amazonaws.com"
+          export JOLT_CHDB_S3_REGION="$AWS_REGION"
+          export JOLT_CHDB_S3_ACCESS_KEY="$AWS_ACCESS_KEY_ID"
+          export JOLT_CHDB_S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
+          export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
+          jolt -M:durable-s3-provider-test
