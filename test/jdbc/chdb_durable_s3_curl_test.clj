@@ -32,7 +32,7 @@
                 :connect-timeout-ms 2000 :timeout-ms 10000})
         _ (check "direct transport signs and streams a request" 200
                  (:status probe))
-        namespace (s3/s3-backend
+        namespace (s3-curl/s3-backend
                    {:endpoint endpoint
                     :bucket "bucket"
                     :prefix "tenant"

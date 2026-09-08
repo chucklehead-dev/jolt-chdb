@@ -1,6 +1,7 @@
 (ns jdbc.chdb.durable.s3-curl
   "Jolt-native libcurl transport for the Durable S3 backend."
   (:require [clojure.string :as str]
+            [jdbc.chdb.durable.s3 :as s3]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.nio.file Files OpenOption StandardOpenOption]))
@@ -329,3 +330,12 @@
                               [:connect-timeout-ms :timeout-ms
                                :max-response-bytes])]
     (fn [request] (request! (merge selected request)))))
+
+(defn s3-backend
+  "Create the S3 ObjectBackend with a statically reachable libcurl transport.
+
+  Compiled Jolt applications should call this entry point so the native
+  transport namespace is retained by AOT reachability analysis."
+  [options]
+  (s3/s3-backend
+   (assoc options :request! (request-function options))))

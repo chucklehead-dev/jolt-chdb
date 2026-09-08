@@ -7,6 +7,12 @@ SigV4 support. It is a namespace
 backend: pass it with `:namespace-backend` and a separate `:object-id`, or scope
 it explicitly with `jdbc.chdb.durable.backend/object-backend`.
 
+Compiled Jolt applications should call
+`jdbc.chdb.durable.s3-curl/s3-backend` directly. That wrapper supplies the same
+transport but also gives the AOT reachability analysis an explicit namespace
+edge; a dynamic default transport lookup alone is insufficient evidence that a
+standalone executable contains the FFI bindings.
+
 The backend emits path-style URLs of the form:
 
 ```text
