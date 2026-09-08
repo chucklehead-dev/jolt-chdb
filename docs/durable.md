@@ -163,6 +163,9 @@ directory synchronization before it reports a successful publication.
 
 A reader does not acquire a lease and cannot call `flush!` or `checkpoint!`.
 It downloads and verifies exactly the manifest snapshot observed at open.
+Integrations can call `durable/connection-role` before performing any writes;
+it returns `:writer` or `:reader` without publishing state, and rejects ordinary
+chDB connections.
 
 ### S3-compatible namespace
 

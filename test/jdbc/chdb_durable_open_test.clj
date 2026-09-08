@@ -284,6 +284,8 @@
                   :owner "jdbc-writer" :instance "jdbc-instance"
                   :database "default" :lease-ttl-ms 300M
                   :operations operations})]
+      (check "Durable writer connection reports its role"
+             :writer (durable/connection-role connection))
       (check "jdbc.core adapter preserves bound parameters for reads"
              [{:value 42}]
              (jdbc/fetch connection ["SELECT ?" 42]))
@@ -360,6 +362,8 @@
                 (jdbc/connection
                  {:vendor "chdb-durable" :backend store :read-only? true
                   :operations operations})]
+      (check "Durable reader connection reports its role"
+             :reader (durable/connection-role connection))
       (check "reader restores only the first immutable manifest snapshot"
              ["INSERT INTO t VALUES (1)"]
              (mapv second (filter #(= :execute (first %)) @calls)))
