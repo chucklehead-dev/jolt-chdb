@@ -55,7 +55,11 @@
     output))
 
 (defn- clear-wal! [writer]
-  (reset! (:wal-state writer) {:lines [] :byte-count 0}))
+  (reset! (:wal-state writer)
+          {:lines [] :byte-count 0 :checkpoint-required? false}))
+
+(defn- require-checkpoint! [writer]
+  (swap! (:wal-state writer) assoc :checkpoint-required? true))
 
 (defn- assert-writable! [writer]
   (when-let [lease-state (:lease-state writer)]
@@ -83,23 +87,30 @@
   ((:query-bytes-native! (:operations writer))
    (:handle writer) sql params options))
 
-(defn- prepare-wal-line! [writer sql]
+(defn- validate-statement-size! [sql]
   (let [statement-bytes (alength (.getBytes sql "UTF-8"))]
     (when (> statement-bytes max-statement-bytes)
       (fail! ::limit-exceeded "Durable SQL statement exceeds 64 MiB"))
-    (let [line (wal-line sql)
+    statement-bytes))
+
+(defn- prepare-wal-line! [writer sql]
+  (validate-statement-size! sql)
+  (let [line (wal-line sql)
           next-segment-bytes (+ (:byte-count @(:wal-state writer))
                                 (alength line))]
-      (when (> next-segment-bytes max-wal-segment-bytes)
-        (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
-      line)))
+    (when (> next-segment-bytes max-wal-segment-bytes)
+      (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
+    line))
 
-(defn- execute-admitted! [writer sql line]
+(defn- execute-admitted! [writer sql params line]
   (let [result ((:execute-native! (:operations writer))
-                (:handle writer) sql)]
-    ;; Local failure must not create a replay record. Once local execution
-    ;; succeeds, the exact statement becomes part of the pending WAL.
-    (append-wal! writer line)
+                (:handle writer) sql params)]
+    ;; Local failure must not create recovery state. An exact materialized
+    ;; statement enters V1 WAL; a bound mutation instead requires a full
+    ;; checkpoint because V1 has no typed-parameter WAL record.
+    (if line
+      (append-wal! writer line)
+      (require-checkpoint! writer))
     result))
 
 (defn- do-execute! [writer sql]
@@ -108,7 +119,7 @@
   (let [line (prepare-wal-line! writer sql)]
     ((:analyze-execute! (:operations writer))
      (:handle writer) sql (:database writer))
-    (execute-admitted! writer sql line)))
+    (execute-admitted! writer sql [] line)))
 
 (defn- do-sql! [writer sql params]
   (require-string! sql "sql")
@@ -128,31 +139,40 @@
       (do
         (assert-writable! writer)
         (policy/authorize-execute! analysis)
-        (when (seq params)
-          (fail! ::parameters-not-durable
-                 "Durable mutations require fully materialized SQL"))
-        (execute-admitted! writer sql (prepare-wal-line! writer sql)))
+        (let [line (if (seq params)
+                     (do (validate-statement-size! sql) nil)
+                     (prepare-wal-line! writer sql))]
+          (execute-admitted! writer sql params line)))
 
       (policy/authorize-query! analysis))))
 
+(declare do-checkpoint!)
+
 (defn- do-flush! [writer]
   (assert-writable! writer)
-  (if (zero? (:byte-count @(:wal-state writer)))
-    {:status :empty}
-    (let [payload (joined-wal writer)
-          committed
-          (locking (:head-lock writer)
-            (let [publication ((:publish-wal! (:operations writer))
-                               (:store writer) (:token writer) payload)]
-              ((:commit-reference! (:operations writer))
-               (:store writer) (:token writer)
-               {:kind :wal
-                :reference (:reference publication)
-                :verify-reference! control/verify-byte-reference!})))]
-      ;; Retain the complete pending buffer on every failure. Only a confirmed
-      ;; or reconciled head commit proves that replay can recover these writes.
-      (clear-wal! writer)
-      committed)))
+  (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
+    (cond
+      checkpoint-required?
+      (do-checkpoint! writer)
+
+      (zero? byte-count)
+      {:status :empty}
+
+      :else
+      (let [payload (joined-wal writer)
+            committed
+            (locking (:head-lock writer)
+              (let [publication ((:publish-wal! (:operations writer))
+                                 (:store writer) (:token writer) payload)]
+                ((:commit-reference! (:operations writer))
+                 (:store writer) (:token writer)
+                 {:kind :wal
+                  :reference (:reference publication)
+                  :verify-reference! control/verify-byte-reference!})))]
+        ;; Retain the complete pending buffer on every failure. Only a confirmed
+        ;; or reconciled head commit proves that replay can recover these writes.
+        (clear-wal! writer)
+        committed))))
 
 (defn- do-checkpoint! [writer]
   (assert-writable! writer)
@@ -330,8 +350,8 @@
           :query-native! (fn [handle sql params]
                            (chdb/execute-any handle sql params))
           :query-bytes-native! chdb/execute-query-bytes-handle
-          :execute-native! (fn [handle sql]
-                             (chdb/execute-any handle sql []))
+          :execute-native! (fn [handle sql params]
+                             (chdb/execute-any handle sql params))
           :publish-wal! control/publish-wal-bytes!
           :publish-checkpoint! control/publish-checkpoint-file!
           :commit-reference! control/commit-reference!
@@ -368,7 +388,8 @@
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) (Object.)
                   (atom :open) (promise)
-                  (atom {:lines [] :byte-count 0}) (Object.)
+                  (atom {:lines [] :byte-count 0
+                         :checkpoint-required? false}) (Object.)
                   (when lease-expiry
                     (atom {:expires-at lease-expiry :fenced? false}))
                   (promise) operations nil nil)
@@ -427,8 +448,10 @@
         (if error (throw error) value)))))
 
 (defn status [writer]
-  (let [{:keys [lines byte-count]} @(:wal-state writer)]
+  (let [{:keys [lines byte-count checkpoint-required?]}
+        @(:wal-state writer)]
     {:lifecycle @(:lifecycle writer)
      :writable? (not (true? (:fenced? (some-> (:lease-state writer) deref))))
      :pending-wal-bytes byte-count
-     :pending-statements (count lines)}))
+     :pending-statements (count lines)
+     :checkpoint-required? (boolean checkpoint-required?)}))

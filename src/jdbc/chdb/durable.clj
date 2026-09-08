@@ -256,7 +256,8 @@
    :query-native! (fn [handle sql params]
                     (chdb/execute-any handle sql params))
    :query-bytes-native! chdb/execute-query-bytes-handle
-   :execute-native! (fn [handle sql] (chdb/execute-any handle sql []))})
+   :execute-native! (fn [handle sql params]
+                      (chdb/execute-any handle sql params))})
 
 (def ^:private recovery-operation-keys
   [:create-scratch! :cleanup-scratch! :open-native! :close-native!
@@ -285,7 +286,7 @@
                   writer/max-wal-segment-bytes)]
         (doseq [sql (decode-wal! path)]
           ((:analyze-execute! operations) handle sql logical-database)
-          ((:execute-native! operations) handle sql))))
+          ((:execute-native! operations) handle sql []))))
     logical-database))
 
 (defn open-reader!
@@ -414,10 +415,12 @@
     handle))
 
 (defn flush!
-  "Flush the pending statement WAL of a Durable JDBC writer connection.
+  "Commit the pending recovery state of a Durable JDBC writer connection.
 
-  The call returns only after the manifest CAS is confirmed or reconciled.
-  Other driver types and read-only Durable connections fail closed."
+  Materialized mutations publish statement WAL. If a native bound mutation is
+  pending, the call publishes a full checkpoint instead. It returns only after
+  the manifest CAS is confirmed or reconciled. Other driver types and read-only
+  Durable connections fail closed."
   [connection]
   (shim/extension-operation
    #(writer/flush! (jdbc-writer-handle connection))))
@@ -434,9 +437,9 @@
 (def durable-driver
   "`jdbc.core` adapter for map dbspecs carrying a scoped Durable backend.
 
-  Read parameters remain native bound values because reads never enter the
-  WAL. V1 mutations must arrive as fully materialized SQL and are rejected when
-  `params` is non-empty."
+  Reads and mutations retain native bound values. Because V1 statement WAL has
+  no typed-parameter record, a successful parameterized mutation makes the next
+  flush or close publish a full checkpoint."
   (reify driver/Driver
     (descriptor [_]
       {:id :chdb-durable
@@ -446,7 +449,7 @@
        :capabilities {:transactions :none :generated-keys :none
                       :query-bytes chdb/query-bytes-capability}
        :constraints {:active-storage-paths :one-per-process
-                     :mutation-parameters :materialized-sql-only}
+                     :mutation-parameters :checkpoint-fallback}
        :schema-sql nil})
     (open-handle [_ spec]
       (when-not (map? spec)

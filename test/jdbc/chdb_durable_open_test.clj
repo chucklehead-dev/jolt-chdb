@@ -95,7 +95,7 @@
                           {:byte-count 3 :bytes (byte-array [1 2 3])})
    :analyze-execute! (fn [_ sql database]
                        (swap! calls conj [:analyze-execute sql database]))
-   :execute-native! (fn [_ sql]
+   :execute-native! (fn [_ sql _]
                       (swap! calls conj [:execute sql])
                       {:sql sql})})
 
@@ -274,7 +274,9 @@
                (fn [_ _ params]
                  {:labels ["value"] :rows [[(first params)]] :count 1})
                :execute-native!
-               (fn [_ _] {:labels [] :rows [] :count 0}))]
+               (fn [_ sql params]
+                 (swap! calls conj [:jdbc-execute sql (vec params)])
+                 {:labels [] :rows [] :count 0}))]
     (with-open [connection
                 (jdbc/connection
                  {:vendor "chdb-durable"
@@ -294,6 +296,15 @@
              0 (jdbc/execute! connection "INSERT INTO t VALUES (42)"))
       (check "Durable JDBC flush publishes the pending WAL"
              :committed (:status (durable/flush! connection)))
+      (check "jdbc.core admits a native bound Durable mutation"
+             0 (jdbc/execute! connection
+                              ["INSERT INTO t VALUES (?)" 43]))
+      (check "Durable JDBC flush checkpoints bound values"
+             :committed (:status (durable/flush! connection)))
+      (check "the native operation receives the original bound value"
+             true (boolean
+                   (some #{[:jdbc-execute "INSERT INTO t VALUES (?)" [43]]}
+                         @calls)))
       (jdbc/execute! connection "INSERT INTO t VALUES (43)")
       (check "Durable JDBC checkpoint publishes the complete database"
              :committed (:status (durable/checkpoint! connection))))
@@ -302,7 +313,7 @@
            [(get-in (:head (control/read-head! store)) ["lease" "owner"])
             @close-count @cleanup-count])
     (check "checkpoint replaces earlier WAL at the JDBC extension boundary"
-           [2 true []]
+           [3 true []]
            (let [head (:head (control/read-head! store))]
              [(get-in head ["manifest" "seq"])
               (some? (get-in head ["manifest" "base"]))

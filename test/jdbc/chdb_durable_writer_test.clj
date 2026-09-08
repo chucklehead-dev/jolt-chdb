@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [hegel.core :as h]
             [hegel.stateful :as hs]
+            [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.writer :as writer]
@@ -44,7 +45,7 @@
                      (swap! calls conj [:analyze-query sql database]))
    :analyze-execute! (fn [_ sql database]
                        (swap! calls conj [:analyze-execute sql database]))
-   :execute-native! (fn [_ sql]
+   :execute-native! (fn [_ sql _]
                       (swap! calls conj [:execute sql])
                       {:sql sql})
    :query-native! (fn [_ sql _]
@@ -52,6 +53,26 @@
                     {:sql sql})
    :close-native! (fn [_] (swap! close-count inc))
    :cleanup-scratch! (fn [] nil)})
+
+(defn- model-checkpoint-operations [calls close-count]
+  (let [bytes (.getBytes "abc" "UTF-8")]
+    (assoc (fake-operations calls close-count)
+           :create-checkpoint! (fn [_ _] :model-checkpoint)
+           :delete-checkpoint! (fn [_] nil)
+           :publish-checkpoint!
+           (fn [store token _]
+             (let [sequence (inc (get-in (:head (control/read-head! store))
+                                         ["manifest" "seq"]))
+                   reference
+                   {"key" (str "checkpoints/" (:generation token) "-"
+                               sequence "-" (format "%08x" sequence)
+                               ".tar.gz")
+                    "size" 3
+                    "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]
+               (backend/put-bytes-if-absent!
+                store (get reference "key") bytes)
+               {:status :published :reference reference}))
+           :verify-checkpoint-reference! control/verify-byte-reference!)))
 
 (defn- ambiguous-head-store [delegate]
   (reify backend/ObjectBackend
@@ -103,7 +124,8 @@
            (writer/query! writer "SELECT 1"))
     (check "query does not enter the statement WAL"
            {:lifecycle :open :writable? true
-            :pending-wal-bytes 0 :pending-statements 0}
+            :pending-wal-bytes 0 :pending-statements 0
+            :checkpoint-required? false}
            (writer/status writer))
     (writer/execute! writer "INSERT INTO t VALUES (1)")
     (writer/execute! writer "INSERT INTO t VALUES (2)")
@@ -149,20 +171,148 @@
       (check "limit rejection has no engine side effect" [] @calls)
       (finally (writer/close! writer))))
 
-  (let [{:keys [writer]} (new-writer)]
+  (let [{:keys [writer calls]} (new-writer)]
+    (try
+      (with-redefs [writer/max-statement-bytes 3]
+        (check "bound mutation SQL retains the same pre-engine size limit"
+               ::writer/limit-exceeded
+               (error-type #(writer/sql! writer "1234" [42]))))
+      (check "bound mutation limit rejection has no engine side effect"
+             [] @calls)
+      (finally (writer/close! writer))))
+
+  (let [secret "durable-invalid-bound-secret"
+        calls (atom [])
+        close-count (atom 0)
+        operations (assoc (fake-operations calls close-count)
+                          :classification-sql! chdb/classification-sql)
+        {:keys [writer]} (new-writer calls close-count operations)
+        error (try
+                (writer/sql! writer "INSERT INTO t VALUES (?)"
+                             [{:secret secret}])
+                nil
+                (catch Throwable thrown thrown))]
+    (try
+      (check "invalid bound values fail before native execution"
+             true (some? error))
+      (check "invalid bound-value diagnostics do not retain the value"
+             false (str/includes? (pr-str [(ex-message error)
+                                           (ex-data error)])
+                                  secret))
+      (check "invalid bound values have no engine side effect" [] @calls)
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        publications (atom [])
+        operations
+        (assoc (fake-operations calls close-count)
+               :execute-native!
+               (fn [_ sql params]
+                 (swap! calls conj [:execute sql (vec params)])
+                 {:sql sql :params (vec params)})
+               :create-checkpoint!
+               (fn [_ _]
+                 (swap! calls conj [:backup])
+                 :checkpoint-path)
+               :delete-checkpoint! (fn [_] nil)
+               :publish-checkpoint!
+               (fn [_ _ _]
+                 (swap! publications conj :checkpoint)
+                 {:status :published
+                  :reference {"key" "checkpoints/1-1-00000012.tar.gz"
+                              "size" 3
+                              "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}})
+               :publish-wal!
+               (fn [_ _ _]
+                 (swap! publications conj :wal)
+                 (throw (ex-info "WAL must not publish" {})))
+               :commit-reference!
+               (fn [_ _ request]
+                 (swap! calls conj [:commit (:kind request)])
+                 {:status :committed}))
+        {:keys [writer]} (new-writer calls close-count operations)]
     (try
       (check "generic SQL routing preserves read-only parameters"
              {:sql "SELECT ?"}
              (writer/sql! writer "SELECT ?" [42]))
-      (check "parameterized mutations fail before engine execution"
-             ::writer/parameters-not-durable
-             (error-type #(writer/sql! writer "INSERT INTO t VALUES (?)" [42])))
-      (check "rejected mutation parameters append no WAL"
-             0 (:pending-statements (writer/status writer)))
+      (check "parameterized mutations preserve native bound values"
+             {:sql "INSERT INTO t VALUES (?)" :params [42]}
+             (writer/sql! writer "INSERT INTO t VALUES (?)" [42]))
+      (check "bound mutations require a checkpoint without entering V1 WAL"
+             [true 0 0]
+             ((juxt :checkpoint-required? :pending-statements
+                    :pending-wal-bytes)
+              (writer/status writer)))
       (writer/sql! writer "INSERT INTO t VALUES (42)" [])
-      (check "materialized mutations route through the WAL path"
-             1 (:pending-statements (writer/status writer)))
+      (check "mixed materialized mutations remain pending until the checkpoint"
+             [true 1]
+             ((juxt :checkpoint-required? :pending-statements)
+              (writer/status writer)))
+      (check "flush checkpoints the complete state after a bound mutation"
+             :committed (:status (writer/flush! writer)))
+      (check "checkpoint commit clears both pending recovery requirements"
+             [false 0 0]
+             ((juxt :checkpoint-required? :pending-statements
+                    :pending-wal-bytes)
+              (writer/status writer)))
+      (check "bound mutation flush never publishes a value-bearing V1 WAL"
+             [:checkpoint] @publications)
+      (check "bound values reach only the native execution operation"
+             true (boolean
+                   (some #{[:execute "INSERT INTO t VALUES (?)" [42]]}
+                         @calls)))
       (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        {:keys [store writer]}
+        (new-writer calls close-count
+                    (model-checkpoint-operations calls close-count))]
+    (writer/sql! writer "INSERT INTO t VALUES (?)" [9])
+    (writer/close! writer)
+    (let [head (:head (control/read-head! store))]
+      (check "successful close checkpoints an unflushed bound mutation"
+             [1 true [] nil]
+             [(get-in head ["manifest" "seq"])
+              (boolean (get-in head ["manifest" "base"]))
+              (get-in head ["manifest" "wal"])
+              (get-in head ["lease" "owner"])])))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        checkpoint-error
+        (ex-info "checkpoint commit ambiguous"
+                 {:type ::control/commit-ambiguous})
+        operations
+        (assoc (fake-operations calls close-count)
+               :create-checkpoint! (fn [_ _] :checkpoint-path)
+               :delete-checkpoint! (fn [_] nil)
+               :publish-checkpoint!
+               (fn [_ _ _]
+                 {:status :published
+                  :reference {"key" "checkpoints/1-1-00000013.tar.gz"
+                              "size" 3
+                              "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}})
+               :commit-reference! (fn [_ _ _] (throw checkpoint-error)))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (writer/execute! writer "INSERT INTO t VALUES (1)")
+    (writer/sql! writer "INSERT INTO t VALUES (?)" [2])
+    (check "failed checkpoint fallback returns the storage failure unchanged"
+           ::control/commit-ambiguous
+           (error-type #(writer/flush! writer)))
+    (check "failed checkpoint fallback retains WAL and checkpoint requirement"
+           [1 true]
+           ((juxt :pending-statements :checkpoint-required?)
+            (writer/status writer)))
+    (check "failed checkpoint fallback close still reaches terminal cleanup"
+           ::control/commit-ambiguous
+           (error-type #(writer/close! writer)))
+    (check "failed close retains recovery state and closes the engine once"
+           [:closed true 1 1]
+           (let [status (writer/status writer)]
+             [(:lifecycle status) (:checkpoint-required? status)
+              (:pending-statements status) @close-count])))
 
   (let [calls (atom [])
         close-count (atom 0)
@@ -205,7 +355,7 @@
         close-count (atom 0)
         operations (assoc (fake-operations calls close-count)
                           :execute-native!
-                          (fn [_ sql]
+                          (fn [_ sql _]
                             (swap! calls conj [:execute sql])
                             (throw (ex-info "engine failure" {:type ::engine-failure}))))
         {:keys [writer]} (new-writer calls close-count operations)]
@@ -224,7 +374,7 @@
         operations
         (assoc (fake-operations calls close-count)
                :execute-native!
-               (fn [_ sql]
+               (fn [_ sql _]
                  (swap! calls conj [:begin sql])
                  (when (= sql "first")
                    (deliver entered true)
@@ -388,6 +538,8 @@
   (let [status (writer/status (:writer state))
         head (:head (control/read-head! (:store state)))]
     (and (= (:pending state) (:pending-statements status))
+         (= (:checkpoint-required? state)
+            (:checkpoint-required? status))
          (= (:committed state) (get-in head ["manifest" "seq"])))))
 
 (defn- execute-step [state]
@@ -399,10 +551,18 @@
   (writer/query! (:writer state) "SELECT 1")
   state)
 
+(defn- parameterized-step [state]
+  (writer/sql! (:writer state) "INSERT INTO t VALUES (?)"
+               [(:next-id state)])
+  (-> state
+      (assoc :checkpoint-required? true)
+      (update :next-id inc)))
+
 (defn- flush-step [state]
-  (let [had-pending? (pos? (:pending state))]
+  (let [had-pending? (or (pos? (:pending state))
+                         (:checkpoint-required? state))]
     (writer/flush! (:writer state))
-    (cond-> (assoc state :pending 0)
+    (cond-> (assoc state :pending 0 :checkpoint-required? false)
       had-pending? (update :committed inc))))
 
 (defn- run-stateful-property! []
@@ -416,12 +576,18 @@
           :test-cases 30
           :stateful-step-count 16}
          (fn [_]
-           (let [{:keys [writer store]} (new-writer)]
+           (let [calls (atom [])
+                 close-count (atom 0)
+                 {:keys [writer store]}
+                 (new-writer calls close-count
+                             (model-checkpoint-operations calls close-count))]
              (try
                (hs/run!
                 {:initial-state {:writer writer :store store
-                                 :pending 0 :committed 0 :next-id 1}
+                                 :pending 0 :checkpoint-required? false
+                                 :committed 0 :next-id 1}
                  :rules [(hs/rule :execute execute-step)
+                         (hs/rule :execute-parameterized parameterized-step)
                          (hs/rule :query query-step)
                          (hs/rule :flush flush-step)]
                  :invariants [(hs/invariant :model-matches-writer

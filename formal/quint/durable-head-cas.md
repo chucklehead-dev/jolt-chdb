@@ -51,6 +51,8 @@ no liveness claim.
   invariants.
 - The generated `durableHeadCasTest.qnt` owns deterministic corrected boundaries
   and all mutation witnesses.
+- The generated `durableWriterBoundary.qnt` separately models the writer's
+  statement-WAL versus full-checkpoint choice for bound mutations.
 - `durableHeadCasCorrected` binds the six-step bounds with correct ownership.
 - `durableHeadCasStaleMutant` binds the same model with one semantic fault:
   any remembered generation is treated as authority.
@@ -174,7 +176,9 @@ scripts/check-durable-head-quint.sh --verify
 The explicit corrected gates check publication-attempt freshness, stale-writer
 safety, exact reference canonicality, operation-specific ambiguous
 reconciliation, and both publication transition monitors through six
-transitions.
+transitions. They also check the five-step writer boundary: bound mutations
+remain checkpoint-required across later writes and failed flushes, and only a
+full checkpoint can acknowledge them.
 Each mutation module must produce its expected
 bounded counterexample. The refinement monitors are inductive and local, which
 avoids a solver-expensive quantified scan of the complete history.
@@ -1880,5 +1884,225 @@ module durablePublicationAckMutantTest {
     init
       .then(attempt(AmbiguousDropped))
       .expect(not(publicationAcknowledgementIsSound))
+}
+```
+
+## Parameterized-mutation checkpoint boundary
+
+The head-CAS protocol above does not model the writer's in-process buffering
+choice. V1 WAL records contain replayable SQL text, so a mutation with native
+bound values cannot safely enter that format. This small companion model makes
+the implementation boundary explicit: a bound mutation creates a checkpoint
+obligation, later materialized mutations cannot weaken it, a failed flush
+retains it, and a successful durability acknowledgement must publish a full
+checkpoint covering the current local version.
+
+`boundPending` is a ghost variable: the runtime deliberately retains no bound
+values, while the model remembers only that at least one such mutation remains
+uncommitted. The mutation control incorrectly routes the obligation through
+statement WAL. It must violate the acknowledgement property after one bound
+execute and one successful flush.
+
+```quint target/formal/quint/durableWriterBoundary.qnt +=
+module durableWriterBoundary {
+  type PendingRecovery = Clean | StatementWal | FullCheckpoint
+  type Publication = NoPublication | WalPublication | CheckpointPublication
+  type Outcome = Idle | Executed | CommitAcknowledged | CommitFailed | Crashed
+
+  type WriterState = {
+    localVersion: int,
+    committedVersion: int,
+    pending: PendingRecovery,
+    boundPending: bool,
+    priorPending: PendingRecovery,
+    priorBoundPending: bool,
+    publication: Publication,
+    outcome: Outcome,
+  }
+
+  const BOUND_MUTATION_USES_WAL_MUTANT: bool
+  var writerState: WriterState
+
+  action init: bool =
+    writerState' = {
+      localVersion: 0,
+      committedVersion: 0,
+      pending: Clean,
+      boundPending: false,
+      priorPending: Clean,
+      priorBoundPending: false,
+      publication: NoPublication,
+      outcome: Idle,
+    }
+
+  action executeMaterialized: bool = {
+    val nextPending =
+      if (writerState.pending == FullCheckpoint) FullCheckpoint
+      else StatementWal
+    writerState' = {
+      localVersion: writerState.localVersion + 1,
+      committedVersion: writerState.committedVersion,
+      pending: nextPending,
+      boundPending: writerState.boundPending,
+      priorPending: writerState.pending,
+      priorBoundPending: writerState.boundPending,
+      publication: NoPublication,
+      outcome: Executed,
+    }
+  }
+
+  action executeBound: bool = {
+    val nextPending =
+      if (BOUND_MUTATION_USES_WAL_MUTANT) StatementWal else FullCheckpoint
+    writerState' = {
+      localVersion: writerState.localVersion + 1,
+      committedVersion: writerState.committedVersion,
+      pending: nextPending,
+      boundPending: true,
+      priorPending: writerState.pending,
+      priorBoundPending: writerState.boundPending,
+      publication: NoPublication,
+      outcome: Executed,
+    }
+  }
+
+  action flushSuccess: bool = {
+    val publication =
+      if (writerState.pending == FullCheckpoint) CheckpointPublication
+      else if (writerState.pending == StatementWal) WalPublication
+      else NoPublication
+    writerState' = {
+      localVersion: writerState.localVersion,
+      committedVersion: writerState.localVersion,
+      pending: Clean,
+      boundPending: false,
+      priorPending: writerState.pending,
+      priorBoundPending: writerState.boundPending,
+      publication: publication,
+      outcome: CommitAcknowledged,
+    }
+  }
+
+  action flushFailure: bool =
+    writerState' = {
+      localVersion: writerState.localVersion,
+      committedVersion: writerState.committedVersion,
+      pending: writerState.pending,
+      boundPending: writerState.boundPending,
+      priorPending: writerState.pending,
+      priorBoundPending: writerState.boundPending,
+      publication: NoPublication,
+      outcome: CommitFailed,
+    }
+
+  action crashAndRecover: bool =
+    writerState' = {
+      localVersion: writerState.committedVersion,
+      committedVersion: writerState.committedVersion,
+      pending: Clean,
+      boundPending: false,
+      priorPending: writerState.pending,
+      priorBoundPending: writerState.boundPending,
+      publication: NoPublication,
+      outcome: Crashed,
+    }
+
+  action step: bool = any {
+    executeMaterialized,
+    executeBound,
+    flushSuccess,
+    flushFailure,
+    crashAndRecover,
+  }
+
+  val versionsAreOrdered: bool =
+    writerState.committedVersion <= writerState.localVersion
+
+  val checkpointFallbackIsSound: bool =
+    if (writerState.outcome == CommitAcknowledged
+        and writerState.priorBoundPending)
+      writerState.publication == CheckpointPublication
+        and writerState.committedVersion == writerState.localVersion
+    else true
+
+  val failedFlushRetainsRecoveryObligation: bool =
+    if (writerState.outcome == CommitFailed)
+      writerState.pending == writerState.priorPending
+        and writerState.boundPending == writerState.priorBoundPending
+    else true
+
+  val boundExecuteReached: bool = writerState.boundPending
+  val checkpointCommitReached: bool =
+    writerState.outcome == CommitAcknowledged
+      and writerState.publication == CheckpointPublication
+}
+
+module durableWriterBoundaryCorrected {
+  import durableWriterBoundary(
+    BOUND_MUTATION_USES_WAL_MUTANT = false
+  ).* from "./durableWriterBoundary"
+}
+
+module durableWriterBoundaryMutant {
+  import durableWriterBoundary(
+    BOUND_MUTATION_USES_WAL_MUTANT = true
+  ).* from "./durableWriterBoundary"
+}
+```
+
+The executable examples cover the mixed mutation order, retained obligation on
+failure, crash-before-ack semantics, and the mutation witness.
+
+```quint target/formal/quint/durableWriterBoundaryTest.qnt +=
+module durableWriterBoundaryCorrectedTest {
+  import durableWriterBoundary(
+    BOUND_MUTATION_USES_WAL_MUTANT = false
+  ).* from "./durableWriterBoundary"
+
+  run mixedMutationsCommitThroughCheckpointTest =
+    init
+      .then(executeMaterialized)
+      .then(executeBound)
+      .then(executeMaterialized)
+      .then(flushSuccess)
+      .expect(and {
+        writerState.committedVersion == 3,
+        writerState.pending == Clean,
+        writerState.publication == CheckpointPublication,
+        checkpointFallbackIsSound,
+      })
+
+  run failedFlushRetainsCheckpointRequirementTest =
+    init
+      .then(executeBound)
+      .then(flushFailure)
+      .expect(and {
+        writerState.pending == FullCheckpoint,
+        writerState.boundPending,
+        failedFlushRetainsRecoveryObligation,
+      })
+
+  run crashBeforeAcknowledgementRecoversCommittedVersionTest =
+    init
+      .then(executeBound)
+      .then(crashAndRecover)
+      .expect(and {
+        writerState.localVersion == 0,
+        writerState.committedVersion == 0,
+        writerState.pending == Clean,
+        versionsAreOrdered,
+      })
+}
+
+module durableWriterBoundaryMutantTest {
+  import durableWriterBoundary(
+    BOUND_MUTATION_USES_WAL_MUTANT = true
+  ).* from "./durableWriterBoundary"
+
+  run boundMutationThroughWalWitnessTest =
+    init
+      .then(executeBound)
+      .then(flushSuccess)
+      .expect(not(checkpointFallbackIsSound))
 }
 ```

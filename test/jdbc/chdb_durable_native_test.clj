@@ -45,8 +45,21 @@
       (writer/execute! opened
                        "CREATE TABLE t (id UInt32) ENGINE = MergeTree ORDER BY id")
       (writer/execute! opened "INSERT INTO t VALUES (1),(2),(3)")
-      (check "full writer checkpoint commits"
-             :committed (:status (writer/checkpoint! opened)))
+      (writer/execute!
+       opened
+       (str "CREATE TABLE bound_values (id Int64, text String, flag Bool, "
+            "note Nullable(String), raw String) ENGINE = MergeTree ORDER BY id"))
+      (writer/sql! opened
+                   (str "INSERT INTO bound_values VALUES (?, ?, ?, ?, ?)")
+                   [7 "a\\β" true
+                    (chdb/typed-param "Nullable(String)" nil)
+                    (byte-array [92 0 -1])])
+      (check "native bound mutation selects checkpoint fallback"
+             [true 3]
+             ((juxt :checkpoint-required? :pending-statements)
+              (writer/status opened)))
+      (check "flush commits a full checkpoint for native bound values"
+             :committed (:status (writer/flush! opened)))
       (finally
         (writer/close! opened)))
     (let [head (:head (control/read-head! store))]
@@ -61,6 +74,13 @@
         (check "read-only reopen restores checkpoint rows"
                3 (-> (reader/query! opened "SELECT count() n FROM t" [])
                      :rows first first))
+        (check "checkpoint reopen preserves every representative bound value"
+               [7 "a\\β" true 1 "5C00FF"]
+               (-> (reader/query!
+                    opened
+                    (str "SELECT id, text, flag, isNull(note), hex(raw) "
+                         "FROM bound_values") [])
+                   :rows first))
         (check "read-only reopen exports owned Arrow bytes"
                [65 82 82 79 87 49]
                (unsigned-prefix
