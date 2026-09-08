@@ -436,6 +436,13 @@
     (check "reader close after terminal failure returns the same cause"
            ::reader-worker-failed
            (error-type #(reader/close! opened))))
+  (with-open [connection (jdbc/connection "chdb::memory:")]
+    (check "ordinary chDB connection is not a Durable role"
+           true
+           (try
+             (durable/connection-role connection)
+             false
+             (catch Throwable _ true))))
   true)
 
 (defn run-checks! []
