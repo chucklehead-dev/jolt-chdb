@@ -37,11 +37,12 @@ Important limits:
 - The local backend is for private local storage shared by cooperating Jolt
   processes. It is not qualified for NFS, SMB, or external writers.
 - The S3 path is checked against a semantic transport, a loopback libcurl
-  server, and pinned MinIO. Real AWS qualification, large-checkpoint memory
-  evidence, injected real-transport timeout boundaries, and more corruption
-  cases remain work in progress.
-- WAL records contain complete SQL strings. Durable mutations cannot use JDBC
-  parameter vectors or streaming inserts. Reads still support bound parameters.
+  server, pinned MinIO, and an environment-protected live AWS OIDC lane.
+  Large-checkpoint memory evidence, injected real-transport timeout boundaries,
+  and more corruption cases remain work in progress.
+- WAL records contain complete SQL strings. Parameterized mutations are
+  supported through full-checkpoint fallback; streaming inserts remain outside
+  the Durable writer contract. Reads also support bound parameters.
 - A reader sees the immutable manifest snapshot it opened. It does not follow
   later writer commits.
 
@@ -266,15 +267,19 @@ make the new generation's head refer to it.
 
 ### When a write is acknowledged
 
-`execute!` changes the recovered local engine and appends the complete SQL
-statement to an in-process WAL buffer. That alone is not a persistence
+`execute!` changes the recovered local engine. A fully materialized mutation
+appends its complete SQL statement to an in-process WAL buffer. A mutation with
+bound values instead marks the writer checkpoint-required because frozen V1
+WAL has no typed-parameter record. Neither result alone is a persistence
 acknowledgement.
 
-`flush!` serializes the pending statements, publishes a new immutable WAL, and
-then conditionally advances `head.json`. It returns successfully only after the
-head update is confirmed or an uncertain response is reconciled by rereading
-the exact expected reference and sequence. The implementation keeps the buffer
-if that outcome cannot be proved.
+`flush!` serializes and publishes pending statements as a new immutable WAL
+when all mutations are materialized. If any successful bound mutation is
+pending, it publishes a full checkpoint that also covers any pending statement
+WAL. It then conditionally advances `head.json` and returns successfully only
+after the update is confirmed or an uncertain response is reconciled by
+rereading the exact expected reference and sequence. The implementation keeps
+both pending recovery obligations if that outcome cannot be proved.
 
 `checkpoint!` creates a full native backup, streams and verifies its immutable
 publication, and then conditionally replaces the checkpoint reference while
@@ -287,10 +292,11 @@ boundary can lose the in-process WAL buffer. A crash after an immutable object
 upload but before its manifest commit may leave an unreachable object, but
 recovery ignores anything not referenced by the committed head.
 
-The acknowledgement path has two conditional publications. First the WAL
-object must exist with the exact expected bytes. Then `head.json` must point to
-that reference at the next sequence. A lost provider response is reconciled by
-rereading state; it is never treated as proof of failure or success by itself.
+The acknowledgement path has two conditional publications. First the selected
+WAL or checkpoint object must exist with the exact expected bytes. Then
+`head.json` must point to that reference at the next sequence. A lost provider
+response is reconciled by rereading state; it is never treated as proof of
+failure or success by itself.
 
 ```mermaid
 sequenceDiagram
@@ -300,20 +306,28 @@ sequenceDiagram
   participant B as Object backend
 
   A->>W: execute mutation
-  W->>W: apply locally and buffer SQL
+  alt materialized SQL
+    W->>W: apply locally and buffer SQL
+  else native bound values
+    W->>W: apply locally and require checkpoint
+  end
   A->>W: flush!
-  W->>C: publish WAL bytes
-  C->>B: conditional create immutable WAL
+  alt checkpoint required
+    W->>C: create and publish full checkpoint
+  else statement WAL pending
+    W->>C: publish WAL bytes
+  end
+  C->>B: conditional create immutable object
   alt create response is confirmed
     B-->>C: created or matching existing object
   else create response is uncertain
     B--xC: response lost
-    C->>B: reread unique WAL key
+    C->>B: reread unique publication key
     B-->>C: exact, missing, or different object
   end
   C->>B: read head.json and current ETag
   B-->>C: head, ownership, and ETag
-  C->>B: verify referenced WAL
+  C->>B: verify referenced object
   B-->>C: exact size and digest
   C->>B: replace head.json with If-Match
   alt head CAS response is confirmed
@@ -330,13 +344,13 @@ sequenceDiagram
       C--xW: ambiguous or lease-fenced error
     end
   end
-  W->>W: clear buffer only after proof
+  W->>W: clear pending recovery state only after proof
   W-->>A: flush succeeded
 ```
 
-Error branches stop before “flush succeeded.” On an unprovable result the
-buffer remains available to the writer, while changed ownership permanently
-fences it.
+Error branches stop before “flush succeeded.” On an unprovable result the WAL
+buffer and checkpoint-required marker remain available to the writer, while
+changed ownership permanently fences it.
 
 ## Storage and lease safety
 
@@ -464,14 +478,15 @@ Current CI separates the claims:
   bounded corrected, and mutation-control checks; and
 - [`durable-aws`](../.github/workflows/durable-aws.yml) is a manual,
   environment-protected GitHub OIDC lane for the shared provider suite against
-  a pre-provisioned AWS S3 prefix. The workflow is implemented without
-  long-lived credentials, but no successful live-AWS run has been recorded yet.
+  a pre-provisioned AWS S3 prefix. It uses no long-lived credentials; exact-main
+  [run 34202755181](https://github.com/chucklehead-dev/jolt-chdb/actions/runs/34202755181)
+  passed the live provider suite.
 
-The next confidence-building work is a successful run of that live-provider
-lane, a larger process-crash and corruption matrix around flush/checkpoint
-cuts, large-transfer memory evidence, and the remaining native platform
-runners. Those are pending tests and qualifications, not hidden features of
-the current implementation.
+The next confidence-building work is a larger process-crash and corruption
+matrix around flush/checkpoint cuts, large-transfer memory evidence, injected
+real-transport failures, and the remaining native platform runners. Those are
+pending tests and qualifications, not hidden features of the current
+implementation.
 
 ## Development commands
 

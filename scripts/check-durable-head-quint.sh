@@ -8,6 +8,8 @@ model="$target/durableHeadCas.qnt"
 tests="$target/durableHeadCasTest.qnt"
 publication_model="$target/durablePublicationAck.qnt"
 publication_tests="$target/durablePublicationAckTest.qnt"
+writer_model="$target/durableWriterBoundary.qnt"
+writer_tests="$target/durableWriterBoundaryTest.qnt"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
@@ -41,6 +43,8 @@ quint typecheck "$model"
 quint typecheck "$tests"
 quint typecheck "$publication_model"
 quint typecheck "$publication_tests"
+quint typecheck "$writer_model"
+quint typecheck "$writer_tests"
 
 quint test "$tests" \
   --main durableHeadCasCorrectedTest \
@@ -86,6 +90,18 @@ quint test "$tests" \
 
 quint test "$publication_tests" \
   --main durablePublicationAckCorrectedTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$writer_tests" \
+  --main durableWriterBoundaryCorrectedTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$writer_tests" \
+  --main durableWriterBoundaryMutantTest \
   --match '.*Test' \
   --backend typescript \
   --verbosity 1
@@ -143,6 +159,26 @@ do
   fi
 done
 
+writer_sample_log="$target/writer-boundary-sampled.log"
+quint run "$writer_model" \
+  --main durableWriterBoundaryCorrected \
+  --invariants versionsAreOrdered checkpointFallbackIsSound failedFlushRetainsRecoveryObligation \
+  --witnesses boundExecuteReached checkpointCommitReached \
+  --max-steps 5 \
+  --max-samples 1000 \
+  --backend typescript \
+  --verbosity 1 | tee "$writer_sample_log"
+
+for witness in boundExecuteReached checkpointCommitReached
+do
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
+    "$writer_sample_log"
+  then
+    echo "required writer-boundary witness was not reached: $witness" >&2
+    exit 1
+  fi
+done
+
 if [[ "${1:-}" != "--verify" ]]
 then
   exit 0
@@ -152,6 +188,22 @@ quint verify "$model" \
   --main durableHeadCasCorrected \
   --invariant staleWriterCannotChangeHead \
   --max-steps 6 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+quint verify "$writer_model" \
+  --main durableWriterBoundaryCorrected \
+  --invariant checkpointFallbackIsSound \
+  --max-steps 5 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+quint verify "$writer_model" \
+  --main durableWriterBoundaryCorrected \
+  --invariant failedFlushRetainsRecoveryObligation \
+  --max-steps 5 \
   --backend apalache \
   --apalache-version 0.56.1 \
   --verbosity 1
@@ -237,6 +289,29 @@ expect_violation durableHeadCasCommitAttemptMutant \
   headReferenceWasPublished commit-attempt-mutant
 expect_violation durableHeadCasWholeHeadReconciliationMutant \
   ambiguousLandedUsesOperationSpecificReconciliation whole-head-reconciliation-mutant
+
+writer_mutant_log="$target/writer-boundary-mutant.log"
+set +e
+quint verify "$writer_model" \
+  --main durableWriterBoundaryMutant \
+  --invariant checkpointFallbackIsSound \
+  --max-steps 3 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --out-itf "$target/writer-boundary-mutant.itf.json" \
+  --verbosity 1 >"$writer_mutant_log" 2>&1
+writer_mutant_status=$?
+set -e
+
+if [[ $writer_mutant_status -eq 0 ]] || \
+   ! grep -Eq '^\[violation\] Found an issue' "$writer_mutant_log"
+then
+  cat "$writer_mutant_log" >&2
+  echo "writer-boundary mutant did not produce the expected counterexample" >&2
+  exit 1
+fi
+
+cat "$writer_mutant_log"
 
 quint verify "$publication_model" \
   --main durablePublicationAckCorrected \

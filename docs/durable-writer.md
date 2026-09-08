@@ -18,9 +18,10 @@ The synchronous operations are:
   Arrow or Parquet result through the neutral `db.export` SPI;
 - `execute!`: reject oversize or inadmissible SQL before execution, execute one
   contained non-secret mutation locally, then append its JSONL record;
-- `flush!`: publish the complete pending WAL under a fresh UUIDv4 key, commit
-  its reference with head CAS, and clear the buffer only after confirmed or
-  reconciled success; and
+- `flush!`: publish the complete pending WAL under a fresh UUIDv4 key, or a full
+  checkpoint when a bound mutation requires it; commit its reference with head
+  CAS, and clear pending recovery state only after confirmed or reconciled
+  success; and
 - `checkpoint!`: create a full backup outside the head-CAS lock, stream and
   verify its immutable publication, then replace the base and clear both the
   manifest WAL list and covered in-memory WAL after confirmed commit; and
@@ -32,9 +33,10 @@ The synchronous operations are:
 An `ArrayBlockingQueue` plus one Jolt fiber provides the explicit bounded FIFO.
 Admission and the transition to closing share one lock, so an operation cannot
 pass the open check and enter behind the close request. `status` exposes only
-the lifecycle, local writability, and pending counts. A second fiber renews the
-lease independently of long queued engine work. Every mutation and flush also
-checks the locally known expiry immediately before its side effects.
+the lifecycle, local writability, pending counts, and whether a checkpoint is
+required. A second fiber renews the lease independently of long queued engine
+work. Every mutation and flush also checks the locally known expiry immediately
+before its side effects.
 Terminal worker-loop failures stop admission, attempt flush/release/native
 cleanup, and fail every already queued request instead of leaving callers
 blocked on unresolved promises.
@@ -44,10 +46,12 @@ UTF-8 per statement and 128 MiB for the uncompressed JSONL segment. A local
 engine failure does not append a replay record. A failed or ambiguous flush
 retains the complete buffer.
 
-Current mutation boundary: the frozen WAL stores replayable SQL text, so
-mutations must be fully materialized strings rather than parameter vectors or
-streaming inserts. Read queries and `query-bytes` retain native bound
-parameters because they never enter the WAL.
+The frozen WAL stores replayable SQL text. Fully materialized mutations use
+that path. Parameterized mutations retain their native bound values for local
+execution, then mark the writer checkpoint-required; the next `flush!` or
+successful close publishes a full checkpoint and never serializes or logs the
+values. Streaming inserts remain outside the Durable writer contract. Read
+queries and `query-bytes` also retain native bound parameters.
 
 Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
 workspace supplies its pinned wrapper through the parent `AGENTS.md`):
@@ -57,9 +61,11 @@ jolt -M:durable-writer-test
 ```
 
 The deterministic suite covers queue ordering, admission-before-execution,
-ordered WAL serialization, empty and successful flush, close, limits, and
-ambiguous-commit retention. A Hegel state machine checks pending statement and
-manifest sequence agreement over generated execute/query/flush traces.
+ordered WAL serialization, checkpoint fallback, empty and successful flush,
+close, limits, and ambiguous-commit retention. A Hegel state machine checks
+pending statements, checkpoint requirements, and manifest sequence agreement
+over generated materialized execute, parameterized execute, query, and flush
+traces.
 
 Read-only open is implemented by `jdbc.chdb.durable/open-reader!` and shares
 the verified recovery path without participating in lease state.

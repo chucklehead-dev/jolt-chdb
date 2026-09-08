@@ -133,6 +133,6 @@ The public `jdbc.chdb.durable/open-writer!` and `open-reader!` APIs now compose
 this storage protocol with native recovery, serialized SQL, lease renewal,
 checkpointing, and cleanup. The POSIX provider is therefore the first usable
 single-host Durable backend. The remote S3-compatible provider is implemented
-separately and tested against semantic and loopback transports plus pinned
-MinIO; real-provider qualification remains pending. See
+separately and tested against semantic and loopback transports, pinned MinIO,
+and live AWS S3 through a protected OIDC role. See
 [Durable storage](durable.md) for the current provider matrix.

@@ -66,16 +66,16 @@ writes instead of relying on one chDB data directory surviving intact.
 The reader, single-writer lease, WAL flush, checkpoint, recovery, local POSIX
 backend, and S3-compatible backend are implemented. The local backend has
 cross-process and native WAL/checkpoint recovery tests on Linux. The S3 backend
-has protocol, libcurl, and pinned-MinIO tests. Durable is still experimental:
-the stable 26.7.0 library installed by `-M:setup-native` does not expose the
-required ABI, hosted native qualification covers only Linux x86-64, and real
-AWS plus a broader crash/corruption and platform matrix remain unfinished.
+has protocol, libcurl, pinned-MinIO, and live AWS OIDC qualification. Durable is
+still experimental: the stable 26.7.0 library installed by `-M:setup-native`
+does not expose the required ABI, hosted native qualification covers only Linux
+x86-64, and a broader crash/corruption and platform matrix remain unfinished.
 
 Choose Durable now when you can pin and qualify chDB 26.7.2-rc.2 yourself and
 want to evaluate explicit persistence boundaries on one POSIX host or an
 S3-compatible test deployment. Do not choose it yet when you need a stable
-native dependency, broad platform/provider qualification, parameterized or
-streaming mutations, or a production-ready remote durability claim.
+native dependency, broad platform/provider qualification, streaming inserts,
+or a production-ready remote durability claim.
 
 To try the local backend, first point `JOLT_CHDB_LIB` at a qualified
 26.7.2-rc.2 library. The qualification script downloads the checksum-pinned
@@ -104,15 +104,18 @@ process or writer attempt.
                    :owner "my-app"
                    :instance (str (java.util.UUID/randomUUID))
                    :database "default"})]
-  (jdbc/execute! conn "INSERT INTO events VALUES (1, 'accepted')")
+  (jdbc/execute! conn ["INSERT INTO events VALUES (?, ?)" 1 "accepted"])
   ;; Do this before acknowledging the write to another system.
   (durable/flush! conn))
 ```
 
 Mutations are durable only after `flush!`, `checkpoint!`, or a successful close
-has committed the new manifest. Read-only opens use the same backend and object
-ID with `:read-only? true`; they restore one fixed manifest snapshot and do not
-take the writer lease.
+has committed the new manifest. Materialized SQL uses statement WAL. A mutation
+with native bound values makes that boundary publish a full checkpoint because
+V1 WAL has no typed-parameter record; values are never interpolated or placed
+in WAL. Read-only opens use the same backend and object ID with `:read-only?
+true`; they restore one fixed manifest snapshot and do not take the writer
+lease.
 
 See [Durable storage](docs/durable.md) for configuration, recovery and
 acknowledgement behavior, provider status, and the modeling/testing method.

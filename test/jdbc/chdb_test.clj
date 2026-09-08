@@ -97,6 +97,15 @@
          (str/includes?
           (chdb/classification-sql "select ?" ["private-value"])
           "private-value"))
+  (let [secret "unsupported-parameter-secret"
+        error (try
+                (chdb/classification-sql "select ?" [{:secret secret}])
+                nil
+                (catch Throwable thrown thrown))]
+    (check "unsupported parameter diagnostics omit the parameter value"
+           false
+           (str/includes? (pr-str [(ex-message error) (ex-data error)])
+                          secret)))
   (with-open [conn (jdbc/connection "chdb::memory:")]
     (check "database product metadata" "ClickHouse (chDB)"
            (.getDatabaseProductName (.getMetaData (proto/connection conn))))

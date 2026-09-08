@@ -116,7 +116,7 @@
                    (or (string? value) (bytes? value)) "String"
                    :else
                    (throw (ex-info "unsupported chDB parameter type"
-                                   {:value value :class (str (class value))
+                                   {:class (str (class value))
                                     :jdbc/sql-error true})))
         encoded (cond
                   (nil? value) "\\N"
