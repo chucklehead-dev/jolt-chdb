@@ -114,12 +114,14 @@ The literate executable companion in `formal/quint/` expresses the same bounded
 corrected, mutant, and boundary shapes as a Quint state machine.
 Its fast gate typechecks both modules, runs deterministic traces, and samples
 10,000 six-step executions while requiring every major action witness to be
-nonzero. The checked-in evidence record distinguishes sampled results from the
-critical invariant's bounded Apalache result and records a combined-invariant
-`UNKNOWN` as tool-blocked rather than proof.
+nonzero. The checked-in
+[evidence record](../formal/quint/evidence/2026-09-06.edn) distinguishes those
+sampled results from separate bounded Apalache results for each named invariant.
+A solver `UNKNOWN`, interrupted run, or timeout is not recorded as proof.
 It additionally checks that a committed reference never names a future lease
-generation, exactly matches manifest sequence, and that each exact transition
-refines the content-level view. Independent generation- and sequence-mismatch
+generation, exactly matches manifest sequence, and that publication satisfies
+both full attempt-bearing and attempt-erased checks. Commit validity separately
+checks its content projection. Independent generation- and sequence-mismatch
 mutants are required to fail those checks.
 
 The checked ADR-015 trace is replayed against this namespace with

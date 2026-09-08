@@ -395,9 +395,11 @@ ambiguous head updates, renewal during reconciliation, and release. It does not
 model real clocks, retry timing, JSON/ETag encoding, scratch files, native
 restore, process lifecycle, or liveness.
 
-The model also checks two explicit refinements: the exact attempt-bearing
-reference view can be reduced to a generation/sequence view, which can in turn
-be reduced to a content-only view without changing the modeled transition.
+The model carries two transition monitors. One requires the full
+attempt-bearing publication reference; the other erases the attempt identity
+and checks the remaining object, generation, and sequence. Commit validity also
+projects the committed reference to object content, but the current model does
+not claim a second transition-level refinement down to a content-only state.
 Mutants for stale ownership, wrong generation or sequence, reused publication
 attempts, unpublished attempts, and whole-head reconciliation must each fail.
 
@@ -459,27 +461,30 @@ Current CI separates the claims:
   26.7.2-rc.2 on Linux x86-64; and
 - [`durable-head-quint`](../.github/workflows/durable-head-quint.yml) tangles
   the literate spec, replays the ITF corpus, and runs deterministic, sampled,
-  bounded corrected, and mutation-control checks.
+  bounded corrected, and mutation-control checks; and
+- [`durable-aws`](../.github/workflows/durable-aws.yml) is a manual,
+  environment-protected GitHub OIDC lane for the shared provider suite against
+  a pre-provisioned AWS S3 prefix. The workflow is implemented without
+  long-lived credentials, but no successful live-AWS run has been recorded yet.
 
-The next confidence-building work is real-provider qualification without
-long-lived credentials, a larger process-crash and corruption matrix around
-flush/checkpoint cuts, large-transfer memory evidence, and the remaining native
-platform runners. Those are pending tests and qualifications, not hidden
-features of the current implementation.
+The next confidence-building work is a successful run of that live-provider
+lane, a larger process-crash and corruption matrix around flush/checkpoint
+cuts, large-transfer memory evidence, and the remaining native platform
+runners. Those are pending tests and qualifications, not hidden features of
+the current implementation.
 
 ## Development commands
 
-Run all Jolt commands in this workspace through the pinned Chez 10.4.1 wrapper:
+The commands below assume `jolt` selects Jolt v0.8.3 with Chez 10.4.1. In the
+shared `ai-src` maintainer workspace, run them through the pinned wrapper named
+in the parent `AGENTS.md`; external checkouts should provide the same versions
+through their own toolchain setup.
 
 ```sh
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-open-test
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  bash test/durable-s3-minio.sh jolt
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  scripts/check-durable-head-itf-corpus.sh
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  scripts/check-durable-head-quint.sh --verify
+jolt -M:durable-open-test
+bash test/durable-s3-minio.sh jolt
+scripts/check-durable-head-itf-corpus.sh
+scripts/check-durable-head-quint.sh --verify
 ```
 
 The full list of focused aliases is in the README's

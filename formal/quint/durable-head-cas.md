@@ -30,10 +30,12 @@ reconciliation point.
 
 `ObjectId` is a finite immutable-content identity. `AttemptId` is the bounded
 identity of the fresh UUIDv4 nonce in every physical publication key. The
-model retains that identity in exact references and checks two explicit
-refinements: erasing the attempt yields the sequenced-reference view, and
-erasing generation and sequence yields the content-only view. The ITF driver
-maps every finite attempt to exactly one runtime UUID-bearing reference.
+model retains that identity in exact references. One transition monitor checks
+the full publication reference; a second checks the projection produced by
+erasing only the attempt, leaving object, generation, and sequence. Commit
+validity separately compares the content projection of the committed head. The
+ITF driver maps every finite attempt to exactly one runtime UUID-bearing
+reference.
 
 The model deliberately excludes wall-clock time and heartbeat scheduling, but
 includes an abstract lease revision so a same-owner renewal can occur between
@@ -171,7 +173,8 @@ scripts/check-durable-head-quint.sh --verify
 
 The explicit corrected gates check publication-attempt freshness, stale-writer
 safety, exact reference canonicality, operation-specific ambiguous
-reconciliation, and both per-transition refinements through six transitions.
+reconciliation, and both publication transition monitors through six
+transitions.
 Each mutation module must produce its expected
 bounded counterexample. The refinement monitors are inductive and local, which
 avoids a solver-expensive quantified scan of the complete history.
@@ -491,12 +494,14 @@ generation must match the current head. The stale-ownership mutant changes only
 that decision, making it possible to distinguish a useful red control from an
 unrelated broken model.
 
-The two projection functions erase information in stages. First they remove the
-physical publication attempt, leaving content plus generation and sequence;
-then they reduce a reference to content alone. The commit evaluator records
-whether ownership and publication proofs held, whether the CAS applied, and
-the resulting head. Keeping these facts in the event is what lets later
-invariants prove the transition rather than merely inspect its final value.
+The model defines projections at two useful boundaries. Erasing the physical
+publication attempt leaves object, generation, and sequence and is checked by a
+publication transition monitor. Projecting a head reference to object content
+is used later by acknowledged-commit validity; it is not a second general
+transition refinement. The commit evaluator records whether ownership and
+publication proofs held, whether the CAS applied, and the resulting head.
+Keeping these facts in the event is what lets later invariants prove the
+transition rather than merely inspect its final value.
 
 ```quint target/formal/quint/durableHeadCas.qnt +=
   pure def tokenOwns(
@@ -856,8 +861,8 @@ serialized decision.
 
 These pure predicates explain what a single recorded event is allowed to do.
 They check acquisition, publication freshness, generation and sequence changes,
-stale rejection, acknowledged and failed commits, release, and the two
-information-erasing refinement steps.
+stale rejection, acknowledged and failed commits, release, exact publication,
+and attempt-erased publication.
 
 Because every event contains its own before/after snapshots, a later
 publication cannot retroactively make an earlier invalid commit appear safe.
@@ -1092,11 +1097,13 @@ cannot change the head, every committed reference names a prior exact
 publication, sequences do not regress, and an acknowledged commit has the
 operation-specific result it claims.
 
-`lastTransitionRefinesExactView` and
-`lastTransitionRefinesContentView` are local inductive monitors. They check each
-exact transition against the two simpler views without quantifying over every
-possible history. Passing them means refinement held for every transition in
-the bounded reachable state graph; it is not an unbounded proof of the runtime.
+`lastTransitionRefinesContentView` requires full attempt-bearing publication
+identity. `lastTransitionRefinesExactView` weakens publication identity by
+erasing the attempt while retaining object, generation, and sequence. The names
+are historical and can be surprising, so rely on these definitions rather than
+reading an erasure order from the names. Both are local inductive monitors;
+passing them means their checks held for every transition in the bounded
+reachable state graph, not that the runtime has an unbounded refinement proof.
 
 ```quint target/formal/quint/durableHeadCas.qnt +=
   val generationWithinBound: bool =

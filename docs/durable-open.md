@@ -64,11 +64,11 @@ extension boundary. Oscope uses `checkpoint!` after its sole schema owner has
 applied migrations and before ingress, then uses `flush!` before acknowledging
 each accepted OTLP batch.
 
-Run the focused gate through the pinned Chez wrapper:
+Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
+workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 
 ```sh
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-open-test
+jolt -M:durable-open-test
 ```
 
 `checkpoint!` runs the full native backup outside the head-CAS lock so heartbeat
