@@ -35,13 +35,14 @@
 (def ^:private no-link-options (make-array LinkOption 0))
 
 ;; Jolt 0.8.3's modeled Files/newOutputStream does not implement CREATE_NEW.
-;; Use an atomic POSIX fd for file destinations and write it from our callback;
-;; unlike FILE*, an fd has no cross-CRT ownership contract with libcurl.
+;; Use an atomic Linux fd for file destinations and write it from our callback;
+;; unlike FILE*, an fd has no cross-CRT ownership contract with libcurl. Other
+;; hosts fail closed until their callback/error/fd path is qualified.
 (ffi/load-library)
 (ffi/defcfn c-open "open" [:string :int :int] :int
   {:capture-native-error true})
 (ffi/defcfn c-write "write" [:int :pointer :size_t] :ssize_t
-  {:capture-native-error true})
+  {:blocking true :capture-native-error true})
 (ffi/defcfn c-close "close" [:int] :int
   {:capture-native-error true})
 
@@ -125,17 +126,23 @@
 
 (defn- posix-file-flags []
   (let [os-name (str/lower-case (or (System/getProperty "os.name") ""))]
-    (cond
-      (str/includes? os-name "linux")
+    (if (str/includes? os-name "linux")
       (bit-or (bit-or 1 64) (bit-or 128 (bit-or 131072 524288)))
       ;; O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC
-
-      (or (str/includes? os-name "mac") (str/includes? os-name "darwin"))
-      (bit-or (bit-or 1 512) (bit-or 2048 (bit-or 256 16777216)))
-
-      :else
       (transport-failure!
        "S3 streamed file destinations are unsupported on this host" true))))
+
+(defn- discard-owned-file! [fd file]
+  ;; Called only after this request's O_EXCL create succeeded. Always attempt
+  ;; both close and cleanup, and do not retain either native/path exception.
+  (let [[close-result _] (c-close fd)
+        deleted? (try
+                   (Files/deleteIfExists file)
+                   true
+                   (catch Throwable _ false))]
+    (when (or (neg? close-result) (not deleted?))
+      (transport-failure!
+       "S3 response destination setup cleanup failed" true))))
 
 (defn- secure-destination-parent! [file]
   (try
@@ -202,20 +209,25 @@
           (when (neg? fd)
             (transport-failure!
              "S3 response destination could not be created" true))
-          (let [count (atom 0)
-                closed? (atom false)]
-            {:write-pointer! (fn [pointer n]
-                               (write-all-fd! fd pointer n)
-                               (swap! count + n))
-             :result (fn [] {:byte-count @count})
-             :close! (fn []
-                       (when (compare-and-set! closed? false true)
-                         (let [[result _] (c-close fd)]
-                           (when (neg? result)
-                             (transport-failure!
-                              "S3 response destination could not be closed"
-                              false)))))
-             :cleanup! (fn [] (Files/deleteIfExists file))}))))))
+          (try
+            (let [count (atom 0)
+                  closed? (atom false)]
+              {:write-pointer! (fn [pointer n]
+                                 (write-all-fd! fd pointer n)
+                                 (swap! count + n))
+               :result (fn [] {:byte-count @count})
+               :close! (fn []
+                         (when (compare-and-set! closed? false true)
+                           (let [[result _] (c-close fd)]
+                             (when (neg? result)
+                               (transport-failure!
+                                "S3 response destination could not be closed"
+                                false)))))
+               :cleanup! (fn [] (Files/deleteIfExists file))})
+            (catch Throwable _
+              (discard-owned-file! fd file)
+              (transport-failure!
+               "S3 response destination setup failed" true))))))))
 
 (defn- request-reader [request-body]
   (when request-body

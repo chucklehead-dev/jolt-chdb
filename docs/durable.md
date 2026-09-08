@@ -207,7 +207,7 @@ path until your provider and failure boundaries have been qualified.
 | `:lease-ttl-ms` | Writer lease lifetime; defaults to 30 seconds. |
 | `:heartbeat-interval-ms` | Renewal interval; defaults to one third of the TTL and may not exceed that bound. |
 | `:clock-skew-ms` | Extra time before normal expired-lease takeover; defaults to zero. |
-| `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. |
+| `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
 
 ## Persistence and recovery

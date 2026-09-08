@@ -52,18 +52,22 @@ response ETag, and never includes credential-bearing curl messages in public
 exceptions. `:connect-timeout-ms` defaults to 10000, `:timeout-ms` to 300000,
 and bounded byte responses default to 128 MiB via `:max-response-bytes`.
 Checkpoint file bodies cross bounded libcurl callbacks. Uploads retain an open
-NIO input stream. On Linux and macOS, downloads retain an atomically created
+NIO input stream. On Linux, the implemented and qualified download path retains
+an atomically created
 `O_EXCL|O_NOFOLLOW` descriptor for the whole transfer, so a colliding path is
 neither overwritten nor deleted. The destination parent must be a real
 directory without group/other write access; Durable recovery scratch satisfies
-that contract and therefore makes name-based partial-file cleanup safe from
-other OS principals. Other hosts fail closed for streamed file destinations.
-This explicit scope avoids passing C-runtime `FILE*` values across library
-boundaries; a Jolt runtime implementation of `CREATE_NEW` for
-`Files/newOutputStream` would be the cleaner portable dependency. Windows
-streamed-file download is therefore unsupported pending that runtime fix. The
-private-parent rule excludes external OS principals, not hostile code already
-running as the same account. Checkpoint
+the immediate-parent part of that contract. The default `:scratch-parent` is
+acceptable only when the system temporary directory supplies its normal sticky
+directory protections. A custom `:scratch-parent` must prevent other OS
+principals from renaming or replacing the private scratch directory; mode 0700
+on the child alone does not protect its directory entry in a writable ancestor.
+Same-account hostile code remains outside this boundary. Other hosts fail
+closed for streamed file destinations. This explicit Linux-only scope avoids
+passing C-runtime `FILE*` values across library boundaries. A portable Jolt
+implementation of `CREATE_NEW` for `Files/newOutputStream` is tracked by
+[jolt-lang/jolt#895](https://github.com/jolt-lang/jolt/issues/895) and is the
+cleaner dependency for macOS and Windows support. Checkpoint
 SHA-256 uses an incremental OpenSSL EVP context on Jolt. This is required
 because the compatibility
 `MessageDigest.update` contract snapshots caller bytes until `digest`; using it
