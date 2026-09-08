@@ -12,11 +12,17 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - deps.edn
+      - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/s3.clj
+      - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
+      - test/durable-s3-itf.sh
       - test/jdbc/chdb_durable_control_test.clj
       - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
+      - test/support/s3_http_fixture.py
   push:
     paths:
       - .github/workflows/durable-head-quint.yml
@@ -27,11 +33,17 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - deps.edn
+      - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/s3.clj
+      - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
+      - test/durable-s3-itf.sh
       - test/jdbc/chdb_durable_control_test.clj
       - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
+      - test/support/s3_http_fixture.py
 
 permissions:
   contents: read
@@ -69,7 +81,7 @@ jobs:
           test "$(quint --version)" = "0.32.0"
           test "$(jolt --version)" = "jolt v0.8.3"
           test "$(go version -m "$(command -v lmt)" | awk '$1 == "mod" { print $3 }')" = "v0.0.0-20210421124901-62fe18f2f6a6"
-      - name: Replay a deterministic Quint ITF corpus against Jolt
-        run: scripts/check-durable-head-itf-corpus.sh
+      - name: Replay one deterministic Quint ITF corpus through memory and S3
+        run: scripts/check-durable-head-itf-corpus.sh --with-s3
       - name: Tangle, test, sample, and bounded-check the model
         run: scripts/check-durable-head-quint.sh --verify
