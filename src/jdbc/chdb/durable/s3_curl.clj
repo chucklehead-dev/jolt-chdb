@@ -4,7 +4,8 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
-           [java.nio.file Files]))
+           [java.nio.file Files LinkOption OpenOption]
+           [java.nio.file.attribute PosixFilePermission]))
 
 ;; These values are the public ABI from curl 7.75+ (the first release with
 ;; CURLOPT_AWS_SIGV4). Keep the option kind in the binding used below: libcurl's
@@ -29,6 +30,20 @@
 (def ^:private curlinfo-response-code 0x200002)
 (def ^:private curl-readfunc-abort 0x10000000)
 (def ^:private curl-global-default 3)
+(def ^:private mode-0600 384)
+(def ^:private eintr 4)
+(def ^:private no-link-options (make-array LinkOption 0))
+
+;; Jolt 0.8.3's modeled Files/newOutputStream does not implement CREATE_NEW.
+;; Use an atomic POSIX fd for file destinations and write it from our callback;
+;; unlike FILE*, an fd has no cross-CRT ownership contract with libcurl.
+(ffi/load-library)
+(ffi/defcfn c-open "open" [:string :int :int] :int
+  {:capture-native-error true})
+(ffi/defcfn c-write "write" [:int :pointer :size_t] :ssize_t
+  {:capture-native-error true})
+(ffi/defcfn c-close "close" [:int] :int
+  {:capture-native-error true})
 
 (ffi/load-system-library "curl")
 
@@ -50,8 +65,6 @@
   "curl_slist_append" [:pointer :string] :pointer)
 (ffi/defcfn curl-slist-free-all
   "curl_slist_free_all" [:pointer] :void)
-(ffi/defcfn c-fopen "fopen" [:string :string] :pointer)
-(ffi/defcfn c-fclose "fclose" [:pointer] :int)
 
 (def ^:private initialized
   (delay
@@ -110,10 +123,56 @@
   (let [n (* size nitems)]
     (if (> n Integer/MAX_VALUE) Integer/MAX_VALUE (int n))))
 
+(defn- posix-file-flags []
+  (let [os-name (str/lower-case (or (System/getProperty "os.name") ""))]
+    (cond
+      (str/includes? os-name "linux")
+      (bit-or (bit-or 1 64) (bit-or 128 (bit-or 131072 524288)))
+      ;; O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC
+
+      (or (str/includes? os-name "mac") (str/includes? os-name "darwin"))
+      (bit-or (bit-or 1 512) (bit-or 2048 (bit-or 256 16777216)))
+
+      :else
+      (transport-failure!
+       "S3 streamed file destinations are unsupported on this host" true))))
+
+(defn- secure-destination-parent! [file]
+  (try
+    (let [parent (.getParent file)]
+      (when-not (and parent
+                     (Files/isDirectory parent no-link-options)
+                     (not (Files/isSymbolicLink parent)))
+        (transport-failure!
+         "S3 response destination requires a real parent directory" true))
+      ;; Cleanup is necessarily name-based after libcurl returns. Refuse a
+      ;; directory in which another OS principal can replace that name.
+      (let [permissions (Files/getPosixFilePermissions parent no-link-options)]
+        (when (or (.contains permissions PosixFilePermission/GROUP_WRITE)
+                  (.contains permissions PosixFilePermission/OTHERS_WRITE))
+          (transport-failure!
+           "S3 response destination requires a private parent directory"
+           true))))
+    (catch Throwable error
+      (if (= :transport (:category (ex-data error)))
+        (throw error)
+        (transport-failure!
+         "S3 response destination parent could not be verified" true)))))
+
+(defn- write-all-fd! [fd pointer length]
+  (loop [offset 0]
+    (when (< offset length)
+      (let [[n errno] (c-write fd (+ pointer offset) (- length offset))]
+        (cond
+          (pos? n) (recur (+ offset n))
+          (= eintr errno) (recur offset)
+          :else (transport-failure! "S3 response destination write failed"
+                                    false))))))
+
 (defn- response-writer [response-body max-response-bytes]
   (cond
     (nil? response-body)
-    {:write-pointer! (fn [_ _] nil)
+    {:write! (fn [_] nil)
      :result (fn [] {})
      :close! (fn [] nil)
      :cleanup! (fn [] nil)}
@@ -122,13 +181,12 @@
     (let [output (ByteArrayOutputStream.)
           count (atom 0)]
       {:output output
-       :write-pointer! (fn [pointer n]
-                 (let [new-count (+ @count n)]
+       :write! (fn [bytes]
+                 (let [new-count (+ @count (alength bytes))]
                    (when (> new-count max-response-bytes)
                      (throw (ex-info "S3 byte response exceeded its bound" {})))
-                   (let [bytes (ffi/read-array pointer n)]
-                     (.write output bytes 0 (alength bytes))
-                     (reset! count new-count))))
+                   (.write output bytes 0 (alength bytes))
+                   (reset! count new-count)))
        :result (fn [] {:body (.toByteArray output)})
        :close! (fn [] nil)
        :cleanup! (fn [] nil)})
@@ -137,65 +195,44 @@
     (let [{:keys [file create-new?]} response-body]
       (when-not (and file create-new?)
         (transport-failure! "invalid libcurl response destination" true))
-      (let [stream
-            (try
-              ;; Preserve CREATE_NEW before handing the already-private scratch
-              ;; path to stdio. Libcurl's default write callback is fwrite, so
-              ;; checkpoint bytes never cross into a managed callback buffer.
-              (Files/createFile file
-                                (make-array java.nio.file.attribute.FileAttribute 0))
-              (let [stream (c-fopen (str file) "wb")]
-                (when (ffi/null? stream)
-                  (transport-failure!
-                   "S3 response destination could not be opened" true))
-                stream)
-              (catch Throwable error
-                (Files/deleteIfExists file)
-                (if (:category (ex-data error))
-                  (throw error)
-                  (transport-failure!
-                   "S3 response destination could not be created" true))))
-            closed? (atom false)]
-        {:write-data stream
-         :result (fn [] {:byte-count (Files/size file)})
-         :close! (fn []
-                   (when (compare-and-set! closed? false true)
-                     (when-not (zero? (c-fclose stream))
-                       (transport-failure!
-                        "S3 response destination could not be closed" false))))
-         :cleanup! (fn [] (Files/deleteIfExists file))}))))
+      ;; Select or reject the host before invoking POSIX permission shims.
+      (let [flags (posix-file-flags)]
+        (secure-destination-parent! file)
+        (let [[fd _] (c-open (str file) flags mode-0600)]
+          (when (neg? fd)
+            (transport-failure!
+             "S3 response destination could not be created" true))
+          (let [count (atom 0)
+                closed? (atom false)]
+            {:write-pointer! (fn [pointer n]
+                               (write-all-fd! fd pointer n)
+                               (swap! count + n))
+             :result (fn [] {:byte-count @count})
+             :close! (fn []
+                       (when (compare-and-set! closed? false true)
+                         (let [[result _] (c-close fd)]
+                           (when (neg? result)
+                             (transport-failure!
+                              "S3 response destination could not be closed"
+                              false)))))
+             :cleanup! (fn [] (Files/deleteIfExists file))}))))))
 
 (defn- request-reader [request-body]
   (when request-body
     (let [{:keys [bytes file byte-count]} request-body]
       (when-not (and (integer? byte-count) (not (neg? byte-count)))
         (transport-failure! "invalid libcurl request body length" true))
-      (try
-        (cond
-          (bytes? bytes)
-          (let [input (ByteArrayInputStream. bytes)]
-            {:input input :byte-count byte-count
-             :close! (fn [] (.close input))})
-
-          file
-          (let [stream (c-fopen (str file) "rb")
-                closed? (atom false)]
-            (when (ffi/null? stream)
-              (transport-failure! "S3 request source could not be opened" true))
-            ;; Libcurl's default read callback is fread. Keeping the FILE* on
-            ;; the native side avoids one managed allocation per upload chunk.
-            {:read-data stream :byte-count byte-count
-             :close! (fn []
-                       (when (compare-and-set! closed? false true)
-                         (c-fclose stream)))})
-
-          :else
-          (transport-failure! "invalid libcurl request body" true))
-        (catch Throwable error
-          (if (:category (ex-data error))
-            (throw error)
-            (transport-failure!
-             "S3 request source could not be opened" true)))))))
+      (let [input (try
+                    (cond
+                      (bytes? bytes) (ByteArrayInputStream. bytes)
+                      file (Files/newInputStream
+                            file (make-array OpenOption 0))
+                      :else (transport-failure!
+                             "invalid libcurl request body" true))
+                    (catch Throwable _
+                      (transport-failure!
+                       "S3 request source could not be opened" true)))]
+        {:input input :byte-count byte-count :close! (fn [] (.close input))}))))
 
 (defn- parse-header! [headers bytes]
   (let [line (str/trim (String. bytes "ISO-8859-1"))
@@ -274,7 +311,9 @@
                    (fn [pointer size nitems _]
                      (let [n (callback-size size nitems)]
                        (try
-                         ((:write-pointer! response-sink) pointer n)
+                         (if-let [write-pointer! (:write-pointer! response-sink)]
+                           (write-pointer! pointer n)
+                           ((:write! response-sink) (ffi/read-array pointer n)))
                          n
                          (catch Throwable error
                            (reset! callback-error error)
@@ -302,12 +341,9 @@
               (set-long! handle curlopt-connecttimeout-ms
                          connect-timeout-ms :connect-timeout)
               (set-long! handle curlopt-timeout-ms timeout-ms :timeout)
-              (if-let [write-data (:write-data response-sink)]
-                (set-pointer! handle curlopt-writedata write-data :write-data)
-                (do
-                  (set-pointer! handle curlopt-writedata ffi/null :write-data)
-                  (set-pointer! handle curlopt-writefunction
-                                write-callback :write-callback)))
+              (set-pointer! handle curlopt-writedata ffi/null :write-data)
+              (set-pointer! handle curlopt-writefunction
+                            write-callback :write-callback)
               (set-pointer! handle curlopt-headerdata ffi/null :header-data)
               (set-pointer! handle curlopt-headerfunction
                             header-callback :header-callback)
@@ -319,12 +355,9 @@
                   (transport-failure! "PUT request omitted its body" true))
                 (set-long! handle curlopt-upload 1 :upload)
                 (set-string! handle curlopt-customrequest "PUT" :method)
-                (if-let [read-data (:read-data request-source)]
-                  (set-pointer! handle curlopt-readdata read-data :read-data)
-                  (do
-                    (set-pointer! handle curlopt-readdata ffi/null :read-data)
-                    (set-pointer! handle curlopt-readfunction
-                                  read-callback :read-callback)))
+                (set-pointer! handle curlopt-readdata ffi/null :read-data)
+                (set-pointer! handle curlopt-readfunction
+                              read-callback :read-callback)
                 (set-off-t! handle curlopt-infilesize-large
                             (:byte-count request-source) :content-length))
               (let [perform-code (curl-easy-perform handle)]

@@ -11,6 +11,7 @@ on:
       - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
       - src/jdbc/chdb/durable/digest.cljc
+      - src/jdbc/chdb/durable/reader.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
       - test/durable-s3-curl.sh
