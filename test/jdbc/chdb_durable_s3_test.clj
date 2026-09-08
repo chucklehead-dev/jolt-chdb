@@ -21,6 +21,12 @@
 (defn- copy-bytes [bytes]
   (java.util.Arrays/copyOf bytes (alength bytes)))
 
+(defn- corrupt-copy [bytes]
+  (let [result (copy-bytes bytes)]
+    (when (pos? (alength result))
+      (aset-byte result 0 (unchecked-byte (bit-xor 255 (aget result 0)))))
+    result))
+
 (defn- fake-transport []
   (let [objects (atom {})
         calls (atom [])
@@ -38,6 +44,7 @@
              inject? (= operation (:operation selected))
              before? (and inject? (= :before (:phase selected)))
              after? (and inject? (= :after (:phase selected)))
+             corrupt? (and inject? (= :corrupt-response (:phase selected)))
              transport-error
              #(throw (ex-info "transport contained PRIVATE-SECRET"
                               {:category :transport
@@ -49,13 +56,17 @@
                    (if (= :bytes response-body)
                      {:status 200 :headers {"etag" etag}
                       :body (copy-bytes bytes)}
-                     (let [path (get-in response-body [:file])]
-                       (Files/write path bytes
+                     (let [path (get-in response-body [:file])
+                           response-bytes (if corrupt?
+                                            (corrupt-copy bytes)
+                                            bytes)]
+                       (when corrupt? (reset! fault nil))
+                       (Files/write path response-bytes
                                     (into-array OpenOption
                                                 [StandardOpenOption/CREATE_NEW
                                                  StandardOpenOption/WRITE]))
                        {:status 200 :headers {"etag" etag}
-                        :byte-count (alength bytes)}))
+                        :byte-count (alength response-bytes)}))
                    {:status 404})
                  (let [current (get @objects key)
                        if-none (get headers "if-none-match")
@@ -144,6 +155,20 @@
                 store "checkpoints/test.tar.gz" target))
         (check "streamed download bytes remain exact" [4 5 6]
                (vec (Files/readAllBytes target)))
+        (let [publication (control/publish-checkpoint-file!
+                           store token source)
+              reference (:reference publication)]
+          (reset! (:fault fake)
+                  {:operation :download-to-file
+                   :phase :corrupt-response})
+          (let [error (caught #(control/verify-file-reference!
+                                store reference))]
+            (check "corrupt streamed checkpoint response fails recovery verification"
+                   [::control/object-unverified :integrity]
+                   [(:type (ex-data error)) (:reason (ex-data error))]))
+          (check "a later byte-exact checkpoint download still verifies"
+                 reference
+                 (control/verify-file-reference! store reference)))
         (finally
           (Files/deleteIfExists source)
           (Files/deleteIfExists target))))

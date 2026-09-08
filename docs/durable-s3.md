@@ -56,7 +56,10 @@ Checkpoint file transfers are streamed without payload-sized buffering.
 The checked-in semantic transport test is deliberately adversarial: it checks
 conditional headers, opaque ETags, retry bounds, credential redaction,
 streaming descriptors, sibling scoping, timeout-after-object-create
-reconciliation, and timeout-after-head-CAS reconciliation.
+reconciliation, timeout-after-head-CAS reconciliation, and rejection of a
+same-length corrupt checkpoint response before recovery can restore it. A
+following byte-exact download verifies successfully, proving that response
+corruption does not poison the immutable stored object.
 
 ```sh
 jolt -M:durable-s3-test
@@ -71,11 +74,11 @@ digest `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`
 (`RELEASE.2025-09-07T16-13-09Z`) and checks real service authentication,
 concurrent conditional creators, stale ETags, lease contention, verified WAL
 commit, and streaming file transfer. This slice does **not** yet claim complete
-production S3 qualification: real AWS conformance, injected real-transport
-timeout boundaries, corruption cases, and large-checkpoint memory evidence
-remain. The service principal needs object read and conditional write permission
-for the configured bucket/prefix; listing and deletion are not part of Durable
-V1.
+production S3 qualification: injected real-transport timeout boundaries, a
+broader corrupt/partial-download matrix, large-checkpoint memory evidence, and
+additional compatible-service coverage remain. The service principal needs
+object read and conditional write permission for the configured bucket/prefix;
+listing and deletion are not part of Durable V1.
 
 ## AWS OIDC qualification
 
