@@ -85,6 +85,8 @@
                      (= expected-traces (:namespaces provider))
                      (pos? (:gets provider))
                      (pos? (:puts provider))
+                     (= (:attempts client)
+                        (:authenticated-requests provider))
                      (= (+ (:gets provider) (:puts provider))
                         (:authenticated-requests provider)))
         (fail! "S3 ITF replay evidence was vacuous or inconsistent"
