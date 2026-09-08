@@ -24,6 +24,8 @@ on:
       - test/jdbc/chdb_durable_writer_test.clj
       - test/support/s3_http_fixture.py
   push:
+    branches:
+      - main
     paths:
       - .github/workflows/durable-head-quint.yml
       - formal/durable-head-cas*.smt2
