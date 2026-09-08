@@ -81,6 +81,9 @@
            :durable-s3-minio-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-s3-minio-test"]}
+           :durable-s3-provider-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-s3-provider-test"]}
            :durable-local-worker
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-local-worker"]}
@@ -107,6 +110,7 @@
          durable-s3-test "jolt -M:durable-s3-test"
          durable-s3-curl-test "bash test/durable-s3-curl.sh jolt"
          durable-s3-minio-test "bash test/durable-s3-minio.sh jolt"
+         durable-s3-provider-test "jolt -M:durable-s3-provider-test"
          durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}

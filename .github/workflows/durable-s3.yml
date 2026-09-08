@@ -15,6 +15,7 @@ on:
       - test/durable-s3-minio.sh
       - test/jdbc/chdb_durable_s3_curl_test.clj
       - test/jdbc/chdb_durable_s3_minio_test.clj
+      - test/jdbc/chdb_durable_s3_provider_test.clj
       - test/jdbc/chdb_durable_s3_test.clj
       - test/support/s3_http_fixture.py
 

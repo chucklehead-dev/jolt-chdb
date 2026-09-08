@@ -81,3 +81,30 @@ timeout boundaries, corruption cases, and large-checkpoint memory evidence
 remain. The service principal needs object read and conditional write permission
 for the configured bucket/prefix; listing and deletion are not part of Durable
 V1.
+
+## AWS OIDC qualification
+
+The manual `durable-aws-qualification` workflow runs the same live-provider
+checks against a pre-provisioned AWS bucket. Configure the GitHub environment
+`aws-durable-ci` with these non-secret environment variables:
+
+- `AWS_DURABLE_ROLE_ARN`
+- `AWS_DURABLE_BUCKET`
+- `AWS_DURABLE_REGION`
+
+The workflow assumes the role with GitHub OIDC and maps the resulting access
+key, secret key, and mandatory session token into the transport. It neither
+creates nor deletes the bucket. Each attempt writes beneath the unique prefix
+`ci/jolt-chdb/<run-id>-<run-attempt>` so retries cannot inherit a prior head.
+It is safe to share the bucket with other CI consumers when each role is scoped
+to a distinct top-level prefix. For this workflow the object permission can be
+limited to:
+
+```text
+arn:aws:s3:::BUCKET/ci/jolt-chdb/*
+```
+
+Only `s3:GetObject` and `s3:PutObject` are required. `s3:ListBucket`,
+`s3:DeleteObject`, and `s3:CreateBucket` are not required by the conformance
+run. Configure a bucket lifecycle rule for the shared `ci/` subtree rather
+than granting test jobs destructive cleanup permission.
