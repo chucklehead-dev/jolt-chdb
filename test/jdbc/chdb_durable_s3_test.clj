@@ -198,7 +198,9 @@
   (doseq [options [(assoc base-options :endpoint
                           "https://PRIVATE-SECRET@example.com")
                    (assoc base-options :bucket "bad/bucket")
-                   (assoc base-options :session-token "")]]
+                   (assoc base-options :session-token "")
+                   (assoc base-options :timeout-ms 0)
+                   (assoc base-options :max-response-bytes -1)]]
     (check "unsafe S3 configuration fails before transport"
            ::s3/invalid-options
            (:type (ex-data

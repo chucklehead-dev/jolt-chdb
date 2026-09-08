@@ -21,6 +21,11 @@
     (fail! ::invalid-options (str label " must be a nonblank string")))
   value)
 
+(defn- positive-option! [value label]
+  (when-not (and (integer? value) (pos? value))
+    (fail! ::invalid-options (str label " must be a positive integer")))
+  value)
+
 (defn- safe-key! [key]
   (let [parts (when (string? key) (str/split key #"/" -1))]
     (when-not (and (seq parts)
@@ -248,20 +253,36 @@
   Durable manifest data beyond the exact object request and must honor file
   bodies/destinations without buffering them."
   [{:keys [endpoint bucket prefix region access-key secret-key session-token
-           request! max-attempts]
+           request! max-attempts connect-timeout-ms timeout-ms
+           max-response-bytes]
     :or {prefix "" max-attempts 3}}]
-  (when-not (fn? request!)
-    (fail! ::invalid-options "request! must be a function"))
   (when-not (and (integer? max-attempts) (pos? max-attempts) (<= max-attempts 8))
     (fail! ::invalid-options "max-attempts must be between one and eight"))
-  (S3Backend.
-   {:endpoint (endpoint! endpoint)
-    :bucket (bucket! bucket)
-    :prefix (normalized-prefix prefix)
-    :region (nonblank! region "region")
-    :auth {:access-key (nonblank! access-key "access-key")
-           :secret-key (nonblank! secret-key "secret-key")
-           :session-token (when session-token
-                            (nonblank! session-token "session-token"))}
-    :request! request!
-    :max-attempts max-attempts}))
+  (when connect-timeout-ms
+    (positive-option! connect-timeout-ms "connect-timeout-ms"))
+  (when timeout-ms
+    (positive-option! timeout-ms "timeout-ms"))
+  (when max-response-bytes
+    (positive-option! max-response-bytes "max-response-bytes"))
+  (let [state
+        {:endpoint (endpoint! endpoint)
+         :bucket (bucket! bucket)
+         :prefix (normalized-prefix prefix)
+         :region (nonblank! region "region")
+         :auth {:access-key (nonblank! access-key "access-key")
+                :secret-key (nonblank! secret-key "secret-key")
+                :session-token (when session-token
+                                 (nonblank! session-token "session-token"))}
+         :max-attempts max-attempts}
+        transport-options
+        (cond-> {}
+          connect-timeout-ms (assoc :connect-timeout-ms connect-timeout-ms)
+          timeout-ms (assoc :timeout-ms timeout-ms)
+          max-response-bytes (assoc :max-response-bytes max-response-bytes))
+        request! (or request!
+                     ((requiring-resolve
+                       'jdbc.chdb.durable.s3-curl/request-function)
+                      transport-options))]
+    (when-not (fn? request!)
+      (fail! ::invalid-options "request! must be a function"))
+    (S3Backend. (assoc state :request! request!))))

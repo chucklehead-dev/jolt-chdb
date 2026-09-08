@@ -107,9 +107,10 @@ and [`docs/durable-writer.md`](docs/durable-writer.md).
 
 The S3-compatible namespace backend semantics, atomic preconditions, retry and
 error mapping, and streaming transport contract are documented in
-[`docs/durable-s3.md`](docs/durable-s3.md). Its default libcurl transport and
-real AWS/MinIO qualification are still pending, so this is not yet a production
-S3 conformance claim.
+[`docs/durable-s3.md`](docs/durable-s3.md). Its Jolt-native default libcurl
+SigV4 transport has loopback and pinned-MinIO integration gates; real AWS and
+large-transfer qualification are still pending, so this is not yet a complete
+production S3 conformance claim.
 
 Its executable formal companion is the literate specification
 [`formal/quint/durable-head-cas.md`](formal/quint/durable-head-cas.md).
