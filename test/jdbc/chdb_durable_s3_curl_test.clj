@@ -9,6 +9,10 @@
 
 (def failures (atom 0))
 
+(def ^:private timeout-access-key "JOLT-ACCESS-KEY-CANARY-9A4C")
+(def ^:private timeout-secret-key "JOLT-SECRET-KEY-CANARY-72ED")
+(def ^:private timeout-session-token "JOLT-SESSION-TOKEN-CANARY-B813")
+
 (defn- check [label expected actual]
   (if (= expected actual)
     (println "  ok  " label)
@@ -18,6 +22,36 @@
 
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
+
+(defn- recording-timeout-store [endpoint prefix transport-errors]
+  (backend/object-backend
+   (s3/s3-backend
+    {:endpoint endpoint
+     :bucket "bucket"
+     :prefix prefix
+     :region "us-east-1"
+     :access-key timeout-access-key
+     :secret-key timeout-secret-key
+     :session-token timeout-session-token
+     :max-attempts 1
+     :request!
+     (fn [request]
+       (try
+         (s3-curl/request!
+          (assoc request
+                 :connect-timeout-ms 2000
+                 :timeout-ms 100))
+         (catch Throwable error
+           (swap! transport-errors conj
+                  {:message (.getMessage error)
+                   :data (ex-data error)})
+           (throw error))))})
+   "object"))
+
+(defn- leaks-private-data?
+  [errors forbidden]
+  (let [rendered (pr-str errors)]
+    (boolean (some #(str/includes? rendered %) forbidden))))
 
 (def acquisition-options
   {:owner "writer-timeout"
@@ -94,29 +128,8 @@
     (check "replaced bytes remain exact"
            "second" (String. (backend/get-bytes store "head.json") "UTF-8"))
     (let [transport-errors (atom [])
-          timed-namespace
-          (s3/s3-backend
-           {:endpoint endpoint
-            :bucket "bucket"
-            :prefix "timeout-after-commit"
-            :region "us-east-1"
-            :access-key "ACCESS"
-            :secret-key "PRIVATE-SECRET"
-            :session-token "SESSION"
-            :max-attempts 1
-            :request!
-            (fn [request]
-              (try
-                (s3-curl/request!
-                 (assoc request
-                        :connect-timeout-ms 2000
-                        :timeout-ms 100))
-                (catch Throwable error
-                  (swap! transport-errors conj
-                         {:message (.getMessage error)
-                          :data (ex-data error)})
-                  (throw error))))})
-          timed-store (backend/object-backend timed-namespace "object")
+          timed-store (recording-timeout-store
+                       endpoint "timeout-after-commit" transport-errors)
           token (:token (control/acquire! timed-store acquisition-options))
           wal-bytes (.getBytes "timeout-recovery" "UTF-8")
           started (System/nanoTime)
@@ -129,8 +142,7 @@
                      {:kind :wal
                       :reference reference
                       :verify-reference! control/verify-byte-reference!})
-          captured (first @transport-errors)
-          rendered (pr-str @transport-errors)]
+          captured (first @transport-errors)]
       (check "real libcurl timeout after immutable create is observed"
              [28 :transport false]
              [(get-in captured [:data :curl-code])
@@ -151,11 +163,125 @@
              true (< elapsed-ms 3000.0))
       (check "native timeout diagnostics retain no credential, URL, or key"
              false
-             (boolean
-              (some #(str/includes? rendered %)
-                    ["PRIVATE-SECRET" endpoint "timeout-after-commit"
-                     (get reference "key")])))
+             (leaks-private-data?
+              @transport-errors
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-after-commit" "timeout-recovery"
+               (get reference "key")]))
       (check "exactly one native transfer failure required reconciliation"
+             1 (count @transport-errors)))
+    (let [transport-errors (atom [])
+          timed-store (recording-timeout-store
+                       endpoint "timeout-after-cas" transport-errors)
+          token1 (:token (control/acquire! timed-store acquisition-options))
+          wal-bytes (.getBytes "head-cas-timeout" "UTF-8")
+          publication (control/publish-wal-bytes!
+                       timed-store token1 wal-bytes)
+          reference (:reference publication)
+          started (System/nanoTime)
+          committed (control/commit-reference!
+                     timed-store token1
+                     {:kind :wal
+                      :reference reference
+                      :verify-reference! control/verify-byte-reference!})
+          elapsed-ms (/ (- (System/nanoTime) started) 1000000.0)
+          recovery-head (:head (control/read-head-read-only! timed-store))
+          _ (control/release! timed-store token1)
+          acquired2
+          (control/acquire!
+           timed-store
+           (assoc acquisition-options
+                  :owner "writer-after-timeout"
+                  :instance "instance-after-timeout"
+                  :now 101M
+                  :expires-at 300M))
+          token2 (:token acquired2)
+          before-stale (:head (control/read-head! timed-store))
+          stale-result (error-type #(control/renew! timed-store token1 350M))
+          after-stale (:head (control/read-head! timed-store))
+          captured (first @transport-errors)]
+      (check "real libcurl timeout after head CAS is observed"
+             [28 :transport false]
+             [(get-in captured [:data :curl-code])
+              (get-in captured [:data :category])
+              (get-in captured [:data :definitely-not-sent?])])
+      (check "ambiguous head CAS reconciles the exact intended transition"
+             [:reconciled 1 [reference]]
+             [(:status committed)
+              (get-in (:head committed) ["manifest" "seq"])
+              (get-in (:head committed) ["manifest" "wal"])])
+      (check "read-only recovery sees the reconciled sequence and reference"
+             [1 [reference]]
+             [(get-in recovery-head ["manifest" "seq"])
+              (get-in recovery-head ["manifest" "wal"])])
+      (check "a subsequent writer retains the committed manifest exactly once"
+             [:acquired 2 1 [reference]]
+             [(:status acquired2)
+              (:generation token2)
+              (get-in (:head acquired2) ["manifest" "seq"])
+              (get-in (:head acquired2) ["manifest" "wal"])])
+      (check "the stale owner is fenced without changing the recovered head"
+             [::control/lease-fenced before-stale]
+             [stale-result after-stale])
+      (check "the post-CAS-timeout transport remains reusable"
+             "head-cas-timeout"
+             (String. (backend/get-bytes timed-store (get reference "key"))
+                      "UTF-8"))
+      (check "head-CAS timeout reconciliation has a bounded runtime"
+             true (< elapsed-ms 3000.0))
+      (check "head-CAS diagnostics retain no credential, URL, or key"
+             false
+             (leaks-private-data?
+              @transport-errors
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-after-cas" "head-cas-timeout"
+               (get reference "key")]))
+      (check "exactly one head-CAS transfer failure required reconciliation"
+             1 (count @transport-errors)))
+    (let [transport-errors (atom [])
+          timed-store (recording-timeout-store
+                       endpoint "timeout-before-cas" transport-errors)
+          token (:token (control/acquire! timed-store acquisition-options))
+          wal-bytes (.getBytes "head-cas-not-applied" "UTF-8")
+          reference (:reference
+                     (control/publish-wal-bytes! timed-store token wal-bytes))
+          commit-result
+          (error-type
+           #(control/commit-reference!
+             timed-store token
+             {:kind :wal
+              :reference reference
+              :verify-reference! control/verify-byte-reference!}))
+          unchanged (:head (control/read-head! timed-store))
+          captured (first @transport-errors)]
+      (check "real timeout before head CAS remains explicitly uncommitted"
+             [::control/commit-ambiguous 0 []]
+             [commit-result
+              (get-in unchanged ["manifest" "seq"])
+              (get-in unchanged ["manifest" "wal"])])
+      (check "before-CAS negative control is a native ambiguous timeout"
+             [28 :transport false]
+             [(get-in captured [:data :curl-code])
+              (get-in captured [:data :category])
+              (get-in captured [:data :definitely-not-sent?])])
+      (check "before-CAS negative control reached its provider fault branch"
+             "request-reached-before-cas"
+             (String.
+              (backend/get-bytes timed-store
+                                 "fixture-timeout-before-cas-hit")
+              "UTF-8"))
+      (check "the dropped-CAS transport remains readable without poisoning"
+             "head-cas-not-applied"
+             (String. (backend/get-bytes timed-store (get reference "key"))
+                      "UTF-8"))
+      (check "before-CAS diagnostics retain no credential, URL, or key"
+             false
+             (leaks-private-data?
+              @transport-errors
+              [timeout-access-key timeout-secret-key timeout-session-token
+               endpoint "timeout-before-cas" "head-cas-not-applied"
+               (get reference "key")]))
+      (check "negative control visits exactly one native timeout"
              1 (count @transport-errors)))
     (let [source (Files/createTempFile
                   "jchdb-curl-upload-" ".bin" (make-array FileAttribute 0))
