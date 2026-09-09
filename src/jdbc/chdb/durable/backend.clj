@@ -50,6 +50,48 @@
   ;; provider paths containing tenant data through this boundary.
   (throw (ex-info message {:type type})))
 
+(def ^:dynamic ^:private *operation-context* {})
+
+(defn operation-context
+  "Return the backend context bound by the current high-level operation."
+  []
+  *operation-context*)
+
+(defn operation-stopped!
+  "Abort a nested backend operation because its high-level caller stopped."
+  []
+  (fail! ::operation-stopped
+         "Durable backend operation was stopped by its caller"))
+
+(defn call-with-operation-context
+  "Call `f` with context visible to synchronous nested backend operations.
+
+  This preserves the frozen ObjectBackend method signatures while allowing a
+  writer to propagate bounded cancellation such as its live fencing predicate."
+  [context f]
+  (when-not (map? context)
+    (fail! ::invalid-operation-context
+           "Durable backend operation context must be a map"))
+  (when-not (fn? f)
+    (fail! ::invalid-operation-context
+           "Durable backend operation callback must be callable"))
+  (when (and (contains? context :stopped?)
+             (not (fn? (:stopped? context))))
+    (fail! ::invalid-operation-context
+           "Durable backend stopped predicate must be callable"))
+  (let [outer-stopped? (:stopped? *operation-context*)
+        inner-stopped? (:stopped? context)
+        combined
+        (cond
+          (and outer-stopped? inner-stopped?)
+          (fn [] (or (outer-stopped?) (inner-stopped?)))
+          outer-stopped? outer-stopped?
+          inner-stopped? inner-stopped?)
+        context (cond-> (merge *operation-context* context)
+                  combined (assoc :stopped? combined))]
+    (binding [*operation-context* context]
+      (f))))
+
 (defn- checked-key [key]
   (let [parts (when (string? key) (str/split key #"/" -1))]
     (when-not (and (seq parts)

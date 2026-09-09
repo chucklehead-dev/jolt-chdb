@@ -2,6 +2,8 @@
   (:require [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
+            [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-writer-test-support :as support]
             [jolt.fibers :as fibers]))
@@ -492,6 +494,131 @@
            [@replace-count @waits (:writable? (writer/status durable-writer))
             (:pending-statements (writer/status durable-writer))])
     (check "close retains the self-fenced persistence obligation"
+           ::control/lease-fenced
+           (error-type #(writer/close! durable-writer))))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        now (atom 100M)
+        observed-context (atom nil)
+        operations
+        (assoc (fake-operations (atom []) (atom 0))
+               :now-ms (fn [] @now)
+               :await-heartbeat! (fn [stop _] @stop :stop)
+               :publish-wal!
+               (fn [_ _ _]
+                 (reset! observed-context (backend/operation-context))
+                 (backend/operation-stopped!)))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})]
+    (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
+    (check "writer operations propagate their live fencing context"
+           ::control/lease-fenced
+           (error-type #(writer/flush! durable-writer)))
+    (check "nested backends receive the writer stop predicate"
+           false ((:stopped? @observed-context)))
+    (check "context-observation failure retains the pending WAL"
+           1 (:pending-statements (writer/status durable-writer)))
+    (reset! now 1000M)
+    (check "propagated stop predicate follows later local expiry"
+           true ((:stopped? @observed-context)))
+    (check "close remains fenced after propagated-context failure"
+           ::control/lease-fenced
+           (error-type #(writer/close! durable-writer))))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        now (atom 100M)
+        requests (atom 0)
+        waits (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        transport-store
+        (s3/s3-backend
+         {:endpoint "http://127.0.0.1:9000"
+          :bucket "bucket" :region "us-east-1"
+          :access-key "access" :secret-key "secret"
+          :max-attempts 4
+          :retry-initial-backoff-ms 10 :retry-max-backoff-ms 20
+          :monotonic-ms! (fn [] @now)
+          :await-backoff! (fn [milliseconds]
+                            (swap! waits conj milliseconds)
+                            (reset! now 1000M))
+          :request! (fn [_] (swap! requests inc) {:status 503})})
+        operations
+        (assoc (fake-operations (atom []) close-count)
+               :now-ms (fn [] @now)
+               :await-heartbeat! (fn [stop _] @stop :stop)
+               :cleanup-scratch! #(swap! cleanup-count inc)
+               :publish-wal!
+               (fn [_ _ _]
+                 (backend/get-bytes transport-store "head.json")))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})]
+    (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
+    (check "S3 backoff crossing writer expiry maps to lease fencing"
+           ::control/lease-fenced
+           (error-type #(writer/flush! durable-writer)))
+    (check "writer fencing prevents the next nested S3 request"
+           [1 [10] false 1]
+           [@requests @waits (:writable? (writer/status durable-writer))
+            (:pending-statements (writer/status durable-writer))])
+    (check "fenced S3 cleanup preserves one request and closes resources once"
+           ::control/lease-fenced
+           (error-type #(writer/close! durable-writer)))
+    (check "fenced terminal cleanup is exact"
+           [1 1 1] [@requests @close-count @cleanup-count]))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        now (atom 100M)
+        heartbeat-waiting (promise)
+        permit-heartbeat (promise)
+        renewal-entered (promise)
+        release-renewal (promise)
+        wait-count (atom 0)
+        operations
+        (assoc
+         (fake-operations (atom []) (atom 0))
+         :now-ms (fn [] @now)
+         :await-heartbeat!
+         (fn [stop _]
+           (if (= 1 (swap! wait-count inc))
+             (do (deliver heartbeat-waiting true) @permit-heartbeat :tick)
+             (do @stop :stop)))
+         :renew!
+         (fn [_ _ renewed-expiry]
+           (deliver renewal-entered renewed-expiry)
+           @release-renewal
+           {:head {"lease" {"expires_at" renewed-expiry}}}))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})]
+    @heartbeat-waiting
+    (deliver permit-heartbeat true)
+    @renewal-entered
+    (reset! now 1000M)
+    (deliver (:heartbeat-stop durable-writer) :stop)
+    (deliver release-renewal true)
+    (owned-thread/join! (:heartbeat durable-writer))
+    (check "renewal response after the prior expiry cannot resurrect writer"
+           false (:writable? (writer/status durable-writer)))
+    (check "post-expiry renewal remains locally fenced"
+           ::control/lease-fenced
+           (error-type
+            #(writer/execute! durable-writer "INSERT INTO t VALUES (2)")))
+    (check "post-expiry renewal close retains fencing"
            ::control/lease-fenced
            (error-type #(writer/close! durable-writer))))
 

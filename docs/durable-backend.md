@@ -18,6 +18,21 @@ create and replace must be atomic provider operations; a `HEAD` followed by an
 unconditional `PUT` is not an implementation. ETags are opaque tokens and are
 only compared or returned.
 
+## Operation context
+
+`call-with-operation-context` carries bounded, synchronous operation metadata
+through the frozen `ObjectBackend` method signatures. Writers use its
+`:stopped?` predicate to expose local lease self-fencing to nested backend work;
+the S3 backend checks that predicate before the first request and around retry
+backoff. The binding is visible only on the calling thread and is restored when
+the call returns or throws, so asynchronous backend implementations must copy
+the cancellation signal into work they own before returning.
+
+Nested contexts compose stop predicates monotonically: either the outer or
+inner caller may stop the work, and an inner binding cannot weaken an outer
+cancellation decision. Other context keys use ordinary inner-over-outer map
+merging. This addition does not change any `ObjectBackend` method signature.
+
 `memory-backend` is a runtime-neutral semantic oracle, not advertised durable
 storage. It uses one atom CAS for each successful publication, returns owned
 byte arrays, advances the ETag on every replacement, and rejects stale tokens
