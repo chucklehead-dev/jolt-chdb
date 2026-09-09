@@ -81,11 +81,13 @@ token plus an expiry at least as late as requested, while manifest reconciliatio
 proves the exact sequence/reference effect. Neither path can erase the other's
 landed transition or duplicate manifest advancement.
 
-The heartbeat transport itself can still block until its configured backend
-timeout. That is an availability limit, not a fencing exception: mutations and
-flushes compare the local clock with the last proved expiry and self-fence once
-it is reached. Deployments should configure backend request timeouts within
-their renewal slack when continued availability under a stalled request matters.
+An in-flight heartbeat transport request can still block until its configured
+backend timeout. That is an availability limit, not a fencing exception:
+mutations and flushes compare the local clock with the last proved expiry and
+self-fence once it is reached, and nested S3 retries observe that predicate
+before another request. Deployments should configure per-request backend
+timeouts within their renewal slack when continued availability under a
+stalled request matters.
 
 `verify-byte-reference!` is an in-memory verifier for bounded statement WAL
 objects. It uses the pinned `jolt-lang/jolt-crypto` MessageDigest shim on Jolt

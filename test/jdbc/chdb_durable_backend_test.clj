@@ -79,6 +79,29 @@
          (error-type #(backend/put-bytes-if-absent!
                        (backend/memory-backend) "head.json" [1 2 3])))
 
+  (let [outer-stop? (atom true)
+        nested-stop? (atom false)
+        observed
+        (backend/call-with-operation-context
+         {:stopped? (fn [] @outer-stop?)}
+         #(backend/call-with-operation-context
+           {:stopped? (fn [] @nested-stop?)}
+           (fn [] ((:stopped? (backend/operation-context))))))]
+    (check "nested backend context cannot weaken an outer stop" true observed)
+    (check "backend context is restored after nested return"
+           {} (backend/operation-context)))
+  (try
+    (backend/call-with-operation-context
+     {:stopped? (constantly true)}
+     #(throw (ex-info "test failure" {})))
+    (catch Throwable _))
+  (check "backend context is restored after throw"
+         {} (backend/operation-context))
+  (check "backend context rejects a non-callable stop predicate"
+         ::backend/invalid-operation-context
+         (error-type
+          #(backend/call-with-operation-context {:stopped? true} identity)))
+
   (let [namespace (backend/memory-backend)
         alpha (backend/object-backend namespace "alpha")
         beta (backend/object-backend namespace "beta")

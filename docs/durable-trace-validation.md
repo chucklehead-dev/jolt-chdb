@@ -12,6 +12,12 @@ formal model, implementation replay, and compiler aspects:
 | `checkpoint-publish` | `jdbc.chdb.durable.control/publish-checkpoint-file!` |
 | `release-attempt` | `jdbc.chdb.durable.control/release!` |
 
+The target-owned aspect manifest marks retry-aware control compatibility with
+epoch `4a0b82119a09fdadb08442cb5d189bdc0474ed86`. For multi-arity operations it
+selects the option-bearing terminal arity: convenience calls delegate there,
+and writers enter it directly, so either public call shape produces exactly
+one logical event.
+
 The literate Quint specification produces ADR-015 ITF traces with
 `mbt::actionTaken` and `mbt::nondetPicks`. The checked fixture under
 `formal/quint/traces/` is replayed by
@@ -53,7 +59,8 @@ its only carrier, and a stop signal is not proof that heartbeat has terminated.
 | blocking operation cannot starve renewal | lifecycle `elapseWhileHeartbeatResponsible` permits renewal independently | isolated `durable-thread-test` blocks longer than the initial lease | process asserts exactly one carrier and every Durable loop asserts it is off-fiber |
 | heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | `durable-writer-concurrency-test` blocks publication, verification, and manifest CAS while admitting renewal through virtual expiry | stopped-at-admission mutant expires the lease during flushing |
 | storage cannot locally exclude heartbeat | `blockingIOLeavesHeartbeatIndependent` over explicit `Publishing`, `Verifying`, and `Committing` phases | `durable-writer-concurrency-test` stops a manifest CAS before the backend, completes heartbeat CAS, then observes one manifest retry/advance | `LOCK_DURING_BLOCKING_IO_MUTANT` holds a local lock across blocked storage, prevents renewal, and loses the lease |
-| retry cannot outlive proved ownership | head model fences every stale owner; timing is deliberately outside its state | fake monotonic clock crosses lease expiry during manifest backoff; writer performs one CAS, becomes non-writable, and retains WAL | removing the post-wait stop check permits a second CAS after local expiry |
+| retry cannot outlive proved ownership | head model fences every stale owner; timing and nested transport attempts are deliberately outside its state | fake clocks cross lease expiry during manifest and S3 backoff; the writer performs no next CAS or transport request, surfaces `lease-fenced`, becomes non-writable, and retains WAL | removing either the post-wait check or writer backend context permits another attempt after local expiry |
+| a late renewal response cannot resurrect an expired writer | lifecycle `leaseCoversCloseFlush` and head fencing define the required ownership boundary; response latency is outside the current model | a barrier returns a successful renewal only after the prior proved expiry; the heartbeat marks the writer fenced and later operations fail closed | accepting the response without comparing the local clock to the prior expiry makes the writer writable again |
 | release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | exact close trace places observed heartbeat stop before release | injected heartbeat failure is rethrown by identity while cleanup continues |
 | renewal cannot follow release | `noRenewAfterRelease` | close waits for the owned heartbeat completion before release | release-before-join mutant enables a post-release heartbeat tick and violates the invariant |
 

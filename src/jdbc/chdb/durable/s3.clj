@@ -7,6 +7,7 @@
            [java.nio.file Files Paths]))
 
 (def ^:private retryable-statuses #{409 429 500 502 503 504})
+(def ^:private uncertain-write-statuses #{500 502 503 504})
 (def ^:private unreserved
   (set (map int
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")))
@@ -118,57 +119,64 @@
   (case (retry/await-next! budget attempt)
     :retry true
     :deadline (fail! ::timeout "S3 request exceeded its retry deadline")
-    :stopped (fail! ::timeout "S3 request retrying was stopped")
+    :stopped (backend/operation-stopped!)
     :attempt-limit false))
 
 (defn- request!
   [state operation request write?]
-  (let [budget (retry-budget! state)]
+  (let [context (backend/operation-context)
+        stopped? (:stopped? context)
+        budget (retry-budget! (cond-> state stopped? (assoc :stopped? stopped?)))]
+    (when ((:stopped? budget))
+      (backend/operation-stopped!))
     (loop [attempt 1]
-    (let [outcome (try
-                    {:response ((:request! state)
+      (let [outcome (try
+                      {:response ((:request! state)
                                 (assoc (bounded-request state budget request)
                                        :operation operation
                                        :auth (:auth state)
                                        :region (:region state)))}
-                    (catch Throwable error {:error error}))]
-      (if-let [error (:error outcome)]
-        (let [category (:category (ex-data error))
-              definitely-not-sent? (true? (:definitely-not-sent?
-                                            (ex-data error)))]
-          (cond
-            (= :authentication category)
-            (fail! ::authentication "S3 authentication failed")
+                      (catch Throwable error {:error error}))]
+        (if-let [error (:error outcome)]
+          (let [category (:category (ex-data error))
+                definitely-not-sent? (true? (:definitely-not-sent?
+                                              (ex-data error)))]
+            (cond
+              (= :authentication category)
+              (fail! ::authentication "S3 authentication failed")
 
-            (= :permission category)
-            (fail! ::permission "S3 permission was denied")
+              (= :permission category)
+              (fail! ::permission "S3 permission was denied")
 
-            (and (or (not write?) definitely-not-sent?)
-                 (retryable-error? error)
-                 (await-retry! budget attempt))
-            (recur (inc attempt))
-
-            (and write? (not definitely-not-sent?))
-            {:ambiguous? true}
-
-            (= :throttled category)
-            (fail! ::throttled "S3 request was throttled")
-
-            :else
-            (fail! ::transport "S3 transport failed")))
-        (let [response (:response outcome)
-              status (:status response)]
-          (when-not (integer? status)
-            (fail! ::invalid-response "S3 transport returned no HTTP status"))
-          (if (contains? retryable-statuses status)
-            (if (await-retry! budget attempt)
+              (and (or (not write?) definitely-not-sent?)
+                   (retryable-error? error)
+                   (await-retry! budget attempt))
               (recur (inc attempt))
-              (if write?
+
+              (and write? (not definitely-not-sent?))
+              {:ambiguous? true}
+
+              (= :throttled category)
+              (fail! ::throttled "S3 request was throttled")
+
+              :else
+              (fail! ::transport "S3 transport failed")))
+          (let [response (:response outcome)
+                status (:status response)]
+            (when-not (integer? status)
+              (fail! ::invalid-response "S3 transport returned no HTTP status"))
+            (if (contains? retryable-statuses status)
+              (if (and write? (contains? uncertain-write-statuses status))
                 {:ambiguous? true}
-                (if (= 429 status)
-                  (fail! ::throttled "S3 request was throttled")
-                  (fail! ::transport "S3 service remained unavailable"))))
-            {:response response})))))))
+                (if (await-retry! budget attempt)
+                  (recur (inc attempt))
+                  (if write?
+                    {:ambiguous? true}
+                    (if (= 429 status)
+                      (fail! ::throttled "S3 request was throttled")
+                      (fail! ::transport
+                             "S3 service remained unavailable")))))
+              {:response response})))))))
 
 (defn- response-or-error! [operation {:keys [response ambiguous?]}]
   (if ambiguous?

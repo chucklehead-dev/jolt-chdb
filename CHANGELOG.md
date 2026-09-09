@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Propagate each live writer's self-fencing predicate into synchronous nested
+  object-backend work without changing the Durable backend ABI. S3 stops before
+  a first request and before/after transport backoff, maps writer-originated
+  stopping to `lease-fenced`, and still never reissues an uncertain write.
+- Advance the target-owned Durable aspect epoch to the retry-aware control
+  surface and select its option-bearing terminal arities exactly once.
 - Require the generated Durable Quint ITF corpus to cover every legacy action
   and semantic outcome before replay, and record the aggregate counts in a
   machine-readable coverage manifest.

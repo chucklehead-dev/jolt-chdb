@@ -28,6 +28,9 @@
               :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-control-test"]}
+           :durable-aspect-manifest-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-aspect-manifest-test"]}
            :durable-retry-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-retry-test"]}
@@ -127,6 +130,7 @@
          durable-native-test "jolt -M:durable-native-test"
          durable-policy-test "jolt -M:durable-policy-test"
          durable-control-test "jolt -M:durable-control-test"
+         durable-aspect-manifest-test "jolt -M:durable-aspect-manifest-test"
          durable-itf-test "jolt -M:durable-itf-test"
          durable-writer-test "jolt -M:durable-writer-test"
          durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"

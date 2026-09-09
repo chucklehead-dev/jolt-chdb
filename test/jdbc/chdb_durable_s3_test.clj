@@ -229,6 +229,44 @@
            [[10 15] [[25 25] [15 15]]]
            [@waits @requests]))
 
+  (let [stopped? (atom false)
+        requests (atom 0)
+        waits (atom [])
+        store
+        (s3/s3-backend
+         (assoc base-options
+                :max-attempts 4
+                :retry-initial-backoff-ms 10
+                :retry-max-backoff-ms 20
+                :await-backoff! (fn [milliseconds]
+                                  (swap! waits conj milliseconds)
+                                  (reset! stopped? true))
+                :request! (fn [_]
+                            (swap! requests inc)
+                            {:status 503})))
+        error
+        (caught
+         #(backend/call-with-operation-context
+           {:stopped? (fn [] @stopped?)}
+           (fn [] (backend/get-bytes store "head.json"))))]
+    (check "caller stop during S3 backoff has the backend stop category"
+           ::backend/operation-stopped (:type (ex-data error)))
+    (check "writer stop prevents the next S3 transport request"
+           [1 [10]] [@requests @waits]))
+
+  (let [requests (atom 0)
+        store (s3/s3-backend
+               (assoc base-options :max-attempts 4
+                      :request! (fn [_] (swap! requests inc) {:status 404})))
+        error
+        (caught
+         #(backend/call-with-operation-context
+           {:stopped? (constantly true)}
+           (fn [] (backend/get-bytes store "head.json"))))]
+    (check "already-fenced writer stops before its first S3 request"
+           [::backend/operation-stopped 0]
+           [(:type (ex-data error)) @requests]))
+
   (let [calls (atom 0)
         waits (atom [])
         store
@@ -245,6 +283,29 @@
     (check "uncertain writes are never reissued"
            [:ambiguous 1 []]
            [(:status result) @calls @waits]))
+
+  (let [calls (atom 0)
+        waits (atom [])
+        source (Files/createTempFile "jchdb-s3-uncertain-" ".bin"
+                                     (make-array FileAttribute 0))
+        store
+        (s3/s3-backend
+         (assoc base-options :max-attempts 4
+                :await-backoff! #(swap! waits conj %)
+                :request! (fn [_] (swap! calls inc) {:status 503})))]
+    (try
+      (Files/write source (byte-array [1]) (into-array OpenOption []))
+      (check "uncertain HTTP 5xx writes are each single-attempt"
+             [[:ambiguous :ambiguous :ambiguous] 3 []]
+             [[(:status (backend/put-bytes-if-absent!
+                         store "wal/bytes.jsonl" (byte-array [1])))
+               (:status (backend/put-file-if-absent!
+                         store "checkpoints/file.tar.gz" source))
+               (:status (backend/replace-if-match!
+                         store "head.json" (byte-array [2]) "opaque-etag"))]
+              @calls @waits])
+      (finally
+        (Files/deleteIfExists source))))
 
   (let [throttled (s3/s3-backend
                    (assoc base-options :request! (constantly {:status 429})))

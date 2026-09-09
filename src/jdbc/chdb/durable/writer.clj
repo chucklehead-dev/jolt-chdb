@@ -6,6 +6,7 @@
   owns the public query/execute/flush/close queue for that live writer."
   (:require [clojure.data.json :as json]
             [jdbc.chdb :as chdb]
+            [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
@@ -18,10 +19,20 @@
 
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
-     wal-state lease-state heartbeat-stop operations worker heartbeat])
+     wal-state lease-state heartbeat-stop backend-context operations worker
+     heartbeat])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
+
+(defn- call-with-backend-context [writer f]
+  (try
+    (backend/call-with-operation-context (:backend-context writer) f)
+    (catch Throwable error
+      (if (= ::backend/operation-stopped (:type (ex-data error)))
+        (fail! ::control/lease-fenced
+               "The Durable writer cannot prove a live lease")
+        (throw error)))))
 
 (defn- require-string! [value label]
   (when-not (string? value)
@@ -227,16 +238,18 @@
     nil))
 
 (defn- execute-request! [writer request]
-  (case (:op request)
-    :query (do-query! writer (:sql request) (:params request))
-    :query-bytes (do-query-bytes! writer (:sql request) (:params request)
-                                  (:options request))
-    :execute (do-execute! writer (:sql request))
-    :sql (do-sql! writer (:sql request) (:params request))
-    :flush (do-flush! writer)
-    :checkpoint (do-checkpoint! writer)
-    :close (do-close! writer)
-    (fail! ::invalid-operation "Unknown Durable writer operation")))
+  (call-with-backend-context
+   writer
+   #(case (:op request)
+      :query (do-query! writer (:sql request) (:params request))
+      :query-bytes (do-query-bytes! writer (:sql request) (:params request)
+                                    (:options request))
+      :execute (do-execute! writer (:sql request))
+      :sql (do-sql! writer (:sql request) (:params request))
+      :flush (do-flush! writer)
+      :checkpoint (do-checkpoint! writer)
+      :close (do-close! writer)
+      (fail! ::invalid-operation "Unknown Durable writer operation"))))
 
 (defn- complete! [result value]
   (deliver result {:value value})
@@ -253,7 +266,9 @@
   (locking (:admission-lock writer)
     (when (= :open @(:lifecycle writer))
       (reset! (:lifecycle writer) :closing)))
-  (try (do-close! writer) (catch Throwable _))
+  (try
+    (call-with-backend-context writer #(do-close! writer))
+    (catch Throwable _))
   (locking (:admission-lock writer)
     (loop []
       (when-let [request (.poll ^ArrayBlockingQueue (:queue writer))]
@@ -311,12 +326,17 @@
                          (not (:fenced? @(:lease-state writer))))
                 (let [renewed-expiry (max (inc expires-at)
                                           (+ renew-now ttl-ms))
-                      result ((:renew! (:operations writer))
-                              (:store writer) (:token writer) renewed-expiry)]
-                  (reset! (:lease-state writer)
-                          {:expires-at (get-in (:head result)
-                                               ["lease" "expires_at"])
-                           :fenced? false})))
+                      result
+                      (call-with-backend-context
+                       writer
+                       #((:renew! (:operations writer))
+                         (:store writer) (:token writer) renewed-expiry))]
+                  (if (>= ((:now-ms (:operations writer))) expires-at)
+                    (swap! (:lease-state writer) assoc :fenced? true)
+                    (reset! (:lease-state writer)
+                            {:expires-at (get-in (:head result)
+                                                 ["lease" "expires_at"])
+                             :fenced? false}))))
               (catch Throwable error
                 (when (or (= ::control/lease-fenced (:type (ex-data error)))
                           (>= ((:now-ms (:operations writer))) expires-at))
@@ -356,6 +376,7 @@
         retry-options (assoc (or retry-options {})
                              :stopped?
                              #(boolean (retry-stopped? lease-state now-ms)))
+        backend-context {:stopped? (:stopped? retry-options)}
         operations
         (merge
          {:analyze-query! policy/analyze-query!
@@ -418,7 +439,7 @@
                   (atom {:lines [] :byte-count 0
                          :checkpoint-required? false})
                   lease-state
-                  (promise) operations worker heartbeat)]
+                  (promise) backend-context operations worker heartbeat)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat
         (owned-thread/start!
