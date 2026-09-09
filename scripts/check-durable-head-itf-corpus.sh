@@ -5,7 +5,10 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 literate_spec="$repo_root/formal/quint/durable-head-cas.md"
 target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
-seed="${QUINT_ITF_CORPUS_SEED:-0xd17ab1e}"
+coverage="$target/itf-corpus-coverage.json"
+# With the pinned Quint evaluator, this seed reaches every required legacy
+# action and outcome within the existing 64-trace default corpus.
+seed="${QUINT_ITF_CORPUS_SEED:-0x9009}"
 trace_count="${QUINT_ITF_TRACE_COUNT:-64}"
 replay_mode="${1:-}"
 
@@ -21,7 +24,7 @@ then
   exit 1
 fi
 
-for tool in lmt quint
+for tool in jq lmt quint
 do
   if ! command -v "$tool" >/dev/null 2>&1
   then
@@ -63,6 +66,21 @@ do
   traces+=("$trace")
 done
 
+jq -s \
+  --arg seed "$seed" \
+  --argjson trace_count "$trace_count" \
+  -f "$repo_root/scripts/durable-head-itf-coverage.jq" \
+  "${traces[@]}" >"$coverage"
+
+if ! jq -e \
+  '.missing.actions == [] and .missing.outcomes == []' \
+  "$coverage" >/dev/null
+then
+  jq . "$coverage" >&2
+  echo "Durable ITF corpus did not cover every required action and outcome" >&2
+  exit 1
+fi
+
 if [[ -x "$repo_root/../tools/jolt-with-chez-10.4.1" ]]
 then
   jolt_wrapper="$repo_root/../tools/jolt-with-chez-10.4.1"
@@ -83,3 +101,5 @@ then
   fi
 fi
 echo "Durable Quint ITF corpus: $trace_count trace(s), seed $seed"
+echo "Coverage manifest: $coverage"
+jq -c '.observed' "$coverage"

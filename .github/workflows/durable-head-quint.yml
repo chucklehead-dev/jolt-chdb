@@ -7,6 +7,7 @@ on:
       - .github/workflows/durable-head-quint.yml
       - formal/durable-head-cas*.smt2
       - formal/quint/**
+      - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
@@ -14,15 +15,20 @@ on:
       - deps.edn
       - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/digest.cljc
       - src/jdbc/chdb/durable/head.clj
       - src/jdbc/chdb/durable/owned_thread.clj
       - src/jdbc/chdb/durable/reader.clj
+      - src/jdbc/chdb/durable/retry.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
       - test/durable-s3-itf.sh
+      - test/jdbc/chdb_durable_backend_test.clj
       - test/jdbc/chdb_durable_control_test.clj
+      - test/jdbc/chdb_durable_head_test.clj
       - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_retry_test.clj
       - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
       - test/jdbc/chdb_durable_writer_concurrency_test.clj
@@ -36,6 +42,7 @@ on:
       - .github/workflows/durable-head-quint.yml
       - formal/durable-head-cas*.smt2
       - formal/quint/**
+      - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
@@ -43,15 +50,20 @@ on:
       - deps.edn
       - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/digest.cljc
       - src/jdbc/chdb/durable/head.clj
       - src/jdbc/chdb/durable/owned_thread.clj
       - src/jdbc/chdb/durable/reader.clj
+      - src/jdbc/chdb/durable/retry.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
       - test/durable-s3-itf.sh
+      - test/jdbc/chdb_durable_backend_test.clj
       - test/jdbc/chdb_durable_control_test.clj
+      - test/jdbc/chdb_durable_head_test.clj
       - test/jdbc/chdb_durable_itf_test.clj
+      - test/jdbc/chdb_durable_retry_test.clj
       - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
       - test/jdbc/chdb_durable_writer_concurrency_test.clj
