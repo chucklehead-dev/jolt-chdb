@@ -303,7 +303,11 @@ both pending recovery obligations if that outcome cannot be proved.
 `checkpoint!` creates a full native backup, streams and verifies its immutable
 publication, and then conditionally replaces the checkpoint reference while
 clearing covered WALs. A successful close drains queued work, flushes pending
-statements, releases the lease, closes chDB, and removes scratch storage.
+statements, releases the lease, closes chDB, removes scratch storage, and
+positively joins the owned operation OS thread before returning. Reader close
+has the same worker-join boundary after native close and scratch cleanup. Thus
+a returned or rethrown public close proves that its operation thread is no
+longer live, not only that the worker published a terminal result.
 
 Applications that acknowledge an external request should therefore call and
 successfully return from `flush!` (or `checkpoint!`) first. A crash before that

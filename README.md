@@ -277,6 +277,7 @@ jolt -M:durable-control-test
 jolt -M:durable-itf-test
 jolt -M:durable-writer-test
 jolt -M:durable-writer-concurrency-test
+jolt -M:durable-worker-join-test
 jolt -M:durable-open-test
 scripts/check-durable-head-quint.sh
 jolt -M:durable-local-test

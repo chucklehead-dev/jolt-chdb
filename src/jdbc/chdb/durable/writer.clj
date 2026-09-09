@@ -489,10 +489,11 @@
                         (throw error))))
             :closing :wait
             :closed :wait))]
-    (if (= :owner disposition)
-      (await-result (:result request))
-      (let [{:keys [value error]} @(:closed-result writer)]
-        (if error (throw error) value)))))
+    (owned-thread/join-after!
+     (:worker writer)
+     #(if (= :owner disposition)
+        (await-result (:result request))
+        (await-result (:closed-result writer))))))
 
 (defn status [writer]
   (let [{:keys [lines byte-count checkpoint-required?]}

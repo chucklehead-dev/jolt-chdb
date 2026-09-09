@@ -12,6 +12,7 @@
             [jdbc.chdb-durable-itf-test :as durable-itf]
             [jdbc.chdb-durable-writer-test :as durable-writer]
             [jdbc.chdb-durable-writer-concurrency-test :as durable-writer-concurrency]
+            [jdbc.chdb-durable-worker-join-test :as durable-worker-join]
             [jdbc.chdb-durable-open-test :as durable-open]
             [jdbc.chdb-durable-dbspec-test :as durable-dbspec]
             [jdbc.chdb-durable-local-test :as durable-local]
@@ -678,6 +679,7 @@
   (durable-itf/run-checks!)
   (durable-writer/run-checks!)
   (durable-writer-concurrency/run-checks!)
+  (durable-worker-join/run-checks!)
   (durable-open/run-checks!)
   (durable-dbspec/run-checks!)
   (durable-local/run-checks!)
