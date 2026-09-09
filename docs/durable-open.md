@@ -21,20 +21,24 @@ manifest and line order through the internal engine path, never through the
 public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
-The active writer runs heartbeat renewal independently of its operation queue;
-the configured interval cannot exceed one third of the lease TTL. Mutations
-and flushes check the locally known expiry at execution time and fail with
-`lease-fenced` once ownership can no longer be proved. Head CAS calls share one
-writer lock. Ambiguous manifest commits reconcile by exact reference and
-sequence while ownership remains intact, so a later heartbeat-only expiry
-change cannot turn an already-landed WAL into a duplicate retry.
+The active writer runs its operation queue and heartbeat on separate owned OS
+threads; the read-only queue likewise owns an OS thread. These are deliberately
+not Jolt fibers because native chDB and storage calls may block a shared fiber
+carrier. The configured heartbeat interval cannot exceed one third of the
+lease TTL. Mutations and flushes check the locally known expiry at execution
+time and fail with `lease-fenced` once ownership can no longer be proved. Head
+CAS calls share one writer lock. Ambiguous manifest commits reconcile by exact
+reference and sequence while ownership remains intact, so a later
+heartbeat-only expiry change cannot turn an already-landed WAL into a duplicate
+retry.
 
 Failure after acquisition attempts native close, lease release, and scratch
 cleanup without replacing the primary error. A restore failure after the
 compatibility gate is reported as `engine-incompatible`, as required by the
-full-archive promise. Successful `close!` stops heartbeat admission, drains and
-flushes the operation queue, releases the lease, closes chDB, and removes the
-scratch tree.
+full-archive promise. Successful `close!` stops operation admission, drains and
+flushes the operation queue while heartbeat remains live, then stops and joins
+heartbeat before it releases the lease, closes chDB, and removes the scratch
+tree. This positive termination handshake prevents renewal after release.
 
 `jdbc.chdb.durable/open-reader!` reads and validates the head once in
 read-only mode, returns `not-found` without creating a missing object, and

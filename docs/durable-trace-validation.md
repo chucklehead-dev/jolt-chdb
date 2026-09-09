@@ -29,10 +29,17 @@ ITF state. It also records a bounded pair of lifecycle events:
 {:seq 2
  :operation-id 1
  :phase :return
- :value {:outcome :acquired
+:value {:outcome :acquired
          :head {:generation 2 :owner :writer-2
                 :sequence 0 :reference nil}}}
 ```
+
+The separate literate writer-lifecycle model keeps the head/ITF projection
+stable. Its corrected trace corresponds to the focused runtime trace: close
+admission, renewal while prior FIFO work is blocked, operation return, WAL
+publication and head commit, heartbeat stop/join, lease release, native close,
+and scratch cleanup. The test asserts this ordering directly and checks that a
+heartbeat failure retains exact Throwable identity.
 
 Hegel first checks the explicit `hegel.operation-events` revision 1 envelope,
 including contiguous sequence, complete invoke/terminal lifecycles, parentage,
@@ -99,7 +106,8 @@ Derived command JSON is a driver convenience, not the state oracle.
 Use one transition vocabulary but keep four different claims explicit:
 
 1. The literate Markdown is tangled, typechecked, deterministically tested,
-   and mutation-tested. This catches specification and extraction drift.
+   and mutation-tested. This includes the head-CAS model and the smaller writer
+   close-lifecycle model; it catches specification and extraction drift.
 2. Apalache explores the bounded model and proves or finds counterexamples for
    the selected invariants. It says nothing directly about Clojure execution.
 3. Quint ITF traces drive the real control implementation and compare every

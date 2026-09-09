@@ -66,10 +66,15 @@ writes instead of relying on one chDB data directory surviving intact.
 The reader, single-writer lease, WAL flush, checkpoint, recovery, local POSIX
 backend, and S3-compatible backend are implemented. The local backend has
 cross-process and native WAL/checkpoint recovery tests on Linux. The S3 backend
-has protocol, libcurl, pinned-MinIO, and live AWS OIDC qualification. Durable is
-still experimental: the stable 26.7.0 library installed by `-M:setup-native`
-does not expose the required ABI, hosted native qualification covers only Linux
-x86-64, and a broader crash/corruption and platform matrix remain unfinished.
+has protocol, libcurl, pinned-MinIO, and live AWS OIDC qualification. The
+serialized reader and writer workers and lease heartbeat are isolated from
+Jolt's shared fiber carriers: they each own an OS thread because native chDB and
+storage calls may block. During close, heartbeat remains live through queued
+work and the final flush, then is stopped and joined before lease release.
+Durable is still experimental: the stable 26.7.0 library installed by
+`-M:setup-native` does not expose the required ABI, hosted native qualification
+covers only Linux x86-64, and a broader crash/corruption and platform matrix
+remain unfinished.
 
 Choose Durable now when you can pin and qualify chDB 26.7.2-rc.2 yourself and
 want to evaluate explicit persistence boundaries on one POSIX host or an
