@@ -130,9 +130,9 @@
                  (do @heartbeat-tick :tick)
                  (do @stop (swap! calls conj :heartbeat-stop) :stop)))
              :renew!
-             (fn [store token expiry]
+             (fn [store token expiry retry-options]
                (swap! calls conj :renew)
-               (let [result (control/renew! store token expiry)]
+               (let [result (control/renew! store token expiry retry-options)]
                  (deliver heartbeat-renewed result)
                  result))
              :publish-wal!
@@ -204,9 +204,9 @@
              (do @heartbeat-tick :tick)
              (do @stop (swap! calls conj :heartbeat-stop) :stop)))
          :renew!
-         (fn [store token expiry]
+         (fn [store token expiry retry-options]
            (swap! calls conj :renew)
-           (let [result (control/renew! store token expiry)]
+           (let [result (control/renew! store token expiry retry-options)]
              (deliver heartbeat-renewed result)
              result))
          :verify-checkpoint-reference!
@@ -268,9 +268,9 @@
                  (do @heartbeat-tick :tick)
                  (do @stop (swap! calls conj :heartbeat-stop) :stop)))
              :renew!
-             (fn [store token expiry]
+             (fn [store token expiry retry-options]
                (swap! calls conj :renew-begin)
-               (let [result (control/renew! store token expiry)]
+               (let [result (control/renew! store token expiry retry-options)]
                  (swap! calls conj :renew-end)
                  (deliver heartbeat-renewed result)
                  result))
@@ -341,8 +341,8 @@
                  (do @heartbeat-tick :tick)
                  (do @stop :stop)))
              :renew!
-             (fn [store token expiry]
-               (let [result (control/renew! store token expiry)]
+             (fn [store token expiry retry-options]
+               (let [result (control/renew! store token expiry retry-options)]
                  (deliver heartbeat-renewed result)
                  result))))
         durable-writer
@@ -595,7 +595,7 @@
              (do (deliver heartbeat-waiting true) @permit-heartbeat :tick)
              (do @stop :stop)))
          :renew!
-         (fn [_ _ renewed-expiry]
+         (fn [_ _ renewed-expiry _]
            (deliver renewal-entered renewed-expiry)
            @release-renewal
            {:head {"lease" {"expires_at" renewed-expiry}}}))

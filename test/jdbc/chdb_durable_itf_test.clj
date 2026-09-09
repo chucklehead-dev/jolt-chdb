@@ -331,7 +331,13 @@
    {:initial {:generation 1 :sequence 0 :valid? true}
     :step
     (fn [state event]
-      (if (contains? #{:return :throw} (:phase event))
+      (if (= :invoke (:phase event))
+        (if (= :durable/acquire (:operation event))
+          (update state :valid?
+                  #(and % (= :epoch-seconds
+                             (get-in event
+                                     [:input :wire-lease-time-unit]))))
+          state)
         (let [head (get-in event [:value :head])]
           {:generation (:generation head)
            :sequence (:sequence head)
@@ -342,8 +348,7 @@
                              :commit-ambiguous}
                            (get-in event [:value :outcome]))
                 (>= (:generation head) (:generation state))
-                (>= (:sequence head) (:sequence state)))})
-        state))
+                (>= (:sequence head) (:sequence state)))})))
     :invariant (fn [state _] (:valid? state))}))
 
 (defn- validate-journal! [events]
@@ -364,7 +369,9 @@
         invoke-seq (inc (count events))
         terminal-seq (inc invoke-seq)
         operation (keyword "durable" (name (:op command)))
-        input (dissoc command :index)]
+        input (cond-> (dissoc command :index)
+                (= :acquire (:op command))
+                (assoc :wire-lease-time-unit :epoch-seconds))]
     (conj events
           {:seq invoke-seq
            :operation-id operation-id
@@ -504,6 +511,17 @@
                (dissoc (first (:journal result)) :context-id))))
       (fail! "noncanonical invocation mutation was accepted" {}))
     (println "  ok   noncanonical invocation mutation rejected")
+    (let [mutant
+          (mapv (fn [event]
+                  (if (and (= :invoke (:phase event))
+                           (= :durable/acquire (:operation event)))
+                    (assoc-in event [:input :wire-lease-time-unit]
+                              :epoch-milliseconds)
+                    event))
+                (:journal result))]
+      (when-not (rejected? #(validate-journal! mutant))
+        (fail! "millisecond-tagged wire lease mutation was accepted" {})))
+    (println "  ok   millisecond-tagged wire lease mutation rejected")
     true))
 
 (defn -main [& args]

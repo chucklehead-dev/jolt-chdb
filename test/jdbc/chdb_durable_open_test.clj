@@ -159,7 +159,7 @@
                                 (first %))
                     @calls))
     (check "writer open renews only after recovery"
-           [2 301]
+           [2 0.301M]
            [(get-in (:head (control/read-head! store)) ["lease" "generation"])
             (get-in (:head (control/read-head! store)) ["lease" "expires_at"])])
     (writer/execute! opened "INSERT INTO t VALUES (2)")

@@ -14,6 +14,7 @@
             [jdbc.chdb-durable-writer-concurrency-test :as durable-writer-concurrency]
             [jdbc.chdb-durable-worker-join-test :as durable-worker-join]
             [jdbc.chdb-durable-open-test :as durable-open]
+            [jdbc.chdb-durable-epoch-seconds-test :as durable-epoch-seconds]
             [jdbc.chdb-durable-dbspec-test :as durable-dbspec]
             [jdbc.chdb-durable-local-test :as durable-local]
             [jdbc.chdb-durable-s3-test :as durable-s3]
@@ -681,6 +682,7 @@
   (durable-writer-concurrency/run-checks!)
   (durable-worker-join/run-checks!)
   (durable-open/run-checks!)
+  (durable-epoch-seconds/run-checks!)
   (durable-dbspec/run-checks!)
   (durable-local/run-checks!)
   (durable-s3/run-checks!)

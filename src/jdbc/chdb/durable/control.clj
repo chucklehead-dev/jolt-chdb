@@ -229,6 +229,10 @@
 (defn acquire!
   "Acquire a missing, released, expired, or explicitly forced writer lease.
 
+  expires-at, now, and clock-skew use the Protocol V1 wire unit of epoch
+  seconds. The public Durable API converts its millisecond configuration at
+  this boundary.
+
   Normal takeover is allowed only at `expires_at + clock-skew`. Every
   acquisition of an existing head increments its generation. The bounded
   retry count covers CAS collisions; it does not wait for a live lease."
@@ -315,6 +319,8 @@
 
 (defn renew!
   "Renew the current writer lease without changing its generation.
+
+  expires-at uses the Protocol V1 wire unit of epoch seconds.
 
   Manifest commits may race the lease CAS. Definite same-owner conflicts retry
   from the latest head. An ambiguous renewal is reconciled when the same token

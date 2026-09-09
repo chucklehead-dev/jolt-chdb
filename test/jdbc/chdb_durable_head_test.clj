@@ -55,7 +55,7 @@
 
 (def expected-source
   {:repository "https://github.com/chdb-io/chdb.git"
-   :commit "db10b548a3e1e21e51c213baf863cb1050963d9c"
+   :commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
    :document "docs/durable/protocol-v1.mdx"
    :section "head"})
 

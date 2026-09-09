@@ -30,7 +30,8 @@ ITF state. It also records a bounded pair of lifecycle events:
  :operation-id 1
  :phase :invoke
  :operation :durable/acquire
- :input {:op :acquire :writer :writer-2}}
+ :input {:op :acquire :writer :writer-2
+         :wire-lease-time-unit :epoch-seconds}}
 
 {:seq 2
  :operation-id 1
@@ -79,6 +80,13 @@ monotonic generation and manifest sequence. Those checks run after the
 operation completes. They must not run inside aspect advice:
 Jolt advice is fail-open, so an assertion thrown by advice is not a reliable
 test verdict.
+
+The ITF adapter also requires every acquired-command lifecycle to declare
+`:wire-lease-time-unit :epoch-seconds`. A millisecond-tag mutant must fail the
+offline journal model. This guards the declared dimension of the checked
+corpus, but the tag does not observe or prove the conversion performed inside
+`durable.clj`; the independent Python-shaped JSON fixtures are the behavioral
+oracle for that numeric boundary.
 
 ## Aspect integration boundary
 

@@ -23,6 +23,7 @@
 (def reader-backup-format 1)
 (def default-lease-ttl-ms 30000)
 (def default-clock-skew-ms 0)
+(def ^:private milliseconds-per-second 1000M)
 (def default-max-attempts 4)
 (def default-retry-deadline-ms 5000)
 (def default-retry-initial-backoff-ms 10)
@@ -419,6 +420,16 @@
    :execute-native! (fn [handle sql params]
                       (chdb/execute-any handle sql params))})
 
+(defn- epoch-ms->seconds
+  "Convert the runtime wall-clock representation to the frozen V1 wire unit."
+  [milliseconds]
+  (/ (bigdec milliseconds) milliseconds-per-second))
+
+(defn- epoch-seconds->ms
+  "Convert a V1 wire expiry to the runtime writer's wall-clock unit."
+  [seconds]
+  (* (bigdec seconds) milliseconds-per-second))
+
 (def ^:private recovery-operation-keys
   [:create-scratch! :cleanup-scratch! :open-native! :close-native!
    :restore-database! :create-database! :use-database! :analyze-execute!
@@ -531,14 +542,18 @@
                :retry-max-backoff-ms retry-max-backoff-ms
                :monotonic-ms! (:monotonic-ms! operations)
                :await-backoff! (:await-backoff! operations)}
-              now ((:now-ms operations))
+              now-ms ((:now-ms operations))
+              now-seconds (epoch-ms->seconds now-ms)
               acquired (control/acquire!
                         store
                         (merge
                          retry-options
                          {:owner owner :instance instance
-                          :expires-at (+ now lease-ttl-ms)
-                          :now now :clock-skew clock-skew-ms :force? force?
+                          :expires-at
+                          (epoch-ms->seconds (+ now-ms lease-ttl-ms))
+                          :now now-seconds
+                          :clock-skew (epoch-ms->seconds clock-skew-ms)
+                          :force? force?
                           :database database :engine-version running-version
                           :backup-format reader-backup-format
                           :min-reader running-version}))
@@ -553,14 +568,16 @@
             (let [logical-database
                   (recover-snapshot! store document operations @scratch @handle)]
               (let [renew-now ((:now-ms operations))
-                    current-expiry (get-in document ["lease" "expires_at"])
+                    current-expiry
+                    (epoch-seconds->ms
+                     (get-in document ["lease" "expires_at"]))
                     renewed-expiry (max (inc current-expiry)
                                         (+ renew-now lease-ttl-ms))]
                 (when (>= renew-now current-expiry)
                   (fail! ::control/lease-fenced
                          "The Durable writer lease expired during recovery"))
                 (control/renew!
-                 store token renewed-expiry
+                 store token (epoch-ms->seconds renewed-expiry)
                  (assoc retry-options
                         :stopped?
                         #(>= ((:now-ms operations)) current-expiry)))
@@ -575,6 +592,14 @@
                   :retry-options retry-options
                   :operations
                   (assoc operations
+                         :renew!
+                         (fn [store token expiry-ms operation-retry-options]
+                           (update-in
+                            (control/renew!
+                             store token (epoch-ms->seconds expiry-ms)
+                             operation-retry-options)
+                            [:head "lease" "expires_at"]
+                            epoch-seconds->ms))
                          :create-checkpoint!
                          (fn [handle database]
                            ((:create-checkpoint! operations)

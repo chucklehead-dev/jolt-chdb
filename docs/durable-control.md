@@ -13,7 +13,7 @@ implements:
 - ambiguous head-CAS reconciliation.
 
 The normative source is chDB commit
-`db10b548a3e1e21e51c213baf863cb1050963d9c`,
+`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`,
 `docs/durable/protocol-v1.mdx#state-machine`. This control layer is composed by
 the public Durable reader/writer API; its formal bounds are narrower than that
 complete runtime path and are described below.
@@ -32,6 +32,13 @@ lease. A new lease expiry must be later than the acquisition time, and a
 heartbeat must strictly extend the existing expiry. Scheduling heartbeats at no
 more than one third of the TTL is owned by the public writer's independent
 heartbeat worker.
+
+At this low-level protocol seam, `now`, `expires-at`, and `clock-skew` are all
+epoch seconds, matching Python's `time.time()` and the frozen `expires_at`
+field. The public Durable API remains millisecond-configured and converts
+explicitly before calling this namespace. Its writer keeps local expiry and
+heartbeat scheduling in milliseconds, while the separate retry budget uses a
+monotonic millisecond clock. There is no magnitude-based unit detection.
 
 All desired heads are encoded and decoded before CAS. That is a correctness
 boundary, not cosmetic normalization: JSON may serialize an integral decimal

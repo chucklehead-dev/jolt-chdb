@@ -30,9 +30,9 @@
      (Thread/sleep 1300)
      :query-result)
    :renew!
-   (fn [store token expiry]
+   (fn [store token expiry retry-options]
      (reset! heartbeat-in-fiber? (fibers/in-fiber?))
-     (let [result (control/renew! store token expiry)]
+     (let [result (control/renew! store token expiry retry-options)]
        (deliver renewed result)
        result))
    :close-native! (fn [_] nil)
