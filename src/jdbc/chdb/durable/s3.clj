@@ -107,7 +107,9 @@
         (throw error)))))
 
 (defn- bounded-request [state budget request]
-  (let [remaining (max 1 (retry/remaining-ms budget))]
+  (let [remaining (retry/remaining-ms budget)]
+    (when (zero? remaining)
+      (fail! ::timeout "S3 request exceeded its retry deadline"))
     (assoc request
            :timeout-ms (min (:timeout-ms state) remaining)
            :connect-timeout-ms (min (:connect-timeout-ms state) remaining))))
@@ -309,6 +311,7 @@
          :retry-max-backoff-ms retry-max-backoff-ms
          :monotonic-ms! monotonic-ms!
          :await-backoff! await-backoff!}
+        _ (retry-budget! state)
         transport-options
         (cond-> {}
           connect-timeout-ms (assoc :connect-timeout-ms connect-timeout-ms)
