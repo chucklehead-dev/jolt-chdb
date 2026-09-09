@@ -486,11 +486,21 @@
         token (:token acquired)
         conflicting-expiry (atom 200M)
         replace-count (atom 0)
+        now (atom 0)
+        waits (atom [])
         store (renew-before-every-replace-backend
                delegate token conflicting-expiry replace-count)]
     (check "renewal reports bounded exhaustion under repeated CAS loss"
-           ::control/retry-exhausted
-           (error-type #(control/renew! store token 300M)))
+           ::control/timeout
+           (error-type
+            #(control/renew!
+              store token 300M
+              {:monotonic-ms! (fn [] @now)
+               :await-backoff! (fn [milliseconds]
+                                 (swap! waits conj milliseconds)
+                                 (swap! now + milliseconds))})))
+    (check "renewal uses capped retry backoff before timing out"
+           [10 20 40] @waits)
     (check "renewal exhaustion preserves ownership and manifest"
            [4 204 0]
            (let [latest (:head (control/read-head! delegate))]

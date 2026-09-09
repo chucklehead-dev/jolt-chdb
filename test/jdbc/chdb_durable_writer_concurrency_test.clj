@@ -445,7 +445,7 @@
           :database "default" :operations operations})]
     (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
     (check "manifest retry exhaustion is reported to the writer"
-           ::control/retry-exhausted
+           ::control/timeout
            (error-type #(writer/flush! durable-writer)))
     (check "exhausted commit verifies once, advances zero times, and retains WAL"
            [2 1 0 1]
@@ -453,7 +453,7 @@
             (get-in (:head (control/read-head! delegate)) ["manifest" "seq"])
             (:pending-statements (writer/status durable-writer))])
     (check "close retains the same exhausted persistence obligation"
-           ::control/retry-exhausted
+           ::control/timeout
            (error-type #(writer/close! durable-writer))))
 
   (let [store (backend/memory-backend)

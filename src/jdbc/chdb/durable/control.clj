@@ -8,7 +8,8 @@
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.digest :as digest]
-            [jdbc.chdb.durable.head :as head])
+            [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.durable.retry :as retry])
   (:import [java.nio.file Files Path Paths]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.security MessageDigest]
@@ -48,6 +49,21 @@
   (when-not (and (integer? value) (pos? value))
     (fail! ::invalid-options "max-attempts must be a positive integer"))
   value)
+
+(defn- retry-budget! [options]
+  (try
+    (retry/start options)
+    (catch Throwable error
+      (if (= ::retry/invalid-options (:type (ex-data error)))
+        (fail! ::invalid-options (ex-message error))
+        (throw error)))))
+
+(defn- definite-retry-result! [result message]
+  (case (:status result)
+    :done (:value result)
+    :stopped (fail! ::lease-fenced "The Durable writer has lost its lease")
+    :deadline (fail! ::timeout message)
+    :attempt-limit (fail! ::timeout message)))
 
 (defn ownership
   "Return the opaque application-level fencing token carried by an active head."
@@ -202,6 +218,58 @@
        (fail! ::backend-contract
               "The Durable backend returned an unsupported CAS result")))))
 
+(defn- acquire-attempt! [store options]
+  (if-let [snapshot (read-head! store)]
+    (let [current (:head snapshot)]
+      (when-not (or (released? current)
+                    (expired? current (:now options) (:clock-skew options))
+                    (:force? options))
+        (fail! ::lease-held "Another writer holds the Durable lease"))
+      (let [generation (next-generation current)
+            intended (assoc current "lease"
+                            (active-lease generation
+                                          (:owner options)
+                                          (:instance options)
+                                          (:expires-at options)))
+            {desired :head bytes :bytes} (encoded-head intended)
+            token (ownership desired)
+            result (backend/replace-if-match!
+                    store head-key bytes (:etag snapshot))]
+        (case (:status result)
+          :replaced
+          {:status :done
+           :value {:status :acquired :head desired :etag (:etag result)
+                   :token token}}
+          :ambiguous
+          (let [latest (reread store)]
+            (if (and latest (= desired (:head latest)))
+              {:status :done
+               :value {:status :reconciled :head desired
+                       :etag (:etag latest) :token token}}
+              (fail! ::commit-ambiguous
+                     "Durable lease acquisition could not be proved")))
+          :precondition-failed {:status :retry :state nil}
+          (fail! ::backend-contract
+                 "The Durable backend returned an unsupported CAS result"))))
+    (let [{desired :head bytes :bytes} (encoded-head (fresh-head options))
+          result (backend/put-bytes-if-absent! store head-key bytes)]
+      (case (:status result)
+        :created
+        {:status :done
+         :value {:status :acquired :head desired :etag (:etag result)
+                 :token (ownership desired)}}
+        :ambiguous
+        (let [latest (reread store)]
+          (if (and latest (= desired (:head latest)))
+            {:status :done
+             :value {:status :reconciled :head desired
+                     :etag (:etag latest) :token (ownership desired)}}
+            (fail! ::commit-ambiguous
+                   "Fresh Durable lease acquisition could not be proved")))
+        :precondition-failed {:status :retry :state nil}
+        (fail! ::backend-contract
+               "The Durable backend returned an unsupported create result")))))
+
 (defn acquire!
   "Acquire a missing, released, expired, or explicitly forced writer lease.
 
@@ -220,57 +288,68 @@
   (when-not (> expires-at now)
     (fail! ::invalid-options
            "expires-at must be later than the acquisition time"))
-  (loop [attempt 1]
-    (if-let [snapshot (read-head! store)]
-      (let [current (:head snapshot)]
-        (when-not (or (released? current)
-                      (expired? current now clock-skew)
-                      force?)
-          (fail! ::lease-held "Another writer holds the Durable lease"))
-        (let [generation (next-generation current)
-              intended (assoc current "lease"
-                              (active-lease generation owner instance expires-at))
-              {desired :head bytes :bytes} (encoded-head intended)
-              token (ownership desired)
-              result (backend/replace-if-match!
-                      store head-key bytes (:etag snapshot))]
-          (case (:status result)
-            :replaced {:status :acquired :head desired :etag (:etag result)
-                       :token token}
-            :ambiguous
-            (let [latest (reread store)]
-              (if (and latest (= desired (:head latest)))
-                {:status :reconciled :head desired :etag (:etag latest)
-                 :token token}
-                (fail! ::commit-ambiguous
-                       "Durable lease acquisition could not be proved")))
-            :precondition-failed
-            (if (< attempt max-attempts)
-              (recur (inc attempt))
-              (fail! ::retry-exhausted
-                     "Durable lease acquisition exhausted its CAS attempts"))
-            (fail! ::backend-contract
-                   "The Durable backend returned an unsupported CAS result"))))
-      (let [{desired :head bytes :bytes} (encoded-head (fresh-head options))
-            result (backend/put-bytes-if-absent!
-                    store head-key bytes)]
+  (definite-retry-result!
+   (retry/run! (retry-budget! (assoc options :max-attempts max-attempts))
+               nil
+               (fn [_ _] (acquire-attempt! store options)))
+   "Durable lease acquisition exceeded its retry bounds"))
+
+(defn- renew-attempt! [store token expires-at attempt snapshot]
+  (let [current (assert-owned! (:head snapshot) token)
+        current-expiry (get-in current ["lease" "expires_at"])]
+    (when-not (or (> expires-at current-expiry) (> attempt 1))
+      (fail! ::invalid-options
+             "A heartbeat must extend the current lease expiry"))
+    (if (>= current-expiry expires-at)
+      {:status :done
+       :value {:status :reconciled
+               :head current :etag (:etag snapshot) :token token}}
+      (let [desired (assoc-in current ["lease" "expires_at"] expires-at)
+            {canonical :head bytes :bytes} (encoded-head desired)
+            result (backend/replace-if-match!
+                    store head-key bytes (:etag snapshot))]
         (case (:status result)
-          :created {:status :acquired :head desired :etag (:etag result)
-                    :token (ownership desired)}
+          :replaced
+          {:status :done
+           :value {:status :committed
+                   :head canonical :etag (:etag result) :token token}}
+
           :ambiguous
-          (let [latest (reread store)]
-            (if (and latest (= desired (:head latest)))
-              {:status :reconciled :head desired :etag (:etag latest)
-               :token (ownership desired)}
+          (let [latest (or (reread store)
+                           (fail! ::lease-fenced
+                                  "The Durable head no longer exists"))]
+            (cond
+              (not (owns? (:head latest) token))
+              (fail! ::lease-fenced "The Durable writer has lost its lease")
+
+              (>= (get-in (:head latest) ["lease" "expires_at"])
+                  expires-at)
+              {:status :done
+               :value {:status :reconciled
+                       :head (:head latest) :etag (:etag latest) :token token}}
+
+              :else
               (fail! ::commit-ambiguous
-                     "Fresh Durable lease acquisition could not be proved")))
+                     "The Durable lease renewal could not be proved")))
+
           :precondition-failed
-          (if (< attempt max-attempts)
-            (recur (inc attempt))
-            (fail! ::retry-exhausted
-                   "Fresh Durable lease acquisition exhausted its attempts"))
+          (let [latest (or (reread store)
+                           (fail! ::lease-fenced
+                                  "The Durable head no longer exists"))]
+            (cond
+              (not (owns? (:head latest) token))
+              (fail! ::lease-fenced "The Durable writer has lost its lease")
+
+              (>= (get-in (:head latest) ["lease" "expires_at"])
+                  expires-at)
+              {:status :done
+               :value {:status :reconciled
+                       :head (:head latest) :etag (:etag latest) :token token}}
+
+              :else {:status :retry :state latest}))
+
           (fail! ::backend-contract
-                 "The Durable backend returned an unsupported create result"))))))
+                 "The Durable backend returned an unsupported CAS result"))))))
 
 (defn renew!
   "Renew the current writer lease without changing its generation.
@@ -279,68 +358,21 @@
   from the latest head. An ambiguous renewal is reconciled when the same token
   still owns a lease whose expiry is at least the requested value, regardless
   of a later manifest-only advance."
-  [store token expires-at]
-  (nonnegative-time! expires-at "expires-at")
-  (loop [attempt 1
-         snapshot (or (read-head! store)
-                      (fail! ::lease-fenced
-                             "The Durable head no longer exists"))]
-    (let [current (assert-owned! (:head snapshot) token)
-          current-expiry (get-in current ["lease" "expires_at"])]
-      (when-not (or (> expires-at current-expiry) (> attempt 1))
-        (fail! ::invalid-options
-               "A heartbeat must extend the current lease expiry"))
-      (if (>= current-expiry expires-at)
-        {:status :reconciled
-         :head current :etag (:etag snapshot) :token token}
-        (let [desired (assoc-in current ["lease" "expires_at"] expires-at)
-              {canonical :head bytes :bytes} (encoded-head desired)
-              result (backend/replace-if-match!
-                      store head-key bytes (:etag snapshot))]
-          (case (:status result)
-            :replaced
-            {:status :committed
-             :head canonical :etag (:etag result) :token token}
-
-            :ambiguous
-            (let [latest (or (reread store)
-                             (fail! ::lease-fenced
-                                    "The Durable head no longer exists"))]
-              (cond
-                (not (owns? (:head latest) token))
-                (fail! ::lease-fenced "The Durable writer has lost its lease")
-
-                (>= (get-in (:head latest) ["lease" "expires_at"])
-                    expires-at)
-                {:status :reconciled
-                 :head (:head latest) :etag (:etag latest) :token token}
-
-                :else
-                (fail! ::commit-ambiguous
-                       "The Durable lease renewal could not be proved")))
-
-            :precondition-failed
-            (let [latest (or (reread store)
-                             (fail! ::lease-fenced
-                                    "The Durable head no longer exists"))]
-              (cond
-                (not (owns? (:head latest) token))
-                (fail! ::lease-fenced "The Durable writer has lost its lease")
-
-                (>= (get-in (:head latest) ["lease" "expires_at"])
-                    expires-at)
-                {:status :reconciled
-                 :head (:head latest) :etag (:etag latest) :token token}
-
-                (< attempt default-commit-attempts)
-                (recur (inc attempt) latest)
-
-                :else
-                (fail! ::retry-exhausted
-                       "Durable lease renewal exhausted its CAS attempts")))
-
-            (fail! ::backend-contract
-                   "The Durable backend returned an unsupported CAS result")))))))
+  ([store token expires-at]
+   (renew! store token expires-at {}))
+  ([store token expires-at options]
+   (nonnegative-time! expires-at "expires-at")
+   (let [initial (or (read-head! store)
+                     (fail! ::lease-fenced
+                            "The Durable head no longer exists"))]
+     (definite-retry-result!
+      (retry/run!
+       (retry-budget!
+        (merge {:max-attempts default-commit-attempts} options))
+       initial
+       (fn [attempt snapshot]
+         (renew-attempt! store token expires-at attempt snapshot)))
+      "Durable lease renewal exceeded its retry bounds"))))
 
 (defn release!
   "Release the current writer lease without changing its generation."
@@ -577,6 +609,43 @@
            :checkpoint (and (= reference (get manifest "base"))
                             (empty? (get manifest "wal")))))))
 
+(defn- commit-reference-attempt!
+  [store token kind reference snapshot]
+  (let [current (assert-owned! (:head snapshot) token)
+        {:keys [desired next-seq]}
+        (reference-transition current token kind reference)
+        {canonical :head bytes :bytes} (encoded-head desired)
+        landed? #(reference-landed? kind reference next-seq %)
+        result (backend/replace-if-match!
+                store head-key bytes (:etag snapshot))]
+    (case (:status result)
+      :replaced
+      {:status :done
+       :value {:status :committed
+               :head canonical :etag (:etag result) :token token}}
+
+      :ambiguous
+      {:status :done
+       :value (classify-after-cas store canonical token true false landed?)}
+
+      :precondition-failed
+      (let [latest (or (reread store)
+                       (fail! ::lease-fenced
+                              "The Durable head no longer exists"))]
+        (cond
+          (not (owns? (:head latest) token))
+          (fail! ::lease-fenced "The Durable writer has lost its lease")
+
+          (landed? (:head latest))
+          {:status :done
+           :value {:status :reconciled
+                   :head (:head latest) :etag (:etag latest) :token token}}
+
+          :else {:status :retry :state latest}))
+
+      (fail! ::backend-contract
+             "The Durable backend returned an unsupported CAS result"))))
+
 (defn commit-reference!
   "Commit one already-published immutable WAL or checkpoint reference.
 
@@ -587,7 +656,8 @@
   outcomes never retry. Checkpoint commits replace the base and clear WAL; WAL
   commits append exactly one reference."
   [store token {:keys [kind reference verify-reference! max-attempts]
-                :or {max-attempts default-commit-attempts}}]
+                :or {max-attempts default-commit-attempts}
+                :as options}]
   (when-not (contains? #{:wal :checkpoint} kind)
     (fail! ::invalid-options "kind must be :wal or :checkpoint"))
   (when-not (fn? verify-reference!)
@@ -607,47 +677,11 @@
     ;; flight. Rebuild from the newest owned head and retry only a definite CAS
     ;; precondition failure. An ambiguous CAS is never retried: exact reread
     ;; reconciliation remains the sole authority against duplicate advancement.
-    (loop [attempt 1
-           snapshot (or (read-head! store)
-                        (fail! ::lease-fenced
-                               "The Durable head no longer exists"))]
-      (let [current (assert-owned! (:head snapshot) token)
-            {:keys [desired next-seq]}
-            (reference-transition current token kind reference)
-            {canonical :head bytes :bytes} (encoded-head desired)
-            landed? #(reference-landed?
-                       kind reference next-seq %)
-            result (backend/replace-if-match!
-                    store head-key bytes (:etag snapshot))]
-        (case (:status result)
-          :replaced
-          {:status :committed
-           :head canonical :etag (:etag result) :token token}
-
-          :ambiguous
-          (classify-after-cas store canonical token true false landed?)
-
-          :precondition-failed
-          (let [latest (or (reread store)
-                           (fail! ::lease-fenced
-                                  "The Durable head no longer exists"))]
-            (cond
-              (not (owns? (:head latest) token))
-              (fail! ::lease-fenced
-                     "The Durable writer has lost its lease")
-
-              (landed? (:head latest))
-              {:status :reconciled
-               :head (:head latest)
-               :etag (:etag latest)
-               :token token}
-
-              (< attempt max-attempts)
-              (recur (inc attempt) latest)
-
-              :else
-              (fail! ::retry-exhausted
-                     "Durable reference commit exhausted its CAS attempts")))
-
-          (fail! ::backend-contract
-                 "The Durable backend returned an unsupported CAS result"))))))
+    (definite-retry-result!
+     (retry/run!
+      (retry-budget! (assoc options :max-attempts max-attempts))
+      (or (read-head! store)
+          (fail! ::lease-fenced "The Durable head no longer exists"))
+      (fn [_ snapshot]
+        (commit-reference-attempt! store token kind reference snapshot)))
+     "Durable reference commit exceeded its retry bounds")))
