@@ -16,6 +16,7 @@
             [jdbc.chdb-durable-local-test :as durable-local]
             [jdbc.chdb-durable-s3-test :as durable-s3]
             [jdbc.chdb-durable-policy-test :as durable-policy]
+            [jdbc.chdb-durable-retry-test :as durable-retry]
             [jdbc.chdb.native :as native]
             [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
@@ -680,6 +681,7 @@
   (durable-local/run-checks!)
   (durable-s3/run-checks!)
   (durable-policy/run-checks!)
+  (durable-retry/run-checks!)
   (property/run-properties!)
   (if (zero? @failures)
     (println "all checks passed")

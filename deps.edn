@@ -28,6 +28,9 @@
               :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-control-test"]}
+           :durable-retry-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-retry-test"]}
            :durable-itf-test
            {:extra-deps
            {io.github.chucklehead-dev/jolt-hegel

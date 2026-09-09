@@ -70,6 +70,14 @@
         (fail! ::control/lease-fenced
                "The Durable writer cannot prove a live lease")))))
 
+(defn- retry-stopped? [lease-state now-ms]
+  (when lease-state
+    (let [{:keys [expires-at fenced?]} @lease-state
+          stopped? (or fenced? (>= (now-ms) expires-at))]
+      (when stopped?
+        (swap! lease-state assoc :fenced? true))
+      stopped?)))
+
 (defn- do-query! [writer sql params]
   (require-string! sql "sql")
   ((:analyze-query! (:operations writer))
@@ -324,7 +332,7 @@
   this writer after start. Optional operation functions exist for deterministic
   conformance tests; production callers should use the defaults."
   [{:keys [store token handle database queue-capacity operations
-           lease-expiry lease-ttl-ms heartbeat-interval-ms]
+           lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options]
     :or {queue-capacity default-queue-capacity}}]
   (when-not store (fail! ::invalid-options "store is required"))
   (when-not (map? token) (fail! ::invalid-options "token is required"))
@@ -340,7 +348,15 @@
     (when (> heartbeat-interval-ms (quot lease-ttl-ms 3))
       (fail! ::invalid-options
              "heartbeat-interval-ms must not exceed one third of lease-ttl-ms")))
-  (let [operations
+  (let [configured-operations operations
+        now-ms (or (:now-ms configured-operations)
+                   #(System/currentTimeMillis))
+        lease-state (when lease-expiry
+                      (atom {:expires-at lease-expiry :fenced? false}))
+        retry-options (assoc (or retry-options {})
+                             :stopped?
+                             #(boolean (retry-stopped? lease-state now-ms)))
+        operations
         (merge
          {:analyze-query! policy/analyze-query!
           :analyze-execute! policy/analyze-execute!
@@ -351,18 +367,28 @@
           :query-bytes-native! chdb/execute-query-bytes-handle
           :execute-native! (fn [handle sql params]
                              (chdb/execute-any handle sql params))
-          :publish-wal! control/publish-wal-bytes!
-          :publish-checkpoint! control/publish-checkpoint-file!
-          :commit-reference! control/commit-reference!
+          :publish-wal!
+          (fn [store token payload]
+            (control/publish-wal-bytes! store token payload retry-options))
+          :publish-checkpoint!
+          (fn [store token path]
+            (control/publish-checkpoint-file!
+             store token path retry-options))
+          :commit-reference!
+          (fn [store token options]
+            (control/commit-reference!
+             store token (merge options retry-options)))
           :verify-checkpoint-reference! control/verify-file-reference!
           :create-checkpoint!
           (fn [_ _]
             (fail! ::checkpoint-unavailable
                    "This writer has no checkpoint archive provider"))
           :delete-checkpoint! (fn [_] nil)
-          :renew! control/renew!
-          :release! control/release!
-          :now-ms #(System/currentTimeMillis)
+          :renew! (fn [store token expires-at]
+                    (control/renew! store token expires-at retry-options))
+          :release! (fn [store token]
+                      (control/release! store token retry-options))
+          :now-ms now-ms
           :await-heartbeat! (fn [stop timeout-ms]
                               (if (= ::tick (deref stop timeout-ms ::tick))
                                 :tick
@@ -371,7 +397,7 @@
                            (.take ^ArrayBlockingQueue queue))
           :close-native! native/close!
           :cleanup-scratch! (fn [] nil)}
-         operations)
+         configured-operations)
         required #{:analyze-query! :analyze-execute! :classification-sql!
                    :classify! :query-native!
                    :query-bytes-native!
@@ -391,8 +417,7 @@
                   (atom :open) (promise)
                   (atom {:lines [] :byte-count 0
                          :checkpoint-required? false})
-                  (when lease-expiry
-                    (atom {:expires-at lease-expiry :fenced? false}))
+                  lease-state
                   (promise) operations worker heartbeat)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat

@@ -33,10 +33,22 @@ Conditional operations use provider-native request preconditions:
 - an uncertain write outcome maps to `:ambiguous` so the control plane can
   reread and prove the exact object or manifest transition.
 
-Authentication, permission, throttling, transport, provider-response, and
-invalid-response failures have separate sanitized exception categories. Reads
-and writes that are proved not sent may retry up to `:max-attempts` (default
-three, hard maximum eight). Exhausted uncertain writes return `:ambiguous`.
+Authentication, permission, throttling, transport, provider-response, timeout,
+and invalid-response failures have separate sanitized exception categories.
+Reads and writes that are proved not sent may retry up to `:max-attempts`
+(default three, hard maximum eight) within `:retry-deadline-ms` (default five
+minutes). Backoff starts at `:retry-initial-backoff-ms` (25 ms), doubles up to
+`:retry-max-backoff-ms` (1 second), and is clipped to the remaining deadline.
+Each libcurl connect and total timeout is also clipped to that same remaining
+budget. An uncertain write is returned as `:ambiguous` after its first request
+and is never reissued.
+
+These transport settings belong to the `s3-backend` map. The identically named
+writer settings belong to `writer-dbspec` and bound head-CAS reconciliation;
+setting one does not configure the other. Keep the S3 request timeout and retry
+deadline comfortably below the writer lease TTL when prompt local
+self-fencing matters. Provider ETag preconditions remain the correctness fence
+if an in-flight transport call finishes after the local lease expires.
 
 The transport request contract uses `{:bytes ... :byte-count n}` for bounded
 control/WAL bodies and `{:file path :byte-count n}` for streaming checkpoint

@@ -445,7 +445,7 @@
           :database "default" :operations operations})]
     (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
     (check "manifest retry exhaustion is reported to the writer"
-           ::control/retry-exhausted
+           ::control/timeout
            (error-type #(writer/flush! durable-writer)))
     (check "exhausted commit verifies once, advances zero times, and retains WAL"
            [2 1 0 1]
@@ -453,7 +453,46 @@
             (get-in (:head (control/read-head! delegate)) ["manifest" "seq"])
             (:pending-statements (writer/status durable-writer))])
     (check "close retains the same exhausted persistence obligation"
-           ::control/retry-exhausted
+           ::control/timeout
+           (error-type #(writer/close! durable-writer))))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        replace-count (atom 0)
+        expiry (atom 1000M)
+        now (atom 100M)
+        waits (atom [])
+        store (conflict-every-manifest-cas-store
+               delegate token expiry replace-count)
+        close-count (atom 0)
+        operations
+        (assoc (fake-operations (atom []) close-count)
+               :now-ms (fn [] @now)
+               :await-heartbeat! (fn [stop _] @stop :stop))
+        durable-writer
+        (writer/start!
+         {:store store :token token :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :retry-options
+          {:max-attempts 4 :retry-deadline-ms 5000
+           :retry-initial-backoff-ms 10 :retry-max-backoff-ms 250
+           :monotonic-ms! (fn [] @now)
+           :await-backoff! (fn [milliseconds]
+                             (swap! waits conj milliseconds)
+                             (reset! now 1000M))}
+          :operations operations})]
+    (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
+    (check "lease expiry during backoff self-fences the writer"
+           ::control/lease-fenced
+           (error-type #(writer/flush! durable-writer)))
+    (check "self-fencing stops before a second CAS and retains WAL"
+           [1 [10] false 1]
+           [@replace-count @waits (:writable? (writer/status durable-writer))
+            (:pending-statements (writer/status durable-writer))])
+    (check "close retains the self-fenced persistence obligation"
+           ::control/lease-fenced
            (error-type #(writer/close! durable-writer))))
 
   (let [store (backend/memory-backend)
