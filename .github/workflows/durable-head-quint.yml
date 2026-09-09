@@ -14,6 +14,8 @@ on:
       - deps.edn
       - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/owned_thread.clj
+      - src/jdbc/chdb/durable/reader.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
@@ -22,6 +24,7 @@ on:
       - test/jdbc/chdb_durable_itf_test.clj
       - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
+      - test/jdbc/chdb_durable_thread_test.clj
       - test/support/s3_http_fixture.py
   push:
     branches:
@@ -37,6 +40,8 @@ on:
       - deps.edn
       - src/jdbc/chdb/durable/backend.clj
       - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/owned_thread.clj
+      - src/jdbc/chdb/durable/reader.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
       - src/jdbc/chdb/durable/writer.clj
@@ -45,6 +50,7 @@ on:
       - test/jdbc/chdb_durable_itf_test.clj
       - test/jdbc/chdb_durable_s3_itf_test.clj
       - test/jdbc/chdb_durable_writer_test.clj
+      - test/jdbc/chdb_durable_thread_test.clj
       - test/support/s3_http_fixture.py
 
 permissions:
