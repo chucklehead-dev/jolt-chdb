@@ -23,6 +23,17 @@
 (def default-lease-ttl-ms 30000)
 (def default-clock-skew-ms 0)
 
+(def ^:private common-dbspec-keys
+  #{:vendor :backend :namespace-backend :object-id :scratch-parent
+    :operations :read-only?})
+
+(def ^:private writer-dbspec-keys
+  (into common-dbspec-keys
+        [:owner :instance :database :lease-ttl-ms :clock-skew-ms
+         :heartbeat-interval-ms :force?]))
+
+(def ^:private snapshot-dbspec-keys common-dbspec-keys)
+
 (def ^:private private-directory-attributes
   (into-array
    FileAttribute
@@ -34,6 +45,151 @@
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
+
+(defn- nonblank-string! [value label]
+  (when-not (and (string? value) (not (str/blank? value)))
+    (fail! ::invalid-options (str label " must be a nonblank string")))
+  value)
+
+(defn- finite-number? [value]
+  (and (number? value)
+       (= value value)
+       (not= value ##Inf)
+       (not= value ##-Inf)))
+
+(defn- whole-milliseconds? [value]
+  (and (finite-number? value)
+       (<= Long/MIN_VALUE value Long/MAX_VALUE)
+       (zero? (rem value 1))))
+
+(defn- positive-integer! [value label]
+  (when-not (and (whole-milliseconds? value) (pos? value))
+    (fail! ::invalid-options (str label " must be a positive integer")))
+  value)
+
+(defn- nonnegative-integer! [value label]
+  (when-not (and (whole-milliseconds? value) (not (neg? value)))
+    (fail! ::invalid-options (str label " must be a nonnegative integer")))
+  value)
+
+(defn- reject-unknown-dbspec-keys! [spec allowed]
+  (when (some #(not (contains? allowed %)) (keys spec))
+    ;; Configuration keys can be derived from secret-bearing external input.
+    ;; Report the shape failure without copying unknown names into public data.
+    (fail! ::invalid-options "Durable dbspec contains an unknown option")))
+
+(defn- validate-storage-selection!
+  [{:keys [backend namespace-backend object-id]}]
+  (cond
+    (and backend (or namespace-backend object-id))
+    (fail! ::invalid-options
+           "Choose either backend or namespace-backend with object-id")
+
+    backend
+    (when-not (satisfies? backend/ObjectBackend backend)
+      (fail! ::invalid-options "backend must implement the Durable backend contract"))
+
+    (and namespace-backend object-id)
+    (do
+      (when-not (satisfies? backend/ObjectBackend namespace-backend)
+        (fail! ::invalid-options
+               "namespace-backend must implement the Durable backend contract"))
+      ;; Validate the public object identity without touching provider storage.
+      (backend/object-backend namespace-backend object-id)
+      nil)
+
+    (or namespace-backend object-id)
+    (fail! ::invalid-options
+           "namespace-backend and object-id must be supplied together")
+
+    :else
+    (fail! ::invalid-options
+           "backend or namespace-backend with object-id is required")))
+
+(defn- validate-common-dbspec! [spec]
+  (when-not (map? spec)
+    (fail! ::invalid-options "Durable chDB requires a map dbspec"))
+  (when-not (= "chdb-durable" (:vendor spec))
+    (fail! ::invalid-options "Durable dbspec vendor must be chdb-durable"))
+  (validate-storage-selection! spec)
+  (when-let [scratch-parent (:scratch-parent spec)]
+    (nonblank-string! scratch-parent "scratch-parent"))
+  (when-let [operations (:operations spec)]
+    (when-not (map? operations)
+      (fail! ::invalid-options "operations must be a map")))
+  spec)
+
+(defn- validate-writer-dbspec! [spec]
+  (reject-unknown-dbspec-keys! spec writer-dbspec-keys)
+  (when (:read-only? spec)
+    (fail! ::invalid-options "A writer dbspec cannot be read-only"))
+  (validate-common-dbspec! spec)
+  (nonblank-string! (:owner spec) "owner")
+  (nonblank-string! (:instance spec) "instance")
+  (nonblank-string! (:database spec) "database")
+  (positive-integer! (:lease-ttl-ms spec) "lease-ttl-ms")
+  (nonnegative-integer! (:clock-skew-ms spec) "clock-skew-ms")
+  (when-let [interval (:heartbeat-interval-ms spec)]
+    (positive-integer! interval "heartbeat-interval-ms")
+    (when (> interval (quot (:lease-ttl-ms spec) 3))
+      (fail! ::invalid-options
+             "heartbeat-interval-ms must not exceed one third of lease-ttl-ms")))
+  (when-not (instance? Boolean (:force? spec))
+    (fail! ::invalid-options "force? must be boolean"))
+  spec)
+
+(defn- validate-snapshot-dbspec! [spec]
+  (reject-unknown-dbspec-keys! spec snapshot-dbspec-keys)
+  (when-not (true? (:read-only? spec))
+    (fail! ::invalid-options "A snapshot dbspec must be read-only"))
+  (validate-common-dbspec! spec))
+
+(defn writer-dbspec
+  "Return a validated ordinary JDBC dbspec for one Durable writer.
+
+  Storage is either an already object-scoped `:backend`, or a
+  `:namespace-backend` plus `:object-id`. `:owner` and `:database` are required.
+  When omitted, `:instance` is a fresh UUIDv4 identity; lease generation remains
+  the protocol's ordering and fencing authority."
+  [options]
+  (when-not (map? options)
+    (fail! ::invalid-options "Durable writer options must be a map"))
+  (when (or (contains? options :vendor) (contains? options :read-only?))
+    (fail! ::invalid-options
+           "writer-dbspec owns the vendor and read-only options"))
+  (validate-writer-dbspec!
+   (merge {:vendor "chdb-durable"
+           :instance (str (UUID/randomUUID))
+           :lease-ttl-ms default-lease-ttl-ms
+           :clock-skew-ms default-clock-skew-ms
+           :force? false}
+          options)))
+
+(defn snapshot-dbspec
+  "Return a validated ordinary JDBC dbspec for one immutable Durable snapshot.
+
+  The result contains no writer ownership, lease, heartbeat, force, or database
+  configuration. It reads exactly the head snapshot observed during open."
+  [options]
+  (when-not (map? options)
+    (fail! ::invalid-options "Durable snapshot options must be a map"))
+  (when (or (contains? options :vendor) (contains? options :read-only?))
+    (fail! ::invalid-options
+           "snapshot-dbspec owns the vendor and read-only options"))
+  (validate-snapshot-dbspec!
+   (merge {:vendor "chdb-durable" :read-only? true} options)))
+
+(defn- normalize-jdbc-dbspec! [spec]
+  (when-not (map? spec)
+    (fail! ::invalid-options "Durable chDB requires a map dbspec"))
+  (when-not (= "chdb-durable" (:vendor spec))
+    (fail! ::invalid-options "Durable dbspec vendor must be chdb-durable"))
+  (when-not (contains? #{nil false true} (:read-only? spec))
+    (fail! ::invalid-options "read-only? must be boolean"))
+  (let [options (dissoc spec :vendor :read-only?)]
+    (if (true? (:read-only? spec))
+      (snapshot-dbspec options)
+      (writer-dbspec options))))
 
 (defn- version-parts [version]
   (when (string? version)
@@ -448,9 +604,8 @@
                      :mutation-parameters :checkpoint-fallback}
        :schema-sql nil})
     (open-handle [_ spec]
-      (when-not (map? spec)
-        (fail! ::invalid-options "Durable chDB requires a map dbspec"))
-      (let [common {:store (:backend spec)
+      (let [spec (normalize-jdbc-dbspec! spec)
+            common {:store (:backend spec)
                     :namespace-backend (:namespace-backend spec)
                     :object-id (:object-id spec)
                     :scratch-parent (or (:scratch-parent spec)

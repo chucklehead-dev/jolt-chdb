@@ -92,8 +92,9 @@ export JOLT_CHDB_LIB=/tmp/jolt-chdb-durable/native/libchdb.so
 ```
 
 Then select the Durable JDBC driver and give the namespace a separate object
-ID. `:owner` identifies the service; `:instance` must identify this particular
-process or writer attempt.
+ID. `:owner` identifies the service. `writer-dbspec` generates a fresh UUIDv4
+`:instance` unless the application supplies its own identity for this process
+or writer attempt.
 
 ```clojure
 (require '[jdbc.chdb.durable :as durable]
@@ -103,12 +104,11 @@ process or writer attempt.
 (def storage (durable-local/local-backend "/var/lib/my-app/chdb-objects"))
 
 (with-open [conn (jdbc/connection
-                  {:vendor "chdb-durable"
-                   :namespace-backend storage
-                   :object-id "primary"
-                   :owner "my-app"
-                   :instance (str (java.util.UUID/randomUUID))
-                   :database "default"})]
+                  (durable/writer-dbspec
+                   {:namespace-backend storage
+                    :object-id "primary"
+                    :owner "my-app"
+                    :database "default"}))]
   (jdbc/execute! conn ["INSERT INTO events VALUES (?, ?)" 1 "accepted"])
   ;; Do this before acknowledging the write to another system.
   (durable/flush! conn))
@@ -118,9 +118,11 @@ Mutations are durable only after `flush!`, `checkpoint!`, or a successful close
 has committed the new manifest. Materialized SQL uses statement WAL. A mutation
 with native bound values makes that boundary publish a full checkpoint because
 V1 WAL has no typed-parameter record; values are never interpolated or placed
-in WAL. Read-only opens use the same backend and object ID with `:read-only?
-true`; they restore one fixed manifest snapshot and do not take the writer
-lease.
+in WAL. A fresh process can open `(durable/snapshot-dbspec
+{:namespace-backend storage :object-id "primary"})`; it restores one fixed
+manifest snapshot and does not take the writer lease. The constructors return
+ordinary JDBC maps, reject role/configuration mistakes before opening resources,
+and do not add another lifecycle abstraction.
 
 See [Durable storage](docs/durable.md) for configuration, recovery and
 acknowledgement behavior, provider status, and the modeling/testing method.

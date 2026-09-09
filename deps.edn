@@ -51,6 +51,13 @@
            :durable-open-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
+           :durable-dbspec-test
+           {:extra-deps
+            {io.github.chucklehead-dev/jolt-hegel
+             {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
+              :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
+            :extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-dbspec-test"]}
            :durable-head-test
            {:extra-deps
            {io.github.chucklehead-dev/jolt-hegel
@@ -122,6 +129,7 @@
          durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"
          durable-thread-test "jolt -M:durable-thread-test"
          durable-open-test "jolt -M:durable-open-test"
+         durable-dbspec-test "jolt -M:durable-dbspec-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-backend-test "jolt -M:durable-backend-test"
          durable-local-test "jolt -M:durable-local-test"
