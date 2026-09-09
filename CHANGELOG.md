@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Positively join each Durable reader and writer operation OS thread before a
+  public close returns or rethrows. Concurrent and repeated closes retain the
+  exact original failure while cleanup and worker exit remain exactly once;
+  same-thread joins fail fast instead of deadlocking, and close still waits for
+  actual heartbeat-thread exit before release.
 - Add an opt-in JVM-only Typed Clojure development check for the runtime-neutral
   Durable ABI and capability contracts, including a real positive consumer and
   two mutation-specific negative controls. Normal Jolt consumers do not resolve

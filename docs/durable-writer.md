@@ -28,8 +28,14 @@ The synchronous operations are:
   commit; and
 - `close!`: stop admission, drain earlier operations, flush, attempt release,
   close the native engine, and remove an owned scratch directory exactly once.
-  It is idempotent and returns the first persistence or release failure after
-  attempting every cleanup step.
+  It is idempotent, positively joins the operation OS thread, and returns the
+  first persistence or release failure after attempting every cleanup step.
+  Concurrent and repeated callers observe the same terminal outcome only after
+  that join; close never leaves the owned operation worker live behind them.
+  Close is deliberately uncancellable after admission at this resource
+  boundary. An interrupt received during a join is retained while the join
+  finishes, then restored and rethrown unless an earlier close failure is
+  primary.
 
 An `ArrayBlockingQueue` plus one owned OS thread provides the explicit bounded
 FIFO. The worker is deliberately not a Jolt fiber: native chDB, filesystem, and
@@ -59,7 +65,8 @@ stop predicate reads the same lease-state atom as `status`; crossing the proved
 expiry during backoff marks the writer non-writable before another attempt.
 Terminal worker-loop failures stop admission, attempt flush/release/native
 cleanup, and fail every already queued request instead of leaving callers
-blocked on unresolved promises.
+blocked on unresolved promises. Public close then joins the terminated worker
+before preserving and rethrowing that exact terminal failure.
 
 The V1 limits are applied before a mutation reaches the engine: 64 MiB of SQL
 UTF-8 per statement and 128 MiB for the uncompressed JSONL segment. A local
@@ -80,6 +87,7 @@ workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 jolt -M:durable-thread-test
 jolt -M:durable-writer-test
 jolt -M:durable-writer-concurrency-test
+jolt -M:durable-worker-join-test
 ```
 
 The isolated one-carrier gate proves native worker work cannot starve heartbeat
@@ -97,6 +105,13 @@ and covered statement WAL, while a stale generation cannot make its published
 checkpoint reachable. A Hegel state machine checks pending statements,
 checkpoint requirements, and manifest sequence agreement over generated
 materialized execute, parameterized execute, query, and flush traces.
+The worker-join suite uses a test-scoped wrapper around the owned-thread
+launcher to hold operation and heartbeat threads at post-loop exit barriers.
+It proves reader and writer close remain blocked while their operation thread
+is live, and proves lease release waits for the actual heartbeat-thread exit.
+It then checks exact cleanup counts, self-join fail-fast behavior, and failure
+identity for concurrent and repeated closes. Removing either join makes its
+deterministic red controls fail.
 
 Read-only open is implemented by `jdbc.chdb.durable/open-reader!` and shares
 the verified recovery path without participating in lease state.

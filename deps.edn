@@ -54,6 +54,9 @@
            :durable-thread-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-thread-test"]}
+           :durable-worker-join-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-worker-join-test"]}
            :durable-open-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
@@ -144,6 +147,7 @@
          durable-writer-test "jolt -M:durable-writer-test"
          durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"
          durable-thread-test "jolt -M:durable-thread-test"
+         durable-worker-join-test "jolt -M:durable-worker-join-test"
          durable-open-test "jolt -M:durable-open-test"
          durable-dbspec-test "jolt -M:durable-dbspec-test"
          durable-head-test "jolt -M:durable-head-test"

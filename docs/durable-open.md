@@ -43,7 +43,14 @@ compatibility gate is reported as `engine-incompatible`, as required by the
 full-archive promise. Successful `close!` stops operation admission, drains and
 flushes the operation queue while heartbeat remains live, then stops and joins
 heartbeat before it releases the lease, closes chDB, and removes the scratch
-tree. This positive termination handshake prevents renewal after release.
+tree. It then joins the operation OS thread before returning. Reader close
+likewise joins its operation thread after native close and scratch cleanup.
+These positive termination handshakes prevent renewal after release and prevent
+public close from leaving an owned operation worker live.
+Once close is admitted, interruption does not weaken this ownership boundary:
+an interrupt received while joining is retained, the join continues until the
+owned thread exits, and only then is the interrupt restored and rethrown. An
+earlier persistence or cleanup failure remains the primary error.
 
 `jdbc.chdb.durable/open-reader!` reads and validates the head once in
 read-only mode, returns `not-found` without creating a missing object, and

@@ -158,9 +158,11 @@
                   (throw error))))
             :closing :wait
             :closed :wait))]
-    (if (= :owner disposition)
-      (await-result (:result request))
-      (await-result (:closed-result reader)))))
+    (owned-thread/join-after!
+     (:worker reader)
+     #(if (= :owner disposition)
+        (await-result (:result request))
+        (await-result (:closed-result reader))))))
 
 (defn status [reader]
   {:lifecycle @(:lifecycle reader) :read-only? true})
