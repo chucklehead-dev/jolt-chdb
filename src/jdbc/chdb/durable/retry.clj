@@ -75,8 +75,8 @@
   caller retains operation-specific certainty and error classification."
   [budget attempt]
   (cond
-    (>= attempt (:max-attempts budget)) :attempt-limit
     ((:stopped? budget)) :stopped
+    (>= attempt (:max-attempts budget)) :attempt-limit
     :else
     (let [remaining (remaining-ms budget)]
       (if (zero? remaining)

@@ -47,6 +47,11 @@
                    :await-backoff! (fn [_] (reset! stopped? true))})]
       (is (= :stopped (retry/await-next! budget 1))))))
 
+(deftest retry-budget-prefers-stopping-over-attempt-exhaustion
+  (let [budget (retry/start {:max-attempts 1
+                             :stopped? (constantly true)})]
+    (is (= :stopped (retry/await-next! budget 1)))))
+
 (deftest retry-budget-validates-public-bounds
   (doseq [options [{:max-attempts 0}
                    {:retry-deadline-ms 0}

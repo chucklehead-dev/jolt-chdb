@@ -43,6 +43,13 @@ Each libcurl connect and total timeout is also clipped to that same remaining
 budget. An uncertain write is returned as `:ambiguous` after its first request
 and is never reissued.
 
+These transport settings belong to the `s3-backend` map. The identically named
+writer settings belong to `writer-dbspec` and bound head-CAS reconciliation;
+setting one does not configure the other. Keep the S3 request timeout and retry
+deadline comfortably below the writer lease TTL when prompt local
+self-fencing matters. Provider ETag preconditions remain the correctness fence
+if an in-flight transport call finishes after the local lease expires.
+
 The transport request contract uses `{:bytes ... :byte-count n}` for bounded
 control/WAL bodies and `{:file path :byte-count n}` for streaming checkpoint
 uploads. Downloads use `{:response-body {:file path :create-new? true}}`; the
