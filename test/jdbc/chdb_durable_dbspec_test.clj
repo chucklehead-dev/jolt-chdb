@@ -41,7 +41,8 @@
 
 (def writer-only-keys
   [:owner :instance :database :lease-ttl-ms :clock-skew-ms
-   :heartbeat-interval-ms :force?])
+   :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
+   :retry-initial-backoff-ms :retry-max-backoff-ms])
 
 (defn- run-validation-checks! []
   (println "Durable dbspec validation")
@@ -57,8 +58,14 @@
     (check "writer constructor defaults a canonical UUIDv4 instance"
            4 (.version instance))
     (check "writer constructor supplies explicit safe lifecycle defaults"
-           [durable/default-lease-ttl-ms durable/default-clock-skew-ms false]
-           [(:lease-ttl-ms spec) (:clock-skew-ms spec) (:force? spec)]))
+           [durable/default-lease-ttl-ms durable/default-clock-skew-ms false
+            durable/default-max-attempts durable/default-retry-deadline-ms
+            durable/default-retry-initial-backoff-ms
+            durable/default-retry-max-backoff-ms]
+           [(:lease-ttl-ms spec) (:clock-skew-ms spec) (:force? spec)
+            (:max-attempts spec) (:retry-deadline-ms spec)
+            (:retry-initial-backoff-ms spec)
+            (:retry-max-backoff-ms spec)]))
 
   (let [namespace (backend/memory-backend)
         spec (durable/snapshot-dbspec
@@ -91,7 +98,11 @@
                   :lease-ttl-ms 30000
                   :clock-skew-ms 0
                   :heartbeat-interval-ms 10000
-                  :force? false)})))))
+                  :force? false
+                  :max-attempts 4
+                  :retry-deadline-ms 5000
+                  :retry-initial-backoff-ms 10
+                  :retry-max-backoff-ms 250)})))))
 
   (doseq [[label options]
           [["missing storage" {:owner "owner" :database "default"}]
@@ -110,7 +121,17 @@
            ["overslow heartbeat"
             {:backend (backend/memory-backend) :owner "owner"
              :database "default" :lease-ttl-ms 30
-             :heartbeat-interval-ms 11}]]]
+             :heartbeat-interval-ms 11}]
+           ["zero retry attempts"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :max-attempts 0}]
+           ["zero retry deadline"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :retry-deadline-ms 0}]
+           ["inverted retry backoff"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :retry-initial-backoff-ms 20
+             :retry-max-backoff-ms 10}]]]
     (check (str "writer rejects " label)
            ::durable/invalid-options
            (error-type (rejected #(durable/writer-dbspec options)))))
@@ -161,10 +182,16 @@
                      (driver/open-handle durable/durable-driver input))]
     (check "handwritten writer uses the constructor defaults"
            [storage "owner" "default"
-            durable/default-lease-ttl-ms durable/default-clock-skew-ms false 4]
+            durable/default-lease-ttl-ms durable/default-clock-skew-ms false
+            durable/default-max-attempts durable/default-retry-deadline-ms
+            durable/default-retry-initial-backoff-ms
+            durable/default-retry-max-backoff-ms 4]
            [(:store normalized) (:owner normalized) (:database normalized)
             (:lease-ttl-ms normalized)
             (:clock-skew-ms normalized) (:force? normalized)
+            (:max-attempts normalized) (:retry-deadline-ms normalized)
+            (:retry-initial-backoff-ms normalized)
+            (:retry-max-backoff-ms normalized)
             (.version (UUID/fromString (:instance normalized)))])))
 
 (defn- run-provider-shape-checks! []

@@ -11,6 +11,7 @@
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
+            [jdbc.chdb.durable.retry :as retry]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto])
@@ -22,6 +23,10 @@
 (def reader-backup-format 1)
 (def default-lease-ttl-ms 30000)
 (def default-clock-skew-ms 0)
+(def default-max-attempts 4)
+(def default-retry-deadline-ms 5000)
+(def default-retry-initial-backoff-ms 10)
+(def default-retry-max-backoff-ms 250)
 
 (def ^:private common-dbspec-keys
   #{:vendor :backend :namespace-backend :object-id :scratch-parent
@@ -30,7 +35,8 @@
 (def ^:private writer-dbspec-keys
   (into common-dbspec-keys
         [:owner :instance :database :lease-ttl-ms :clock-skew-ms
-         :heartbeat-interval-ms :force?]))
+         :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
+         :retry-initial-backoff-ms :retry-max-backoff-ms]))
 
 (def ^:private snapshot-dbspec-keys common-dbspec-keys)
 
@@ -134,6 +140,15 @@
     (when (> interval (quot (:lease-ttl-ms spec) 3))
       (fail! ::invalid-options
              "heartbeat-interval-ms must not exceed one third of lease-ttl-ms")))
+  (positive-integer! (:max-attempts spec) "max-attempts")
+  (positive-integer! (:retry-deadline-ms spec) "retry-deadline-ms")
+  (positive-integer! (:retry-initial-backoff-ms spec)
+                     "retry-initial-backoff-ms")
+  (positive-integer! (:retry-max-backoff-ms spec) "retry-max-backoff-ms")
+  (when (> (:retry-initial-backoff-ms spec)
+           (:retry-max-backoff-ms spec))
+    (fail! ::invalid-options
+           "retry-initial-backoff-ms must not exceed retry-max-backoff-ms"))
   (when-not (instance? Boolean (:force? spec))
     (fail! ::invalid-options "force? must be boolean"))
   spec)
@@ -162,6 +177,10 @@
            :instance (str (UUID/randomUUID))
            :lease-ttl-ms default-lease-ttl-ms
            :clock-skew-ms default-clock-skew-ms
+           :max-attempts default-max-attempts
+           :retry-deadline-ms default-retry-deadline-ms
+           :retry-initial-backoff-ms default-retry-initial-backoff-ms
+           :retry-max-backoff-ms default-retry-max-backoff-ms
            :force? false}
           options)))
 
@@ -370,6 +389,8 @@
 
 (defn- default-open-operations []
   {:now-ms #(System/currentTimeMillis)
+   :monotonic-ms! retry/monotonic-ms
+   :await-backoff! retry/await-backoff!
    :durable-capability native/durable-capability
    :create-scratch! default-scratch!
    :cleanup-scratch! delete-tree!
@@ -470,9 +491,14 @@
 (defn open-writer!
   "Acquire, recover, renew, and return a serialized Durable V1 writer."
   [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
-           heartbeat-interval-ms scratch-parent operations]
+           heartbeat-interval-ms scratch-parent operations max-attempts
+           retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms]
     :or {lease-ttl-ms default-lease-ttl-ms
          clock-skew-ms default-clock-skew-ms
+         max-attempts default-max-attempts
+         retry-deadline-ms default-retry-deadline-ms
+         retry-initial-backoff-ms default-retry-initial-backoff-ms
+         retry-max-backoff-ms default-retry-max-backoff-ms
          force? false
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
@@ -481,7 +507,8 @@
   (let [store (resolve-store! options)
         operations
         (merge (default-open-operations) operations)
-        required [:now-ms :durable-capability :create-scratch! :cleanup-scratch!
+        required [:now-ms :monotonic-ms! :await-backoff!
+                  :durable-capability :create-scratch! :cleanup-scratch!
                   :open-native! :close-native! :restore-database!
                   :create-checkpoint! :delete-checkpoint!
                   :create-database! :use-database! :analyze-query!
@@ -497,14 +524,24 @@
             existing (control/read-head! store)]
         (when existing
           (check-engine-compatibility! (:head existing) running-version))
-        (let [now ((:now-ms operations))
+        (let [retry-options
+              {:max-attempts max-attempts
+               :retry-deadline-ms retry-deadline-ms
+               :retry-initial-backoff-ms retry-initial-backoff-ms
+               :retry-max-backoff-ms retry-max-backoff-ms
+               :monotonic-ms! (:monotonic-ms! operations)
+               :await-backoff! (:await-backoff! operations)}
+              now ((:now-ms operations))
               acquired (control/acquire!
-                        store {:owner owner :instance instance
-                               :expires-at (+ now lease-ttl-ms)
-                               :now now :clock-skew clock-skew-ms :force? force?
-                               :database database :engine-version running-version
-                               :backup-format reader-backup-format
-                               :min-reader running-version})
+                        store
+                        (merge
+                         retry-options
+                         {:owner owner :instance instance
+                          :expires-at (+ now lease-ttl-ms)
+                          :now now :clock-skew clock-skew-ms :force? force?
+                          :database database :engine-version running-version
+                          :backup-format reader-backup-format
+                          :min-reader running-version}))
               token (:token acquired)
               document (:head acquired)
               scratch (atom nil)
@@ -519,7 +556,14 @@
                     current-expiry (get-in document ["lease" "expires_at"])
                     renewed-expiry (max (inc current-expiry)
                                         (+ renew-now lease-ttl-ms))]
-                (control/renew! store token renewed-expiry)
+                (when (>= renew-now current-expiry)
+                  (fail! ::control/lease-fenced
+                         "The Durable writer lease expired during recovery"))
+                (control/renew!
+                 store token renewed-expiry
+                 (assoc retry-options
+                        :stopped?
+                        #(>= ((:now-ms operations)) current-expiry)))
                 (writer/start!
                  {:store store :token token :handle @handle
                   :database logical-database
@@ -528,6 +572,7 @@
                   :heartbeat-interval-ms
                   (long (or heartbeat-interval-ms
                             (max 1 (quot lease-ttl-ms 3))))
+                  :retry-options retry-options
                   :operations
                   (assoc operations
                          :create-checkpoint!
@@ -623,6 +668,11 @@
                    :clock-skew-ms (or (:clock-skew-ms spec)
                                       default-clock-skew-ms)
                    :heartbeat-interval-ms (:heartbeat-interval-ms spec)
+                   :max-attempts (:max-attempts spec)
+                   :retry-deadline-ms (:retry-deadline-ms spec)
+                   :retry-initial-backoff-ms
+                   (:retry-initial-backoff-ms spec)
+                   :retry-max-backoff-ms (:retry-max-backoff-ms spec)
                    :force? (boolean (:force? spec))})))))
     (close-handle [_ handle]
       (if (reader/reader? handle)
