@@ -7,6 +7,7 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb-durable-head-test :as durable-head]
             [jdbc.chdb-durable-backend-test :as durable-backend]
+            [jdbc.chdb-durable-aspect-manifest-test :as durable-aspect-manifest]
             [jdbc.chdb-durable-control-test :as durable-control]
             [jdbc.chdb-durable-itf-test :as durable-itf]
             [jdbc.chdb-durable-writer-test :as durable-writer]
@@ -672,6 +673,7 @@
   (run-storage-checks)
   (durable-head/run-checks!)
   (durable-backend/run-checks!)
+  (durable-aspect-manifest/run-checks!)
   (durable-control/run-checks!)
   (durable-itf/run-checks!)
   (durable-writer/run-checks!)

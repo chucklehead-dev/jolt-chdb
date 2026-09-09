@@ -12,6 +12,12 @@ formal model, implementation replay, and compiler aspects:
 | `checkpoint-publish` | `jdbc.chdb.durable.control/publish-checkpoint-file!` |
 | `release-attempt` | `jdbc.chdb.durable.control/release!` |
 
+The target-owned aspect manifest marks retry-aware control compatibility with
+epoch `4a0b82119a09fdadb08442cb5d189bdc0474ed86`. For multi-arity operations it
+selects the option-bearing terminal arity: convenience calls delegate there,
+and writers enter it directly, so either public call shape produces exactly
+one logical event.
+
 The literate Quint specification produces ADR-015 ITF traces with
 `mbt::actionTaken` and `mbt::nondetPicks`. The checked fixture under
 `formal/quint/traces/` is replayed by

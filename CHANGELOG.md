@@ -6,6 +6,8 @@
   object-backend work without changing the Durable backend ABI. S3 stops before
   a first request and before/after transport backoff, maps writer-originated
   stopping to `lease-fenced`, and still never reissues an uncertain write.
+- Advance the target-owned Durable aspect epoch to the retry-aware control
+  surface and select its option-bearing terminal arities exactly once.
 - Add monotonic retry deadlines and capped exponential backoff to Durable
   control and S3 operations. Writers stop retrying when their locally proved
   lease expires; ambiguous writes are never reissued, while delayed
