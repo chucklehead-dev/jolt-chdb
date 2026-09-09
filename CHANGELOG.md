@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Write and compare Durable V1 `lease.expires_at` as epoch seconds, including
+  fractional seconds, while keeping the public `*-ms` configuration and
+  monotonic retry budgets in milliseconds. Python-shaped fixtures cover both
+  interoperability directions and the explicit force-takeover migration from
+  legacy Jolt millisecond heads.
 - Positively join each Durable reader and writer operation OS thread before a
   public close returns or rethrows. Concurrent and repeated closes retain the
   exact original failure while cleanup and worker exit remain exactly once;

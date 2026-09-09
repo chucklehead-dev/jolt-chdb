@@ -19,8 +19,8 @@
 
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
-     wal-state lease-state heartbeat-stop backend-context operations worker
-     heartbeat])
+     wal-state lease-state heartbeat-stop backend-context retry-options
+     operations worker heartbeat])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -330,7 +330,8 @@
                       (call-with-backend-context
                        writer
                        #((:renew! (:operations writer))
-                         (:store writer) (:token writer) renewed-expiry))]
+                         (:store writer) (:token writer) renewed-expiry
+                         (:retry-options writer)))]
                   (if (>= ((:now-ms (:operations writer))) expires-at)
                     (swap! (:lease-state writer) assoc :fenced? true)
                     (reset! (:lease-state writer)
@@ -350,7 +351,10 @@
   This is the composition seam for the later public Durable `open!`. The
   caller retains responsibility for recovery and must not use `handle` outside
   this writer after start. Optional operation functions exist for deterministic
-  conformance tests; production callers should use the defaults."
+  conformance tests; production callers should use the defaults. At this raw
+  seam, `lease-expiry`, `lease-ttl-ms`, `heartbeat-interval-ms`, and `:now-ms`
+  are all milliseconds. The public open layer owns conversion to and from the
+  Protocol V1 epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options]
     :or {queue-capacity default-queue-capacity}}]
@@ -405,8 +409,9 @@
             (fail! ::checkpoint-unavailable
                    "This writer has no checkpoint archive provider"))
           :delete-checkpoint! (fn [_] nil)
-          :renew! (fn [store token expires-at]
-                    (control/renew! store token expires-at retry-options))
+          :renew! (fn [store token expires-at operation-retry-options]
+                    (control/renew! store token expires-at
+                                    operation-retry-options))
           :release! (fn [store token]
                       (control/release! store token retry-options))
           :now-ms now-ms
@@ -439,7 +444,8 @@
                   (atom {:lines [] :byte-count 0
                          :checkpoint-required? false})
                   lease-state
-                  (promise) backend-context operations worker heartbeat)]
+                  (promise) backend-context retry-options operations
+                  worker heartbeat)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat
         (owned-thread/start!

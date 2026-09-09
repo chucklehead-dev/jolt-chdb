@@ -12,7 +12,7 @@ create by rereading its unique immutable key and a replace by rereading
 `head.json`; only exact operation-specific state proves success.
 
 The protocol source is chDB commit
-`db10b548a3e1e21e51c213baf863cb1050963d9c`,
+`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`,
 `docs/durable/protocol-v1.mdx#backend-contract`. In particular, conditional
 create and replace must be atomic provider operations; a `HEAD` followed by an
 unconditional `PUT` is not an implementation. ETags are opaque tokens and are

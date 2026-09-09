@@ -223,6 +223,22 @@ path until your provider and failure boundaries have been qualified.
 | `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
 
+The `*-ms` names above describe the application configuration and remain in
+milliseconds. On `head.json`, Protocol V1 freezes `lease.expires_at` as Unix
+epoch seconds. jolt-chdb converts at that boundary and preserves millisecond
+fractions; retry deadlines continue to use the monotonic millisecond clock and
+are never serialized.
+
+### Migrating heads written by older jolt-chdb builds
+
+Older development builds wrote epoch milliseconds into `expires_at`. The V1
+reader deliberately does not guess a unit from numeric magnitude: doing so
+would make two writers interpret the same frozen field differently. Stop every
+old writer first. Then open once with `:force? true`; the takeover increments
+the fencing generation and rewrites the active lease in epoch seconds. Do not
+run old and corrected writers together. Mixed-unit writers are unsupported and
+unsafe.
+
 ## Persistence and recovery
 
 The manifest contains the database name, an optional checkpoint reference, an

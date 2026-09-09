@@ -49,6 +49,10 @@ work drains and while close flushes. Close then signals and positively joins
 the heartbeat before lease release, native close, and scratch cleanup. This
 ordering prevents renewal after release. Every mutation and flush also checks
 the locally known expiry immediately before its side effects.
+The writer-local expiry, heartbeat interval, and supplied `lease-ttl-ms` stay
+in milliseconds. The public open layer alone converts between those values and
+Protocol V1 epoch seconds before a control-plane acquire or renewal, and
+converts the confirmed wire expiry back before publishing local lease state.
 Immutable publication and verification likewise leave heartbeat renewal
 unblocked. The manifest commit rereads the latest owned head afterward and
 retries only definite same-owner heartbeat CAS collisions; takeover fences it,

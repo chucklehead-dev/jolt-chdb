@@ -10,7 +10,7 @@ The `lmt` tangler extracts its Quint fences into ignored files under
 ## Authority and scope
 
 The normative source is chDB commit
-`db10b548a3e1e21e51c213baf863cb1050963d9c`,
+`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`,
 `docs/durable/protocol-v1.mdx#state-machine`. The implementation correspondence
 is:
 
@@ -43,6 +43,12 @@ an ambiguous CAS landing and its reconciliation read. It excludes retry/backoff,
 generation exhaustion, full JSON/ETag encoding, WAL versus checkpoint manifest
 shape, scratch recovery, close, and process lifecycle. It establishes
 no liveness claim.
+
+That abstraction does not make time units irrelevant at the implementation
+boundary. Protocol and runtime traces tag every observed wire lease value as
+`EpochSeconds`; the separate time-dimension model below checks the explicit
+millisecond-to-seconds conversion and retains a wrong-unit mutant. Neither is a
+proof of real-clock behavior.
 
 ## Executable structure
 
@@ -2263,5 +2269,76 @@ module durableWriterBoundaryMutantTest {
       .then(executeBound)
       .then(flushSuccess)
       .expect(not(checkpointFallbackIsSound))
+}
+```
+
+## Lease time dimension boundary
+
+The head-CAS state machine intentionally abstracts elapsed time, so it cannot
+justify a wire-unit claim. This small, separate functional model makes the
+binding conversion explicit. Public wall-clock values are integer epoch
+milliseconds; the V1 wire value is epoch seconds represented here as whole
+seconds plus a millisecond fraction. Nominal unit tags prevent a value from
+silently crossing the boundary unchanged. The wrong-unit function is retained
+only as a red control.
+
+```quint target/formal/quint/durableLeaseTime.qnt +=
+module durableLeaseTime {
+  type EpochUnit = EpochSeconds | EpochMilliseconds
+
+  type WireEpoch = {
+    wholeSeconds: int,
+    millisecondFraction: int,
+    unit: EpochUnit,
+  }
+
+  pure def epochMillisToWire(epochMillis: int): WireEpoch = {
+    wholeSeconds: epochMillis / 1000,
+    millisecondFraction: epochMillis % 1000,
+    unit: EpochSeconds,
+  }
+
+  pure def wireToEpochMillis(wire: WireEpoch): int =
+    wire.wholeSeconds * 1000 + wire.millisecondFraction
+
+  pure def wrongUnitMutant(epochMillis: int): WireEpoch = {
+    wholeSeconds: epochMillis,
+    millisecondFraction: 0,
+    unit: EpochMilliseconds,
+  }
+
+  pure def wellDimensioned(wire: WireEpoch): bool = and {
+    wire.unit == EpochSeconds,
+    wire.millisecondFraction >= 0,
+    wire.millisecondFraction < 1000,
+  }
+}
+```
+
+```quint target/formal/quint/durableLeaseTimeTest.qnt +=
+module durableLeaseTimeTest {
+  import durableLeaseTime.* from "./durableLeaseTime"
+
+  run fractionalEpochRoundTripsTest = {
+    val epochMillis = 1788230400125
+    val wire = epochMillisToWire(epochMillis)
+    and {
+      wellDimensioned(wire),
+      wire.wholeSeconds == 1788230400,
+      wire.millisecondFraction == 125,
+      wireToEpochMillis(wire) == epochMillis,
+    }
+  }
+
+  run zeroEpochRoundTripsTest = {
+    val wire = epochMillisToWire(0)
+    and {
+      wellDimensioned(wire),
+      wireToEpochMillis(wire) == 0,
+    }
+  }
+
+  run wrongUnitMutantIsDetectedTest =
+    not(wellDimensioned(wrongUnitMutant(1788230400125)))
 }
 ```

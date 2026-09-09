@@ -1,0 +1,1 @@
+{"protocol":{"version":1,"reader_features":[],"writer_features":[]},"engine":{"name":"chdb","version":"26.7.2-rc.2","backup_format":1,"min_reader":"26.7.2-rc.2"},"lease":{"generation":1,"owner":"legacy-jolt-writer","instance":"legacy-jolt-instance","expires_at":1788230400000},"manifest":{"db":"default","base":null,"wal":[],"seq":0}}

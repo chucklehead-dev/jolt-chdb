@@ -71,6 +71,8 @@ serialized reader and writer workers and lease heartbeat are isolated from
 Jolt's shared fiber carriers: they each own an OS thread because native chDB and
 storage calls may block. During close, heartbeat remains live through queued
 work and the final flush, then is stopped and joined before lease release.
+Public lease and skew options are milliseconds; the interoperable
+`head.json` lease expiry is Unix epoch seconds with fractional precision.
 Durable is still experimental: the stable 26.7.0 library installed by
 `-M:setup-native` does not expose the required ABI, hosted native qualification
 covers only Linux x86-64, and a broader crash/corruption and platform matrix

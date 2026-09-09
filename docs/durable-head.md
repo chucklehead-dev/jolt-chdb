@@ -2,15 +2,19 @@
 
 `jdbc.chdb.durable.head` is the runtime-neutral parser and encoder for the
 frozen `head.json` document. Its normative source is chDB commit
-`db10b548a3e1e21e51c213baf863cb1050963d9c`,
-`docs/durable/protocol-v1.mdx#head`. The Python implementation and scenarios at
-that commit are design evidence only: their older head shape predates the
-frozen V1 document and is not accepted as an alternate schema.
+`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`,
+`docs/durable/protocol-v1.mdx#head`. The Python binding's head parser and
+seconds-based fixtures at that revision are the cross-binding reference; no
+alternate or legacy head shape is accepted.
 
 The codec accepts UTF-8 bytes or a string and returns ordinary Clojure data
 with JSON string keys. Keeping string keys is intentional: fields unknown to a
 V1 reader survive `decode`, an update to a known field, and `encode` without
 being renamed or discarded.
+
+An active lease's `expires_at` is a finite nonnegative Unix timestamp in
+seconds. Fractional seconds are preserved as a JSON number. The codec does not
+infer or migrate legacy millisecond values from their magnitude.
 
 ```clojure
 (require '[jdbc.chdb.durable.head :as head])

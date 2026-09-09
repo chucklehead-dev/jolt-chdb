@@ -526,9 +526,9 @@
                  (do @heartbeat-tick :tick)
                  (do @stop (swap! calls conj :heartbeat-stop) :stop)))
              :renew!
-             (fn [store token expiry]
+             (fn [store token expiry retry-options]
                (swap! calls conj :renew)
-               (let [result (control/renew! store token expiry)]
+               (let [result (control/renew! store token expiry retry-options)]
                  (deliver heartbeat-renewed result)
                  result))
              :publish-wal!
@@ -624,8 +624,8 @@
                        (do @heartbeat-tick :tick)
                        (do @stop :stop)))
                    :renew!
-                   (fn [store token expiry]
-                     (let [result (control/renew! store token expiry)]
+                   (fn [store token expiry retry-options]
+                     (let [result (control/renew! store token expiry retry-options)]
                        (deliver heartbeat-renewed result)
                        result))))
         writer

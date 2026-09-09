@@ -11,6 +11,8 @@ publication_model="$target/durablePublicationAck.qnt"
 publication_tests="$target/durablePublicationAckTest.qnt"
 writer_model="$target/durableWriterBoundary.qnt"
 writer_tests="$target/durableWriterBoundaryTest.qnt"
+lease_time_model="$target/durableLeaseTime.qnt"
+lease_time_tests="$target/durableLeaseTimeTest.qnt"
 lifecycle_model="$target/durableWriterLifecycle.qnt"
 lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 required_quint_version=0.32.0
@@ -54,8 +56,16 @@ quint typecheck "$publication_model"
 quint typecheck "$publication_tests"
 quint typecheck "$writer_model"
 quint typecheck "$writer_tests"
+quint typecheck "$lease_time_model"
+quint typecheck "$lease_time_tests"
 quint typecheck "$lifecycle_model"
 quint typecheck "$lifecycle_tests"
+
+quint test "$lease_time_tests" \
+  --main durableLeaseTimeTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
 
 quint test "$tests" \
   --main durableHeadCasCorrectedTest \
