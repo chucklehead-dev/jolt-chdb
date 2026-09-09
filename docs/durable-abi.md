@@ -47,3 +47,39 @@ The native production pin must not move to this prerelease. Once a stable chDB
 release carries the ABI, its assets and checksums must be pinned and the upstream
 C oracle plus independent Jolt classification and backup/restore tests must pass
 before Durable is advertised as supported.
+
+## Phase 0 Babashka and JVM characterization
+
+The driver contract has one additional, deliberately test-only adapter that
+derives `babashka.ffi/cfn` bindings from `jdbc.chdb.abi/binding-specs`. It does
+not copy a symbol or C signature and is not reachable through the production
+`jdbc.chdb.native` or `jdbc.chdb` namespaces. The same owned-thread smoke test
+performs version and capability checks, opens an in-memory connection, binds
+`42` as a server-side query parameter, copies the exact three CSV bytes, then
+destroys the result and closes the connection owner exactly once.
+
+The checked compatibility unit is recorded in
+`resources/jdbc/chdb/ffi-compatibility.edn`: Babashka `v1.13.220` at commit
+`b98575c98a0ef4df77775ff25fd7fc7b591b1afd` with embedded `babashka.ffi`
+`aacb153618bc39ca1e4c397b8f30fb81c76d0c4c`, and the same FFI revision on
+Corretto JDK `25.0.2+10-LTS`. The only qualified Phase 0 native target is stable
+libchdb `26.7.0` on Linux amd64. This is not a claim of Durable, Windows, or
+unqualified-platform support.
+
+Two controls keep this characterization meaningful. A raw C result-buffer
+pointer must reject copying until it is reinterpreted to the exact native
+length, and a binding constrained to the wrong or a missing selected library
+must reject rather than falling back to a process-global symbol. Native calls
+run on one owned OS thread; only copied bytes and scalar evidence cross its
+positive join.
+
+Run all three hosts with `scripts/qualify-ffi-runtimes.sh jolt`. Local source
+work in this workspace passes the mandatory compiler selector as two arguments:
+
+```sh
+scripts/qualify-ffi-runtimes.sh /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt
+```
+
+Phase 1 must fold the host adapter into `jdbc.chdb.native` and delete
+`test/jdbc/chdb_abi_babashka_test.clj`; a second production ABI path is not an
+acceptable endpoint.

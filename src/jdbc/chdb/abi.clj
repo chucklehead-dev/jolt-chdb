@@ -113,6 +113,26 @@
                   (some #(= contract-id %) (:contracts function))))
         (:functions (descriptor))))
 
+(defn binding-spec
+  "Return one runtime-neutral literal binding specification.
+
+  Runtime adapters must derive their foreign declarations from this value
+  rather than copying symbols or signatures into a second registry."
+  [function-id]
+  (let [{:keys [symbol args return blocking? contracts]}
+        (function-spec function-id)]
+    {:function function-id
+     :symbol symbol
+     :args args
+     :return return
+     :blocking? (boolean blocking?)
+     :contracts contracts}))
+
+(defn binding-specs
+  "Return binding specifications in caller-requested order."
+  [function-ids]
+  (mapv binding-spec function-ids))
+
 (defmacro defjoltfn
   "Define one literal Jolt binding derived from the canonical descriptor."
   [binding function-id]

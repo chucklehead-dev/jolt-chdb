@@ -1,0 +1,22 @@
+{:schema 1
+ :phase 0
+ :temporary-binding
+ {:scope :test-only
+  :retire-in :phase-1
+  :criterion "Fold this adapter into jdbc.chdb.native and delete the test-only binding namespace before exposing a BB/JVM API."}
+ :jolt
+ {:version "0.8.3"
+  :release-commit "343f730922cf16fafe673b466cedcdcfe0596854"}
+ :babashka
+ {:tag "v1.13.220"
+  :tag-commit "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"
+  :embedded-ffi-commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}
+ :jvm
+ {:jdk-distribution :corretto
+  :jdk-version "25.0.2+10-LTS"
+  :ffi-commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}
+ :native
+ {:version "26.7.0"
+  :qualified-platforms [{:os :linux :arch "amd64"}]
+  :linux-amd64-archive-sha256
+  "4ba2b740f2b107be53157d8226cae1edb25b498d69511cdb3c340db3c95c2905"}}

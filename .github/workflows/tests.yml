@@ -34,6 +34,14 @@ jobs:
       JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: '25.0.2'
+      - uses: DeLaGuardo/setup-clojure@13.5
+        with:
+          bb: 1.13.220
+          cli: latest
       - name: Install Jolt v0.8.3
         run: |
           set -euo pipefail
@@ -47,6 +55,14 @@ jobs:
         run: jolt -M:setup-native
       - name: Verify native ABI capability boundary
         run: jolt -M:abi-test
+      - name: Characterize the same ABI on pinned Babashka
+        run: |
+          test "$(bb --version)" = "babashka v1.13.220"
+          actual_commit="$(bb describe | bb -i -e '(print (:git/sha (read-string (slurp *in*))))')"
+          test "$actual_commit" = "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"
+          bb -cp src:resources:test -m jdbc.chdb-abi-babashka-test
+      - name: Characterize the same ABI on Corretto JDK 25
+        run: clojure -Srepro -M:abi-babashka-jvm-test
       - name: Install pinned Hegel native library
         run: jolt -A:test -m hegel.install
       - name: Test Durable owned threads with one Jolt carrier
