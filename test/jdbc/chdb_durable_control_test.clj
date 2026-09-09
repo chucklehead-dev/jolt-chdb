@@ -283,6 +283,13 @@
             #(control/acquire!
               store (assoc base-options
                            :owner "writer-2" :instance "instance-2"))))
+    (check "omitted acquisition defaults reject the same live competitor"
+           ::control/lease-held
+           (error-type
+            #(control/acquire!
+              store (-> base-options
+                        (dissoc :clock-skew)
+                        (assoc :owner "writer-2" :instance "instance-2")))))
     (check "fresh acquisition cannot publish an already expired lease"
            ::control/invalid-options
            (error-type

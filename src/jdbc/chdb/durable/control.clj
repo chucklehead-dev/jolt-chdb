@@ -244,12 +244,16 @@
   (when-not (> expires-at now)
     (fail! ::invalid-options
            "expires-at must be later than the acquisition time"))
-  (ambiguity-aware-retry-result!
-   (retry/run! (retry-budget! (assoc options :max-attempts max-attempts))
-               {:phase :cas}
-               (fn [_ state] (acquire-attempt! store options state)))
-   "Durable lease acquisition exceeded its retry bounds"
-   "Durable lease acquisition could not be proved before its deadline"))
+  (let [options (assoc options
+                       :clock-skew clock-skew
+                       :force? force?
+                       :max-attempts max-attempts)]
+    (ambiguity-aware-retry-result!
+     (retry/run! (retry-budget! options)
+                 {:phase :cas}
+                 (fn [_ state] (acquire-attempt! store options state)))
+     "Durable lease acquisition exceeded its retry bounds"
+     "Durable lease acquisition could not be proved before its deadline")))
 
 (defn- renew-attempt! [store token expires-at attempt
                        {:keys [phase snapshot] :as state}]
