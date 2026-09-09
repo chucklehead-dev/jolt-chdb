@@ -367,8 +367,13 @@
           :query-bytes-native! chdb/execute-query-bytes-handle
           :execute-native! (fn [handle sql params]
                              (chdb/execute-any handle sql params))
-          :publish-wal! control/publish-wal-bytes!
-          :publish-checkpoint! control/publish-checkpoint-file!
+          :publish-wal!
+          (fn [store token payload]
+            (control/publish-wal-bytes! store token payload retry-options))
+          :publish-checkpoint!
+          (fn [store token path]
+            (control/publish-checkpoint-file!
+             store token path retry-options))
           :commit-reference!
           (fn [store token options]
             (control/commit-reference!
@@ -381,7 +386,8 @@
           :delete-checkpoint! (fn [_] nil)
           :renew! (fn [store token expires-at]
                     (control/renew! store token expires-at retry-options))
-          :release! control/release!
+          :release! (fn [store token]
+                      (control/release! store token retry-options))
           :now-ms now-ms
           :await-heartbeat! (fn [stop timeout-ms]
                               (if (= ::tick (deref stop timeout-ms ::tick))

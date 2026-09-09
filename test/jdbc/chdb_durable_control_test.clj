@@ -69,6 +69,27 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- delayed-ambiguous-head-backend [delegate hidden-reads replace-count]
+  (let [remaining (atom 0)]
+    (reify backend/ObjectBackend
+      (get-bytes [_ key] (backend/get-bytes delegate key))
+      (get-with-etag [_ key]
+        (if (and (= control/head-key key) (pos? @remaining))
+          (do (swap! remaining dec) nil)
+          (backend/get-with-etag delegate key)))
+      (put-file-if-absent! [_ key path]
+        (backend/put-file-if-absent! delegate key path))
+      (put-bytes-if-absent! [_ key bytes]
+        (backend/put-bytes-if-absent! delegate key bytes))
+      (replace-if-match! [_ key bytes etag]
+        (swap! replace-count inc)
+        (let [result (backend/replace-if-match! delegate key bytes etag)]
+          (if (= :replaced (:status result))
+            (do (reset! remaining hidden-reads) {:status :ambiguous})
+            result)))
+      (download-to-file! [_ key path]
+        (backend/download-to-file! delegate key path)))))
+
 (defn- conflicting-publication-backend [delegate]
   (reify backend/ObjectBackend
     (get-bytes [_ key]
@@ -111,6 +132,28 @@
       (backend/replace-if-match! delegate key bytes etag))
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
+
+(defn- delayed-ambiguous-publication-backend [delegate put-count]
+  (let [hidden-key (atom nil)
+        hidden-reads (atom 0)]
+    (reify backend/ObjectBackend
+      (get-bytes [_ key]
+        (if (and (= key @hidden-key) (pos? @hidden-reads))
+          (do (swap! hidden-reads dec) nil)
+          (backend/get-bytes delegate key)))
+      (get-with-etag [_ key] (backend/get-with-etag delegate key))
+      (put-file-if-absent! [_ key path]
+        (backend/put-file-if-absent! delegate key path))
+      (put-bytes-if-absent! [_ key bytes]
+        (swap! put-count inc)
+        (backend/put-bytes-if-absent! delegate key bytes)
+        (reset! hidden-key key)
+        (reset! hidden-reads 1)
+        {:status :ambiguous})
+      (replace-if-match! [_ key bytes etag]
+        (backend/replace-if-match! delegate key bytes etag))
+      (download-to-file! [_ key path]
+        (backend/download-to-file! delegate key path)))))
 
 (defn- land-then-renew-backend [delegate token renewed-expiry]
   (reify backend/ObjectBackend
@@ -396,6 +439,30 @@
            1 (get-in (:head committed) ["manifest" "seq"])))
 
   (let [delegate (backend/memory-backend)
+        token (:token (control/acquire! delegate base-options))
+        reference (publish-abc! delegate token)
+        replace-count (atom 0)
+        waits (atom [])
+        now (atom 0)
+        store (delayed-ambiguous-head-backend delegate 1 replace-count)
+        committed
+        (control/commit-reference!
+         store token
+         {:kind :wal :reference reference
+          :verify-reference! control/verify-byte-reference!
+          :monotonic-ms! (fn [] @now)
+          :await-backoff! (fn [milliseconds]
+                            (swap! waits conj milliseconds)
+                            (swap! now + milliseconds))})]
+    (check "ambiguous commit tolerates a not-yet-visible proof read"
+           [:reconciled 1 [10 20]]
+           [(:status committed) @replace-count @waits])
+    (check "delayed reconciliation advances the manifest exactly once"
+           [1 [reference]]
+           [(get-in (:head committed) ["manifest" "seq"])
+            (get-in (:head committed) ["manifest" "wal"])]))
+
+  (let [delegate (backend/memory-backend)
         acquired (control/acquire! delegate base-options)
         token (:token acquired)
         reference (publish-abc! delegate token)
@@ -559,6 +626,23 @@
     (check "publication rejects non-byte payloads before the backend"
            ::control/invalid-options
            (error-type #(control/publish-wal-bytes! store token "abc"))))
+
+  (let [delegate (backend/memory-backend)
+        token (:token (control/acquire! delegate base-options))
+        put-count (atom 0)
+        waits (atom [])
+        now (atom 0)
+        store (delayed-ambiguous-publication-backend delegate put-count)
+        publication
+        (control/publish-wal-bytes!
+         store token (.getBytes "abc" "UTF-8")
+         {:monotonic-ms! (fn [] @now)
+          :await-backoff! (fn [milliseconds]
+                            (swap! waits conj milliseconds)
+                            (swap! now + milliseconds))})]
+    (check "ambiguous publication retries only its delayed proof read"
+           [:reconciled 1 [10]]
+           [(:status publication) @put-count @waits]))
 
   (doseq [[label mode expected]
           [["landed ambiguous WAL publication reconciles" :land :reconciled]
