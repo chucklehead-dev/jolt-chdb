@@ -75,6 +75,14 @@ mutation. Oscope uses `checkpoint!` after its sole schema owner has
 applied migrations and before ingress, then uses `flush!` before acknowledging
 each accepted OTLP batch.
 
+Applications should normally build JDBC maps with
+`jdbc.chdb.durable/writer-dbspec` and `snapshot-dbspec`. These data-only
+constructors select the existing driver and validate storage identity, role,
+writer identity, and timing before `open-writer!` or `open-reader!` runs. The
+driver applies the same validation to handwritten maps for fail-closed
+compatibility. A generated writer instance is UUIDv4; protocol ordering comes
+from the lease generation, not UUID sorting.
+
 Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
 workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 

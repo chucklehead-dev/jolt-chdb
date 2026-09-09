@@ -131,13 +131,12 @@ this prerelease without doing the same qualification in your deployment.
   (durable-local/local-backend "/var/lib/my-app/chdb-objects"))
 
 (with-open [conn (jdbc/connection
-                  {:vendor "chdb-durable"
-                   :namespace-backend durable-namespace
-                   :object-id "primary"
-                   :owner "my-app"
-                   :instance (str (java.util.UUID/randomUUID))
-                   :database "default"
-                   :lease-ttl-ms 30000})]
+                  (durable/writer-dbspec
+                   {:namespace-backend durable-namespace
+                    :object-id "primary"
+                    :owner "my-app"
+                    :database "default"
+                    :lease-ttl-ms 30000}))]
   (jdbc/execute! conn "CREATE TABLE IF NOT EXISTS events
                        (id UInt64, message String) ENGINE = MergeTree
                        ORDER BY id")
@@ -154,15 +153,22 @@ directory synchronization before it reports a successful publication.
 
 ```clojure
 (with-open [conn (jdbc/connection
-                  {:vendor "chdb-durable"
-                   :namespace-backend durable-namespace
-                   :object-id "primary"
-                   :read-only? true})]
+                  (durable/snapshot-dbspec
+                   {:namespace-backend durable-namespace
+                    :object-id "primary"}))]
   (jdbc/fetch conn "SELECT * FROM events ORDER BY id"))
 ```
 
 A reader does not acquire a lease and cannot call `flush!` or `checkpoint!`.
-It downloads and verifies exactly the manifest snapshot observed at open.
+It downloads and verifies exactly the manifest snapshot observed at open. The
+same map can be passed to `jdbc/connection` in another process; it needs no
+writer owner, instance, database, lease, heartbeat, or force option.
+
+Both constructors return ordinary maps accepted by `jdbc.core`. They validate
+the complete option set before any provider request or native open. A writer
+gets a fresh UUIDv4 `:instance` when none is supplied; this identity is opaque,
+while the monotonically increasing lease generation remains the protocol's
+ordering and fencing authority.
 Integrations can call `durable/connection-role` before performing any writes;
 it returns `:writer` or `:reader` without publishing state, and rejects ordinary
 chDB connections.
@@ -201,10 +207,10 @@ path until your provider and failure boundaries have been qualified.
 
 | Option | Meaning |
 | --- | --- |
-| `:namespace-backend` + `:object-id` | Recommended pair. The backend is shared; the object ID selects one database below it. |
+| `:namespace-backend` + `:object-id` | Recommended pair passed to `writer-dbspec` or `snapshot-dbspec`. The backend is shared; the object ID selects one database below it. |
 | `:backend` | Advanced JDBC option for an already object-scoped backend. Do not combine it with the namespace/object pair. |
 | `:owner` | Nonblank writer identity, usually an application or service name. Required for writers. |
-| `:instance` | Nonblank identity for one process or writer attempt. Required for writers and should be unique per attempt. |
+| `:instance` | Nonblank identity for one process or writer attempt. `writer-dbspec` defaults it to a fresh UUIDv4; an explicitly supplied value must be unique per attempt. |
 | `:database` | Logical database to create for a new Durable object. An existing object's manifest remains authoritative. |
 | `:read-only?` | When true, open one immutable snapshot without a writer lease. |
 | `:lease-ttl-ms` | Writer lease lifetime; defaults to 30 seconds. |
