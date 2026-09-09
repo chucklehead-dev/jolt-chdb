@@ -134,8 +134,10 @@ Use one transition vocabulary but keep four different claims explicit:
 2. Apalache explores the bounded model and proves or finds counterexamples for
    the selected invariants. It says nothing directly about Clojure execution.
 3. Quint ITF traces drive the real control implementation and compare every
-   abstract state. Hegel validates both generated state-machine traces and the
-   versioned operation-event envelope.
+   abstract state. The legacy corpus first requires aggregate coverage of all
+   four actions and all modeled control outcomes, recording the counts in
+   `target/formal/quint/itf-corpus-coverage.json`. Hegel validates both
+   generated state-machine traces and the versioned operation-event envelope.
 4. Instrumented app tests record the same privacy-shaped commands and outcomes;
    the offline validator accepts them only when the Quint transition relation
    can replay the whole trace.
