@@ -166,6 +166,13 @@ projection after every step with the corresponding model state. Its command
 decoder remains separate from the state oracle so the same ITF vocabulary can
 later drive a real object backend and woven aspect lifecycle runs.
 
+The deterministic 64-trace corpus uses a seed selected to reach every legacy
+action and every modeled control outcome. Before replay, the corpus gate writes
+`target/formal/quint/itf-corpus-coverage.json` and fails if confirmed or
+reconciled commit, ambiguity, fencing, object rejection, or either release
+outcome is absent. This coverage assertion does not add renewal or retry to the
+legacy vocabulary; those require a separate lifecycle/concurrency adapter.
+
 The script requires Quint 0.32.0 and `lmt` pinned at commit
 `62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c`. It first tangles this Markdown
 source, then runs every Quint command against the generated files. Install the

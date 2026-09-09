@@ -8,6 +8,9 @@
   stopping to `lease-fenced`, and still never reissues an uncertain write.
 - Advance the target-owned Durable aspect epoch to the retry-aware control
   surface and select its option-bearing terminal arities exactly once.
+- Require the generated Durable Quint ITF corpus to cover every legacy action
+  and semantic outcome before replay, and record the aggregate counts in a
+  machine-readable coverage manifest.
 - Add monotonic retry deadlines and capped exponential backoff to Durable
   control and S3 operations. Writers stop retrying when their locally proved
   lease expires; ambiguous writes are never reissued, while delayed

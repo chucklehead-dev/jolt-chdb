@@ -450,7 +450,11 @@ Quint emits traces in ADR-015 ITF form. The
 command metadata, executes the same operations against the in-memory backend,
 and compares the implementation's abstract head and result with every complete
 ITF state. The CI corpus replays 64 generated traces, rather than only one
-handpicked scenario.
+handpicked scenario. Its deterministic seed must cover every legacy action and
+every modeled control outcome, including confirmed and reconciled commits,
+ambiguous failure, stale fencing, object rejection, and accepted/rejected
+release. The gate writes the aggregate counts to
+`target/formal/quint/itf-corpus-coverage.json` before replay.
 
 Hegel checks properties in the focused
 [head](../test/jdbc/chdb_durable_head_test.clj),
