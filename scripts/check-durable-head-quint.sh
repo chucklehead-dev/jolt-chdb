@@ -16,6 +16,11 @@ lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
+# The takeover-enabled six-step state graph exceeds Node's default old-space
+# limit while Quint translates it for Apalache. Keep the model bounds intact
+# and give the checked process a fixed heap that fits local and hosted runners.
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
+
 if ! command -v lmt >/dev/null 2>&1
 then
   echo "lmt is required; install the pinned extractor with:" >&2
@@ -94,6 +99,12 @@ quint test "$tests" \
   --backend typescript \
   --verbosity 1
 
+quint test "$tests" \
+  --main durableHeadCasLandingReferenceMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
 quint test "$publication_tests" \
   --main durablePublicationAckCorrectedTest \
   --match '.*Test' \
@@ -150,7 +161,7 @@ sample_log="$target/corrected-sampled.log"
 quint run "$model" \
   --main durableHeadCasCorrected \
   --invariants generationWithinBound sequenceWithinBound publicationAttemptIsFresh attemptIdentityIsUnique headReferenceWasPublished headReferenceIsCanonical attemptTransitionsRefineExactView exactTransitionsRefineContentView acquisitionIncrementsGeneration sequenceNeverRegresses staleWriterCannotChangeHead acknowledgedCommitIsExact failedCommitLeavesHeadUnchanged ambiguousLandedUsesOperationSpecificReconciliation releasePreservesGeneration activeOwnerHasCurrentToken \
-  --witnesses acquisitionReached publicationReached confirmedCommitReached reconciledCommitReached ambiguousDropReached staleCommitRejectedReached releaseReached renewalDuringReconciliationReached postRenewalReconciliationReached \
+  --witnesses acquisitionReached publicationReached confirmedCommitReached reconciledCommitReached ambiguousDropReached staleCommitRejectedReached releaseReached renewalDuringReconciliationReached postRenewalReconciliationReached takeoverFencedReconciliationReached \
   --max-steps 6 \
   --max-samples 10000 \
   --backend typescript \
@@ -160,7 +171,8 @@ for witness in \
   acquisitionReached publicationReached confirmedCommitReached \
   reconciledCommitReached ambiguousDropReached \
   staleCommitRejectedReached releaseReached \
-  renewalDuringReconciliationReached postRenewalReconciliationReached
+  renewalDuringReconciliationReached postRenewalReconciliationReached \
+  takeoverFencedReconciliationReached
 do
   if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" "$sample_log"
   then
@@ -285,6 +297,14 @@ quint verify "$model" \
 
 quint verify "$model" \
   --main durableHeadCasCorrected \
+  --invariant headReferenceWasPublished \
+  --max-steps 6 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+quint verify "$model" \
+  --main durableHeadCasCorrected \
   --invariant attemptTransitionsRefineExactView \
   --max-steps 6 \
   --backend apalache \
@@ -348,6 +368,8 @@ expect_violation durableHeadCasCommitAttemptMutant \
   headReferenceWasPublished commit-attempt-mutant
 expect_violation durableHeadCasWholeHeadReconciliationMutant \
   ambiguousLandedUsesOperationSpecificReconciliation whole-head-reconciliation-mutant
+expect_violation durableHeadCasLandingReferenceMutant \
+  attemptTransitionsRefineExactView ambiguous-landing-reference-mutant
 
 writer_mutant_log="$target/writer-boundary-mutant.log"
 set +e

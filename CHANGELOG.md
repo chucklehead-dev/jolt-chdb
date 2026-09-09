@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Check ambiguous head-CAS landing as its own refinement transition, model a
+  rival lease takeover before reconciliation, and require the stale writer to
+  receive `LeaseFenced` without losing the landed recovery reference.
 - Add validated `writer-dbspec` and `snapshot-dbspec` constructors. Durable
   JDBC maps now reject unknown options, incomplete storage identity, invalid
   timing, and writer-only fields on snapshot readers before opening storage or
