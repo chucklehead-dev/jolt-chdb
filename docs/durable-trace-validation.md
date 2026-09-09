@@ -35,11 +35,12 @@ ITF state. It also records a bounded pair of lifecycle events:
 ```
 
 The separate literate writer-lifecycle model keeps the head/ITF projection
-stable. Its corrected trace corresponds to the focused runtime trace: close
-admission, renewal while prior FIFO work is blocked, operation return, WAL
-publication and head commit, heartbeat stop/join, lease release, native close,
-and scratch cleanup. The test asserts this ordering directly and checks that a
-heartbeat failure retains exact Throwable identity.
+stable. Its corrected trace corresponds to the focused runtime traces: close
+admission, renewal while prior FIFO work is blocked, operation return, and
+independent renewal during WAL publication, verification, and manifest
+CAS/reconciliation, followed by heartbeat stop/join, lease release, native
+close, and scratch cleanup. The tests assert these schedules directly and check
+that a heartbeat failure retains exact Throwable identity.
 
 ## Scheduler and lifecycle coverage manifest
 
@@ -50,9 +51,10 @@ its only carrier, and a stop signal is not proof that heartbeat has terminated.
 | Claim | Formal control | Runtime control | Non-vacuity / mutant |
 | --- | --- | --- | --- |
 | blocking operation cannot starve renewal | lifecycle `elapseWhileHeartbeatResponsible` permits renewal independently | isolated `durable-thread-test` blocks longer than the initial lease | process asserts exactly one carrier and every Durable loop asserts it is off-fiber |
-| heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | blocked operation, virtual expiry, then close-time WAL commit | stopped-at-admission mutant expires the lease during flushing |
-| release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | exact close trace places stop/join before release | injected heartbeat failure is rethrown by identity while cleanup continues |
-| renewal cannot follow release | `noRenewAfterRelease` | completed trace contains every injected renewal and ends with release/cleanup | exact trace comparison rejects a late or duplicated renewal |
+| heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | blocked operation, publication, verification, and manifest CAS each admit renewal through virtual expiry | stopped-at-admission mutant expires the lease during flushing |
+| storage cannot locally exclude heartbeat | `blockingIOLeavesHeartbeatIndependent` over explicit `Publishing`, `Verifying`, and `Committing` phases | a manifest CAS is stopped before the backend, heartbeat CAS completes, then manifest retries and advances once | `LOCK_DURING_BLOCKING_IO_MUTANT` holds a local lock across blocked storage, prevents renewal, and loses the lease |
+| release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | exact close trace places observed heartbeat stop before release | injected heartbeat failure is rethrown by identity while cleanup continues |
+| renewal cannot follow release | `noRenewAfterRelease` | close waits for the owned heartbeat completion before release | release-before-join mutant enables a post-release heartbeat tick and violates the invariant |
 
 The head-CAS model and its ITF replay remain authoritative for ownership,
 publication, and CAS state, but intentionally contain no clock, executor,
