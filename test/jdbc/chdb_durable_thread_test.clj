@@ -97,6 +97,8 @@
   (reset! failures 0)
   (fibers/set-carrier-count! 1)
   (println "Durable owned OS-thread isolation")
+  (check "the regression process has exactly one Jolt carrier"
+         1 (fibers/carrier-count))
   (run-writer-checks!)
   (run-reader-checks!)
   (when-not (zero? @failures)

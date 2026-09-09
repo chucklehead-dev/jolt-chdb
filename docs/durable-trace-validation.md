@@ -41,6 +41,26 @@ publication and head commit, heartbeat stop/join, lease release, native close,
 and scratch cleanup. The test asserts this ordering directly and checks that a
 heartbeat failure retains exact Throwable identity.
 
+## Scheduler and lifecycle coverage manifest
+
+Keep the physical executor claim separate from the abstract storage claim. A
+second fiber is not an independent executor when blocking native work can pin
+its only carrier, and a stop signal is not proof that heartbeat has terminated.
+
+| Claim | Formal control | Runtime control | Non-vacuity / mutant |
+| --- | --- | --- | --- |
+| blocking operation cannot starve renewal | lifecycle `elapseDuringDrain` permits renewal independently | isolated `durable-thread-test` blocks longer than the initial lease | process asserts exactly one carrier and every Durable loop asserts it is off-fiber |
+| heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | blocked operation, virtual expiry, then close-time WAL commit | stopped-at-admission mutant loses coverage and lease |
+| release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | exact close trace places stop/join before release | injected heartbeat failure is rethrown by identity while cleanup continues |
+| renewal cannot follow release | `noRenewAfterRelease` | completed trace contains every injected renewal and ends with release/cleanup | exact trace comparison rejects a late or duplicated renewal |
+
+The head-CAS model and its ITF replay remain authoritative for ownership,
+publication, and CAS state, but intentionally contain no clock, executor,
+operation queue, or close lifecycle. The writer Hegel state machine covers WAL
+and checkpoint state across sequential commands. Neither layer should be cited
+as evidence for thread isolation or close-time heartbeat ordering; changes to
+those claims must retain the lifecycle model and the isolated runtime gate.
+
 Hegel first checks the explicit `hegel.operation-events` revision 1 envelope,
 including contiguous sequence, complete invoke/terminal lifecycles, parentage,
 causal links, and context. Its Durable model then checks known outcomes and
