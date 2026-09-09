@@ -68,6 +68,24 @@ the verifier must then prove that the immutable object already present in the
 backend matches the reference's size and SHA-256; only then can the head CAS
 run. WAL appends exactly one reference and advances the sequence once.
 Checkpoint replaces the base, clears WAL, and advances the sequence once.
+Ownership and reference currency are checked before verification. Because
+verification may block, heartbeat renewal remains independent while it runs;
+the commit rereads and rebuilds from the latest owned head afterward. A
+definite same-owner CAS collision retries within the bounded commit attempt
+limit, while changed ownership fences and an ambiguous CAS is never retried.
+There is no writer-local head lock around a backend read, CAS, or reconciliation
+read: any of those remote calls may outlive the lease TTL. Manifest commit and
+heartbeat renewal instead race through backend CAS. A definite same-owner loser
+rebuilds from the newest head; renewal reconciliation proves the same fencing
+token plus an expiry at least as late as requested, while manifest reconciliation
+proves the exact sequence/reference effect. Neither path can erase the other's
+landed transition or duplicate manifest advancement.
+
+The heartbeat transport itself can still block until its configured backend
+timeout. That is an availability limit, not a fencing exception: mutations and
+flushes compare the local clock with the last proved expiry and self-fence once
+it is reached. Deployments should configure backend request timeouts within
+their renewal slack when continued availability under a stalled request matters.
 
 `verify-byte-reference!` is an in-memory verifier for bounded statement WAL
 objects. It uses the pinned `jolt-lang/jolt-crypto` MessageDigest shim on Jolt

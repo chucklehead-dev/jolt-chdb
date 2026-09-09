@@ -229,8 +229,9 @@ Opening a writer follows this order:
 3. Create private scratch storage, restore the checkpoint if present, replay
    WAL statements in manifest order, select the logical database, and renew the
    lease again before returning the writer.
-4. Run serialized database operations on a bounded queue while an independent
-   heartbeat renews the lease.
+4. Run serialized database operations on a bounded queue and an owned OS thread
+   while a second owned OS thread renews the lease. Native work therefore
+   cannot pin a shared Jolt fiber carrier and starve heartbeat renewal.
 
 After a crash, recovery trusts only objects named by the committed head. It
 downloads into private scratch paths, verifies every size and SHA-256 digest,
@@ -421,6 +422,13 @@ not claim a second transition-level refinement down to a content-only state.
 Mutants for stale ownership, wrong generation or sequence, reused publication
 attempts, unpublished attempts, and whole-head reconciliation must each fail.
 
+[`formal/quint/durable-writer-lifecycle.md`](../formal/quint/durable-writer-lifecycle.md)
+is a separate small lifecycle model so the existing head/ITF state projection
+does not change. It checks that heartbeat covers admitted-close drain and
+flush, that release follows a positive heartbeat termination handshake, and
+that renewal cannot follow release. Its stopped-at-close-admission mutant must
+expose the prior lease-expiry counterexample.
+
 ### Model-based traces and Hegel
 
 Quint emits traces in ADR-015 ITF form. The
@@ -469,8 +477,8 @@ killed while holding the local provider lock.
 Current CI separates the claims:
 
 - [`tests`](../.github/workflows/tests.yml) runs the full Jolt suite, Hegel
-  properties, the local POSIX process checks, and the loopback libcurl gate on
-  Linux;
+  properties, an isolated one-carrier worker/heartbeat regression, the local
+  POSIX process checks, and the loopback libcurl gate on Linux;
 - [`durable-s3-qualification`](../.github/workflows/durable-s3.yml) adds the
   semantic S3 suite, bounded-memory large-checkpoint gate, and pinned MinIO;
 - [`durable-native-qualification`](../.github/workflows/durable-native.yml)

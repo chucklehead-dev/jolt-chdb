@@ -7,9 +7,9 @@
   (:require [clojure.data.json :as json]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
-            [jdbc.chdb.native :as native]
-            [jolt.fibers :as fibers])
+            [jdbc.chdb.native :as native])
   (:import [java.util.concurrent ArrayBlockingQueue]))
 
 (def max-statement-bytes (* 64 1024 1024))
@@ -18,7 +18,7 @@
 
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
-     wal-state head-lock lease-state heartbeat-stop operations worker heartbeat])
+     wal-state lease-state heartbeat-stop operations worker heartbeat])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -161,14 +161,13 @@
       :else
       (let [payload (joined-wal writer)
             committed
-            (locking (:head-lock writer)
-              (let [publication ((:publish-wal! (:operations writer))
-                                 (:store writer) (:token writer) payload)]
-                ((:commit-reference! (:operations writer))
-                 (:store writer) (:token writer)
-                 {:kind :wal
-                  :reference (:reference publication)
-                  :verify-reference! control/verify-byte-reference!})))]
+            (let [publication ((:publish-wal! (:operations writer))
+                               (:store writer) (:token writer) payload)]
+              ((:commit-reference! (:operations writer))
+               (:store writer) (:token writer)
+               {:kind :wal
+                :reference (:reference publication)
+                :verify-reference! control/verify-byte-reference!}))]
         ;; Retain the complete pending buffer on every failure. Only a confirmed
         ;; or reconciled head commit proves that replay can recover these writes.
         (clear-wal! writer)
@@ -180,15 +179,14 @@
               (:handle writer) (:database writer))]
     (try
       (let [committed
-            (locking (:head-lock writer)
-              (let [publication ((:publish-checkpoint! (:operations writer))
-                                 (:store writer) (:token writer) path)]
-                ((:commit-reference! (:operations writer))
-                 (:store writer) (:token writer)
-                 {:kind :checkpoint
-                  :reference (:reference publication)
-                  :verify-reference!
-                  (:verify-checkpoint-reference! (:operations writer))})))]
+            (let [publication ((:publish-checkpoint! (:operations writer))
+                               (:store writer) (:token writer) path)]
+              ((:commit-reference! (:operations writer))
+               (:store writer) (:token writer)
+               {:kind :checkpoint
+                :reference (:reference publication)
+                :verify-reference!
+                (:verify-checkpoint-reference! (:operations writer))}))]
         ;; The full backup contains every local mutation. Pending statement WAL
         ;; becomes redundant only after the checkpoint head CAS is proved.
         (clear-wal! writer)
@@ -208,12 +206,13 @@
    attempts))
 
 (defn- do-close! [writer]
-  (deliver (:heartbeat-stop writer) :stop)
   (let [error
         (first-error
          [#(do-flush! writer)
-          #(locking (:head-lock writer)
-             ((:release! (:operations writer)) (:store writer) (:token writer)))
+          #(deliver (:heartbeat-stop writer) :stop)
+          #(when-let [heartbeat (:heartbeat writer)]
+             (owned-thread/join! heartbeat))
+          #((:release! (:operations writer)) (:store writer) (:token writer))
           #((:close-native! (:operations writer)) (:handle writer))
           #((:cleanup-scratch! (:operations writer)))])]
     (when error (throw error))
@@ -292,24 +291,24 @@
           signal ((:await-heartbeat! (:operations writer))
                   (:heartbeat-stop writer) wait-ms)]
       (when (and (= :tick signal)
-                 (= :open @(:lifecycle writer))
+                 (contains? #{:open :closing} @(:lifecycle writer))
                  (not (:fenced? @(:lease-state writer))))
         (let [renew-now ((:now-ms (:operations writer)))]
           (if (>= renew-now expires-at)
             (swap! (:lease-state writer) assoc :fenced? true)
             (try
-              (locking (:head-lock writer)
-                (when (and (not (realized? (:heartbeat-stop writer)))
-                           (= :open @(:lifecycle writer))
-                           (not (:fenced? @(:lease-state writer))))
-                  (let [renewed-expiry (max (inc expires-at)
-                                            (+ renew-now ttl-ms))
-                        result ((:renew! (:operations writer))
-                                (:store writer) (:token writer) renewed-expiry)]
-                    (reset! (:lease-state writer)
-                            {:expires-at (get-in (:head result)
-                                                 ["lease" "expires_at"])
-                             :fenced? false}))))
+              (when (and (not (realized? (:heartbeat-stop writer)))
+                         (contains? #{:open :closing}
+                                    @(:lifecycle writer))
+                         (not (:fenced? @(:lease-state writer))))
+                (let [renewed-expiry (max (inc expires-at)
+                                          (+ renew-now ttl-ms))
+                      result ((:renew! (:operations writer))
+                              (:store writer) (:token writer) renewed-expiry)]
+                  (reset! (:lease-state writer)
+                          {:expires-at (get-in (:head result)
+                                               ["lease" "expires_at"])
+                           :fenced? false})))
               (catch Throwable error
                 (when (or (= ::control/lease-fenced (:type (ex-data error)))
                           (>= ((:now-ms (:operations writer))) expires-at))
@@ -384,21 +383,23 @@
                    :close-native! :cleanup-scratch!}]
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "writer operations must be functions"))
-    (let [writer (->DurableWriter
+    (let [worker (owned-thread/completion)
+          heartbeat (when lease-expiry (owned-thread/completion))
+          writer (->DurableWriter
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) (Object.)
                   (atom :open) (promise)
                   (atom {:lines [] :byte-count 0
-                         :checkpoint-required? false}) (Object.)
+                         :checkpoint-required? false})
                   (when lease-expiry
                     (atom {:expires-at lease-expiry :fenced? false}))
-                  (promise) operations nil nil)
-          worker (fibers/spawn #(worker-loop writer))
-          heartbeat (when lease-expiry
-                      (fibers/spawn
-                       #(heartbeat-loop writer heartbeat-interval-ms
-                                        lease-ttl-ms)))]
-      (assoc writer :worker worker :heartbeat heartbeat))))
+                  (promise) operations worker heartbeat)]
+      (owned-thread/start! worker #(worker-loop writer))
+      (when heartbeat
+        (owned-thread/start!
+         heartbeat
+         #(heartbeat-loop writer heartbeat-interval-ms lease-ttl-ms)))
+      writer)))
 
 (defn query!
   ([writer sql] (query! writer sql []))

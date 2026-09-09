@@ -22,21 +22,35 @@ The synchronous operations are:
   checkpoint when a bound mutation requires it; commit its reference with head
   CAS, and clear pending recovery state only after confirmed or reconciled
   success; and
-- `checkpoint!`: create a full backup outside the head-CAS lock, stream and
-  verify its immutable publication, then replace the base and clear both the
-  manifest WAL list and covered in-memory WAL after confirmed commit; and
+- `checkpoint!`: create a full backup, stream and verify its immutable
+  publication without excluding heartbeat renewal, then replace the base and
+  clear both the manifest WAL list and covered in-memory WAL after confirmed
+  commit; and
 - `close!`: stop admission, drain earlier operations, flush, attempt release,
   close the native engine, and remove an owned scratch directory exactly once.
   It is idempotent and returns the first persistence or release failure after
   attempting every cleanup step.
 
-An `ArrayBlockingQueue` plus one Jolt fiber provides the explicit bounded FIFO.
+An `ArrayBlockingQueue` plus one owned OS thread provides the explicit bounded
+FIFO. The worker is deliberately not a Jolt fiber: native chDB, filesystem, and
+object-store calls may block in ways that pin a shared fiber carrier.
 Admission and the transition to closing share one lock, so an operation cannot
 pass the open check and enter behind the close request. `status` exposes only
 the lifecycle, local writability, pending counts, and whether a checkpoint is
-required. A second fiber renews the lease independently of long queued engine
-work. Every mutation and flush also checks the locally known expiry immediately
-before its side effects.
+required. A second owned OS thread renews the lease independently of long
+queued engine work. It remains active after close admission while earlier FIFO
+work drains and while close flushes. Close then signals and positively joins
+the heartbeat before lease release, native close, and scratch cleanup. This
+ordering prevents renewal after release. Every mutation and flush also checks
+the locally known expiry immediately before its side effects.
+Immutable publication and verification likewise leave heartbeat renewal
+unblocked. The manifest commit rereads the latest owned head afterward and
+retries only definite same-owner heartbeat CAS collisions; takeover fences it,
+and ambiguous outcomes retain exact reconciliation semantics. No writer-local
+lock surrounds publication, verification, head CAS, or reconciliation: even a
+blocked manifest CAS must not prevent the heartbeat's independent CAS. The two
+transitions compose through backend CAS, bounded same-owner retry, and
+operation-specific semantic reread proof.
 Terminal worker-loop failures stop admission, attempt flush/release/native
 cleanup, and fail every already queued request instead of leaving callers
 blocked on unresolved promises.
@@ -57,12 +71,20 @@ Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
 workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 
 ```sh
+jolt -M:durable-thread-test
 jolt -M:durable-writer-test
+jolt -M:durable-writer-concurrency-test
 ```
 
-The deterministic suite covers queue ordering, admission-before-execution,
+The isolated one-carrier gate proves native worker work cannot starve heartbeat
+renewal and checks both writer and reader execution are off-fiber. The
+general deterministic suite covers queue ordering, admission-before-execution,
 ordered WAL serialization, checkpoint fallback, empty and successful flush,
-close, limits, and ambiguous-commit retention. Checkpoint-fallback fault cuts
+close, heartbeat failure identity, close-time renewal/flush/release ordering,
+limits, and ambiguous-commit retention. The focused concurrency suite owns
+blocked publication, verification, manifest-CAS, and reconciliation schedules,
+takeover, bounded same-owner retry in both directions, and ambiguous renewal
+followed by manifest advance. Checkpoint-fallback fault cuts
 also cover backup failure, failed or ambiguous immutable upload, and ownership
 takeover after publication: each failed boundary retains the checkpoint marker
 and covered statement WAL, while a stale generation cannot make its published

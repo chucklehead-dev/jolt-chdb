@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 literate_spec="$repo_root/formal/quint/durable-head-cas.md"
+lifecycle_literate_spec="$repo_root/formal/quint/durable-writer-lifecycle.md"
 target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
 tests="$target/durableHeadCasTest.qnt"
@@ -10,6 +11,8 @@ publication_model="$target/durablePublicationAck.qnt"
 publication_tests="$target/durablePublicationAckTest.qnt"
 writer_model="$target/durableWriterBoundary.qnt"
 writer_tests="$target/durableWriterBoundaryTest.qnt"
+lifecycle_model="$target/durableWriterLifecycle.qnt"
+lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
@@ -37,6 +40,7 @@ mkdir -p "$target"
 (
   cd "$repo_root"
   lmt "${literate_spec#$repo_root/}"
+  lmt "${lifecycle_literate_spec#$repo_root/}"
 )
 
 quint typecheck "$model"
@@ -45,6 +49,8 @@ quint typecheck "$publication_model"
 quint typecheck "$publication_tests"
 quint typecheck "$writer_model"
 quint typecheck "$writer_tests"
+quint typecheck "$lifecycle_model"
+quint typecheck "$lifecycle_tests"
 
 quint test "$tests" \
   --main durableHeadCasCorrectedTest \
@@ -96,6 +102,30 @@ quint test "$publication_tests" \
 
 quint test "$writer_tests" \
   --main durableWriterBoundaryCorrectedTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$lifecycle_tests" \
+  --main durableWriterLifecycleCorrectedTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$lifecycle_tests" \
+  --main durableWriterLifecycleMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$lifecycle_tests" \
+  --main durableWriterLifecycleReleaseBeforeJoinMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$lifecycle_tests" \
+  --main durableWriterLifecycleBlockingIOMutantTest \
   --match '.*Test' \
   --backend typescript \
   --verbosity 1
@@ -159,6 +189,27 @@ do
   fi
 done
 
+lifecycle_sample_log="$target/writer-lifecycle-sampled.log"
+quint run "$lifecycle_model" \
+  --main durableWriterLifecycleCorrected \
+  --invariants heartbeatCoversCloseWork leaseCoversCloseFlush blockingIOLeavesHeartbeatIndependent releaseFollowsHeartbeatJoin noRenewAfterRelease \
+  --witnesses closeReached drainRenewalReached publicationRenewalReached verificationRenewalReached commitRenewalReached \
+  --max-steps 12 \
+  --max-samples 3000 \
+  --backend typescript \
+  --verbosity 1 | tee "$lifecycle_sample_log"
+
+for witness in closeReached drainRenewalReached publicationRenewalReached \
+  verificationRenewalReached commitRenewalReached
+do
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
+    "$lifecycle_sample_log"
+  then
+    echo "required writer lifecycle witness was not reached: $witness" >&2
+    exit 1
+  fi
+done
+
 writer_sample_log="$target/writer-boundary-sampled.log"
 quint run "$writer_model" \
   --main durableWriterBoundaryCorrected \
@@ -196,6 +247,14 @@ quint verify "$writer_model" \
   --main durableWriterBoundaryCorrected \
   --invariant checkpointFallbackIsSound \
   --max-steps 5 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+quint verify "$lifecycle_model" \
+  --main durableWriterLifecycleCorrected \
+  --invariants heartbeatCoversCloseWork leaseCoversCloseFlush blockingIOLeavesHeartbeatIndependent releaseFollowsHeartbeatJoin noRenewAfterRelease \
+  --max-steps 12 \
   --backend apalache \
   --apalache-version 0.56.1 \
   --verbosity 1
@@ -312,6 +371,77 @@ then
 fi
 
 cat "$writer_mutant_log"
+
+lifecycle_mutant_log="$target/writer-lifecycle-mutant.log"
+set +e
+quint verify "$lifecycle_model" \
+  --main durableWriterLifecycleMutant \
+  --invariant heartbeatCoversCloseWork \
+  --max-steps 2 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --out-itf "$target/writer-lifecycle-mutant.itf.json" \
+  --verbosity 1 >"$lifecycle_mutant_log" 2>&1
+lifecycle_mutant_status=$?
+set -e
+
+if [[ $lifecycle_mutant_status -eq 0 ]] || \
+   ! grep -Eq '^\[violation\] Found an issue' "$lifecycle_mutant_log"
+then
+  cat "$lifecycle_mutant_log" >&2
+  echo "writer lifecycle mutant did not produce a counterexample" >&2
+  exit 1
+fi
+
+cat "$lifecycle_mutant_log"
+
+lifecycle_release_mutant_log="$target/writer-lifecycle-release-mutant.log"
+set +e
+quint verify "$lifecycle_model" \
+  --main durableWriterLifecycleReleaseBeforeJoinMutant \
+  --invariant noRenewAfterRelease \
+  --max-steps 8 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --out-itf "$target/writer-lifecycle-release-mutant.itf.json" \
+  --verbosity 1 >"$lifecycle_release_mutant_log" 2>&1
+lifecycle_release_mutant_status=$?
+set -e
+
+if [[ $lifecycle_release_mutant_status -eq 0 ]] || \
+   ! grep -Eq '^\[violation\] Found an issue' \
+     "$lifecycle_release_mutant_log"
+then
+  cat "$lifecycle_release_mutant_log" >&2
+  echo "writer lifecycle release mutant did not produce a counterexample" >&2
+  exit 1
+fi
+
+cat "$lifecycle_release_mutant_log"
+
+lifecycle_blocking_io_mutant_log="$target/writer-lifecycle-blocking-io-mutant.log"
+set +e
+quint verify "$lifecycle_model" \
+  --main durableWriterLifecycleBlockingIOMutant \
+  --invariant blockingIOLeavesHeartbeatIndependent \
+  --max-steps 3 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --out-itf "$target/writer-lifecycle-blocking-io-mutant.itf.json" \
+  --verbosity 1 >"$lifecycle_blocking_io_mutant_log" 2>&1
+lifecycle_blocking_io_mutant_status=$?
+set -e
+
+if [[ $lifecycle_blocking_io_mutant_status -eq 0 ]] || \
+   ! grep -Eq '^\[violation\] Found an issue' \
+     "$lifecycle_blocking_io_mutant_log"
+then
+  cat "$lifecycle_blocking_io_mutant_log" >&2
+  echo "writer lifecycle blocking-I/O mutant did not produce a counterexample" >&2
+  exit 1
+fi
+
+cat "$lifecycle_blocking_io_mutant_log"
 
 quint verify "$publication_model" \
   --main durablePublicationAckCorrected \

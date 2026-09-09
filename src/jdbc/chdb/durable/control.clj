@@ -1,5 +1,5 @@
 (ns jdbc.chdb.durable.control
-  "Durable V1 lease fencing and serialized head-CAS transitions.
+  "Durable V1 lease fencing and reconciled head-CAS transitions.
 
   A backend instance is scoped to one Durable object, so the control key is
   always the V1 `head.json`. Every mutating operation rereads and validates
@@ -15,6 +15,7 @@
            [java.util UUID]))
 
 (def head-key "head.json")
+(def ^:private default-commit-attempts 4)
 
 (def protocol-source
   (assoc head/protocol-source :section "state-machine"))
@@ -175,7 +176,7 @@
 
       :else
       (fail! ::head-conflict
-             "The Durable head changed during a serialized update"))))
+             "The Durable head changed during a conditional update"))))
 
 (defn- replace-owned!
   ([store snapshot desired token release?]
@@ -272,18 +273,74 @@
                  "The Durable backend returned an unsupported create result"))))))
 
 (defn renew!
-  "Renew the current writer lease without changing its generation."
+  "Renew the current writer lease without changing its generation.
+
+  Manifest commits may race the lease CAS. Definite same-owner conflicts retry
+  from the latest head. An ambiguous renewal is reconciled when the same token
+  still owns a lease whose expiry is at least the requested value, regardless
+  of a later manifest-only advance."
   [store token expires-at]
   (nonnegative-time! expires-at "expires-at")
-  (let [snapshot (or (read-head! store)
-                     (fail! ::lease-fenced "The Durable head no longer exists"))
-        current (assert-owned! (:head snapshot) token)
-        current-expiry (get-in current ["lease" "expires_at"])
-        desired (assoc-in current ["lease" "expires_at"] expires-at)]
-    (when-not (> expires-at current-expiry)
-      (fail! ::invalid-options
-             "A heartbeat must extend the current lease expiry"))
-    (replace-owned! store snapshot desired token false)))
+  (loop [attempt 1
+         snapshot (or (read-head! store)
+                      (fail! ::lease-fenced
+                             "The Durable head no longer exists"))]
+    (let [current (assert-owned! (:head snapshot) token)
+          current-expiry (get-in current ["lease" "expires_at"])]
+      (when-not (or (> expires-at current-expiry) (> attempt 1))
+        (fail! ::invalid-options
+               "A heartbeat must extend the current lease expiry"))
+      (if (>= current-expiry expires-at)
+        {:status :reconciled
+         :head current :etag (:etag snapshot) :token token}
+        (let [desired (assoc-in current ["lease" "expires_at"] expires-at)
+              {canonical :head bytes :bytes} (encoded-head desired)
+              result (backend/replace-if-match!
+                      store head-key bytes (:etag snapshot))]
+          (case (:status result)
+            :replaced
+            {:status :committed
+             :head canonical :etag (:etag result) :token token}
+
+            :ambiguous
+            (let [latest (or (reread store)
+                             (fail! ::lease-fenced
+                                    "The Durable head no longer exists"))]
+              (cond
+                (not (owns? (:head latest) token))
+                (fail! ::lease-fenced "The Durable writer has lost its lease")
+
+                (>= (get-in (:head latest) ["lease" "expires_at"])
+                    expires-at)
+                {:status :reconciled
+                 :head (:head latest) :etag (:etag latest) :token token}
+
+                :else
+                (fail! ::commit-ambiguous
+                       "The Durable lease renewal could not be proved")))
+
+            :precondition-failed
+            (let [latest (or (reread store)
+                             (fail! ::lease-fenced
+                                    "The Durable head no longer exists"))]
+              (cond
+                (not (owns? (:head latest) token))
+                (fail! ::lease-fenced "The Durable writer has lost its lease")
+
+                (>= (get-in (:head latest) ["lease" "expires_at"])
+                    expires-at)
+                {:status :reconciled
+                 :head (:head latest) :etag (:etag latest) :token token}
+
+                (< attempt default-commit-attempts)
+                (recur (inc attempt) latest)
+
+                :else
+                (fail! ::retry-exhausted
+                       "Durable lease renewal exhausted its CAS attempts")))
+
+            (fail! ::backend-contract
+                   "The Durable backend returned an unsupported CAS result")))))))
 
 (defn release!
   "Release the current writer lease without changing its generation."
@@ -486,22 +543,9 @@
                  "-[0-9a-f]{8}\\." extension))
            (get reference "key"))))))
 
-(defn commit-reference!
-  "Commit one already-published immutable WAL or checkpoint reference.
-
-  `verify-reference!` must return truthy only after checking the backend
-  object against the reference's size and SHA-256. The verification completes
-  before the head CAS. Checkpoint commits replace the base and clear WAL;
-  WAL commits append exactly one reference."
-  [store token {:keys [kind reference verify-reference!]}]
-  (when-not (contains? #{:wal :checkpoint} kind)
-    (fail! ::invalid-options "kind must be :wal or :checkpoint"))
-  (when-not (fn? verify-reference!)
-    (fail! ::invalid-options "verify-reference! must be callable"))
-  (let [snapshot (or (read-head! store)
-                     (fail! ::lease-fenced "The Durable head no longer exists"))
-        current (assert-owned! (:head snapshot) token)
-        next-seq (inc (get-in current ["manifest" "seq"]))]
+(defn- reference-transition
+  [current token kind reference]
+  (let [next-seq (inc (get-in current ["manifest" "seq"]))]
     (when (> next-seq head/max-safe-integer)
       (fail! ::sequence-exhausted
              "The Durable manifest sequence cannot be incremented safely"))
@@ -522,15 +566,88 @@
       ;; This proves canonical key generation/sequence and retains all unknown
       ;; fields before any CAS reaches the backend.
       (head/validate! desired :writer)
-      (when-not (verify-reference! store reference)
-        (fail! ::object-unverified
-               "The immutable Durable object could not be verified"))
-      (replace-owned!
-       store snapshot desired token false
-       (fn [latest]
-         (let [manifest (get latest "manifest")]
-           (and (= next-seq (get manifest "seq"))
-                (case kind
-                  :wal (= reference (peek (get manifest "wal")))
-                  :checkpoint (and (= reference (get manifest "base"))
-                                   (empty? (get manifest "wal")))))))))))
+      {:desired desired :next-seq next-seq})))
+
+(defn- reference-landed?
+  [kind reference next-seq latest]
+  (let [manifest (get latest "manifest")]
+    (and (= next-seq (get manifest "seq"))
+         (case kind
+           :wal (= reference (peek (get manifest "wal")))
+           :checkpoint (and (= reference (get manifest "base"))
+                            (empty? (get manifest "wal")))))))
+
+(defn commit-reference!
+  "Commit one already-published immutable WAL or checkpoint reference.
+
+  `verify-reference!` must return truthy only after checking the backend
+  object against the reference's size and SHA-256. The verification completes
+  before the head CAS without excluding same-owner lease renewal. Definite
+  heartbeat CAS conflicts retry from the latest owned head; ambiguous CAS
+  outcomes never retry. Checkpoint commits replace the base and clear WAL; WAL
+  commits append exactly one reference."
+  [store token {:keys [kind reference verify-reference! max-attempts]
+                :or {max-attempts default-commit-attempts}}]
+  (when-not (contains? #{:wal :checkpoint} kind)
+    (fail! ::invalid-options "kind must be :wal or :checkpoint"))
+  (when-not (fn? verify-reference!)
+    (fail! ::invalid-options "verify-reference! must be callable"))
+  (positive-attempts! max-attempts)
+  ;; Reject an already-stale owner and a non-current reference before touching
+  ;; the immutable object. Verification may block, so it deliberately happens
+  ;; without locally excluding the writer's heartbeat.
+  (let [initial (or (read-head! store)
+                    (fail! ::lease-fenced "The Durable head no longer exists"))
+        initial-current (assert-owned! (:head initial) token)]
+    (reference-transition initial-current token kind reference)
+    (when-not (verify-reference! store reference)
+      (fail! ::object-unverified
+             "The immutable Durable object could not be verified"))
+    ;; A heartbeat may change only the lease expiry while verification is in
+    ;; flight. Rebuild from the newest owned head and retry only a definite CAS
+    ;; precondition failure. An ambiguous CAS is never retried: exact reread
+    ;; reconciliation remains the sole authority against duplicate advancement.
+    (loop [attempt 1
+           snapshot (or (read-head! store)
+                        (fail! ::lease-fenced
+                               "The Durable head no longer exists"))]
+      (let [current (assert-owned! (:head snapshot) token)
+            {:keys [desired next-seq]}
+            (reference-transition current token kind reference)
+            {canonical :head bytes :bytes} (encoded-head desired)
+            landed? #(reference-landed?
+                       kind reference next-seq %)
+            result (backend/replace-if-match!
+                    store head-key bytes (:etag snapshot))]
+        (case (:status result)
+          :replaced
+          {:status :committed
+           :head canonical :etag (:etag result) :token token}
+
+          :ambiguous
+          (classify-after-cas store canonical token true false landed?)
+
+          :precondition-failed
+          (let [latest (or (reread store)
+                           (fail! ::lease-fenced
+                                  "The Durable head no longer exists"))]
+            (cond
+              (not (owns? (:head latest) token))
+              (fail! ::lease-fenced
+                     "The Durable writer has lost its lease")
+
+              (landed? (:head latest))
+              {:status :reconciled
+               :head (:head latest)
+               :etag (:etag latest)
+               :token token}
+
+              (< attempt max-attempts)
+              (recur (inc attempt) latest)
+
+              :else
+              (fail! ::retry-exhausted
+                     "Durable reference commit exhausted its CAS attempts")))
+
+          (fail! ::backend-contract
+                 "The Durable backend returned an unsupported CAS result"))))))

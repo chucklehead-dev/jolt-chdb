@@ -10,6 +10,7 @@
             [jdbc.chdb-durable-control-test :as durable-control]
             [jdbc.chdb-durable-itf-test :as durable-itf]
             [jdbc.chdb-durable-writer-test :as durable-writer]
+            [jdbc.chdb-durable-writer-concurrency-test :as durable-writer-concurrency]
             [jdbc.chdb-durable-open-test :as durable-open]
             [jdbc.chdb-durable-local-test :as durable-local]
             [jdbc.chdb-durable-s3-test :as durable-s3]
@@ -672,6 +673,7 @@
   (durable-control/run-checks!)
   (durable-itf/run-checks!)
   (durable-writer/run-checks!)
+  (durable-writer-concurrency/run-checks!)
   (durable-open/run-checks!)
   (durable-local/run-checks!)
   (durable-s3/run-checks!)

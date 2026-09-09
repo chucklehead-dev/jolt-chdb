@@ -7,72 +7,24 @@
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb-durable-writer-test-support :as support]
             [jolt.fibers :as fibers]))
 
 (def failures (atom 0))
 
-(def ^:private base-options
-  {:owner "writer-1"
-   :instance "instance-1"
-   :expires-at 1000M
-   :now 0M
-   :clock-skew 0M
-   :database "default"
-   :engine-version "26.7.2-rc.2"
-   :backup-format 1
-   :min-reader "26.7.2-rc.2"})
+(def ^:private base-options support/base-options)
 
 (defn- check [label expected actual]
-  (if (= expected actual)
-    (println "  ok  " label)
-    (do
-      (swap! failures inc)
-      (println "  FAIL" label "- expected" (pr-str expected)
-               "got" (pr-str actual)))))
+  (support/check failures label expected actual))
 
 (defn- error-type [f]
-  (try (f) nil (catch Throwable error (:type (ex-data error)))))
+  (support/error-type f))
 
 (defn- fake-operations [calls close-count]
-  {:classification-sql! (fn [sql _] sql)
-   :classify! (fn [_ sql _]
-                {:query-class (if (str/starts-with? sql "SELECT")
-                                :read-only :mutating)
-                 :statement-count 1 :has-secrets false
-                 :writes-only-target-database true
-                 :changes-database-lifecycle false})
-   :analyze-query! (fn [_ sql database]
-                     (swap! calls conj [:analyze-query sql database]))
-   :analyze-execute! (fn [_ sql database]
-                       (swap! calls conj [:analyze-execute sql database]))
-   :execute-native! (fn [_ sql _]
-                      (swap! calls conj [:execute sql])
-                      {:sql sql})
-   :query-native! (fn [_ sql _]
-                    (swap! calls conj [:execute sql])
-                    {:sql sql})
-   :close-native! (fn [_] (swap! close-count inc))
-   :cleanup-scratch! (fn [] nil)})
+  (support/fake-operations calls close-count))
 
 (defn- model-checkpoint-operations [calls close-count]
-  (let [bytes (.getBytes "abc" "UTF-8")]
-    (assoc (fake-operations calls close-count)
-           :create-checkpoint! (fn [_ _] :model-checkpoint)
-           :delete-checkpoint! (fn [_] nil)
-           :publish-checkpoint!
-           (fn [store token _]
-             (let [sequence (inc (get-in (:head (control/read-head! store))
-                                         ["manifest" "seq"]))
-                   reference
-                   {"key" (str "checkpoints/" (:generation token) "-"
-                               sequence "-" (format "%08x" sequence)
-                               ".tar.gz")
-                    "size" 3
-                    "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]
-               (backend/put-bytes-if-absent!
-                store (get reference "key") bytes)
-               {:status :published :reference reference}))
-           :verify-checkpoint-reference! control/verify-byte-reference!)))
+  (support/model-checkpoint-operations calls close-count))
 
 (defn- checkpoint-fault-operations
   [calls close-count fault-state published-reference]
@@ -551,6 +503,100 @@
         acquired (control/acquire! store base-options)
         calls (atom [])
         close-count (atom 0)
+        now (atom 100M)
+        execute-entered (promise)
+        release-execute (promise)
+        heartbeat-tick (promise)
+        heartbeat-renewed (promise)
+        waits (atom 0)
+        operations
+        (-> (fake-operations calls close-count)
+            (assoc
+             :now-ms #(deref now)
+             :execute-native!
+             (fn [_ _ _]
+               (swap! calls conj :execute-begin)
+               (deliver execute-entered true)
+               @release-execute
+               (swap! calls conj :execute-end)
+               :executed)
+             :await-heartbeat!
+             (fn [stop _]
+               (if (= 1 (swap! waits inc))
+                 (do @heartbeat-tick :tick)
+                 (do @stop (swap! calls conj :heartbeat-stop) :stop)))
+             :renew!
+             (fn [store token expiry]
+               (swap! calls conj :renew)
+               (let [result (control/renew! store token expiry)]
+                 (deliver heartbeat-renewed result)
+                 result))
+             :publish-wal!
+             (fn [store token payload]
+               (swap! calls conj :publish)
+               (control/publish-wal-bytes! store token payload))
+             :commit-reference!
+             (fn [store token request]
+               (swap! calls conj :commit)
+               (control/commit-reference! store token request))
+             :release!
+             (fn [store token]
+               (swap! calls conj :release)
+               (control/release! store token))
+             :close-native!
+             (fn [_]
+               (swap! calls conj :native-close)
+               (swap! close-count inc))
+             :cleanup-scratch! (fn [] (swap! calls conj :cleanup))))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})
+        executing
+        (fibers/spawn
+         #(writer/execute! durable-writer "INSERT INTO t VALUES (1)"))]
+    @execute-entered
+    (let [closing
+          (fibers/spawn
+           #(try
+              (writer/close! durable-writer)
+              :closed
+              (catch Throwable error (:type (ex-data error)))))]
+      (loop [remaining 1000]
+        (when (and (pos? remaining)
+                   (not= :closing (:lifecycle (writer/status durable-writer))))
+          (Thread/yield)
+          (recur (dec remaining))))
+      (deliver heartbeat-tick true)
+      (check "heartbeat remains live after close admission while work drains"
+             true (not= ::timeout
+                        (deref heartbeat-renewed 1000 ::timeout)))
+      ;; The renewal extends the lease from 1000 to 1001. A stopped heartbeat
+      ;; leaves the close-time flush exactly at expiry and therefore fenced.
+      (reset! now 1000M)
+      (deliver release-execute true)
+      (fibers/join executing)
+      (check "close-time flush succeeds under the renewed lease"
+             :closed (fibers/join closing))
+      (check "close stops and joins heartbeat before release and cleanup"
+             [:execute-begin :renew :execute-end :publish :commit
+              :heartbeat-stop :release :native-close :cleanup]
+             (filterv keyword? @calls))
+      (check "close commits pending WAL and releases ownership"
+             [1 nil 0 :closed 1]
+             [(get-in (:head (control/read-head! store)) ["manifest" "seq"])
+              (get-in (:head (control/read-head! store)) ["lease" "owner"])
+              (:pending-statements (writer/status durable-writer))
+              (:lifecycle (writer/status durable-writer))
+              @close-count])))
+
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        calls (atom [])
+        close-count (atom 0)
         entered (promise)
         release-execute (promise)
         heartbeat-tick (promise)
@@ -627,6 +673,38 @@
     (check "a repeated failed close does not repeat native cleanup"
            1 @close-count))
 
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        heartbeat-entered (promise)
+        heartbeat-error (ex-info "heartbeat scheduler failed"
+                                 {:type ::heartbeat-failed})
+        close-count (atom 0)
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations
+          (assoc (fake-operations (atom []) close-count)
+                 :now-ms (fn [] 100M)
+                 :await-heartbeat!
+                 (fn [_ _]
+                   (deliver heartbeat-entered true)
+                   (throw heartbeat-error)))})]
+    @heartbeat-entered
+    (let [returned
+          (try
+            (writer/close! durable-writer)
+            nil
+            (catch Throwable error error))]
+      (check "close rethrows the exact owned heartbeat failure"
+             true (identical? heartbeat-error returned)))
+    (check "heartbeat failure still releases and closes owned resources"
+           [nil 1 :closed]
+           [(get-in (:head (control/read-head! store)) ["lease" "owner"])
+            @close-count
+            (:lifecycle (writer/status durable-writer))]))
+
   (let [calls (atom [])
         close-count (atom 0)
         take-entered (promise)
@@ -642,20 +720,28 @@
         {:keys [writer]} (new-writer calls close-count operations)]
     @take-entered
     (let [waiting (fibers/spawn
-                   #(error-type #(writer/query! writer "SELECT 1")))]
+                   #(try
+                      (writer/query! writer "SELECT 1")
+                      nil
+                      (catch Throwable error error)))]
       (loop [remaining 1000]
         (when (and (pos? remaining) (zero? (.size (:queue writer))))
           (Thread/yield)
           (recur (dec remaining))))
       (deliver release-take true)
-      (check "terminal worker failure resolves an already queued caller"
-             ::worker-failed (fibers/join waiting)))
+      (check "terminal worker failure resolves a queued caller unchanged"
+             true (identical? terminal (fibers/join waiting))))
     (check "terminal worker failure closes and cleans the writer"
            [:closed 1]
            [(:lifecycle (writer/status writer)) @close-count])
     (check "close after terminal worker failure returns the same cause"
-           ::worker-failed
-           (error-type #(writer/close! writer)))))
+           true
+           (identical?
+            terminal
+            (try
+              (writer/close! writer)
+              nil
+              (catch Throwable error error))))))
 
 (defn- model-valid? [state]
   (let [status (writer/status (:writer state))

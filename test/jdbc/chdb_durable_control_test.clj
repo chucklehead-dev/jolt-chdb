@@ -3,7 +3,8 @@
             [hegel.stateful :as hs]
             [hegel.trace :as ht]
             [jdbc.chdb.durable.backend :as backend]
-            [jdbc.chdb.durable.control :as control]))
+            [jdbc.chdb.durable.control :as control]
+            [jolt.fibers :as fibers]))
 
 (def failures (atom 0))
 
@@ -127,6 +128,98 @@
           ;; commit path could reread the head.
           (control/renew! delegate token renewed-expiry))
         (if (= :replaced (:status result)) {:status :ambiguous} result)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- renew-before-first-replace-backend
+  [delegate token renewed-expiry replace-count]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (let [attempt (swap! replace-count inc)]
+        (when (= 1 attempt)
+          ;; The heartbeat wins after commit read but before its head CAS.
+          (control/renew! delegate token renewed-expiry))
+        (backend/replace-if-match! delegate key bytes etag)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- commit-before-first-renew-replace-backend
+  [delegate token reference replace-count]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (let [attempt (swap! replace-count inc)]
+        (when (= 1 attempt)
+          ;; The manifest wins after renewal read but before its lease CAS.
+          (control/commit-reference!
+           delegate token
+           {:kind :wal :reference reference
+            :verify-reference! control/verify-byte-reference!}))
+        (backend/replace-if-match! delegate key bytes etag)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- landed-ambiguous-renewal-backend
+  [delegate landed release-response]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (let [result (backend/replace-if-match! delegate key bytes etag)]
+        (when (= :replaced (:status result))
+          (deliver landed true)
+          @release-response)
+        (if (= :replaced (:status result)) {:status :ambiguous} result)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- dropped-ambiguous-renewal-before-manifest-backend
+  [delegate renewal-attempted release-response]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ _ _ _]
+      ;; The renewal request is known not to land, but its caller cannot use
+      ;; that hidden backend fact. Let a manifest commit advance before the
+      ;; required reconciliation read.
+      (deliver renewal-attempted true)
+      @release-response
+      {:status :ambiguous})
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- renew-before-every-replace-backend
+  [delegate token conflicting-expiry replace-count]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (swap! replace-count inc)
+      (control/renew! delegate token (swap! conflicting-expiry inc))
+      (backend/replace-if-match! delegate key bytes etag))
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
@@ -318,6 +411,116 @@
     (check "heartbeat reconciliation commits the reference exactly once"
            [1 [reference]]
            [(get-in (:head committed) ["manifest" "seq"])
+            (get-in (:head committed) ["manifest" "wal"])]))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        reference (publish-abc! delegate token)
+        replace-count (atom 0)
+        store (commit-before-first-renew-replace-backend
+               delegate token reference replace-count)
+        renewed (control/renew! store token 300M)]
+    (check "definite manifest CAS conflict retries lease renewal"
+           [:committed 2]
+           [(:status renewed) @replace-count])
+    (check "retried renewal preserves the manifest and requested expiry"
+           [300 1 [reference]]
+           [(get-in (:head renewed) ["lease" "expires_at"])
+            (get-in (:head renewed) ["manifest" "seq"])
+            (get-in (:head renewed) ["manifest" "wal"])]))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        reference (publish-abc! delegate token)
+        renewal-landed (promise)
+        release-response (promise)
+        store (landed-ambiguous-renewal-backend
+               delegate renewal-landed release-response)
+        renewing (fibers/spawn #(control/renew! store token 300M))]
+    @renewal-landed
+    (let [committed
+          (control/commit-reference!
+           delegate token
+           {:kind :wal :reference reference
+            :verify-reference! control/verify-byte-reference!})]
+      (deliver release-response true)
+      (let [renewed (fibers/join renewing)]
+        (check "ambiguous landed renewal survives a later manifest commit"
+               :reconciled (:status renewed))
+        (check "semantic renewal reconciliation preserves both transitions"
+               [300 1 [reference]]
+               [(get-in (:head renewed) ["lease" "expires_at"])
+                (get-in (:head committed) ["manifest" "seq"])
+                (get-in (:head committed) ["manifest" "wal"])]))))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        reference (publish-abc! delegate token)
+        renewal-attempted (promise)
+        release-response (promise)
+        store (dropped-ambiguous-renewal-before-manifest-backend
+               delegate renewal-attempted release-response)
+        renewing
+        (fibers/spawn
+         #(error-type (fn [] (control/renew! store token 300M))))]
+    @renewal-attempted
+    (control/commit-reference!
+     delegate token
+     {:kind :wal :reference reference
+      :verify-reference! control/verify-byte-reference!})
+    (deliver release-response true)
+    (check "dropped ambiguous renewal is not proved by manifest advance"
+           ::control/commit-ambiguous (fibers/join renewing))
+    (check "failed renewal reconciliation preserves the manifest only"
+           [200 1 [reference]]
+           (let [latest (:head (control/read-head! delegate))]
+             [(get-in latest ["lease" "expires_at"])
+              (get-in latest ["manifest" "seq"])
+              (get-in latest ["manifest" "wal"])])))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        conflicting-expiry (atom 200M)
+        replace-count (atom 0)
+        store (renew-before-every-replace-backend
+               delegate token conflicting-expiry replace-count)]
+    (check "renewal reports bounded exhaustion under repeated CAS loss"
+           ::control/retry-exhausted
+           (error-type #(control/renew! store token 300M)))
+    (check "renewal exhaustion preserves ownership and manifest"
+           [4 204 0]
+           (let [latest (:head (control/read-head! delegate))]
+             [@replace-count
+              (get-in latest ["lease" "expires_at"])
+              (get-in latest ["manifest" "seq"])])))
+
+  (let [delegate (backend/memory-backend)
+        acquired (control/acquire! delegate base-options)
+        token (:token acquired)
+        reference (publish-abc! delegate token)
+        replace-count (atom 0)
+        verify-count (atom 0)
+        store (renew-before-first-replace-backend
+               delegate token 300M replace-count)
+        committed
+        (control/commit-reference!
+         store token
+         {:kind :wal :reference reference
+          :verify-reference!
+          (fn [store reference]
+            (swap! verify-count inc)
+            (control/verify-byte-reference! store reference))})]
+    (check "definite heartbeat CAS conflict retries the reference commit"
+           [:committed 2 1]
+           [(:status committed) @replace-count @verify-count])
+    (check "retried commit preserves renewal and advances the manifest once"
+           [300 1 [reference]]
+           [(get-in (:head committed) ["lease" "expires_at"])
+            (get-in (:head committed) ["manifest" "seq"])
             (get-in (:head committed) ["manifest" "wal"])]))
 
   (let [delegate (backend/memory-backend)

@@ -21,20 +21,29 @@ manifest and line order through the internal engine path, never through the
 public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
-The active writer runs heartbeat renewal independently of its operation queue;
-the configured interval cannot exceed one third of the lease TTL. Mutations
-and flushes check the locally known expiry at execution time and fail with
-`lease-fenced` once ownership can no longer be proved. Head CAS calls share one
-writer lock. Ambiguous manifest commits reconcile by exact reference and
-sequence while ownership remains intact, so a later heartbeat-only expiry
-change cannot turn an already-landed WAL into a duplicate retry.
+The active writer runs its operation queue and heartbeat on separate owned OS
+threads; the read-only queue likewise owns an OS thread. These are deliberately
+not Jolt fibers because native chDB and storage calls may block a shared fiber
+carrier. The configured heartbeat interval cannot exceed one third of the
+lease TTL. Mutations and flushes check the locally known expiry at execution
+time and fail with `lease-fenced` once ownership can no longer be proved.
+Immutable publication and verification do not exclude heartbeat renewal from
+the head; the later manifest CAS retries a definite heartbeat collision from
+the newest owned head. No writer-local lock surrounds publication, verification,
+head CAS, or reconciliation, because a remote call can block beyond the TTL.
+Manifest and renewal transitions coordinate through backend CAS plus bounded
+same-owner retries. Ambiguous manifest commits reconcile by exact reference and
+sequence while ownership remains intact; ambiguous renewal proves the same token
+and an expiry at least as late as requested. Thus either order preserves both
+effects without turning an already-landed WAL into a duplicate retry.
 
 Failure after acquisition attempts native close, lease release, and scratch
 cleanup without replacing the primary error. A restore failure after the
 compatibility gate is reported as `engine-incompatible`, as required by the
-full-archive promise. Successful `close!` stops heartbeat admission, drains and
-flushes the operation queue, releases the lease, closes chDB, and removes the
-scratch tree.
+full-archive promise. Successful `close!` stops operation admission, drains and
+flushes the operation queue while heartbeat remains live, then stops and joins
+heartbeat before it releases the lease, closes chDB, and removes the scratch
+tree. This positive termination handshake prevents renewal after release.
 
 `jdbc.chdb.durable/open-reader!` reads and validates the head once in
 read-only mode, returns `not-found` without creating a missing object, and
@@ -73,9 +82,10 @@ workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 jolt -M:durable-open-test
 ```
 
-`checkpoint!` runs the full native backup outside the head-CAS lock so heartbeat
-renewal remains live, then streams and verifies immutable publication before
-one checkpoint head CAS. Only a proved commit clears covered in-memory WAL.
+`checkpoint!` runs the full native backup without excluding heartbeat renewal,
+then streams and verifies immutable publication before one checkpoint head CAS.
+No backend phase shares a writer-local head lock. Only a proved commit clears
+covered in-memory WAL.
 
 The current native production pin still reports the Durable ABI as
 unsupported. Deterministic tests inject that ABI boundary and exercise real

@@ -42,6 +42,12 @@
               :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-writer-test"]}
+           :durable-writer-concurrency-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-writer-concurrency-test"]}
+           :durable-thread-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-thread-test"]}
            :durable-open-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
@@ -113,6 +119,8 @@
          durable-control-test "jolt -M:durable-control-test"
          durable-itf-test "jolt -M:durable-itf-test"
          durable-writer-test "jolt -M:durable-writer-test"
+         durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"
+         durable-thread-test "jolt -M:durable-thread-test"
          durable-open-test "jolt -M:durable-open-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-backend-test "jolt -M:durable-backend-test"
