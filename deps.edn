@@ -119,6 +119,15 @@
            :durable-file-allocation
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-file-allocation"]}
+           ;; JVM-only, dev-time Typed Clojure pilot. Neither this path nor the
+           ;; checker dependency is visible to ordinary/Jolt consumers.
+           :typed-check {:extra-paths ["script" "typed"]
+                         :extra-deps
+                         {org.clojure/clojure
+                          {:mvn/version "1.12.5"}
+                         org.typedclojure/typed.clj.checker
+                          {:mvn/version "1.3.0"}}
+                         :main-opts ["-m" "jdbc.chdb.typed-check"]}
            :test {:extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
@@ -146,5 +155,6 @@
          durable-s3-minio-test "bash test/durable-s3-minio.sh jolt"
          durable-s3-provider-test "jolt -M:durable-s3-provider-test"
          durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
+         typed-check "clojure -M:typed-check"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}

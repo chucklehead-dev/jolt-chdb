@@ -253,6 +253,17 @@ server's persistent `system.query_log` in the pinned 26.7.0 build.
 
 ## Development
 
+The optional JVM-only Typed Clojure pilot checks the runtime-neutral ABI and
+Durable data contracts without loading `jolt.ffi` or adding a production
+dependency:
+
+```sh
+clojure -M:typed-check
+```
+
+Its exact checked/trusted boundary and mutation controls are documented in
+[`docs/typed-clojure.md`](docs/typed-clojure.md).
+
 Install the pinned native library and run the full driver suite:
 
 ```sh

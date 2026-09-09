@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an opt-in JVM-only Typed Clojure development check for the runtime-neutral
+  Durable ABI and capability contracts, including a real positive consumer and
+  two mutation-specific negative controls. Normal Jolt consumers do not resolve
+  the checker or include the external annotation sources.
 - Propagate each live writer's self-fencing predicate into synchronous nested
   object-backend work without changing the Durable backend ABI. S3 stops before
   a first request and before/after transport backoff, maps writer-originated
