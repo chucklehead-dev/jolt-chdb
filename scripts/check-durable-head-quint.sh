@@ -18,6 +18,13 @@ lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
+case "${1:-}" in
+  "") mode=fast ;;
+  --verify) mode=full ;;
+  --verify-only) mode=exhaustive ;;
+  *) echo "usage: $0 [--verify|--verify-only]" >&2; exit 2 ;;
+esac
+
 # The takeover-enabled six-step state graph exceeds Node's default old-space
 # limit while Quint translates it for Apalache. Keep the model bounds intact
 # and give the checked process a fixed heap that fits local and hosted runners.
@@ -61,6 +68,8 @@ quint typecheck "$lease_time_tests"
 quint typecheck "$lifecycle_model"
 quint typecheck "$lifecycle_tests"
 
+if [[ $mode != exhaustive ]]
+then
 quint test "$lease_time_tests" \
   --main durableLeaseTimeTest \
   --match '.*Test' \
@@ -252,7 +261,9 @@ do
   fi
 done
 
-if [[ "${1:-}" != "--verify" ]]
+fi
+
+if [[ $mode == fast ]]
 then
   exit 0
 fi
