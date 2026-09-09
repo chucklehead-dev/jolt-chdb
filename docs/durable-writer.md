@@ -51,6 +51,12 @@ lock surrounds publication, verification, head CAS, or reconciliation: even a
 blocked manifest CAS must not prevent the heartbeat's independent CAS. The two
 transitions compose through backend CAS, bounded same-owner retry, and
 operation-specific semantic reread proof.
+All retrying control operations share the writer's monotonic deadline and
+capped exponential backoff policy. Ambiguous publication or head-CAS writes
+switch permanently into a reconciliation-read phase. Those reads can tolerate
+short visibility delays, but the uncertain write is never repeated. The retry
+stop predicate reads the same lease-state atom as `status`; crossing the proved
+expiry during backoff marks the writer non-writable before another attempt.
 Terminal worker-loop failures stop admission, attempt flush/release/native
 cleanup, and fail every already queued request instead of leaving callers
 blocked on unresolved promises.

@@ -216,6 +216,10 @@ path until your provider and failure boundaries have been qualified.
 | `:lease-ttl-ms` | Writer lease lifetime; defaults to 30 seconds. |
 | `:heartbeat-interval-ms` | Renewal interval; defaults to one third of the TTL and may not exceed that bound. |
 | `:clock-skew-ms` | Extra time before normal expired-lease takeover; defaults to zero. |
+| `:max-attempts` | Maximum control-plane attempts within one operation; defaults to four. |
+| `:retry-deadline-ms` | Monotonic budget shared by attempts, backoff, and ambiguity proof reads; defaults to 5 seconds. |
+| `:retry-initial-backoff-ms` | First retry delay; defaults to 10 milliseconds. |
+| `:retry-max-backoff-ms` | Cap for exponential retry delay; defaults to 250 milliseconds. |
 | `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
 
@@ -224,7 +228,11 @@ path until your provider and failure boundaries have been qualified.
 The manifest contains the database name, an optional checkpoint reference, an
 ordered WAL list, a manifest sequence number, and the current lease. Checkpoint
 and WAL objects are immutable. Only `head.json` changes in place, and every
-change is conditional on the exact ETag that the writer just read.
+change is conditional on the exact ETag that the writer just read. Retries use
+a monotonic deadline and capped exponential backoff. An uncertain write is
+never sent again: only the read that proves its outcome may repeat. If the
+locally known lease expires during a wait, the writer self-fences before
+another storage attempt and retains any uncommitted recovery work.
 
 Opening a writer follows this order:
 

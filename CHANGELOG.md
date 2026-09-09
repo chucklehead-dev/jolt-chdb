@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add monotonic retry deadlines and capped exponential backoff to Durable
+  control and S3 operations. Writers stop retrying when their locally proved
+  lease expires; ambiguous writes are never reissued, while delayed
+  reconciliation reads remain bounded and preserve `commit-ambiguous`.
 - Check ambiguous head-CAS landing as its own refinement transition, model a
   rival lease takeover before reconciliation, and require the stale writer to
   receive `LeaseFenced` without losing the landed recovery reference. Exercise

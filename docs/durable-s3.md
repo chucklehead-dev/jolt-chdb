@@ -33,10 +33,15 @@ Conditional operations use provider-native request preconditions:
 - an uncertain write outcome maps to `:ambiguous` so the control plane can
   reread and prove the exact object or manifest transition.
 
-Authentication, permission, throttling, transport, provider-response, and
-invalid-response failures have separate sanitized exception categories. Reads
-and writes that are proved not sent may retry up to `:max-attempts` (default
-three, hard maximum eight). Exhausted uncertain writes return `:ambiguous`.
+Authentication, permission, throttling, transport, provider-response, timeout,
+and invalid-response failures have separate sanitized exception categories.
+Reads and writes that are proved not sent may retry up to `:max-attempts`
+(default three, hard maximum eight) within `:retry-deadline-ms` (default five
+minutes). Backoff starts at `:retry-initial-backoff-ms` (25 ms), doubles up to
+`:retry-max-backoff-ms` (1 second), and is clipped to the remaining deadline.
+Each libcurl connect and total timeout is also clipped to that same remaining
+budget. An uncertain write is returned as `:ambiguous` after its first request
+and is never reissued.
 
 The transport request contract uses `{:bytes ... :byte-count n}` for bounded
 control/WAL bodies and `{:file path :byte-count n}` for streaming checkpoint
