@@ -64,6 +64,9 @@ no liveness claim.
 - `durableHeadCasWholeHeadReconciliationMutant` incorrectly requires the whole
   desired head document to match after an ambiguous landing, so a harmless
   same-owner lease revision produces the red control.
+- `durableHeadCasLandingReferenceMutant` corrupts only the reference installed
+  by the ambiguous landing. The landing monitor must reject that intermediate
+  state before a later reconciliation or takeover can hide it.
 
 The event history records before/after head snapshots. This is intentional: a
 later publication must not retroactively make an earlier invalid commit look
@@ -112,6 +115,16 @@ The reference mutants demonstrate that content identity alone is insufficient:
 changing generation or sequence makes a head reference non-canonical, reusing
 an attempt breaks key freshness, and accepting an attempt-erased commit can
 install a reference that was never published.
+
+The pending-takeover boundary is:
+
+```text
+acquire Writer1 -> publish Object1 -> ambiguous CAS lands
+  -> acquire Writer2 -> Writer1 reconciles as LeaseFenced
+```
+
+Writer2's takeover preserves the landed reference. Writer1 receives no success
+acknowledgement, and the immutable object remains available to recovery.
 
 The deterministic reconciliation boundary is:
 
@@ -388,6 +401,7 @@ module durableHeadCas {
   const USE_REFERENCE_SEQUENCE_MUTANT: bool
   const USE_COMMIT_ATTEMPT_MUTANT: bool
   const USE_WHOLE_HEAD_RECONCILIATION_MUTANT: bool
+  const USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT: bool
 
   pure val WRITERS: Set[WriterId] = Set(Writer1, Writer2)
   pure val OBJECTS: Set[ObjectId] = Set(Object1, Object2)
@@ -636,17 +650,55 @@ transition rather than merely inspect its final value.
 ### Ambiguous CAS, renewal, and release
 
 A normal confirmed or dropped commit is evaluated in one model transition. A
-landed ambiguous commit is split into begin, optional same-owner renewal, and
-reconcile transitions. This split is essential: it checks that reconciliation
-uses the expected reference, sequence, and current ownership rather than exact
+landed ambiguous commit is split into begin, optional renewal or takeover, and
+reconcile transitions. The landing transition checks the exact head written by
+the CAS before reconciliation can report any result. Reconciliation then uses
+the expected reference, sequence, and current ownership rather than exact
 equality with an old whole-head snapshot whose lease revision may legitimately
-have changed.
+have changed. If another writer takes over first, the original writer is fenced
+without acknowledging the commit, while the landed immutable reference remains
+recoverable from the shared head.
 
 Release uses the same token rule and preserves generation. None of these
 functions models retries or elapsed time; it models only the state visible at
 the provider's serialized decision points.
 
 ```quint target/formal/quint/durableHeadCas.qnt +=
+  pure def otherObjectId(objectId: ObjectId): ObjectId =
+    match objectId {
+      | Object1 => Object2
+      | Object2 => Object1
+    }
+
+  pure def landedHeadFor(evaluated: CommitEventData): Head =
+    if (USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT) {
+      ...evaluated.after,
+      reference: SomeReference({
+        ...evaluated.reference,
+        objectId: otherObjectId(evaluated.reference.objectId),
+      }),
+    } else evaluated.after
+
+  pure def ambiguousLandingRefinesHead(
+    s: State,
+    evaluated: CommitEventData,
+    landedHead: Head
+  ): bool = and {
+    evaluated.before == s.head,
+    tokenOwns(s.head, evaluated.writer, evaluated.tokenGeneration),
+    evaluated.referenceWasPublished,
+    evaluated.exactReferenceWasPublished,
+    evaluated.reference.objectId == evaluated.objectId,
+    evaluated.reference.attemptId == evaluated.attemptId,
+    evaluated.reference.generation == s.head.generation,
+    evaluated.reference.sequence == s.head.sequence + 1,
+    landedHead.generation == s.head.generation,
+    landedHead.owner == s.head.owner,
+    landedHead.leaseRevision == s.head.leaseRevision,
+    landedHead.sequence == s.head.sequence + 1,
+    landedHead.reference == SomeReference(evaluated.reference),
+  }
+
   pure def applyBeginAmbiguousLanded(
     s: State,
     writer: WriterId,
@@ -656,6 +708,8 @@ the provider's serialized decision points.
     val evaluated = evaluateCommit(
       s, writer, objectId, attemptId, AmbiguousLanded
     )
+    val landedHead = landedHeadFor(evaluated)
+    val landingRefines = ambiguousLandingRefinesHead(s, evaluated, landedHead)
     val pending = {
       writer: writer,
       objectId: objectId,
@@ -667,10 +721,10 @@ the provider's serialized decision points.
     }
     {
       ...s,
-      head: evaluated.after,
+      head: landedHead,
       pendingReconciliation: AwaitingReconciliation(pending),
-      lastTransitionRefinesExactView: true,
-      lastTransitionRefinesContentView: true,
+      lastTransitionRefinesExactView: landingRefines,
+      lastTransitionRefinesContentView: landingRefines,
     }
   }
 
@@ -696,6 +750,7 @@ the provider's serialized decision points.
     val accepted =
       if (USE_WHOLE_HEAD_RECONCILIATION_MUTANT) wholeHeadProof
       else operationProof
+    val observedBefore = if (accepted) pending.casBefore else s.head
     val result =
       if (accepted) Reconciled
       else if (not(tokenOwns(
@@ -711,13 +766,13 @@ the provider's serialized decision points.
       mode: AmbiguousLanded,
       referenceWasPublished: s.published.contains(pending.expectedReference),
       exactReferenceWasPublished: s.published.contains(pending.expectedReference),
-      landed: true,
+      landed: accepted,
       acknowledged: accepted,
       result: result,
       desiredHead: pending.desiredHead,
       operationSpecificProofHeld: operationProof,
       wholeHeadProofHeld: wholeHeadProof,
-      before: pending.casBefore,
+      before: observedBefore,
       after: s.head,
     }
   }
@@ -767,9 +822,9 @@ expiry eligibility are intentionally outside this model.
 
 The actions below are thin wrappers around the pure transition functions. Their
 guards disable invalid actions: a publication attempt cannot be reused in the
-corrected model, an ambiguous reconciliation must already be pending, and no
-other operation can interleave where the model intentionally requires a single
-serialized decision.
+corrected model and an ambiguous reconciliation must already be pending.
+Acquisition remains enabled while reconciliation is pending because an expired
+lease can be taken over while the original writer is waiting to reread the CAS.
 
 ```quint target/formal/quint/durableHeadCas.qnt +=
   action init: bool = all {
@@ -793,7 +848,6 @@ serialized decision.
   }
 
   action acquire(writer: WriterId): bool = all {
-    state.pendingReconciliation == NoPendingReconciliation,
     state.head.generation < MAX_GENERATION,
     state' = applyAcquire(state, writer),
   }
@@ -1025,7 +1079,6 @@ witnesses; they do not mutate model state.
     match event {
       | CommitAttempted(data) =>
           if (data.mode == AmbiguousLanded
-              and data.landed
               and data.operationSpecificProofHeld)
             and {
               data.acknowledged,
@@ -1225,6 +1278,21 @@ ITF state maps to one implementation command and its nondeterministic picks.
   val postRenewalReconciliationReached: bool =
     state.renewedWhilePending and reconciledCommitReached
 
+  val takeoverFencedReconciliationReached: bool =
+    state.events.indices().exists(
+      i => match state.events.nth(i) {
+        | CommitAttempted(data) => and {
+            data.mode == AmbiguousLanded,
+            data.result == LeaseFenced,
+            not(data.acknowledged),
+            not(data.landed),
+            data.exactReferenceWasPublished,
+            data.after == data.before,
+          }
+        | _ => false
+      }
+    )
+
   action chooseAcquire: bool = {
     nondet writer = WRITERS.oneOf()
     acquire(writer)
@@ -1306,7 +1374,8 @@ module durableHeadCasCorrected {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1319,7 +1388,8 @@ module durableHeadCasStaleMutant {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1332,7 +1402,8 @@ module durableHeadCasGenerationMutant {
     USE_REFERENCE_GENERATION_MUTANT = true,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1345,7 +1416,8 @@ module durableHeadCasSequenceMutant {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = true,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1358,7 +1430,8 @@ module durableHeadCasAttemptReuseMutant {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1371,7 +1444,8 @@ module durableHeadCasCommitAttemptMutant {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = true,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).*
 }
 
@@ -1384,7 +1458,22 @@ module durableHeadCasWholeHeadReconciliationMutant {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = true
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = true,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
+  ).*
+}
+
+module durableHeadCasLandingReferenceMutant {
+  import durableHeadCas(
+    MAX_GENERATION = 7,
+    MAX_SEQUENCE = 6,
+    USE_STALE_OWNERSHIP_MUTANT = false,
+    USE_ATTEMPT_REUSE_MUTANT = false,
+    USE_REFERENCE_GENERATION_MUTANT = false,
+    USE_REFERENCE_SEQUENCE_MUTANT = false,
+    USE_COMMIT_ATTEMPT_MUTANT = false,
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = true
   ).*
 }
 ```
@@ -1410,7 +1499,8 @@ module durableHeadCasCorrectedTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run boundaryAcquirePublishCommitTest =
@@ -1475,6 +1565,32 @@ module durableHeadCasCorrectedTest {
         acknowledgedCommitIsExact,
       })
 
+  run takeoverFencesPendingReconciliationTest =
+    init
+      .then(acquire(Writer1))
+      .then(publish(Writer1, Object1, Attempt1))
+      .then(beginAmbiguousLanded(Writer1, Object1, Attempt1))
+      .then(acquire(Writer2))
+      .then(reconcilePending)
+      .expect(and {
+        state.head.generation == 3,
+        state.head.owner == HeldBy(Writer2),
+        state.head.sequence == 1,
+        state.head.reference == SomeReference({
+          objectId: Object1, attemptId: Attempt1,
+          generation: 2, sequence: 1,
+        }),
+        state.published.contains({
+          objectId: Object1, attemptId: Attempt1,
+          generation: 2, sequence: 1,
+        }),
+        takeoverFencedReconciliationReached,
+        staleWriterCannotChangeHead,
+        headReferenceWasPublished,
+        attemptTransitionsRefineExactView,
+        exactTransitionsRefineContentView,
+      })
+
   run ambiguousDroppedDoesNotCommitTest =
     init
       .then(acquire(Writer1))
@@ -1524,7 +1640,8 @@ module durableHeadCasMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   // This is a positive witness for the deliberately faulty control: the test
@@ -1558,7 +1675,8 @@ module durableHeadCasReferenceMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = true,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run generationMismatchMutantWitnessTest =
@@ -1582,7 +1700,8 @@ module durableHeadCasSequenceMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = true,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run sequenceMismatchMutantWitnessTest =
@@ -1606,7 +1725,8 @@ module durableHeadCasAttemptReuseMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run attemptReuseMutantWitnessTest =
@@ -1629,7 +1749,8 @@ module durableHeadCasCommitAttemptMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = true,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run wrongCommitAttemptMutantWitnessTest =
@@ -1654,7 +1775,8 @@ module durableHeadCasWholeHeadReconciliationMutantTest {
     USE_REFERENCE_GENERATION_MUTANT = false,
     USE_REFERENCE_SEQUENCE_MUTANT = false,
     USE_COMMIT_ATTEMPT_MUTANT = false,
-    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = true
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = true,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = false
   ).* from "./durableHeadCas"
 
   run wholeHeadReconciliationMutantWitnessTest =
@@ -1675,6 +1797,36 @@ module durableHeadCasWholeHeadReconciliationMutantTest {
         ambiguousDropReached,
         renewalDuringReconciliationReached,
         not(ambiguousLandedUsesOperationSpecificReconciliation),
+      })
+}
+
+module durableHeadCasLandingReferenceMutantTest {
+  import durableHeadCas(
+    MAX_GENERATION = 7,
+    MAX_SEQUENCE = 6,
+    USE_STALE_OWNERSHIP_MUTANT = false,
+    USE_ATTEMPT_REUSE_MUTANT = false,
+    USE_REFERENCE_GENERATION_MUTANT = false,
+    USE_REFERENCE_SEQUENCE_MUTANT = false,
+    USE_COMMIT_ATTEMPT_MUTANT = false,
+    USE_WHOLE_HEAD_RECONCILIATION_MUTANT = false,
+    USE_AMBIGUOUS_LANDING_REFERENCE_MUTANT = true
+  ).* from "./durableHeadCas"
+
+  run ambiguousLandingReferenceMutantWitnessTest =
+    init
+      .then(acquire(Writer1))
+      .then(publish(Writer1, Object1, Attempt1))
+      .then(beginAmbiguousLanded(Writer1, Object1, Attempt1))
+      .expect(and {
+        state.head.sequence == 1,
+        state.head.reference == SomeReference({
+          objectId: Object2, attemptId: Attempt1,
+          generation: 2, sequence: 1,
+        }),
+        not(headReferenceWasPublished),
+        not(attemptTransitionsRefineExactView),
+        not(exactTransitionsRefineContentView),
       })
 }
 ```
