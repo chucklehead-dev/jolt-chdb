@@ -73,16 +73,18 @@ workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 ```sh
 jolt -M:durable-thread-test
 jolt -M:durable-writer-test
+jolt -M:durable-writer-concurrency-test
 ```
 
 The isolated one-carrier gate proves native worker work cannot starve heartbeat
 renewal and checks both writer and reader execution are off-fiber. The
-deterministic suite covers queue ordering, admission-before-execution,
+general deterministic suite covers queue ordering, admission-before-execution,
 ordered WAL serialization, checkpoint fallback, empty and successful flush,
 close, heartbeat failure identity, close-time renewal/flush/release ordering,
-blocked publication, verification, and manifest-CAS renewal/takeover, bounded
-same-owner CAS retry in both directions, ambiguous renewal followed by manifest
-advance, limits, and ambiguous-commit retention. Checkpoint-fallback fault cuts
+limits, and ambiguous-commit retention. The focused concurrency suite owns
+blocked publication, verification, manifest-CAS, and reconciliation schedules,
+takeover, bounded same-owner retry in both directions, and ambiguous renewal
+followed by manifest advance. Checkpoint-fallback fault cuts
 also cover backup failure, failed or ambiguous immutable upload, and ownership
 takeover after publication: each failed boundary retains the checkpoint marker
 and covered statement WAL, while a stale generation cannot make its published
