@@ -100,13 +100,15 @@
     (throw (ex-info "attempt! must be callable" {:type ::invalid-options})))
   (loop [attempt 1
          state initial-state]
-    (let [result (attempt! attempt state)]
-      (case (:status result)
-        :done result
-        :retry
-        (let [decision (await-next! budget attempt)]
-          (if (= :retry decision)
-            (recur (inc attempt) (:state result))
-            {:status decision :attempt attempt :state (:state result)}))
-        (throw (ex-info "attempt! returned an unsupported retry status"
-                        {:type ::invalid-result}))))))
+    (if ((:stopped? budget))
+      {:status :stopped :attempt (dec attempt) :state state}
+      (let [result (attempt! attempt state)]
+        (case (:status result)
+          :done result
+          :retry
+          (let [decision (await-next! budget attempt)]
+            (if (= :retry decision)
+              (recur (inc attempt) (:state result))
+              {:status decision :attempt attempt :state (:state result)}))
+          (throw (ex-info "attempt! returned an unsupported retry status"
+                          {:type ::invalid-result})))))))

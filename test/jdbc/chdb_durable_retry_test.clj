@@ -78,6 +78,17 @@
                            (fn [_ _] {:status :retry :state :latest}))]
     (is (= {:status :attempt-limit :attempt 2 :state :latest} result))))
 
+(deftest callback-runner-stops-before-its-first-attempt
+  (let [calls (atom 0)
+        result
+        (retry/run! (retry/start {:stopped? (constantly true)})
+                    :initial
+                    (fn [_ _]
+                      (swap! calls inc)
+                      {:status :done :value :unsafe}))]
+    (is (= {:status :stopped :attempt 0 :state :initial} result))
+    (is (zero? @calls))))
+
 (defn run-checks! []
   (let [{:keys [fail error]} (run-tests 'jdbc.chdb-durable-retry-test)]
     (when-not (zero? (+ fail error))
