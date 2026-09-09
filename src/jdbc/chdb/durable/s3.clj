@@ -1,7 +1,8 @@
 (ns jdbc.chdb.durable.s3
   "S3-compatible Durable backend semantics over a streaming HTTP transport."
   (:require [clojure.string :as str]
-            [jdbc.chdb.durable.backend :as backend])
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.retry :as retry])
   (:import [java.net URI]
            [java.nio.file Files Paths]))
 
@@ -97,12 +98,34 @@
 (defn- retryable-error? [error]
   (contains? #{:transport :throttled} (:category (ex-data error))))
 
+(defn- retry-budget! [state]
+  (try
+    (retry/start state)
+    (catch Throwable error
+      (if (= ::retry/invalid-options (:type (ex-data error)))
+        (fail! ::invalid-options (ex-message error))
+        (throw error)))))
+
+(defn- bounded-request [state budget request]
+  (let [remaining (max 1 (retry/remaining-ms budget))]
+    (assoc request
+           :timeout-ms (min (:timeout-ms state) remaining)
+           :connect-timeout-ms (min (:connect-timeout-ms state) remaining))))
+
+(defn- await-retry! [budget attempt]
+  (case (retry/await-next! budget attempt)
+    :retry true
+    :deadline (fail! ::timeout "S3 request exceeded its retry deadline")
+    :stopped (fail! ::timeout "S3 request retrying was stopped")
+    :attempt-limit false))
+
 (defn- request!
   [state operation request write?]
-  (loop [attempt 1]
+  (let [budget (retry-budget! state)]
+    (loop [attempt 1]
     (let [outcome (try
                     {:response ((:request! state)
-                                (assoc request
+                                (assoc (bounded-request state budget request)
                                        :operation operation
                                        :auth (:auth state)
                                        :region (:region state)))}
@@ -118,9 +141,9 @@
             (= :permission category)
             (fail! ::permission "S3 permission was denied")
 
-            (and (< attempt (:max-attempts state))
-                 (or (not write?) definitely-not-sent?)
-                 (retryable-error? error))
+            (and (or (not write?) definitely-not-sent?)
+                 (retryable-error? error)
+                 (await-retry! budget attempt))
             (recur (inc attempt))
 
             (and write? (not definitely-not-sent?))
@@ -136,14 +159,14 @@
           (when-not (integer? status)
             (fail! ::invalid-response "S3 transport returned no HTTP status"))
           (if (contains? retryable-statuses status)
-            (if (< attempt (:max-attempts state))
+            (if (await-retry! budget attempt)
               (recur (inc attempt))
               (if write?
                 {:ambiguous? true}
                 (if (= 429 status)
                   (fail! ::throttled "S3 request was throttled")
                   (fail! ::transport "S3 service remained unavailable"))))
-            {:response response}))))))
+            {:response response})))))))
 
 (defn- response-or-error! [operation {:keys [response ambiguous?]}]
   (if ambiguous?
@@ -254,8 +277,13 @@
   bodies/destinations without buffering them."
   [{:keys [endpoint bucket prefix region access-key secret-key session-token
            request! max-attempts connect-timeout-ms timeout-ms
-           max-response-bytes]
-    :or {prefix "" max-attempts 3}}]
+           max-response-bytes retry-deadline-ms retry-initial-backoff-ms
+           retry-max-backoff-ms monotonic-ms! await-backoff!]
+    :or {prefix "" max-attempts 3 connect-timeout-ms 10000
+         timeout-ms 300000 retry-deadline-ms 300000
+         retry-initial-backoff-ms 25 retry-max-backoff-ms 1000
+         monotonic-ms! retry/monotonic-ms
+         await-backoff! retry/await-backoff!}}]
   (when-not (and (integer? max-attempts) (pos? max-attempts) (<= max-attempts 8))
     (fail! ::invalid-options "max-attempts must be between one and eight"))
   (when connect-timeout-ms
@@ -273,7 +301,14 @@
                 :secret-key (nonblank! secret-key "secret-key")
                 :session-token (when session-token
                                  (nonblank! session-token "session-token"))}
-         :max-attempts max-attempts}
+         :max-attempts max-attempts
+         :connect-timeout-ms connect-timeout-ms
+         :timeout-ms timeout-ms
+         :retry-deadline-ms retry-deadline-ms
+         :retry-initial-backoff-ms retry-initial-backoff-ms
+         :retry-max-backoff-ms retry-max-backoff-ms
+         :monotonic-ms! monotonic-ms!
+         :await-backoff! await-backoff!}
         transport-options
         (cond-> {}
           connect-timeout-ms (assoc :connect-timeout-ms connect-timeout-ms)

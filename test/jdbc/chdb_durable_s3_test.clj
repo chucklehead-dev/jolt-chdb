@@ -201,6 +201,51 @@
     (check "read retries are bounded and can recover" [nil 3]
            [(backend/get-bytes retrying "head.json") @attempts]))
 
+  (let [now (atom 0)
+        waits (atom [])
+        requests (atom [])
+        store
+        (s3/s3-backend
+         (assoc base-options
+                :max-attempts 4
+                :retry-deadline-ms 25
+                :retry-initial-backoff-ms 10
+                :retry-max-backoff-ms 20
+                :connect-timeout-ms 50
+                :timeout-ms 100
+                :monotonic-ms! (fn [] @now)
+                :await-backoff! (fn [milliseconds]
+                                  (swap! waits conj milliseconds)
+                                  (swap! now + milliseconds))
+                :request! (fn [request]
+                            (swap! requests conj
+                                   [(:connect-timeout-ms request)
+                                    (:timeout-ms request)])
+                            {:status 503})))
+        error (caught #(backend/get-bytes store "head.json"))]
+    (check "read retry deadline has a distinct timeout category"
+           ::s3/timeout (:type (ex-data error)))
+    (check "S3 backoff and request timeouts are clipped to the shared deadline"
+           [[10 15] [[25 25] [15 15]]]
+           [@waits @requests]))
+
+  (let [calls (atom 0)
+        waits (atom [])
+        store
+        (s3/s3-backend
+         (assoc base-options :max-attempts 4
+                :await-backoff! #(swap! waits conj %)
+                :request! (fn [_]
+                            (swap! calls inc)
+                            (throw (ex-info "PRIVATE-SECRET"
+                                            {:category :transport
+                                             :definitely-not-sent? false})))))
+        result (backend/put-bytes-if-absent!
+                store "wal/uncertain.jsonl" (byte-array [1]))]
+    (check "uncertain writes are never reissued"
+           [:ambiguous 1 []]
+           [(:status result) @calls @waits]))
+
   (let [throttled (s3/s3-backend
                    (assoc base-options :request! (constantly {:status 429})))
         error (caught #(backend/get-bytes throttled "head.json"))]
