@@ -7,9 +7,9 @@
   (:require [clojure.data.json :as json]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
-            [jdbc.chdb.native :as native]
-            [jolt.fibers :as fibers])
+            [jdbc.chdb.native :as native])
   (:import [java.util.concurrent ArrayBlockingQueue]))
 
 (def max-statement-bytes (* 64 1024 1024))
@@ -208,10 +208,12 @@
    attempts))
 
 (defn- do-close! [writer]
-  (deliver (:heartbeat-stop writer) :stop)
   (let [error
         (first-error
          [#(do-flush! writer)
+          #(deliver (:heartbeat-stop writer) :stop)
+          #(when-let [heartbeat (:heartbeat writer)]
+             (owned-thread/join! heartbeat))
           #(locking (:head-lock writer)
              ((:release! (:operations writer)) (:store writer) (:token writer)))
           #((:close-native! (:operations writer)) (:handle writer))
@@ -292,7 +294,7 @@
           signal ((:await-heartbeat! (:operations writer))
                   (:heartbeat-stop writer) wait-ms)]
       (when (and (= :tick signal)
-                 (= :open @(:lifecycle writer))
+                 (contains? #{:open :closing} @(:lifecycle writer))
                  (not (:fenced? @(:lease-state writer))))
         (let [renew-now ((:now-ms (:operations writer)))]
           (if (>= renew-now expires-at)
@@ -300,7 +302,8 @@
             (try
               (locking (:head-lock writer)
                 (when (and (not (realized? (:heartbeat-stop writer)))
-                           (= :open @(:lifecycle writer))
+                           (contains? #{:open :closing}
+                                      @(:lifecycle writer))
                            (not (:fenced? @(:lease-state writer))))
                   (let [renewed-expiry (max (inc expires-at)
                                             (+ renew-now ttl-ms))
@@ -384,7 +387,9 @@
                    :close-native! :cleanup-scratch!}]
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "writer operations must be functions"))
-    (let [writer (->DurableWriter
+    (let [worker (owned-thread/completion)
+          heartbeat (when lease-expiry (owned-thread/completion))
+          writer (->DurableWriter
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) (Object.)
                   (atom :open) (promise)
@@ -392,13 +397,13 @@
                          :checkpoint-required? false}) (Object.)
                   (when lease-expiry
                     (atom {:expires-at lease-expiry :fenced? false}))
-                  (promise) operations nil nil)
-          worker (fibers/spawn #(worker-loop writer))
-          heartbeat (when lease-expiry
-                      (fibers/spawn
-                       #(heartbeat-loop writer heartbeat-interval-ms
-                                        lease-ttl-ms)))]
-      (assoc writer :worker worker :heartbeat heartbeat))))
+                  (promise) operations worker heartbeat)]
+      (owned-thread/start! worker #(worker-loop writer))
+      (when heartbeat
+        (owned-thread/start!
+         heartbeat
+         #(heartbeat-loop writer heartbeat-interval-ms lease-ttl-ms)))
+      writer)))
 
 (defn query!
   ([writer sql] (query! writer sql []))

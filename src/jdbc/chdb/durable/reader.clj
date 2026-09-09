@@ -1,9 +1,9 @@
 (ns jdbc.chdb.durable.reader
   "Serialized query-only operations for one recovered Durable V1 snapshot."
   (:require [jdbc.chdb :as chdb]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
-            [jdbc.chdb.native :as native]
-            [jolt.fibers :as fibers])
+            [jdbc.chdb.native :as native])
   (:import [java.util.concurrent ArrayBlockingQueue]))
 
 (def default-queue-capacity 64)
@@ -128,11 +128,12 @@
                    :close-native! :cleanup-scratch!}]
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "reader operations must be functions"))
-    (let [reader (->DurableReader
+    (let [worker (owned-thread/completion)
+          reader (->DurableReader
                   handle database (ArrayBlockingQueue. queue-capacity)
-                  (Object.) (atom :open) (promise) operations nil)
-          worker (fibers/spawn #(worker-loop reader))]
-      (assoc reader :worker worker))))
+                  (Object.) (atom :open) (promise) operations worker)]
+      (owned-thread/start! worker #(worker-loop reader))
+      reader)))
 
 (defn query! [reader sql params]
   (enqueue-open! reader {:op :query :sql sql :params params :result (promise)}))
