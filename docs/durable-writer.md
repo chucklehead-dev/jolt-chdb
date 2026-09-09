@@ -22,9 +22,10 @@ The synchronous operations are:
   checkpoint when a bound mutation requires it; commit its reference with head
   CAS, and clear pending recovery state only after confirmed or reconciled
   success; and
-- `checkpoint!`: create a full backup outside the head-CAS lock, stream and
-  verify its immutable publication, then replace the base and clear both the
-  manifest WAL list and covered in-memory WAL after confirmed commit; and
+- `checkpoint!`: create a full backup, stream and verify its immutable
+  publication without excluding heartbeat renewal, then replace the base and
+  clear both the manifest WAL list and covered in-memory WAL after confirmed
+  commit; and
 - `close!`: stop admission, drain earlier operations, flush, attempt release,
   close the native engine, and remove an owned scratch directory exactly once.
   It is idempotent and returns the first persistence or release failure after
@@ -42,6 +43,14 @@ work drains and while close flushes. Close then signals and positively joins
 the heartbeat before lease release, native close, and scratch cleanup. This
 ordering prevents renewal after release. Every mutation and flush also checks
 the locally known expiry immediately before its side effects.
+Immutable publication and verification likewise leave heartbeat renewal
+unblocked. The manifest commit rereads the latest owned head afterward and
+retries only definite same-owner heartbeat CAS collisions; takeover fences it,
+and ambiguous outcomes retain exact reconciliation semantics. No writer-local
+lock surrounds publication, verification, head CAS, or reconciliation: even a
+blocked manifest CAS must not prevent the heartbeat's independent CAS. The two
+transitions compose through backend CAS, bounded same-owner retry, and
+operation-specific semantic reread proof.
 Terminal worker-loop failures stop admission, attempt flush/release/native
 cleanup, and fail every already queued request instead of leaving callers
 blocked on unresolved promises.
@@ -71,7 +80,9 @@ renewal and checks both writer and reader execution are off-fiber. The
 deterministic suite covers queue ordering, admission-before-execution,
 ordered WAL serialization, checkpoint fallback, empty and successful flush,
 close, heartbeat failure identity, close-time renewal/flush/release ordering,
-limits, and ambiguous-commit retention. Checkpoint-fallback fault cuts
+blocked publication, verification, and manifest-CAS renewal/takeover, bounded
+same-owner CAS retry in both directions, ambiguous renewal followed by manifest
+advance, limits, and ambiguous-commit retention. Checkpoint-fallback fault cuts
 also cover backup failure, failed or ambiguous immutable upload, and ownership
 takeover after publication: each failed boundary retains the checkpoint marker
 and covered statement WAL, while a stale generation cannot make its published

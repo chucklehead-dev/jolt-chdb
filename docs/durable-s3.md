@@ -51,6 +51,11 @@ credential option, signs an optional `x-amz-security-token`, retains only the
 response ETag, and never includes credential-bearing curl messages in public
 exceptions. `:connect-timeout-ms` defaults to 10000, `:timeout-ms` to 300000,
 and bounded byte responses default to 128 MiB via `:max-response-bytes`.
+The request timeout may exceed the writer's default 30-second lease TTL.
+That cannot bypass fencing: operations self-fence at the last proved local
+expiry, but a heartbeat stuck until the transport timeout can sacrifice
+availability. Configure request timeouts within renewal slack when that
+availability guarantee is required.
 Checkpoint file bodies cross bounded libcurl callbacks. Uploads retain an open
 NIO input stream. On Linux, the implemented and qualified download path retains
 an atomically created
