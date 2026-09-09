@@ -14,10 +14,13 @@
 (defn- compatibility []
   (-> "jdbc/chdb/ffi-compatibility.edn" io/resource slurp edn/read-string))
 
+(defn- project-deps []
+  (-> "deps.edn" io/file slurp edn/read-string))
+
 (defn- library-path []
   (or (some-> (System/getenv "JOLT_CHDB_LIB") str/trim not-empty)
-      (str (System/getProperty "user.home")
-           "/.cache/jolt-chdb/26.7.0/linux-amd64/libchdb.so")))
+      (throw (ex-info "qualification requires one Jolt-selected libchdb path"
+                      {:type ::library-selection-missing}))))
 
 (defn- selected-library! [path]
   (when-not (.isFile (io/file path))
@@ -26,10 +29,17 @@
   (ffi/load-library path))
 
 (defn- bindings [library]
-  (into {}
-        (map (fn [{:keys [function symbol args return]}]
-               [function (ffi/cfn library symbol args return)]))
-        (abi/binding-specs smoke-function-ids)))
+  {:functions
+   (into {}
+         (map (fn [{:keys [function symbol args return]}]
+                [function (ffi/cfn library symbol args return)]))
+         (abi/binding-specs smoke-function-ids))
+   :capabilities
+   (mapv (fn [{:keys [function symbol]}]
+           {:function function
+            :symbol symbol
+            :available? (boolean (ffi/find-symbol library symbol))})
+         (abi/binding-specs smoke-function-ids))})
 
 (defn- bytes! [arena value]
   (let [data (.getBytes (str value) "UTF-8")
@@ -38,17 +48,11 @@
       (ffi/write-array pointer :byte data))
     {:pointer pointer :length (alength data)}))
 
-(defn- run-native-smoke [library]
+(defn- run-native-smoke [{:keys [functions capabilities]}]
   (let [{:keys [version connect close-conn query-with-params-n
                 destroy-query-result result-buffer result-length result-error]}
-        (bindings library)
+        functions
         native-version (version)
-        capabilities
-        (mapv (fn [{:keys [function symbol]}]
-                {:function function
-                 :symbol symbol
-                 :available? (boolean (ffi/find-symbol library symbol))})
-              (abi/binding-specs smoke-function-ids))
         _ (when-not (every? :available? capabilities)
             (throw (ex-info "selected libchdb lacks a required smoke symbol"
                             {:capabilities capabilities})))
@@ -88,21 +92,23 @@
                   (throw (ex-info (str "chDB query failed: " message) {})))
                 (let [length (result-length result)
                       buffer (result-buffer result)
-                      missing-reinterpret-rejected?
+                      missing-reinterpret-error
                       (try
                         ;; Required red control: C result pointers have size
                         ;; zero and must not be copied until bounded exactly.
                         (ffi/read-array buffer :byte length)
-                        false
-                        (catch Throwable _ true))
+                        nil
+                        (catch clojure.lang.ExceptionInfo error
+                          {:message (ex-message error)
+                           :data-keys (set (keys (ex-data error)))}))
                       copied (ffi/read-array
                               (ffi/reinterpret buffer length) :byte length)]
                   (reset! copied-result
                           {:native-version native-version
                            :capabilities capabilities
                            :bytes (vec copied)
-                           :missing-reinterpret-rejected?
-                           missing-reinterpret-rejected?}))
+                           :missing-reinterpret-error
+                           missing-reinterpret-error}))
                 (finally
                   (destroy-query-result result)
                   (swap! destroyed inc)))))))
@@ -125,33 +131,41 @@
     (let [{:keys [value error]} @outcome]
       (if error (throw error) value))))
 
-(defn- rejected? [f]
-  (try (f) false (catch Throwable _ true)))
+(defn- exception-info [f]
+  (try
+    (f)
+    nil
+    (catch clojure.lang.ExceptionInfo error error)))
 
 (defn- runtime-id []
   (if (System/getProperty "babashka.version") :babashka :jvm))
 
 (defn- validate-compatibility! [pins runtime]
-  (assert (= 1 (:schema pins)))
-  (assert (= :test-only (get-in pins [:temporary-binding :scope])))
-  (assert (= :phase-1 (get-in pins [:temporary-binding :retire-in])))
-  (assert (= {:tag "v1.13.220"
-              :tag-commit "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"
-              :embedded-ffi-commit
-              "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}
-             (:babashka pins)))
-  (assert (= "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"
-             (get-in pins [:jvm :ffi-commit])))
-  (assert (= "26.7.0" (get-in pins [:native :version])))
-  (assert (= [{:os :linux :arch "amd64"}]
-             (get-in pins [:native :qualified-platforms])))
-  (assert (= "Linux" (System/getProperty "os.name")))
-  (assert (= "amd64" (System/getProperty "os.arch")))
-  (when (= :jvm runtime)
-    (assert (= :corretto (get-in pins [:jvm :jdk-distribution])))
-    (assert (= "Amazon.com Inc." (System/getProperty "java.vendor")))
-    (assert (= (get-in pins [:jvm :jdk-version])
-               (System/getProperty "java.runtime.version"))))
+  (let [deps (project-deps)
+        ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
+        platform {:os (case (System/getProperty "os.name")
+                        "Linux" :linux
+                        nil)
+                  :arch (case (System/getProperty "os.arch")
+                          ("amd64" "x86_64") "amd64"
+                          ("aarch64" "arm64") "arm64"
+                          nil)}]
+    (assert (= 1 (:schema pins)))
+    (assert (= :test-only (get-in pins [:temporary-binding :scope])))
+    (assert (= :phase-1 (get-in pins [:temporary-binding :retire-in])))
+    (assert (= (get-in pins [:jolt :version]) (:jolt/min-version deps)))
+    (assert (= (get-in pins [:jvm :ffi-dependency :commit])
+               (get-in deps ffi-path)))
+    (assert (some #{platform} (get-in pins [:native :qualified-platforms]))
+            (str "unqualified native platform " (pr-str platform)))
+    (assert (false? (get-in pins
+                            [:babashka :embedded-ffi-source
+                             :runtime-verifiable?])))
+    (when (= :jvm runtime)
+      (assert (= :corretto (get-in pins [:jvm :jdk-distribution])))
+      (assert (= "Amazon.com Inc." (System/getProperty "java.vendor")))
+      (assert (= (get-in pins [:jvm :jdk-version])
+                 (System/getProperty "java.runtime.version")))))
   pins)
 
 (defn -main [& _]
@@ -159,43 +173,54 @@
         runtime (runtime-id)
         expected-bb (get-in pins [:babashka :tag])
         actual-bb (some-> (System/getProperty "babashka.version") (#(str "v" %)))
+        _ (validate-compatibility! pins runtime)
         path (library-path)
         library (selected-library! path)
+        binding-setup (bindings library)
         smoke (run-owned!
                (fn []
-                 (let [result (run-native-smoke library)]
+                 (let [result (run-native-smoke binding-setup)]
                    ;; Native pointers and arenas are lexical to the worker.
                    ;; Only this closed immutable value crosses the join.
                    (assoc result :result :completed))))
         missing-path (str path ".required-missing-control")
         wrong-library (ffi/load-system-library "z")
-        wrong-library-rejected?
-        (rejected?
+        missing-library-error
+        (exception-info #(selected-library! missing-path))
+        wrong-library-error
+        (exception-info
          #((ffi/cfn wrong-library
                     (:symbol (abi/function-spec :version))
                     (:args (abi/function-spec :version))
                     (:return (abi/function-spec :version)))))]
-    (validate-compatibility! pins runtime)
     (when (= :babashka runtime)
       (assert (= expected-bb actual-bb)
               (str "expected Babashka " expected-bb ", got " actual-bb)))
-    (assert (= "26.7.0" (:native-version smoke)))
+    (assert (= (get-in pins [:native :version]) (:native-version smoke)))
     (assert (= [52 50 10] (:bytes smoke)))
     (assert (every? :available? (:capabilities smoke)))
     (assert (= smoke-function-ids
                (mapv :function (:capabilities smoke))))
-    (assert (:missing-reinterpret-rejected? smoke))
+    (assert (= #{:pointer}
+               (get-in smoke [:missing-reinterpret-error :data-keys])))
+    (assert (re-find #"has size 0; give it a size with reinterpret"
+                     (get-in smoke [:missing-reinterpret-error :message])))
     (assert (= 1 (:destroyed smoke)))
     (assert (= 1 (:closed smoke)))
     (assert (= :completed (:result smoke)))
     (assert (= #{:result :native-version :capabilities :bytes
-                 :missing-reinterpret-rejected? :destroyed :closed}
+                 :missing-reinterpret-error :destroyed :closed}
                (set (keys smoke)))
             "native pointers must not escape the owned worker")
-    (assert (rejected? #(selected-library! missing-path))
-            "a missing selected library must reject")
-    (assert wrong-library-rejected?
-            "an explicitly wrong library must not fall back globally")
+    (assert (= ::library-missing (:type (ex-data missing-library-error)))
+            "a missing selected library must reject with library-missing")
+    (assert (= missing-path (:path (ex-data missing-library-error))))
+    (assert (= (:symbol (abi/function-spec :version))
+               (:symbol (ex-data wrong-library-error)))
+            "an explicitly wrong library must reject its missing symbol")
+    (assert (= (str "babashka.ffi: symbol not found: "
+                    (:symbol (abi/function-spec :version)))
+               (ex-message wrong-library-error)))
     (println "ABI FFI characterization passed"
              {:runtime runtime
               :native-version (:native-version smoke)

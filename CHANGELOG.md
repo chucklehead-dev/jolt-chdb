@@ -14,8 +14,9 @@
   controls.
 - Characterize the canonical libchdb driver ABI on pinned Babashka and JVM
   `babashka.ffi` compatibility units with an owned-thread parameterized-query
-  lifecycle smoke, exact-copy and selected-library negative controls, and an
-  explicit Phase 1 retirement boundary for the test-only adapter.
+  lifecycle smoke, one Jolt-resolved native-library selection, typed exact-copy
+  and selected-library negative controls, and an explicit Phase 1 retirement
+  boundary for the test-only adapter.
 - Positively join each Durable reader and writer operation OS thread before a
   public close returns or rethrows. Concurrent and repeated closes retain the
   exact original failure while cleanup and worker exit remain exactly once;

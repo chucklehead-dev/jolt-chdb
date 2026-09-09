@@ -10,13 +10,19 @@
  :babashka
  {:tag "v1.13.220"
   :tag-commit "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"
-  :embedded-ffi-commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}
+  :embedded-ffi-source
+  {:commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"
+   :runtime-verifiable? false}}
  :jvm
  {:jdk-distribution :corretto
   :jdk-version "25.0.2+10-LTS"
-  :ffi-commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}
+  :ffi-dependency
+  {:commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"
+   :deps-path [:aliases :abi-babashka-jvm-test :extra-deps
+               io.github.babashka/ffi :git/sha]}}
  :native
  {:version "26.7.0"
   :qualified-platforms [{:os :linux :arch "amd64"}]
-  :linux-amd64-archive-sha256
-  "4ba2b740f2b107be53157d8226cae1edb25b498d69511cdb3c340db3c95c2905"}}
+  :archive-sha256
+  {[:linux "amd64"]
+   "4ba2b740f2b107be53157d8226cae1edb25b498d69511cdb3c340db3c95c2905"}}}

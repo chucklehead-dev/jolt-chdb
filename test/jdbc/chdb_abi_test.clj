@@ -1,5 +1,7 @@
 (ns jdbc.chdb-abi-test
-  (:require [jdbc.chdb.abi :as abi]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [jdbc.chdb.abi :as abi]
             [jdbc.chdb.native :as native]
             [jolt.ffi :as ffi]))
 
@@ -82,6 +84,9 @@
 (def smoke-function-ids
   [:version :connect :close-conn :query-with-params-n
    :destroy-query-result :result-buffer :result-length :result-error])
+
+(defn- read-edn [path]
+  (-> path io/file slurp edn/read-string))
 
 (defn- allocated-bytes! [allocated value]
   (let [bytes (.getBytes (str value) "UTF-8")
@@ -181,7 +186,11 @@
 
 (defn- run-descriptor-checks []
   (println "chDB versioned ABI descriptor")
-  (let [descriptor (abi/descriptor)]
+  (let [descriptor (abi/descriptor)
+        pins (read-edn "resources/jdbc/chdb/ffi-compatibility.edn")
+        deps (read-edn "deps.edn")
+        ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
+        platform (select-keys (native/platform) [:os :arch])]
     (check "descriptor validates as schema 1" descriptor
            (abi/validate-descriptor! descriptor))
     (check "provenance names the exact upstream header and oracle commit"
@@ -214,6 +223,21 @@
     (check "ordered binding generation is derived from the canonical descriptor"
            smoke-function-ids
            (mapv :function (abi/binding-specs smoke-function-ids)))
+    (check "compatibility Jolt version agrees with deps.edn"
+           (:jolt/min-version deps) (get-in pins [:jolt :version]))
+    (check "JVM FFI revision agrees with the selected deps.edn alias"
+           (get-in deps ffi-path)
+           (get-in pins [:jvm :ffi-dependency :commit]))
+    (check "compatibility native version agrees with the production selector"
+           native/version (get-in pins [:native :version]))
+    (check "compatibility archive digest agrees with the production selector"
+           (get-in native/assets [[(:os platform) (:arch platform)] :sha256])
+           (get-in pins [:native :archive-sha256
+                         [(:os platform) (:arch platform)]]))
+    (check "the running native platform is explicitly qualified"
+           true
+           (boolean (some #{platform}
+                          (get-in pins [:native :qualified-platforms]))))
 
     ;; Each mutant changes a different contract dimension. A validator that
     ;; merely parses EDN, or a test that never reaches it, would let these pass.

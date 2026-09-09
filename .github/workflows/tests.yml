@@ -53,16 +53,8 @@ jobs:
         run: test "$(jolt --version)" = "jolt v0.8.3"
       - name: Install pinned chDB
         run: jolt -M:setup-native
-      - name: Verify native ABI capability boundary
-        run: jolt -M:abi-test
-      - name: Characterize the same ABI on pinned Babashka
-        run: |
-          test "$(bb --version)" = "babashka v1.13.220"
-          actual_commit="$(bb describe | bb -i -e '(print (:git/sha (read-string (slurp *in*))))')"
-          test "$actual_commit" = "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"
-          bb -cp src:resources:test -m jdbc.chdb-abi-babashka-test
-      - name: Characterize the same ABI on Corretto JDK 25
-        run: clojure -Srepro -M:abi-babashka-jvm-test
+      - name: Qualify the selected native ABI on Jolt, Babashka, and JVM
+        run: bash scripts/qualify-ffi-runtimes.sh jolt
       - name: Install pinned Hegel native library
         run: jolt -A:test -m hegel.install
       - name: Test Durable owned threads with one Jolt carrier

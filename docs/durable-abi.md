@@ -61,17 +61,28 @@ destroys the result and closes the connection owner exactly once.
 The checked compatibility unit is recorded in
 `resources/jdbc/chdb/ffi-compatibility.edn`: Babashka `v1.13.220` at commit
 `b98575c98a0ef4df77775ff25fd7fc7b591b1afd` with embedded `babashka.ffi`
-`aacb153618bc39ca1e4c397b8f30fb81c76d0c4c`, and the same FFI revision on
-Corretto JDK `25.0.2+10-LTS`. The only qualified Phase 0 native target is stable
+source revision `aacb153618bc39ca1e4c397b8f30fb81c76d0c4c`, and the same FFI
+revision as an explicit JVM dependency on Corretto JDK `25.0.2+10-LTS`.
+Babashka does not expose the embedded FFI source revision at runtime, so the
+qualification verifies the exact Babashka tag and commit while recording that
+FFI revision as build-source provenance rather than a runtime-observed fact.
+The only qualified Phase 0 native target is stable
 libchdb `26.7.0` on Linux amd64. This is not a claim of Durable, Windows, or
 unqualified-platform support.
 
 Two controls keep this characterization meaningful. A raw C result-buffer
 pointer must reject copying until it is reinterpreted to the exact native
 length, and a binding constrained to the wrong or a missing selected library
-must reject rather than falling back to a process-global symbol. Native calls
-run on one owned OS thread; only copied bytes and scalar evidence cross its
+must reject rather than falling back to a process-global symbol. Platform and
+compatibility checks run before native loading. Library loading and `cfn`
+construction are setup operations on the invoking thread; actual native calls
+run on one owned OS thread, and only copied bytes and scalar evidence cross its
 positive join.
+
+The qualification resolves `jdbc.chdb.native/library-path` once under Jolt and
+exports that exact selection as `JOLT_CHDB_LIB` to all three hosts. This keeps
+custom `JOLT_CHDB_CACHE_DIR` and `XDG_CACHE_HOME` selections from silently
+diverging between adapters.
 
 Run all three hosts with `scripts/qualify-ffi-runtimes.sh jolt`. Local source
 work in this workspace passes the mandatory compiler selector as two arguments:
