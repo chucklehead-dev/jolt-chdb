@@ -87,3 +87,26 @@
             ((:stopped? budget)) :stopped
             (zero? (remaining-ms budget)) :deadline
             :else :retry))))))
+
+(defn run!
+  "Run retryable attempt callbacks without exposing host-specific tail calls.
+
+  `attempt!` receives the one-based attempt number and caller state. It returns
+  `{:status :done :value value}` or `{:status :retry :state next-state}`.
+  Exhaustion returns the same map shape with status `:attempt-limit`,
+  `:deadline`, or `:stopped`; callers retain certainty-specific error mapping."
+  [budget initial-state attempt!]
+  (when-not (fn? attempt!)
+    (throw (ex-info "attempt! must be callable" {:type ::invalid-options})))
+  (loop [attempt 1
+         state initial-state]
+    (let [result (attempt! attempt state)]
+      (case (:status result)
+        :done result
+        :retry
+        (let [decision (await-next! budget attempt)]
+          (if (= :retry decision)
+            (recur (inc attempt) (:state result))
+            {:status decision :attempt attempt :state (:state result)}))
+        (throw (ex-info "attempt! returned an unsupported retry status"
+                        {:type ::invalid-result}))))))
