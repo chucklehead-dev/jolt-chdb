@@ -373,6 +373,50 @@
     (writer/close! durable-writer))
 
   (let [delegate (backend/memory-backend)
+        reconciliation-entered (promise)
+        release-reconciliation (promise)
+        store (block-manifest-ambiguous-reread-store
+               delegate reconciliation-entered release-reconciliation)
+        acquired (control/acquire! store base-options)
+        close-count (atom 0)
+        operations
+        (assoc
+         (fake-operations (atom []) close-count)
+         :now-ms (fn [] 100M)
+         :await-heartbeat! (fn [stop _] @stop :stop))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :lease-expiry 1000M
+          :lease-ttl-ms 300 :heartbeat-interval-ms 100
+          :operations operations})]
+    (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
+    (let [flushing
+          (fibers/spawn
+           #(error-type (fn [] (writer/flush! durable-writer))))]
+      @reconciliation-entered
+      ;; The manifest CAS has landed, but writer 1 has not completed its proof
+      ;; read. Writer 2 may acquire the expired lease without rewriting that
+      ;; manifest. Writer 1 must observe the new generation and self-fence.
+      (control/acquire!
+       store (assoc base-options :owner "writer-2" :instance "instance-2"
+                    :now 1000M :expires-at 2000M))
+      (deliver release-reconciliation true)
+      (check "takeover fences an ambiguous manifest reconciliation"
+             ::control/lease-fenced (fibers/join flushing)))
+    (let [latest (:head (control/read-head! store))]
+      (check "takeover preserves the already-landed recovery reference"
+             [2 "writer-2" 1 1 1]
+             [(get-in latest ["lease" "generation"])
+              (get-in latest ["lease" "owner"])
+              (get-in latest ["manifest" "seq"])
+              (count (get-in latest ["manifest" "wal"]))
+              (:pending-statements (writer/status durable-writer))]))
+    (check "fenced reconciliation cleanup preserves the takeover"
+           ::control/lease-fenced
+           (error-type #(writer/close! durable-writer))))
+
+  (let [delegate (backend/memory-backend)
         acquired (control/acquire! delegate base-options)
         token (:token acquired)
         replace-count (atom 0)
