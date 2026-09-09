@@ -10,7 +10,7 @@ The implementation correspondence is deliberately small:
 | Model action | Runtime boundary |
 | --- | --- |
 | `admitClose` | `close!` changes `:open` to `:closing` under `admission-lock` and enqueues behind earlier work |
-| `elapseDuringDrain` | an owned heartbeat OS thread renews while the worker may be blocked in native code |
+| `elapseWhileHeartbeatResponsible` | an owned heartbeat OS thread renews while the worker may be blocked in native code or storage flush |
 | `finishPriorOperation` | the serialized worker reaches the close request after FIFO drain |
 | `flush` | `do-close!` calls `do-flush!` before stopping heartbeat |
 | `stopAndJoinHeartbeat` | the stop promise is delivered and the completion handshake succeeds |
@@ -19,11 +19,11 @@ The implementation correspondence is deliberately small:
 
 `STOP_HEARTBEAT_AT_ADMISSION_MUTANT` encodes the previous defect. It stops the
 heartbeat as soon as close changes the lifecycle to `Closing`, allowing time to
-expire the lease before the queued flush. The corrected model retains the
-heartbeat through `Flushed`, then joins it before release. This is a safety
-model: OS-thread scheduling is represented only by the independent
-`elapseDuringDrain` renewal opportunity, and it makes no fairness or latency
-claim. The existing head-CAS state and ITF projection are unchanged.
+expire the lease before or during the queued flush. The corrected model retains
+the heartbeat through `Flushed`, then joins it before release. This is a safety
+model: OS-thread scheduling is represented only by independent renewal/expiry
+opportunities while heartbeat is responsible, and it makes no fairness or
+latency claim. The existing head-CAS state and ITF projection are unchanged.
 
 Generated `.qnt` files live under `target/formal/quint/`; edit this Markdown,
 not those files.
@@ -49,6 +49,8 @@ module durableWriterLifecycle {
     flushed: bool,
     released: bool,
     renewedAfterRelease: bool,
+    renewedDuringDrain: bool,
+    renewedDuringFlush: bool,
     renewals: int,
   }
 
@@ -64,6 +66,8 @@ module durableWriterLifecycle {
       flushed: false,
       released: false,
       renewedAfterRelease: false,
+      renewedDuringDrain: false,
+      renewedDuringFlush: false,
       renewals: 0,
     }
 
@@ -76,9 +80,8 @@ module durableWriterLifecycle {
     },
   }
 
-  action elapseDuringDrain: bool = all {
-    lifecycle.phase == Draining,
-    lifecycle.pending,
+  action elapseWhileHeartbeatResponsible: bool = all {
+    Set(Draining, Flushing, Flushed).contains(lifecycle.phase),
     lifecycle' = {
       ...lifecycle,
       leaseLive: lifecycle.heartbeatRunning,
@@ -88,6 +91,12 @@ module durableWriterLifecycle {
       renewedAfterRelease:
         lifecycle.renewedAfterRelease
           or (lifecycle.released and lifecycle.heartbeatRunning),
+      renewedDuringDrain:
+        lifecycle.renewedDuringDrain
+          or (lifecycle.phase == Draining and lifecycle.heartbeatRunning),
+      renewedDuringFlush:
+        lifecycle.renewedDuringFlush
+          or (lifecycle.phase == Flushing and lifecycle.heartbeatRunning),
     },
   }
 
@@ -129,7 +138,7 @@ module durableWriterLifecycle {
 
   action step: bool = any {
     admitClose,
-    elapseDuringDrain,
+    elapseWhileHeartbeatResponsible,
     finishPriorOperation,
     flush,
     stopAndJoinHeartbeat,
@@ -152,7 +161,8 @@ module durableWriterLifecycle {
 
   val noRenewAfterRelease: bool = not(lifecycle.renewedAfterRelease)
   val closeReached: bool = lifecycle.phase == Closed
-  val drainRenewalReached: bool = lifecycle.renewals > 0
+  val drainRenewalReached: bool = lifecycle.renewedDuringDrain
+  val flushRenewalReached: bool = lifecycle.renewedDuringFlush
 }
 
 module durableWriterLifecycleCorrected {
@@ -171,9 +181,10 @@ module durableWriterLifecycleMutant {
 ## Executable examples
 
 The corrected trace is the runtime test's abstract projection: close admission,
-renewal during drain, operation completion, flush, heartbeat stop/join, release,
-and cleanup. The mutant is expected to violate heartbeat coverage immediately
-after close admission and to lose the lease if time elapses during drain.
+renewal during drain, operation completion, renewal during flush, flush,
+heartbeat stop/join, release, and cleanup. The mutant is expected to violate
+heartbeat coverage immediately after close admission and to lose the lease if
+time elapses during flush.
 
 ```quint target/formal/quint/durableWriterLifecycleTest.qnt +=
 module durableWriterLifecycleCorrectedTest {
@@ -184,8 +195,9 @@ module durableWriterLifecycleCorrectedTest {
   run closeDrainFlushReleaseTest =
     init
       .then(admitClose)
-      .then(elapseDuringDrain)
+      .then(elapseWhileHeartbeatResponsible)
       .then(finishPriorOperation)
+      .then(elapseWhileHeartbeatResponsible)
       .then(flush)
       .then(stopAndJoinHeartbeat)
       .then(release)
@@ -193,6 +205,7 @@ module durableWriterLifecycleCorrectedTest {
       .expect(and {
         closeReached,
         drainRenewalReached,
+        flushRenewalReached,
         releaseFollowsHeartbeatJoin,
         noRenewAfterRelease,
       })
@@ -211,8 +224,8 @@ module durableWriterLifecycleMutantTest {
   run expiryBeforeFlushWitnessTest =
     init
       .then(admitClose)
-      .then(elapseDuringDrain)
       .then(finishPriorOperation)
+      .then(elapseWhileHeartbeatResponsible)
       .expect(not(leaseCoversCloseFlush))
 }
 ```

@@ -49,8 +49,8 @@ its only carrier, and a stop signal is not proof that heartbeat has terminated.
 
 | Claim | Formal control | Runtime control | Non-vacuity / mutant |
 | --- | --- | --- | --- |
-| blocking operation cannot starve renewal | lifecycle `elapseDuringDrain` permits renewal independently | isolated `durable-thread-test` blocks longer than the initial lease | process asserts exactly one carrier and every Durable loop asserts it is off-fiber |
-| heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | blocked operation, virtual expiry, then close-time WAL commit | stopped-at-admission mutant loses coverage and lease |
+| blocking operation cannot starve renewal | lifecycle `elapseWhileHeartbeatResponsible` permits renewal independently | isolated `durable-thread-test` blocks longer than the initial lease | process asserts exactly one carrier and every Durable loop asserts it is off-fiber |
+| heartbeat covers admitted-close drain and flush | `heartbeatCoversCloseWork` and `leaseCoversCloseFlush` | blocked operation, virtual expiry, then close-time WAL commit | stopped-at-admission mutant expires the lease during flushing |
 | release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | exact close trace places stop/join before release | injected heartbeat failure is rethrown by identity while cleanup continues |
 | renewal cannot follow release | `noRenewAfterRelease` | completed trace contains every injected renewal and ends with release/cleanup | exact trace comparison rejects a late or duplicated renewal |
 

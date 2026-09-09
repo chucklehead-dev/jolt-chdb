@@ -181,13 +181,13 @@ lifecycle_sample_log="$target/writer-lifecycle-sampled.log"
 quint run "$lifecycle_model" \
   --main durableWriterLifecycleCorrected \
   --invariants heartbeatCoversCloseWork leaseCoversCloseFlush releaseFollowsHeartbeatJoin noRenewAfterRelease \
-  --witnesses closeReached drainRenewalReached \
-  --max-steps 7 \
+  --witnesses closeReached drainRenewalReached flushRenewalReached \
+  --max-steps 8 \
   --max-samples 1000 \
   --backend typescript \
   --verbosity 1 | tee "$lifecycle_sample_log"
 
-for witness in closeReached drainRenewalReached
+for witness in closeReached drainRenewalReached flushRenewalReached
 do
   if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
     "$lifecycle_sample_log"
@@ -241,7 +241,7 @@ quint verify "$writer_model" \
 quint verify "$lifecycle_model" \
   --main durableWriterLifecycleCorrected \
   --invariants heartbeatCoversCloseWork leaseCoversCloseFlush releaseFollowsHeartbeatJoin noRenewAfterRelease \
-  --max-steps 7 \
+  --max-steps 8 \
   --backend apalache \
   --apalache-version 0.56.1 \
   --verbosity 1
