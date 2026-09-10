@@ -133,19 +133,30 @@
         (neg? b) a
         :else (if (< a b) a b)))
 
+(def ^:private unsearched
+  "A needle cache slot that has never been searched, distinct from a miss."
+  -2)
+
 (defn- still-at
   "A monotonic .indexOf cache. `cached` is the last index found for `needle`,
   searched from some position at or before `from`. Because .indexOf results only
   move forward, a cached hit at or after `from` is still the next one, and a
   cached miss stays a miss for every later `from`.
 
-  Every needle the scan uses must be cached this way or the scan is quadratic: a
-  needle that is absent -- a payload with no backslash in it, say -- otherwise
-  costs a full scan to the end of the statement on each of thousands of visits."
-  ^long [^String sql ^String needle ^long cached ^long from]
-  (if (or (neg? cached) (>= cached from))
+  Slots start `unsearched` rather than seeded, because a needle that is absent
+  costs a full scan to prove it and most statements never reach the state that
+  would consult it. Seeding all nine eagerly cost 4.3 ms on a 136 KB INSERT that
+  holds no `?` at all and should have settled in one search.
+
+  A single character is searched as a character: .indexOf takes 0.24 ms that way
+  against 0.58 ms for the equivalent one-character string."
+  ^long [^String sql needle ^long cached ^long from]
+  (if (and (not= cached unsearched)
+           (or (neg? cached) (>= cached from)))
     cached
-    (.indexOf sql needle from)))
+    (if (string? needle)
+      (.indexOf sql ^String needle from)
+      (.indexOf sql (int needle) from))))
 
 (defn- scan-placeholders
   "Index of the first code-position `?` in `sql`, or -1.
@@ -158,38 +169,43 @@
   hundreds of kilobytes.
 
   Jolt has no JIT, and a bare 136k-iteration loop costs 8.4 ms here before it
-  reads a single character, while .indexOf runs at 228 M chars/s. So this does
+  reads a single character, while .indexOf runs at 455 M chars/s. So this does
   not examine characters one at a time: it jumps between the positions that can
   change lexical state and skips the spans between them, holding a monotonic
-  cache of the next occurrence of each of the nine needles it cares about. A
-  statement with no `?` in it settles in a single .indexOf; otherwise the total
-  work is proportional to how many quotes and comment markers the statement
-  contains, not to its length."
+  cache of the next occurrence of each of its nine needles. A statement with no
+  `?` in it settles in a single search, which is the common case for a bulk
+  INSERT; otherwise the work is proportional to how many quotes and comment
+  markers the statement holds, not to its length.
+
+  Every needle must be cached or the scan is quadratic: an absent needle -- a
+  payload containing no backslash, say -- otherwise costs a scan to the end of
+  the statement on each of thousands of visits to a quoted string."
   ^long [^String sql]
   (let [n (.length sql)]
     (loop [i 0
            mode :code
            depth 0
-           qm (.indexOf sql "?")
-           sq (.indexOf sql "'")
-           dq (.indexOf sql "\"")
-           bq (.indexOf sql "`")
-           lc (.indexOf sql "--")
-           bc (.indexOf sql "/*")
-           esc (.indexOf sql "\\")
-           nl (.indexOf sql "\n")
-           ce (.indexOf sql "*/")]
+           qm unsearched
+           sq unsearched
+           dq unsearched
+           bq unsearched
+           lc unsearched
+           bc unsearched
+           esc unsearched
+           nl unsearched
+           ce unsearched]
       (if (>= i n)
         -1
         (case mode
           :code
-          (let [qm (still-at sql "?" qm i)]
+          (let [qm (still-at sql 63 qm i)]
             (if (neg? qm)
-              ;; No `?` remains anywhere ahead, so no placeholder can.
+              ;; No `?` remains anywhere ahead, so no placeholder can. Reaching
+              ;; this on the first pass is one search over the whole statement.
               -1
-              (let [sq (still-at sql "'" sq i)
-                    dq (still-at sql "\"" dq i)
-                    bq (still-at sql "`" bq i)
+              (let [sq (still-at sql 39 sq i)
+                    dq (still-at sql 34 dq i)
+                    bq (still-at sql 96 bq i)
                     lc (still-at sql "--" lc i)
                     bc (still-at sql "/*" bc i)
                     opener (-> (earlier sq dq) (earlier bq) (earlier lc) (earlier bc))]
@@ -204,7 +220,7 @@
                     :else (recur (+ opener 2) :block 1 qm sq dq bq lc bc esc nl ce))))))
 
           :line
-          (let [nl (still-at sql "\n" nl i)]
+          (let [nl (still-at sql 10 nl i)]
             (if (neg? nl)
               -1
               (recur (inc nl) :code 0 qm sq dq bq lc bc esc nl ce)))
@@ -222,14 +238,13 @@
 
           ;; Quoted identifier or string literal: jump to whichever comes first,
           ;; the closing quote or a backslash escape.
-          (let [needle (case mode :single "'" :double "\"" :backtick "`")
-                q (int (case mode :single 39 :double 34 :backtick 96))
-                close (still-at sql needle
+          (let [q (int (case mode :single 39 :double 34 :backtick 96))
+                close (still-at sql q
                                 (case mode :single sq :double dq :backtick bq) i)
                 sq (if (== q 39) close sq)
                 dq (if (== q 34) close dq)
                 bq (if (== q 96) close bq)
-                esc (still-at sql "\\" esc i)]
+                esc (still-at sql 92 esc i)]
             (cond
               (neg? close) -1
               (and (>= esc 0) (< esc close))
@@ -240,7 +255,6 @@
               (recur (+ close 2) mode depth qm sq dq bq lc bc esc nl ce)
               :else
               (recur (inc close) :code 0 qm sq dq bq lc bc esc nl ce))))))))
-
 
 (defn- rewrite-placeholders* [sql params]
   (if (and (empty? params) (string? sql))
