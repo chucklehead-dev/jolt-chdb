@@ -126,6 +126,27 @@
                   :else (str value))]
     {:type inferred :value encoded}))
 
+(defn- earlier
+  "The earlier of two .indexOf results, treating -1 as \"not present\"."
+  ^long [^long a ^long b]
+  (cond (neg? a) b
+        (neg? b) a
+        :else (if (< a b) a b)))
+
+(defn- still-at
+  "A monotonic .indexOf cache. `cached` is the last index found for `needle`,
+  searched from some position at or before `from`. Because .indexOf results only
+  move forward, a cached hit at or after `from` is still the next one, and a
+  cached miss stays a miss for every later `from`.
+
+  Every needle the scan uses must be cached this way or the scan is quadratic: a
+  needle that is absent -- a payload with no backslash in it, say -- otherwise
+  costs a full scan to the end of the statement on each of thousands of visits."
+  ^long [^String sql ^String needle ^long cached ^long from]
+  (if (or (neg? cached) (>= cached from))
+    cached
+    (.indexOf sql needle from)))
+
 (defn- scan-placeholders
   "Index of the first code-position `?` in `sql`, or -1.
 
@@ -133,48 +154,95 @@
   identifiers, line and nested block comments all hide a `?` -- but it builds no
   output. When a statement carries no parameters the rewrite is the identity, so
   the only thing the walk still has to establish is that no placeholder is
-  present; conj!-ing every character into a transient vector and rebuilding the
-  string with `apply str` is pure cost. A bulk INSERT reaches here carrying its
-  rows, so that walk is over hundreds of kilobytes: measured on a 131 KB payload
-  the rebuild costs 77 ms against 15 ms for this scan."
+  present, and a bulk INSERT reaches here carrying its rows, so that walk is over
+  hundreds of kilobytes.
+
+  Jolt has no JIT, and a bare 136k-iteration loop costs 8.4 ms here before it
+  reads a single character, while .indexOf runs at 228 M chars/s. So this does
+  not examine characters one at a time: it jumps between the positions that can
+  change lexical state and skips the spans between them, holding a monotonic
+  cache of the next occurrence of each of the nine needles it cares about. A
+  statement with no `?` in it settles in a single .indexOf; otherwise the total
+  work is proportional to how many quotes and comment markers the statement
+  contains, not to its length."
   ^long [^String sql]
   (let [n (.length sql)]
-    (loop [i 0 mode :code depth 0]
+    (loop [i 0
+           mode :code
+           depth 0
+           qm (.indexOf sql "?")
+           sq (.indexOf sql "'")
+           dq (.indexOf sql "\"")
+           bq (.indexOf sql "`")
+           lc (.indexOf sql "--")
+           bc (.indexOf sql "/*")
+           esc (.indexOf sql "\\")
+           nl (.indexOf sql "\n")
+           ce (.indexOf sql "*/")]
       (if (>= i n)
         -1
-        (let [c (int (.charAt sql i))
-              nx (if (< (inc i) n) (int (.charAt sql (inc i))) -1)]
-          (case mode
-            :code
+        (case mode
+          :code
+          (let [qm (still-at sql "?" qm i)]
+            (if (neg? qm)
+              ;; No `?` remains anywhere ahead, so no placeholder can.
+              -1
+              (let [sq (still-at sql "'" sq i)
+                    dq (still-at sql "\"" dq i)
+                    bq (still-at sql "`" bq i)
+                    lc (still-at sql "--" lc i)
+                    bc (still-at sql "/*" bc i)
+                    opener (-> (earlier sq dq) (earlier bq) (earlier lc) (earlier bc))]
+                (if (or (neg? opener) (< qm opener))
+                  qm
+                  ;; Distinct leading characters, so at most one can match here.
+                  (cond
+                    (== opener dq) (recur (inc opener) :double 0 qm sq dq bq lc bc esc nl ce)
+                    (== opener sq) (recur (inc opener) :single 0 qm sq dq bq lc bc esc nl ce)
+                    (== opener bq) (recur (inc opener) :backtick 0 qm sq dq bq lc bc esc nl ce)
+                    (== opener lc) (recur (+ opener 2) :line 0 qm sq dq bq lc bc esc nl ce)
+                    :else (recur (+ opener 2) :block 1 qm sq dq bq lc bc esc nl ce))))))
+
+          :line
+          (let [nl (still-at sql "\n" nl i)]
+            (if (neg? nl)
+              -1
+              (recur (inc nl) :code 0 qm sq dq bq lc bc esc nl ce)))
+
+          :block
+          (let [bc (still-at sql "/*" bc i)
+                ce (still-at sql "*/" ce i)]
             (cond
-              (== c 63) i                                   ; ?
-              (== c 39) (recur (unchecked-inc i) :single 0)  ; '
-              (== c 34) (recur (unchecked-inc i) :double 0)  ; "
-              (== c 96) (recur (unchecked-inc i) :backtick 0); `
-              (and (== c 45) (== nx 45)) (recur (+ i 2) :line 0)   ; --
-              (and (== c 47) (== nx 42)) (recur (+ i 2) :block 1)  ; /*
-              :else (recur (unchecked-inc i) :code 0))
+              (neg? ce) -1
+              (and (>= bc 0) (< bc ce))
+              (recur (+ bc 2) :block (inc depth) qm sq dq bq lc bc esc nl ce)
+              :else
+              (let [d (dec depth)]
+                (recur (+ ce 2) (if (zero? d) :code :block) d qm sq dq bq lc bc esc nl ce))))
 
-            :line
-            (recur (unchecked-inc i) (if (== c 10) :code :line) 0)
-
-            :block
+          ;; Quoted identifier or string literal: jump to whichever comes first,
+          ;; the closing quote or a backslash escape.
+          (let [needle (case mode :single "'" :double "\"" :backtick "`")
+                q (int (case mode :single 39 :double 34 :backtick 96))
+                close (still-at sql needle
+                                (case mode :single sq :double dq :backtick bq) i)
+                sq (if (== q 39) close sq)
+                dq (if (== q 34) close dq)
+                bq (if (== q 96) close bq)
+                esc (still-at sql "\\" esc i)]
             (cond
-              (and (== c 47) (== nx 42)) (recur (+ i 2) :block (inc depth))
-              (and (== c 42) (== nx 47)) (let [d (dec depth)]
-                                           (recur (+ i 2) (if (zero? d) :code :block) d))
-              :else (recur (unchecked-inc i) :block depth))
-
-            ;; Quoted identifier or string literal.
-            (let [q (case mode :single 39 :double 34 :backtick 96)]
-              (cond
-                (and (== c 92) (not= nx -1)) (recur (+ i 2) mode depth)
-                (and (== c q) (== nx q)) (recur (+ i 2) mode depth)
-                (== c q) (recur (unchecked-inc i) :code 0)
-                :else (recur (unchecked-inc i) mode depth)))))))))
+              (neg? close) -1
+              (and (>= esc 0) (< esc close))
+              (if (>= (inc esc) n)
+                -1
+                (recur (+ esc 2) mode depth qm sq dq bq lc bc esc nl ce))
+              (and (< (inc close) n) (== q (int (.charAt sql (inc close)))))
+              (recur (+ close 2) mode depth qm sq dq bq lc bc esc nl ce)
+              :else
+              (recur (inc close) :code 0 qm sq dq bq lc bc esc nl ce))))))))
 
 
-(defn- rewrite-placeholders [sql params]
+(defn- rewrite-placeholders* [sql params]
   (if (and (empty? params) (string? sql))
     ;; No parameters: the rewrite is the identity, so only the absence of a
     ;; placeholder still has to be proved. Same error as the rebuilding path.
@@ -245,6 +313,33 @@
                   (recur (inc i) :code 0 pindex (conj! out c))
                   :else
                   (recur (inc i) mode block-depth pindex (conj! out c)))))))))))
+
+(def ^:private last-rewrite
+  "One-entry memo of the most recent placeholder rewrite.
+
+  The Durable path walks every statement twice: `classification-sql` builds the
+  shape the classifier sees, then `execute-native` rewrites the same statement
+  for the native call. Both are the same pure function of the same two objects,
+  and for a bulk INSERT that statement carries the entire payload, so the second
+  walk is repeated work over hundreds of kilobytes.
+
+  Keyed by identity rather than value, so a hit requires the caller to have
+  handed both calls the same string and the same parameter sequence -- which is
+  what the Durable writer does -- and a miss costs only the rewrite that would
+  have happened anyway. A throwing rewrite is never stored, so an invalid
+  statement raises on every call. The entry holds the last statement alive until
+  the next one replaces it."
+  (atom nil))
+
+(defn- rewrite-placeholders [sql params]
+  (let [memo @last-rewrite]
+    (if (and memo
+             (identical? sql (nth memo 0))
+             (identical? params (nth memo 1)))
+      (nth memo 2)
+      (let [result (rewrite-placeholders* sql params)]
+        (reset! last-rewrite [sql params result])
+        result))))
 
 (defn classification-sql
   "Return the value-free SQL shape executed for a parameterized query.
