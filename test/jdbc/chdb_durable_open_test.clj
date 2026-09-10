@@ -13,7 +13,8 @@
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.core :as jdbc]
             [jolt.fibers :as fibers])
-  (:import [java.nio.file Files Path]))
+  (:import [java.nio.file Files Path]
+           [java.util.concurrent ArrayBlockingQueue]))
 
 (def failures (atom 0))
 
@@ -209,6 +210,142 @@
                  (backend/replace-if-match! delegate key bytes etag)))
       (download-to-file! [_ key path]
         (backend/download-to-file! delegate key path)))))
+
+(defn- renewal-failure-backend
+  [delegate fail-replace? replacement-events renewal-failures]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (if (and (= control/head-key key) @fail-replace?)
+        (do
+          (.put ^ArrayBlockingQueue renewal-failures :failed)
+          (throw (ex-info "injected renewal replacement failure"
+                          {:type ::renewal-replace-failed})))
+        (let [result (backend/replace-if-match! delegate key bytes etag)]
+          (when (and (= control/head-key key)
+                     (= :replaced (:status result)))
+            (.put ^ArrayBlockingQueue replacement-events :replaced))
+          result)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- await-writable-state [opened expected]
+  (loop [remaining 10000]
+    (let [actual (:writable? (writer/status opened))]
+      (if (or (= expected actual) (zero? remaining))
+        actual
+        (do (Thread/yield) (recur (dec remaining)))))))
+
+(defn- run-renewal-failure-conformance! []
+  (println "Durable public writer renewal-loss self-fencing")
+  (let [delegate (backend/memory-backend)
+        fail-replace? (atom false)
+        replacement-events (ArrayBlockingQueue. 8)
+        renewal-failures (ArrayBlockingQueue. 8)
+        heartbeat-signals (ArrayBlockingQueue. 8)
+        store (renewal-failure-backend
+               delegate fail-replace? replacement-events renewal-failures)
+        now (atom 100M)
+        calls (atom [])
+        execute-effects (atom 0)
+        flush-effects (atom 0)
+        checkpoint-effects (atom 0)
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        base-operations
+        (support/fake-open-operations
+         calls (atom [100M]) close-count cleanup-count)
+        operations
+        (assoc base-operations
+               :now-ms #(deref now)
+               :await-heartbeat!
+               (fn [stop _]
+                 (if (realized? stop)
+                   :stop
+                   (.take ^ArrayBlockingQueue heartbeat-signals)))
+               :execute-native!
+               (fn [handle sql params]
+                 (swap! execute-effects inc)
+                 ((:execute-native! base-operations) handle sql params))
+               :publish-wal!
+               (fn [_ _ _]
+                 (swap! flush-effects inc)
+                 (throw (ex-info "fenced flush reached publication"
+                                 {:type ::unexpected-flush-effect})))
+               :create-checkpoint!
+               (fn [handle database scratch]
+                 (swap! checkpoint-effects inc)
+                 ((:create-checkpoint! base-operations)
+                  handle database scratch)))
+        opened
+        (durable/open-writer!
+         {:store store :owner "renewal-writer"
+          :instance "renewal-attempt" :database "default"
+          :lease-ttl-ms 600M :heartbeat-interval-ms 150M
+          :operations operations})]
+    ;; Public open performs one recovery renewal before returning. Remove that
+    ;; event so the next observation belongs to the live heartbeat.
+    (.clear ^ArrayBlockingQueue replacement-events)
+    (let [read-before (writer/query! opened "SELECT ?" [4])
+          expiry-before
+          (get-in (:head (control/read-head! store))
+                  ["lease" "expires_at"])]
+      (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+      (check "successful heartbeat control reaches the public head CAS"
+             :replaced (.take ^ArrayBlockingQueue replacement-events))
+      (let [expiry-after
+            (get-in (:head (control/read-head! store))
+                    ["lease" "expires_at"])]
+        (check "successful heartbeat control extends the public lease"
+               true (> expiry-after expiry-before))
+        (reset! fail-replace? true)
+        (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+        (check "injected live renewal loss reaches the public backend"
+               :failed (.take ^ArrayBlockingQueue renewal-failures))
+        (check "one failed renewal before expiry does not fence prematurely"
+               [true expiry-after]
+               [(await-writable-state opened true)
+                (get-in (:head (control/read-head! store))
+                        ["lease" "expires_at"])]))
+      ;; Advance beyond the last proved expiry. The next heartbeat opportunity
+      ;; must fence locally rather than attempt another replacement.
+      (reset! now 10000M)
+      (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+      (check "renewal loss through expiry self-fences the public writer"
+             false (await-writable-state opened false))
+      (let [calls-before @calls]
+        (check "self-fenced public execute is refused"
+               ::control/lease-fenced
+               (error-type
+                #(writer/execute! opened "INSERT INTO t VALUES (1)")))
+        (check "self-fenced public flush is refused"
+               ::control/lease-fenced
+               (error-type #(writer/flush! opened)))
+        (check "self-fenced public checkpoint is refused"
+               ::control/lease-fenced
+               (error-type #(writer/checkpoint! opened)))
+        (let [read-after (writer/query! opened "SELECT ?" [4])]
+          (check "established public writer reads survive self-fencing"
+                 read-before read-after))
+        (check "fenced operations stop before native or persistence effects"
+               [[:analyze-query "SELECT ?" "default"]
+                [:query "SELECT ?" [4]]]
+               (vec (drop (count calls-before) @calls))))
+      (check "post-fence execute flush and checkpoint effect counters stay zero"
+             [0 0 0]
+             [@execute-effects @flush-effects @checkpoint-effects])
+      (reset! fail-replace? false)
+      (check "self-fenced close retains the public fencing category"
+             ::control/lease-fenced
+             (error-type #(writer/close! opened)))
+      (check "self-fenced public writer still closes and cleans up"
+             [1 1]
+             [@close-count @cleanup-count]))))
 
 (def ^:private python-time-fixture
   "test/fixtures/durable/python-decimal-time-oracle.json")
@@ -443,6 +580,7 @@
   (println "Durable V1 public writer open and recovery")
   (run-json-shape-conformance!)
   (run-reference-conformance!)
+  (run-renewal-failure-conformance!)
   (check "release precedence orders release after its prerelease"
          true (pos? (durable/compare-release-versions
                      "26.7.2" "26.7.2-rc.2")))
