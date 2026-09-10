@@ -6,6 +6,13 @@
   retaining full-byte size limits and fail-closed duplicate, malformed,
   non-UTF-8, BOM, and multiple-value handling.
 
+- Add an offline, SHA-pinned inventory of all 49 upstream Durable V1 cases, an
+  obligation-by-obligation local mapping/blocker record, and a focused drift
+  gate. This is Phase 1 qualification evidence, not a full V1 conformance claim.
+
+- Record the running producer version when acquiring an existing Durable head,
+  and atomically record that producer plus non-lowering backup-format and
+  minimum-reader requirements with each full checkpoint.
 - Keep a Durable V1 lease held through equality at
   `expires_at + clock_skew`, allowing normal takeover only after that boundary
   while preserving the current writer's conservative self-fence at expiry.

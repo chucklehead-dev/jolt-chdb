@@ -74,6 +74,8 @@ jobs:
           echo "$install_dir" >> "$GITHUB_PATH"
       - name: Assert Jolt version
         run: test "$(jolt --version)" = "jolt v0.8.3"
+      - name: Verify pinned Durable conformance inventory
+        run: jolt -Srepro -M:durable-conformance-inventory-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
       - name: Qualify the selected native ABI on Jolt, Babashka, and JVM

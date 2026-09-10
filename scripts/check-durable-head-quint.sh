@@ -13,6 +13,9 @@ writer_model="$target/durableWriterBoundary.qnt"
 writer_tests="$target/durableWriterBoundaryTest.qnt"
 lease_time_model="$target/durableLeaseTime.qnt"
 lease_time_tests="$target/durableLeaseTimeTest.qnt"
+engine_metadata_model="$target/durableEngineMetadata.qnt"
+engine_metadata_tests="$target/durableEngineMetadataTest.qnt"
+engine_metadata_trace="$target/engine-metadata.itf.json"
 lifecycle_model="$target/durableWriterLifecycle.qnt"
 lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 required_quint_version=0.32.0
@@ -65,6 +68,8 @@ quint typecheck "$writer_model"
 quint typecheck "$writer_tests"
 quint typecheck "$lease_time_model"
 quint typecheck "$lease_time_tests"
+quint typecheck "$engine_metadata_model"
+quint typecheck "$engine_metadata_tests"
 quint typecheck "$lifecycle_model"
 quint typecheck "$lifecycle_tests"
 
@@ -75,6 +80,32 @@ quint test "$lease_time_tests" \
   --match '.*Test' \
   --backend typescript \
   --verbosity 1
+
+quint test "$engine_metadata_tests" \
+  --main durableEngineMetadataTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+engine_metadata_sample_log="$target/engine-metadata-sampled.log"
+quint run "$engine_metadata_model" \
+  --main durableEngineMetadataCorrected \
+  --invariant engineMetadataIsSound \
+  --witnesses takeoverReached checkpointReached \
+  --max-steps 2 \
+  --max-samples 100 \
+  --backend typescript \
+  --verbosity 1 | tee "$engine_metadata_sample_log"
+
+for witness in takeoverReached checkpointReached
+do
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
+    "$engine_metadata_sample_log"
+  then
+    echo "required engine-metadata witness was not reached: $witness" >&2
+    exit 1
+  fi
+done
 
 quint test "$tests" \
   --main durableHeadCasCorrectedTest \
@@ -176,6 +207,11 @@ quint test "$publication_tests" \
 cmp "$target/corrected-mbt.itf.json" \
   "$repo_root/formal/quint/traces/corrected-mbt.itf.json"
 
+"$repo_root/scripts/generate-durable-engine-metadata-itf.sh" \
+  "$engine_metadata_trace"
+cmp "$engine_metadata_trace" \
+  "$repo_root/formal/quint/traces/engine-metadata.itf.json"
+
 sample_log="$target/corrected-sampled.log"
 quint run "$model" \
   --main durableHeadCasCorrected \
@@ -267,6 +303,52 @@ if [[ $mode == fast ]]
 then
   exit 0
 fi
+
+quint verify "$engine_metadata_model" \
+  --main durableEngineMetadataCorrected \
+  --invariant engineMetadataIsSound \
+  --max-steps 2 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+expect_engine_metadata_violation() {
+  local main=$1
+  local slug=$2
+  local log="$target/$slug.log"
+  local status
+
+  set +e
+  quint verify "$engine_metadata_model" \
+    --main "$main" \
+    --invariant engineMetadataIsSound \
+    --max-steps 2 \
+    --backend apalache \
+    --apalache-version 0.56.1 \
+    --out-itf "$target/$slug.itf.json" \
+    --verbosity 1 >"$log" 2>&1
+  status=$?
+  set -e
+
+  if [[ $status -eq 0 ]] || ! grep -Eq '^\[violation\] Found an issue' "$log"
+  then
+    cat "$log" >&2
+    echo "$slug did not produce the expected counterexample" >&2
+    exit 1
+  fi
+
+  cat "$log"
+}
+
+expect_engine_metadata_violation \
+  durableEngineMetadataAcquisitionOmissionMutant \
+  engine-metadata-acquisition-omission-mutant
+expect_engine_metadata_violation \
+  durableEngineMetadataCheckpointOmissionMutant \
+  engine-metadata-checkpoint-omission-mutant
+expect_engine_metadata_violation \
+  durableEngineMetadataLoweringMutant \
+  engine-metadata-lowering-mutant
 
 quint verify "$model" \
   --main durableHeadCasCorrected \

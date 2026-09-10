@@ -1,0 +1,59 @@
+{:schema 1
+ :source
+ {:repository "https://github.com/chdb-io/chdb.git"
+  :commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
+  :protocol {:path "docs/durable/protocol-v1.mdx"
+             :sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"}
+  :suite {:path "tests/test_durable.py"
+          :sha256 "5b9a97a3bccc0c29b10aca6b6e9a72edceea6a79e19d9a54c900b10d24f5eee6"
+          :case-count 49}}
+ :cases
+ [{:id :upstream/empty-object :name "test_empty_object"}
+  {:id :upstream/readonly-missing-object :name "test_readonly_missing_object"}
+  {:id :upstream/checkpoint-only :name "test_checkpoint_only"}
+  {:id :upstream/checkpoint-plus-wal :name "test_checkpoint_plus_wal"}
+  {:id :upstream/quoted-database-name :name "test_quoted_database_name"}
+  {:id :upstream/missing-base-and-wal :name "test_missing_base_and_wal"}
+  {:id :upstream/bad-base-size-and-digest :name "test_bad_base_size_and_digest"}
+  {:id :upstream/bad-wal-size-and-digest :name "test_bad_wal_size_and_digest"}
+  {:id :upstream/unknown-reader-feature :name "test_unknown_reader_feature"}
+  {:id :upstream/unknown-writer-feature :name "test_unknown_writer_feature"}
+  {:id :upstream/future-protocol-version :name "test_future_protocol_version"}
+  {:id :upstream/producer-version-differs-but-compatible :name "test_producer_version_differs_but_compatible"}
+  {:id :upstream/engine-reader-too-old :name "test_engine_reader_too_old"}
+  {:id :upstream/backup-format-too-new :name "test_backup_format_too_new"}
+  {:id :upstream/unknown-fields-round-trip :name "test_unknown_fields_round_trip"}
+  {:id :upstream/json-shape-is-not-frozen :name "test_json_shape_is_not_frozen"}
+  {:id :upstream/gates-cannot-be-bypassed-by-method-choice :name "test_gates_cannot_be_bypassed_by_method_choice"}
+  {:id :upstream/multi-statement-and-parallel-with-refused :name "test_multi_statement_and_parallel_with_refused"}
+  {:id :upstream/writes-outside-the-object-refused :name "test_writes_outside_the_object_refused"}
+  {:id :upstream/database-lifecycle-refused :name "test_database_lifecycle_refused"}
+  {:id :upstream/mutating-global-refused :name "test_mutating_global_refused"}
+  {:id :upstream/control-statements-refused :name "test_control_statements_refused"}
+  {:id :upstream/secret-mutation-refused-without-leaking :name "test_secret_mutation_refused_without_leaking"}
+  {:id :upstream/secret-read-only-runs-and-is-not-logged :name "test_secret_read_only_runs_and_is_not_logged"}
+  {:id :upstream/unknown-statement-fails-closed :name "test_unknown_statement_fails_closed"}
+  {:id :upstream/limits-report-limit-exceeded :name "test_limits_report_limit_exceeded"}
+  {:id :upstream/conditional-create-race :name "test_conditional_create_race"}
+  {:id :upstream/wal-put-lands-but-head-cas-fails :name "test_wal_put_lands_but_head_cas_fails"}
+  {:id :upstream/head-cas-committed-but-response-lost :name "test_head_cas_committed_but_response_lost"}
+  {:id :upstream/unprovable-commit-is-ambiguous :name "test_unprovable_commit_is_ambiguous"}
+  {:id :upstream/wal-upload-landed-but-response-lost :name "test_wal_upload_landed_but_response_lost"}
+  {:id :upstream/checkpoint-put-lands-but-head-cas-fails :name "test_checkpoint_put_lands_but_head_cas_fails"}
+  {:id :upstream/restore-failure-frees-the-engine :name "test_restore_failure_frees_the_engine"}
+  {:id :upstream/heartbeat-renews-without-moving-generation-or-seq :name "test_heartbeat_renews_without_moving_generation_or_seq"}
+  {:id :upstream/writer-self-fences-when-renewal-fails :name "test_writer_self_fences_when_renewal_fails"}
+  {:id :upstream/takeover-fences-the-previous-writer :name "test_takeover_fences_the_previous_writer"}
+  {:id :upstream/close-releases-and-then-refuses :name "test_close_releases_and_then_refuses"}
+  {:id :upstream/lease-exclusion-and-same-owner-instance :name "test_lease_exclusion_and_same_owner_instance"}
+  {:id :upstream/expired-lease-is-taken-without-force :name "test_expired_lease_is_taken_without_force"}
+  {:id :upstream/unexpired-lease-needs-force :name "test_unexpired_lease_needs_force"}
+  {:id :upstream/object-id-validation-and-path-traversal :name "test_object_id_validation_and_path_traversal"}
+  {:id :upstream/sibling-isolation :name "test_sibling_isolation"}
+  {:id :upstream/destroy-refuses-an-active-lease :name "test_destroy_refuses_an_active_lease"}
+  {:id :upstream/scan-across-objects :name "test_scan_across_objects"}
+  {:id :upstream/reopen-honors-persisted-db :name "test_reopen_honors_persisted_db"}
+  {:id :upstream/cold-open-lands-in-the-objects-database :name "test_cold_open_lands_in_the_objects_database"}
+  {:id :upstream/wal-replay-uses-the-objects-database :name "test_wal_replay_uses_the_objects_database"}
+  {:id :upstream/wal-keys-are-unique :name "test_wal_keys_are_unique"}
+  {:id :upstream/constructor-validation :name "test_constructor_validation"}]}

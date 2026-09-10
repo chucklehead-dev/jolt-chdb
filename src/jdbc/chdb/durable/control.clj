@@ -7,6 +7,7 @@
   the returned opaque ETag exactly once."
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.compatibility :as compatibility]
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.head :as head]
             [jdbc.chdb.durable.retry :as retry])
@@ -191,11 +192,14 @@
                     (:force? options))
         (fail! ::lease-held "Another writer holds the Durable lease"))
       (let [generation (next-generation current)
-            intended (assoc current "lease"
-                            (active-lease generation
-                                          (:owner options)
-                                          (:instance options)
-                                          (:expires-at options)))
+            intended (-> current
+                         (assoc "lease"
+                                (active-lease generation
+                                              (:owner options)
+                                              (:instance options)
+                                              (:expires-at options)))
+                         (assoc-in ["engine" "version"]
+                                   (:engine-version options)))
             {desired :head bytes :bytes} (encoded-head intended)
             token (ownership desired)
             result (backend/replace-if-match!
@@ -242,6 +246,7 @@
           :as options}]
   (nonblank! owner "owner")
   (nonblank! instance "instance")
+  (nonblank! (:engine-version options) "engine-version")
   (nonnegative-time! expires-at "expires-at")
   (nonnegative-time! now "now")
   (nonnegative-time! clock-skew "clock-skew")
@@ -613,8 +618,37 @@
                  "-[0-9a-f]{8}\\." extension))
            (get reference "key"))))))
 
+(defn- checkpoint-engine
+  [current metadata]
+  (when-not (map? metadata)
+    (fail! ::invalid-options
+           "Checkpoint engine-metadata is required"))
+  (let [{:keys [version backup-format min-reader]} metadata
+        engine (get current "engine")]
+    (nonblank! version "engine-metadata version")
+    (when-not (and (integer? backup-format) (not (neg? backup-format)))
+      (fail! ::invalid-options
+             "engine-metadata backup-format must be a nonnegative integer"))
+    (nonblank! min-reader "engine-metadata min-reader")
+    (when (< backup-format (get engine "backup_format"))
+      (fail! ::invalid-options
+             "A checkpoint cannot lower the Durable backup format"))
+    (let [comparison
+          (compatibility/compare-release-versions
+           min-reader (get engine "min_reader"))]
+      (when (nil? comparison)
+        (fail! ::invalid-options
+               "Checkpoint minimum-reader releases must be comparable"))
+      (when (neg? comparison)
+        (fail! ::invalid-options
+               "A checkpoint cannot lower the Durable minimum reader")))
+    (-> engine
+        (assoc "version" version)
+        (assoc "backup_format" backup-format)
+        (assoc "min_reader" min-reader))))
+
 (defn- reference-transition
-  [current token kind reference]
+  [current token kind reference engine-metadata]
   (let [next-seq (inc (get-in current ["manifest" "seq"]))]
     (when (> next-seq head/max-safe-integer)
       (fail! ::sequence-exhausted
@@ -632,27 +666,34 @@
             (-> current
                 (assoc-in ["manifest" "base"] reference)
                 (assoc-in ["manifest" "wal"] [])
-                (assoc-in ["manifest" "seq"] next-seq)))]
+                (assoc-in ["manifest" "seq"] next-seq)
+                (assoc "engine"
+                       (checkpoint-engine current engine-metadata))))]
       ;; This proves canonical key generation/sequence and retains all unknown
       ;; fields before any CAS reaches the backend.
       (head/validate! desired :writer)
       {:desired desired :next-seq next-seq})))
 
 (defn- reference-landed?
-  [kind reference next-seq latest]
+  [kind reference next-seq engine-metadata latest]
   (let [manifest (get latest "manifest")]
     (and (= next-seq (get manifest "seq"))
          (case kind
            :wal (= reference (peek (get manifest "wal")))
-           :checkpoint (and (= reference (get manifest "base"))
-                            (empty? (get manifest "wal")))))))
+           :checkpoint
+           (and (= reference (get manifest "base"))
+                (empty? (get manifest "wal"))
+                (= (checkpoint-engine latest engine-metadata)
+                   (get latest "engine")))))))
 
 (defn- commit-reference-attempt!
-  [store token kind reference {:keys [phase snapshot] :as state}]
+  [store token kind reference engine-metadata
+   {:keys [phase snapshot] :as state}]
   (if (= :reconcile phase)
     (if-let [latest (reread store)]
       (let [{:keys [next-seq]} (:transition state)
-            landed? #(reference-landed? kind reference next-seq %)]
+            landed? #(reference-landed? kind reference next-seq
+                                        engine-metadata %)]
         (cond
           (not (owns? (:head latest) token))
           (fail! ::lease-fenced "The Durable writer has lost its lease")
@@ -666,9 +707,10 @@
       {:status :retry :state state})
     (let [current (assert-owned! (:head snapshot) token)
         {:keys [desired next-seq]}
-        (reference-transition current token kind reference)
+        (reference-transition current token kind reference engine-metadata)
         {canonical :head bytes :bytes} (encoded-head desired)
-        landed? #(reference-landed? kind reference next-seq %)
+        landed? #(reference-landed? kind reference next-seq
+                                    engine-metadata %)
         result (backend/replace-if-match!
                 store head-key bytes (:etag snapshot))]
     (case (:status result)
@@ -708,9 +750,11 @@
   object against the reference's size and SHA-256. The verification completes
   before the head CAS without excluding same-owner lease renewal. Definite
   heartbeat CAS conflicts retry from the latest owned head; ambiguous CAS
-  outcomes never retry. Checkpoint commits replace the base and clear WAL; WAL
+  outcomes never retry. Checkpoint commits require and atomically install
+  producer `engine-metadata` while replacing the base and clearing WAL; WAL
   commits append exactly one reference."
-  [store token {:keys [kind reference verify-reference! max-attempts]
+  [store token {:keys [kind reference verify-reference! max-attempts
+                       engine-metadata]
                 :or {max-attempts default-commit-attempts}
                 :as options}]
   (when-not (contains? #{:wal :checkpoint} kind)
@@ -724,7 +768,7 @@
   (let [initial (or (read-head! store)
                     (fail! ::lease-fenced "The Durable head no longer exists"))
         initial-current (assert-owned! (:head initial) token)]
-    (reference-transition initial-current token kind reference)
+    (reference-transition initial-current token kind reference engine-metadata)
     (when-not (verify-reference! store reference)
       (fail! ::object-unverified
              "The immutable Durable object could not be verified"))
@@ -740,6 +784,7 @@
                      (fail! ::lease-fenced
                             "The Durable head no longer exists"))}
       (fn [_ snapshot]
-        (commit-reference-attempt! store token kind reference snapshot)))
+        (commit-reference-attempt! store token kind reference
+                                   engine-metadata snapshot)))
      "Durable reference commit exceeded its retry bounds"
      "The Durable head update could not be proved before its deadline")))

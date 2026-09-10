@@ -11,6 +11,7 @@
             [jdbc.chdb-durable-aspect-manifest-test :as durable-aspect-manifest]
             [jdbc.chdb-durable-control-test :as durable-control]
             [jdbc.chdb-durable-itf-test :as durable-itf]
+            [jdbc.chdb-durable-engine-metadata-itf-test :as durable-engine-metadata-itf]
             [jdbc.chdb-durable-writer-test :as durable-writer]
             [jdbc.chdb-durable-writer-concurrency-test :as durable-writer-concurrency]
             [jdbc.chdb-durable-worker-join-test :as durable-worker-join]
@@ -680,6 +681,7 @@
   (durable-aspect-manifest/run-checks!)
   (durable-control/run-checks!)
   (durable-itf/run-checks!)
+  (durable-engine-metadata-itf/run-checks!)
   (durable-writer/run-checks!)
   (durable-writer-concurrency/run-checks!)
   (durable-worker-join/run-checks!)

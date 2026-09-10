@@ -253,9 +253,11 @@ another storage attempt and retains any uncommitted recovery work.
 Opening a writer follows this order:
 
 1. Check that the selected native library has the Durable ABI and can read the
-   manifest's engine version and backup format.
+   manifest's backup format and minimum-reader release. The producer version is
+   informational and is not an exact-match gate.
 2. Acquire a missing, released, or expired lease. Each takeover increments its
-   generation.
+   generation and records the running producer version without changing the
+   stored backup-format or minimum-reader requirements.
 3. Create private scratch storage, restore the checkpoint if present, replay
    WAL statements in manifest order, select the logical database, and renew the
    lease again before returning the writer.
@@ -318,7 +320,9 @@ both pending recovery obligations if that outcome cannot be proved.
 
 `checkpoint!` creates a full native backup, streams and verifies its immutable
 publication, and then conditionally replaces the checkpoint reference while
-clearing covered WALs. A successful close drains queued work, flushes pending
+clearing covered WALs. That same head CAS records the running producer version,
+the writer's archive format, and a minimum reader that never moves backward.
+A successful close drains queued work, flushes pending
 statements, releases the lease, closes chDB, removes scratch storage, and
 positively joins the owned operation OS thread before returning. Reader close
 has the same worker-join boundary after native close and scratch cleanup. Thus

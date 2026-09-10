@@ -17,6 +17,7 @@ on:
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
+      - scripts/generate-durable-engine-metadata-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - test/durable-model-path-classifier.sh
@@ -38,6 +39,7 @@ on:
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
+      - scripts/generate-durable-engine-metadata-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - test/durable-model-path-classifier.sh
