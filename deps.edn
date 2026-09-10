@@ -84,6 +84,9 @@
            :durable-epoch-seconds-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-epoch-seconds-test"]}
+           :durable-time-domain-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-time-domain-test"]}
            :durable-dbspec-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
@@ -182,6 +185,7 @@
          durable-open-test "jolt -M:durable-open-test"
          durable-compatibility-test "jolt -M:durable-compatibility-test"
          durable-epoch-seconds-test "jolt -M:durable-epoch-seconds-test"
+         durable-time-domain-test "jolt -M:durable-time-domain-test"
          durable-dbspec-test "jolt -M:durable-dbspec-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-head-whitespace-test "jolt -M:durable-head-whitespace-test"

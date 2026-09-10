@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bound Durable public TTL, heartbeat, skew, observed clocks, and derived lease
+  comparisons to integral cross-runtime-safe milliseconds, while preserving
+  bounded fractional epoch seconds on the wire. Direct open and raw head decode
+  now reject truncating or extreme-time mutants before storage/native mutation;
+  these checks are documented as local adapter policy, with the independent
+  cross-binding unit oracle remaining open in issue #51.
+
 - Reject malformed Durable producer and minimum-reader releases at fresh
   acquisition, takeover, and checkpoint boundaries using the canonical pinned
   compatibility parser, before conditional publication, verification, or head

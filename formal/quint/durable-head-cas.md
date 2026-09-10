@@ -2285,8 +2285,18 @@ a lease remains held at the skew-adjusted expiry, and normal takeover becomes
 eligible one millisecond later. The main head-CAS model still abstracts the
 eligibility decision as a successful acquisition choice.
 
+The bound is the local adapter's JavaScript-safe millisecond magnitude, not a
+new Protocol V1 requirement. This integer model checks the magnitude and wire
+unit projection; runtime boundary tests remain authoritative for rejecting
+fractional public millisecond inputs, accepting arbitrary supported JSON decimal
+fractions, validating observed clocks and derived sums, and preserving storage
+before rejection. The unit tag is not an independent raw-byte oracle; that
+cross-binding obligation remains tracked separately in issue #51.
+
 ```quint target/formal/quint/durableLeaseTime.qnt +=
 module durableLeaseTime {
+  pure val maxSafeEpochMillis: int = 9007199254740991
+
   type EpochUnit = EpochSeconds | EpochMilliseconds
 
   type WireEpoch = {
@@ -2310,10 +2320,20 @@ module durableLeaseTime {
     unit: EpochMilliseconds,
   }
 
-  pure def wellDimensioned(wire: WireEpoch): bool = and {
+  pure def supportedEpochMillis(epochMillis: int): bool = and {
+    epochMillis >= 0,
+    epochMillis <= maxSafeEpochMillis,
+  }
+
+  pure def unboundedWireMutant(wire: WireEpoch): bool = and {
     wire.unit == EpochSeconds,
     wire.millisecondFraction >= 0,
     wire.millisecondFraction < 1000,
+  }
+
+  pure def wellDimensioned(wire: WireEpoch): bool = and {
+    unboundedWireMutant(wire),
+    supportedEpochMillis(wireToEpochMillis(wire)),
   }
 
   pure def leaseHeldAt(
@@ -2356,6 +2376,25 @@ module durableLeaseTimeTest {
     and {
       wellDimensioned(wire),
       wireToEpochMillis(wire) == 0,
+    }
+  }
+
+  run exactSafeBoundaryRoundTripsTest = {
+    val wire = epochMillisToWire(maxSafeEpochMillis)
+    and {
+      wellDimensioned(wire),
+      wire.wholeSeconds == 9007199254740,
+      wire.millisecondFraction == 991,
+      wireToEpochMillis(wire) == maxSafeEpochMillis,
+    }
+  }
+
+  run oneMillisecondOverBoundaryIsRejectedTest = {
+    val wire = epochMillisToWire(maxSafeEpochMillis + 1)
+    and {
+      unboundedWireMutant(wire),
+      not(wellDimensioned(wire)),
+      not(supportedEpochMillis(maxSafeEpochMillis + 1)),
     }
   }
 

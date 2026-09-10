@@ -13,6 +13,7 @@
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.retry :as retry]
+            [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto])
@@ -59,14 +60,8 @@
     (fail! ::invalid-options (str label " must be a nonblank string")))
   value)
 
-(defn- finite-number? [value]
-  (and (number? value)
-       (= value value)
-       (not= value ##Inf)
-       (not= value ##-Inf)))
-
 (defn- whole-milliseconds? [value]
-  (and (finite-number? value)
+  (and (time-domain/finite-number? value)
        (<= Long/MIN_VALUE value Long/MAX_VALUE)
        (zero? (rem value 1))))
 
@@ -78,6 +73,36 @@
 (defn- nonnegative-integer! [value label]
   (when-not (and (whole-milliseconds? value) (not (neg? value)))
     (fail! ::invalid-options (str label " must be a nonnegative integer")))
+  value)
+
+(defn- positive-lease-milliseconds! [value label]
+  (when-not (time-domain/supported-positive-milliseconds? value)
+    (fail! ::invalid-options
+           (str label " must be a positive whole number of milliseconds "
+                "in the supported cross-runtime range")))
+  value)
+
+(defn- nonnegative-lease-milliseconds! [value label]
+  (when-not (time-domain/supported-nonnegative-milliseconds? value)
+    (fail! ::invalid-options
+           (str label " must be a nonnegative whole number of milliseconds "
+                "in the supported cross-runtime range")))
+  value)
+
+(defn- validate-lease-timing!
+  [lease-ttl-ms clock-skew-ms heartbeat-interval-ms]
+  (positive-lease-milliseconds! lease-ttl-ms "lease-ttl-ms")
+  (nonnegative-lease-milliseconds! clock-skew-ms "clock-skew-ms")
+  (when heartbeat-interval-ms
+    (positive-lease-milliseconds! heartbeat-interval-ms
+                                  "heartbeat-interval-ms")
+    (when (> heartbeat-interval-ms (quot lease-ttl-ms 3))
+      (fail! ::invalid-options
+             "heartbeat-interval-ms must not exceed one third of lease-ttl-ms"))))
+
+(defn- supported-derived-milliseconds! [value message]
+  (when-not (time-domain/supported-millisecond-magnitude? value)
+    (fail! ::invalid-options message))
   value)
 
 (defn- reject-unknown-dbspec-keys! [spec allowed]
@@ -135,13 +160,8 @@
   (nonblank-string! (:owner spec) "owner")
   (nonblank-string! (:instance spec) "instance")
   (nonblank-string! (:database spec) "database")
-  (positive-integer! (:lease-ttl-ms spec) "lease-ttl-ms")
-  (nonnegative-integer! (:clock-skew-ms spec) "clock-skew-ms")
-  (when-let [interval (:heartbeat-interval-ms spec)]
-    (positive-integer! interval "heartbeat-interval-ms")
-    (when (> interval (quot (:lease-ttl-ms spec) 3))
-      (fail! ::invalid-options
-             "heartbeat-interval-ms must not exceed one third of lease-ttl-ms")))
+  (validate-lease-timing! (:lease-ttl-ms spec) (:clock-skew-ms spec)
+                          (:heartbeat-interval-ms spec))
   (positive-integer! (:max-attempts spec) "max-attempts")
   (positive-integer! (:retry-deadline-ms spec) "retry-deadline-ms")
   (positive-integer! (:retry-initial-backoff-ms spec)
@@ -391,6 +411,12 @@
   [seconds]
   (* (bigdec seconds) milliseconds-per-second))
 
+(defn- validate-comparison-domain! [document clock-skew-ms]
+  (when-let [expires-at (get-in document ["lease" "expires_at"])]
+    (supported-derived-milliseconds!
+     (+ (epoch-seconds->ms expires-at) clock-skew-ms)
+     "The stored lease expiry and clock skew exceed the supported comparison range")))
+
 (def ^:private recovery-operation-keys
   [:create-scratch! :cleanup-scratch! :open-native! :close-native!
    :restore-database! :create-database! :use-database! :analyze-execute!
@@ -474,11 +500,8 @@
          force? false
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
-  (when-not (and (number? lease-ttl-ms) (pos? lease-ttl-ms))
-    (fail! ::invalid-options "lease-ttl-ms must be positive"))
-  (let [store (resolve-store! options)
-        operations
-        (merge (default-open-operations) operations)
+  (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
+  (let [operations (merge (default-open-operations) operations)
         required [:now-ms :monotonic-ms! :await-backoff!
                   :durable-capability :create-scratch! :cleanup-scratch!
                   :open-native! :close-native! :restore-database!
@@ -489,21 +512,33 @@
                   :query-bytes-native!
                   :execute-native!]]
     (doseq [key required] (required-operation! operations key))
-    (let [capability ((:durable-capability operations))]
-      (when-not (= :supported (:status capability))
-        (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
-      (let [running-version (:native-version capability)
-            existing (control/read-head! store)]
-        (when existing
-          (check-engine-compatibility! (:head existing) running-version))
-        (let [retry-options
+    (let [now-ms ((:now-ms operations))
+          _ (nonnegative-lease-milliseconds! now-ms "now-ms")
+          initial-expiry-ms
+          (supported-derived-milliseconds!
+           (+ now-ms lease-ttl-ms)
+           "The observed time and lease TTL exceed the supported epoch range")
+          _ (when-not (< initial-expiry-ms
+                         time-domain/max-safe-epoch-milliseconds)
+              (fail! ::invalid-options
+                     "The initial lease expiry lacks renewal headroom in the supported epoch range"))
+          store (resolve-store! options)
+          existing (control/read-head! store)]
+      (when existing
+        (validate-comparison-domain! (:head existing) clock-skew-ms))
+      (let [capability ((:durable-capability operations))]
+        (when-not (= :supported (:status capability))
+          (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
+        (let [running-version (:native-version capability)]
+          (when existing
+            (check-engine-compatibility! (:head existing) running-version))
+          (let [retry-options
               {:max-attempts max-attempts
                :retry-deadline-ms retry-deadline-ms
                :retry-initial-backoff-ms retry-initial-backoff-ms
                :retry-max-backoff-ms retry-max-backoff-ms
                :monotonic-ms! (:monotonic-ms! operations)
                :await-backoff! (:await-backoff! operations)}
-              now-ms ((:now-ms operations))
               now-seconds (epoch-ms->seconds now-ms)
               acquired (control/acquire!
                         store
@@ -511,7 +546,7 @@
                          retry-options
                          {:owner owner :instance instance
                           :expires-at
-                          (epoch-ms->seconds (+ now-ms lease-ttl-ms))
+                          (epoch-ms->seconds initial-expiry-ms)
                           :now now-seconds
                           :clock-skew (epoch-ms->seconds clock-skew-ms)
                           :force? force?
@@ -529,11 +564,14 @@
             (let [logical-database
                   (recover-snapshot! store document operations @scratch @handle)]
               (let [renew-now ((:now-ms operations))
+                    _ (nonnegative-lease-milliseconds! renew-now "now-ms")
                     current-expiry
                     (epoch-seconds->ms
                      (get-in document ["lease" "expires_at"]))
-                    renewed-expiry (max (inc current-expiry)
-                                        (+ renew-now lease-ttl-ms))]
+                    renewed-expiry
+                    (supported-derived-milliseconds!
+                     (max (inc current-expiry) (+ renew-now lease-ttl-ms))
+                     "Lease renewal exceeds the supported epoch range")]
                 (when (>= renew-now current-expiry)
                   (fail! ::control/lease-fenced
                          "The Durable writer lease expired during recovery"))
@@ -587,7 +625,7 @@
               (try (control/release! store token) (catch Throwable _))
               (when @scratch
                 (try ((:cleanup-scratch! operations) @scratch) (catch Throwable _)))
-              (throw primary))))))))
+              (throw primary)))))))))
 
 (defn connection-role
   "Return `:writer` or `:reader` for an open Durable JDBC connection.
