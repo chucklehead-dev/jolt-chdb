@@ -192,9 +192,9 @@ magnitude and checks its exact boundary and an unbounded-validator mutant. The
 runtime remains authoritative for integral public inputs, arbitrary JSON
 decimal decoding, observed clocks, and pre-mutation derived-sum checks; the main
 CAS model and SMT proofs still abstract elapsed time. The ITF unit tag is not an
-independent observation of production serialization, so this numeric-domain
-slice does not close the raw-byte cross-binding obligation tracked in issue
-`#51`.
+independent observation of production serialization. The separate raw-byte
+adapter oracle documented in `docs/durable-conformance.md` supplies that narrow
+cross-binding check without changing what the abstract model claims.
 
 The intended CI split is:
 

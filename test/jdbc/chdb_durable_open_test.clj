@@ -1,5 +1,7 @@
 (ns jdbc.chdb-durable-open-test
-  (:require [db.jdbc]
+  (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
+            [db.jdbc]
             [db.export :as export]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
@@ -52,6 +54,80 @@
 (defn- prepared-wal-store []
   (prepared-raw-wal-store
    (.getBytes "{\"sql\":\"INSERT INTO t VALUES (1)\"}\n" "UTF-8")))
+
+(defn- recording-object-backend [delegate head-writes]
+  (letfn [(record! [operation key bytes result]
+            (when (and (= control/head-key key)
+                       (contains? #{:created :replaced} (:status result)))
+              (swap! head-writes conj
+                     {:operation operation :bytes (vec bytes)}))
+            result)]
+    (reify backend/ObjectBackend
+      (get-bytes [_ key] (backend/get-bytes delegate key))
+      (get-with-etag [_ key] (backend/get-with-etag delegate key))
+      (put-file-if-absent! [_ key path]
+        (backend/put-file-if-absent! delegate key path))
+      (put-bytes-if-absent! [_ key bytes]
+        (record! :create key bytes
+                 (backend/put-bytes-if-absent! delegate key bytes)))
+      (replace-if-match! [_ key bytes etag]
+        (record! :replace key bytes
+                 (backend/replace-if-match! delegate key bytes etag)))
+      (download-to-file! [_ key path]
+        (backend/download-to-file! delegate key path)))))
+
+(def ^:private python-time-fixture
+  "test/fixtures/durable/python-decimal-time-oracle.json")
+
+(def ^:private conformance-inventory
+  "resources/jdbc/chdb/durable_conformance_inventory.edn")
+
+(defn- decimal-time-fixture []
+  (json/read-str (slurp python-time-fixture)))
+
+(defn- canonical-protocol-source []
+  (let [source (:source (edn/read-string (slurp conformance-inventory)))]
+    [(get source :repository)
+     (get source :commit)
+     (get-in source [:protocol :path])
+     (get-in source [:protocol :sha256])]))
+
+(defn- raw-head-expiry [bytes]
+  ;; This is intentionally independent of durable.head/decode: the oracle
+  ;; observes the public adapter's stored bytes and parses only generic JSON.
+  (get-in (json/read-str (String. (byte-array bytes) "UTF-8") :bigdec true)
+          ["lease" "expires_at"]))
+
+(defn- captured-heads [head-writes]
+  {:operations (mapv :operation @head-writes)
+   :expires-at (mapv #(raw-head-expiry (:bytes %)) @head-writes)})
+
+(defn- capture-public-open-result []
+  (let [fixture (decimal-time-fixture)
+        now-ms (bigdec (get-in fixture ["inputs_ms" "now"]))
+        ttl-ms (bigdec (get-in fixture ["inputs_ms" "lease_ttl"]))
+        heartbeat-ms
+        (bigdec (get-in fixture ["inputs_ms" "heartbeat_interval"]))
+        head-writes (atom [])
+        store (recording-object-backend (backend/memory-backend) head-writes)
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        operations (support/fake-open-operations
+                    calls (atom [now-ms now-ms]) close-count cleanup-count)]
+    (try
+      (let [opened (durable/open-writer!
+                    {:store store :owner "raw-byte-oracle"
+                     :instance "raw-byte-attempt" :database "default"
+                     :lease-ttl-ms ttl-ms
+                     :heartbeat-interval-ms heartbeat-ms
+                     :operations operations})]
+        (try
+          {:capture (captured-heads head-writes)}
+          (finally (writer/close! opened))))
+      (catch Throwable error
+        {:capture (captured-heads head-writes)
+         :error (select-keys (ex-data error) [:type :path])}))))
 
 (defn- prepared-checkpoint-store []
   (let [store (backend/memory-backend)
@@ -116,6 +192,43 @@
           #(durable/check-engine-compatibility!
             {"engine" {"backup_format" 1 "min_reader" "26.8.0"}}
             "26.7.2")))
+
+  (let [fixture (decimal-time-fixture)
+        expected (mapv bigdec (get fixture "expected_expires_at"))
+        mutant-first (bigint (get fixture "identity_mutant_first_expires_at"))
+        observed (capture-public-open-result)
+        conversion-var (ns-resolve 'jdbc.chdb.durable 'epoch-ms->seconds)
+        mutant
+        (with-redefs-fn {conversion-var identity}
+          capture-public-open-result)]
+    (check "Python Decimal fixture pins the requested public millisecond inputs"
+           ["1788230400125" "375" "125"]
+           [(get-in fixture ["inputs_ms" "now"])
+            (get-in fixture ["inputs_ms" "lease_ttl"])
+            (get-in fixture ["inputs_ms" "heartbeat_interval"])])
+    (check "Python Decimal fixture pins the normative protocol revision"
+           (canonical-protocol-source)
+           [(get-in fixture ["protocol" "repository"])
+            (get-in fixture ["protocol" "commit"])
+            (get-in fixture ["protocol" "document"])
+            (get-in fixture ["protocol" "sha256"])])
+    (check "public open records acquisition then recovery renewal head bytes"
+           [:create :replace]
+           (get-in observed [:capture :operations]))
+    (check "independent raw JSON parsing matches Python Decimal epoch seconds"
+           expected (get-in observed [:capture :expires-at]))
+    (check "identity mutant exposes the exact wrong-unit first raw expiry"
+           mutant-first (first (get-in mutant [:capture :expires-at])))
+    (check "identity mutant differs from the Python seconds oracle"
+           false (= (first expected)
+                    (first (get-in mutant [:capture :expires-at]))))
+    (check "identity mutant has no second active lease write"
+           [mutant-first]
+           (filterv some? (get-in mutant [:capture :expires-at])))
+    (check "identity mutant fails at the bounded wire lease-time category"
+           {:type :jdbc.chdb.durable.head/corrupt
+            :path ["lease" "expires_at"]}
+           (:error mutant)))
 
   (let [store (prepared-released-engine-store
                {:version "26.6.0" :backup-format 0 :min-reader "26.6.0"})
