@@ -1,0 +1,196 @@
+{
+  "#meta": {
+    "format": "ITF",
+    "format-description": "https://apalache-mc.org/docs/adr/015adr-trace.html",
+    "source": "formal/quint/durable-writer-lifecycle.md#renewal-loss-and-public-operation-fencing",
+    "seed": "0x47fece",
+    "status": "ok"
+  },
+  "vars": [
+    "renewalLoss",
+    "mbt::actionTaken",
+    "mbt::nondetPicks"
+  ],
+  "states": [
+    {
+      "#meta": {
+        "index": 0
+      },
+      "mbt::actionTaken": "init",
+      "mbt::nondetPicks": {},
+      "renewalLoss": {
+        "checkpointEffects": {
+          "#bigint": "0"
+        },
+        "executeEffects": {
+          "#bigint": "0"
+        },
+        "expiryExtensions": {
+          "#bigint": "0"
+        },
+        "fenced": false,
+        "flushEffects": {
+          "#bigint": "0"
+        },
+        "leaseLive": true,
+        "phase": {
+          "tag": "RenewalLive",
+          "value": {
+            "#tup": []
+          }
+        },
+        "readAvailable": true,
+        "readResult": {
+          "#bigint": "4"
+        },
+        "renewalAttempts": {
+          "#bigint": "0"
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 1
+      },
+      "mbt::actionTaken": "extendLease",
+      "mbt::nondetPicks": {},
+      "renewalLoss": {
+        "checkpointEffects": {
+          "#bigint": "0"
+        },
+        "executeEffects": {
+          "#bigint": "0"
+        },
+        "expiryExtensions": {
+          "#bigint": "1"
+        },
+        "fenced": false,
+        "flushEffects": {
+          "#bigint": "0"
+        },
+        "leaseLive": true,
+        "phase": {
+          "tag": "RenewalExtended",
+          "value": {
+            "#tup": []
+          }
+        },
+        "readAvailable": true,
+        "readResult": {
+          "#bigint": "4"
+        },
+        "renewalAttempts": {
+          "#bigint": "1"
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 2
+      },
+      "mbt::actionTaken": "failRenewalBeforeExpiry",
+      "mbt::nondetPicks": {},
+      "renewalLoss": {
+        "checkpointEffects": {
+          "#bigint": "0"
+        },
+        "executeEffects": {
+          "#bigint": "0"
+        },
+        "expiryExtensions": {
+          "#bigint": "1"
+        },
+        "fenced": false,
+        "flushEffects": {
+          "#bigint": "0"
+        },
+        "leaseLive": true,
+        "phase": {
+          "tag": "RenewalFailed",
+          "value": {
+            "#tup": []
+          }
+        },
+        "readAvailable": true,
+        "readResult": {
+          "#bigint": "4"
+        },
+        "renewalAttempts": {
+          "#bigint": "2"
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 3
+      },
+      "mbt::actionTaken": "elapseThroughExpiry",
+      "mbt::nondetPicks": {},
+      "renewalLoss": {
+        "checkpointEffects": {
+          "#bigint": "0"
+        },
+        "executeEffects": {
+          "#bigint": "0"
+        },
+        "expiryExtensions": {
+          "#bigint": "1"
+        },
+        "fenced": true,
+        "flushEffects": {
+          "#bigint": "0"
+        },
+        "leaseLive": false,
+        "phase": {
+          "tag": "RenewalExpired",
+          "value": {
+            "#tup": []
+          }
+        },
+        "readAvailable": true,
+        "readResult": {
+          "#bigint": "4"
+        },
+        "renewalAttempts": {
+          "#bigint": "2"
+        }
+      }
+    },
+    {
+      "#meta": {
+        "index": 4
+      },
+      "mbt::actionTaken": "observePublicOutcomes",
+      "mbt::nondetPicks": {},
+      "renewalLoss": {
+        "checkpointEffects": {
+          "#bigint": "0"
+        },
+        "executeEffects": {
+          "#bigint": "0"
+        },
+        "expiryExtensions": {
+          "#bigint": "1"
+        },
+        "fenced": true,
+        "flushEffects": {
+          "#bigint": "0"
+        },
+        "leaseLive": false,
+        "phase": {
+          "tag": "RenewalOutcomesObserved",
+          "value": {
+            "#tup": []
+          }
+        },
+        "readAvailable": true,
+        "readResult": {
+          "#bigint": "4"
+        },
+        "renewalAttempts": {
+          "#bigint": "2"
+        }
+      }
+    }
+  ]
+}

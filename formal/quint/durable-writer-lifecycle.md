@@ -393,6 +393,261 @@ module durableWriterLifecycleBlockingIOMutantTest {
 }
 ```
 
+## Renewal loss and public operation fencing
+
+The close model above deliberately assumes that heartbeat renewal remains
+available. The public writer has a separate boundary when replacement keeps
+failing: one failure before the current expiry is tolerated, but failure
+through expiry self-fences mutation and persistence while queries against the
+already-restored local database remain available. This small model does not
+duplicate head CAS or close sequencing. It records only the causal renewal-loss
+trace and the four public outcomes required by the pinned upstream case.
+
+`IGNORE_EXPIRY_FENCE_MUTANT` represents a heartbeat that observes expiry after
+renewal loss but leaves the writer writable. `ALLOW_FENCED_EFFECTS_MUTANT`
+allows execute, flush, and checkpoint effects after fencing.
+`DROP_FENCED_READ_MUTANT` incorrectly disables the established local read.
+
+```quint target/formal/quint/durableWriterLifecycle.qnt +=
+module durableWriterRenewalLoss {
+  type RenewalLossPhase =
+    | RenewalLive
+    | RenewalExtended
+    | RenewalFailed
+    | RenewalExpired
+    | RenewalOutcomesObserved
+
+  type RenewalLossState = {
+    phase: RenewalLossPhase,
+    leaseLive: bool,
+    fenced: bool,
+    renewalAttempts: int,
+    expiryExtensions: int,
+    executeEffects: int,
+    flushEffects: int,
+    checkpointEffects: int,
+    readAvailable: bool,
+    readResult: int,
+  }
+
+  const IGNORE_EXPIRY_FENCE_MUTANT: bool
+  const ALLOW_FENCED_EFFECTS_MUTANT: bool
+  const DROP_FENCED_READ_MUTANT: bool
+  var renewalLoss: RenewalLossState
+
+  action init: bool =
+    renewalLoss' = {
+      phase: RenewalLive,
+      leaseLive: true,
+      fenced: false,
+      renewalAttempts: 0,
+      expiryExtensions: 0,
+      executeEffects: 0,
+      flushEffects: 0,
+      checkpointEffects: 0,
+      readAvailable: true,
+      readResult: 4,
+    }
+
+  action extendLease: bool = all {
+    renewalLoss.phase == RenewalLive,
+    renewalLoss' = {
+      ...renewalLoss,
+      phase: RenewalExtended,
+      renewalAttempts: renewalLoss.renewalAttempts + 1,
+      expiryExtensions: renewalLoss.expiryExtensions + 1,
+    },
+  }
+
+  action failRenewalBeforeExpiry: bool = all {
+    renewalLoss.phase == RenewalExtended,
+    renewalLoss.leaseLive,
+    renewalLoss' = {
+      ...renewalLoss,
+      phase: RenewalFailed,
+      renewalAttempts: renewalLoss.renewalAttempts + 1,
+    },
+  }
+
+  action elapseThroughExpiry: bool = all {
+    renewalLoss.phase == RenewalFailed,
+    renewalLoss' = {
+      ...renewalLoss,
+      phase: RenewalExpired,
+      leaseLive: false,
+      fenced: not(IGNORE_EXPIRY_FENCE_MUTANT),
+    },
+  }
+
+  action observePublicOutcomes: bool = all {
+    renewalLoss.phase == RenewalExpired,
+    renewalLoss' = {
+      ...renewalLoss,
+      phase: RenewalOutcomesObserved,
+      executeEffects:
+        if (renewalLoss.fenced and not(ALLOW_FENCED_EFFECTS_MUTANT)) 0 else 1,
+      flushEffects:
+        if (renewalLoss.fenced and not(ALLOW_FENCED_EFFECTS_MUTANT)) 0 else 1,
+      checkpointEffects:
+        if (renewalLoss.fenced and not(ALLOW_FENCED_EFFECTS_MUTANT)) 0 else 1,
+      readAvailable: not(DROP_FENCED_READ_MUTANT),
+      readResult: if (DROP_FENCED_READ_MUTANT) -1 else 4,
+    },
+  }
+
+  action step: bool = any {
+    extendLease,
+    failRenewalBeforeExpiry,
+    elapseThroughExpiry,
+    observePublicOutcomes,
+  }
+
+  val failedBeforeExpiryStaysWritable: bool =
+    if (renewalLoss.phase == RenewalFailed)
+      and { renewalLoss.leaseLive, not(renewalLoss.fenced) }
+    else true
+
+  val failedRenewalThroughExpiryFences: bool =
+    if (Set(RenewalExpired, RenewalOutcomesObserved)
+        .contains(renewalLoss.phase))
+      renewalLoss.fenced
+    else true
+
+  val fencedWriteEffectsAreZero: bool =
+    if (renewalLoss.phase == RenewalOutcomesObserved)
+      and {
+        renewalLoss.executeEffects == 0,
+        renewalLoss.flushEffects == 0,
+        renewalLoss.checkpointEffects == 0,
+      }
+    else true
+
+  val fencedReadSurvives: bool =
+    if (renewalLoss.phase == RenewalOutcomesObserved)
+      and { renewalLoss.readAvailable, renewalLoss.readResult == 4 }
+    else true
+
+  val successfulRenewalReached: bool =
+    renewalLoss.expiryExtensions == 1
+  val failedRenewalReached: bool =
+    renewalLoss.renewalAttempts == 2
+  val renewalExpiryReached: bool =
+    Set(RenewalExpired, RenewalOutcomesObserved).contains(renewalLoss.phase)
+  val publicOutcomesReached: bool =
+    renewalLoss.phase == RenewalOutcomesObserved
+}
+
+module durableWriterRenewalLossCorrected {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+}
+
+module durableWriterRenewalLossIgnoreExpiryMutant {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = true,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+}
+
+module durableWriterRenewalLossAllowEffectsMutant {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = true,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+}
+
+module durableWriterRenewalLossDropReadMutant {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = true
+  ).* from "./durableWriterLifecycle"
+}
+```
+
+The examples share one exact four-step trace. The corrected module requires all
+four invariants. Each mutant must expose its own rejected boundary through the
+same sequence rather than through an unrelated fixture.
+
+```quint target/formal/quint/durableWriterLifecycleTest.qnt +=
+module durableWriterRenewalLossCorrectedTest {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+
+  run renewalLossPublicOutcomesTest =
+    init
+      .then(extendLease)
+      .then(failRenewalBeforeExpiry)
+      .then(elapseThroughExpiry)
+      .then(observePublicOutcomes)
+      .expect(and {
+        successfulRenewalReached,
+        failedRenewalReached,
+        renewalExpiryReached,
+        publicOutcomesReached,
+        failedBeforeExpiryStaysWritable,
+        failedRenewalThroughExpiryFences,
+        fencedWriteEffectsAreZero,
+        fencedReadSurvives,
+      })
+}
+
+module durableWriterRenewalLossIgnoreExpiryMutantTest {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = true,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+
+  run ignoredExpiryWitnessTest =
+    init
+      .then(extendLease)
+      .then(failRenewalBeforeExpiry)
+      .then(elapseThroughExpiry)
+      .expect(not(failedRenewalThroughExpiryFences))
+}
+
+module durableWriterRenewalLossAllowEffectsMutantTest {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = true,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+
+  run allowedEffectsWitnessTest =
+    init
+      .then(extendLease)
+      .then(failRenewalBeforeExpiry)
+      .then(elapseThroughExpiry)
+      .then(observePublicOutcomes)
+      .expect(not(fencedWriteEffectsAreZero))
+}
+
+module durableWriterRenewalLossDropReadMutantTest {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = true
+  ).* from "./durableWriterLifecycle"
+
+  run droppedReadWitnessTest =
+    init
+      .then(extendLease)
+      .then(failRenewalBeforeExpiry)
+      .then(elapseThroughExpiry)
+      .then(observePublicOutcomes)
+      .expect(not(fencedReadSurvives))
+}
+```
+
 ## Commands and evidence
 
 Run the same pinned literate-model gate used by the head-CAS model:
@@ -400,9 +655,13 @@ Run the same pinned literate-model gate used by the head-CAS model:
 ```sh
 scripts/check-durable-head-quint.sh
 scripts/check-durable-head-quint.sh --verify
+scripts/check-durable-renewal-loss-quint.sh
 ```
 
 The first command tangles, typechecks, tests, and samples all lifecycle
 variants. `--verify` additionally checks the corrected lifecycle invariants and
 requires the stopped-at-admission, blocking-I/O, and release-before-join mutants
-to produce their bounded counterexamples.
+to produce their bounded counterexamples. The renewal-loss command is a smaller
+TypeScript-only gate: it tangles and typechecks the lifecycle files, runs the
+corrected trace and all three causal mutants, and compares the deterministic
+ITF projection. It does not invoke Apalache or the broader model suite.
