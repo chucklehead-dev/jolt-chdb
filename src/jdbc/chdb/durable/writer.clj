@@ -44,8 +44,43 @@
     (fail! ::invalid-options (str label " must be a positive integer")))
   value)
 
+(defn- append-json-escaped! [^StringBuilder sb ^String s]
+  (let [n (.length s)]
+    (loop [i 0 run 0]
+      (if (== i n)
+        (when (< run i) (.append sb s run i))
+        (let [c (int (.charAt s i))]
+          (if (or (== c 34) (== c 92) (== c 47) (< c 32) (> c 126))
+            (do
+              (when (< run i) (.append sb s run i))
+              (case c
+                47 (.append sb "\\/")
+                34 (.append sb "\\\"")
+                92 (.append sb "\\\\")
+                8  (.append sb "\\b")
+                9  (.append sb "\\t")
+                10 (.append sb "\\n")
+                12 (.append sb "\\f")
+                13 (.append sb "\\r")
+                (if (> c 0xFFFF)
+                  ;; Jolt .charAt yields codepoints, not UTF-16 code units, so
+                  ;; an astral character arrives whole and must be split into
+                  ;; the surrogate pair the \\uXXXX escape can express.
+                  (let [v (- c 0x10000)]
+                    (.append sb (format "\\u%04x\\u%04x"
+                                        (+ 0xD800 (bit-shift-right v 10))
+                                        (+ 0xDC00 (bit-and v 0x3FF)))))
+                  (.append sb (format "\\u%04x" c))))
+              (recur (unchecked-inc i) (unchecked-inc i)))
+            (recur (unchecked-inc i) run)))))))
+
 (defn- wal-line [sql]
-  (.getBytes (str (json/write-str {"sql" sql}) "\n") "UTF-8"))
+  (let [^String sql sql
+        sb (StringBuilder. (+ (.length sql) 32))]
+    (.append sb "{\"sql\":\"")
+    (append-json-escaped! sb sql)
+    (.append sb "\"}\n")
+    (.getBytes (.toString sb) "UTF-8")))
 
 (defn- append-wal! [writer line]
   (swap! (:wal-state writer)
