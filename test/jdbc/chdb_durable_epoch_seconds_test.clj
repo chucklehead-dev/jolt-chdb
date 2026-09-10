@@ -51,6 +51,27 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- replace-on-second-head-read
+  [delegate replacement reads acquire-replaces]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key]
+      (if (and (= control/head-key key) (= 2 (swap! reads inc)))
+        (let [current (backend/get-with-etag delegate key)]
+          (backend/replace-if-match! delegate key (head/encode replacement)
+                                     (:etag current))
+          (backend/get-with-etag delegate key))
+        (backend/get-with-etag delegate key)))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (swap! acquire-replaces inc)
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- await-fenced! [opened]
   (loop [remaining 100000]
     (if (or (not (:writable? (writer/status opened)))
@@ -200,6 +221,24 @@
            [before [] 0 0]
            [(stored-head-bytes store) (:calls result)
             (:close-count result) (:cleanup-count result)]))
+
+  (let [delegate (fixture-store python-fixture)
+        replacement (-> (head/decode (slurp python-fixture) :writer)
+                        (assoc-in ["lease" "expires_at"]
+                                  time-domain/max-wire-epoch-seconds))
+        reads (atom 0)
+        acquire-replaces (atom 0)
+        store (replace-on-second-head-read delegate replacement reads
+                                           acquire-replaces)
+        result (boundary-open-attempt
+                store (atom [(+ python-now-ms 626M)])
+                {:clock-skew-ms 1M})]
+    (check "acquire validates the head that replaced the outer snapshot"
+           ::durable/invalid-options (:type (ex-data (:error result))))
+    (check "TOCTOU replacement is preserved before eligibility, warning, or CAS"
+           [replacement 0 []]
+           [(:head (control/read-head! delegate)) @acquire-replaces
+            (:calls result)]))
 
   (let [document (-> (head/decode (slurp python-fixture) :writer)
                      (assoc-in ["lease" "expires_at"] 1788230400.1255M))

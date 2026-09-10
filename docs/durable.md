@@ -231,12 +231,17 @@ are never serialized.
 
 The local adapter range is `0..9007199254740991` milliseconds (TTL and an
 explicit heartbeat exclude zero). Active wire expiry remains a fractional Unix
-epoch-second number, bounded at `9007199254740.991`. Open also rejects observed
-or derived expiry/skew comparisons outside that range before acquiring or
-replacing a head. These integral-input and magnitude checks are jolt-chdb's
+epoch-second number, bounded at `9007199254740.991`. Open rejects its initial
+observed/derived expiry outside that range before acquisition, and the control
+adapter checks each actual acquire snapshot's expiry-plus-skew before replacing
+a head. These integral-input and magnitude checks are jolt-chdb's
 validated cross-runtime safety policy; Protocol V1 itself requires the
 heartbeat/TTL relationship and the epoch-second wire unit but does not define
 these additional numeric limits.
+After acquisition, each recovery and live-writer clock sample is checked again.
+An invalid recovery sample fails open and cleans up the acquired attempt. An
+invalid live sample or renewal overflow self-fences before a later native data
+mutation or lease renewal; ordinary close then releases the lease and cleans up.
 
 ### Migrating heads written by older jolt-chdb builds
 

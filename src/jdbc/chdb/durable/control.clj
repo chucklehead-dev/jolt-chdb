@@ -195,6 +195,11 @@
 (defn- reread [store]
   (read-head! store))
 
+(defn- validate-acquire-head! [options document]
+  (when-let [validate! (:validate-acquire-head! options)]
+    (validate! document))
+  document)
+
 (defn- encoded-head [document]
   ;; Reconciliation compares the semantic document obtained from stored bytes.
   ;; Canonicalize the intended value through those same bytes first: JSON may
@@ -208,14 +213,15 @@
   [store options {:keys [phase desired token warning] :as state}]
   (if (= :reconcile phase)
     (if-let [latest (reread store)]
-      (if (= desired (:head latest))
+      (let [latest-head (validate-acquire-head! options (:head latest))]
+        (if (= desired latest-head)
         {:status :done
          :value (acquired-value :reconciled desired (:etag latest)
                                 token warning)}
-        {:status :retry :state state})
+        {:status :retry :state state}))
       {:status :retry :state state})
     (if-let [snapshot (read-head! store)]
-    (let [current (:head snapshot)]
+    (let [current (validate-acquire-head! options (:head snapshot))]
       (when-not (or (released? current)
                     (expired? current (:now options) (:clock-skew options))
                     (:force? options))
@@ -273,6 +279,9 @@
   remains held. Every acquisition of an existing head increments its
   generation. The returned map always contains `:warnings`; a successful
   forced takeover of a still-live lease returns exactly one redacted warning.
+  A caller-supplied `:validate-acquire-head!` predicate is invoked on every
+  head snapshot considered during CAS or reconciliation, before eligibility,
+  warning, or replacement logic; the control layer assigns it no time unit.
   The bounded retry count covers CAS collisions; it does not wait for a live
   lease."
   [store {:keys [owner instance expires-at now clock-skew force? max-attempts]
@@ -286,6 +295,9 @@
   (nonnegative-time! expires-at "expires-at")
   (nonnegative-time! now "now")
   (nonnegative-time! clock-skew "clock-skew")
+  (when (and (:validate-acquire-head! options)
+             (not (fn? (:validate-acquire-head! options))))
+    (fail! ::invalid-options "validate-acquire-head! must be a function"))
   (positive-attempts! max-attempts)
   (when-not (> expires-at now)
     (fail! ::invalid-options

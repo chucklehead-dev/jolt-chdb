@@ -105,6 +105,9 @@
     (fail! ::invalid-options message))
   value)
 
+(defn- sample-epoch-milliseconds! [operations]
+  (nonnegative-lease-milliseconds! ((:now-ms operations)) "now-ms"))
+
 (defn- reject-unknown-dbspec-keys! [spec allowed]
   (when (some #(not (contains? allowed %)) (keys spec))
     ;; Configuration keys can be derived from secret-bearing external input.
@@ -512,8 +515,7 @@
                   :query-bytes-native!
                   :execute-native!]]
     (doseq [key required] (required-operation! operations key))
-    (let [now-ms ((:now-ms operations))
-          _ (nonnegative-lease-milliseconds! now-ms "now-ms")
+    (let [now-ms (sample-epoch-milliseconds! operations)
           initial-expiry-ms
           (supported-derived-milliseconds!
            (+ now-ms lease-ttl-ms)
@@ -549,6 +551,8 @@
                           (epoch-ms->seconds initial-expiry-ms)
                           :now now-seconds
                           :clock-skew (epoch-ms->seconds clock-skew-ms)
+                          :validate-acquire-head!
+                          #(validate-comparison-domain! % clock-skew-ms)
                           :force? force?
                           :database database :engine-version running-version
                           :backup-format reader-backup-format
@@ -563,8 +567,7 @@
             (reset! handle ((:open-native! operations) @scratch))
             (let [logical-database
                   (recover-snapshot! store document operations @scratch @handle)]
-              (let [renew-now ((:now-ms operations))
-                    _ (nonnegative-lease-milliseconds! renew-now "now-ms")
+              (let [renew-now (sample-epoch-milliseconds! operations)
                     current-expiry
                     (epoch-seconds->ms
                      (get-in document ["lease" "expires_at"]))
@@ -579,7 +582,8 @@
                  store token (epoch-ms->seconds renewed-expiry)
                  (assoc retry-options
                         :stopped?
-                        #(>= ((:now-ms operations)) current-expiry)))
+                        #(>= (sample-epoch-milliseconds! operations)
+                             current-expiry)))
                 (writer/start!
                  {:store store :token token :handle @handle
                   :database logical-database
