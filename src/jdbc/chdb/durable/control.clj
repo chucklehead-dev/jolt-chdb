@@ -19,6 +19,10 @@
 (def head-key "head.json")
 (def ^:private default-commit-attempts 4)
 
+(def forced-live-takeover-event
+  "Stable, redacted event name returned after a forced live-lease takeover."
+  :durable/forced-live-takeover)
+
 (def protocol-source
   (assoc head/protocol-source :section "state-machine"))
 
@@ -151,6 +155,24 @@
     (and (number? expires-at)
          (> now (+ expires-at clock-skew)))))
 
+(defn- forced-live-takeover? [document options]
+  (and (:force? options)
+       (not (released? document))
+       (not (expired? document (:now options) (:clock-skew options)))))
+
+(defn- takeover-warning [generation]
+  {:event forced-live-takeover-event
+   :severity :warning
+   :protocol-version 1
+   :lease-generation generation})
+
+(defn- acquired-value [status desired etag token warning]
+  {:status status
+   :head desired
+   :etag etag
+   :token token
+   :warnings (if warning [warning] [])})
+
 (defn- next-generation [document]
   (let [generation (get-in document ["lease" "generation"])]
     (when (>= generation head/max-safe-integer)
@@ -176,13 +198,14 @@
     {:bytes bytes
      :head (head/decode bytes :writer)}))
 
-(defn- acquire-attempt! [store options {:keys [phase desired token] :as state}]
+(defn- acquire-attempt!
+  [store options {:keys [phase desired token warning] :as state}]
   (if (= :reconcile phase)
     (if-let [latest (reread store)]
       (if (= desired (:head latest))
         {:status :done
-         :value {:status :reconciled :head desired
-                 :etag (:etag latest) :token token}}
+         :value (acquired-value :reconciled desired (:etag latest)
+                                token warning)}
         {:status :retry :state state})
       {:status :retry :state state})
     (if-let [snapshot (read-head! store)]
@@ -192,6 +215,8 @@
                     (:force? options))
         (fail! ::lease-held "Another writer holds the Durable lease"))
       (let [generation (next-generation current)
+            warning (when (forced-live-takeover? current options)
+                      (takeover-warning generation))
             intended (-> current
                          (assoc "lease"
                                 (active-lease generation
@@ -207,11 +232,12 @@
         (case (:status result)
           :replaced
           {:status :done
-           :value {:status :acquired :head desired :etag (:etag result)
-                   :token token}}
+           :value (acquired-value :acquired desired (:etag result)
+                                  token warning)}
           :ambiguous
           {:status :retry
-           :state {:phase :reconcile :desired desired :token token}}
+           :state {:phase :reconcile :desired desired :token token
+                   :warning warning}}
           :precondition-failed {:status :retry :state {:phase :cas}}
           (fail! ::backend-contract
                  "The Durable backend returned an unsupported CAS result"))))
@@ -220,12 +246,12 @@
       (case (:status result)
         :created
         {:status :done
-         :value {:status :acquired :head desired :etag (:etag result)
-                 :token (ownership desired)}}
+         :value (acquired-value :acquired desired (:etag result)
+                                (ownership desired) nil)}
         :ambiguous
         {:status :retry
          :state {:phase :reconcile :desired desired
-                 :token (ownership desired)}}
+                 :token (ownership desired) :warning nil}}
         :precondition-failed {:status :retry :state {:phase :cas}}
         (fail! ::backend-contract
                "The Durable backend returned an unsupported create result"))))))
@@ -238,9 +264,11 @@
   this boundary.
 
   Normal takeover is allowed only after `expires_at + clock-skew`; equality
-  remains held. Every
-  acquisition of an existing head increments its generation. The bounded
-  retry count covers CAS collisions; it does not wait for a live lease."
+  remains held. Every acquisition of an existing head increments its
+  generation. The returned map always contains `:warnings`; a successful
+  forced takeover of a still-live lease returns exactly one redacted warning.
+  The bounded retry count covers CAS collisions; it does not wait for a live
+  lease."
   [store {:keys [owner instance expires-at now clock-skew force? max-attempts]
           :or {clock-skew 0 force? false max-attempts 4}
           :as options}]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Return one structured, redacted warning after a successful forced takeover of
+  a live Durable lease, including reconciled ambiguous success, while keeping
+  fresh and expired acquisitions silent and preserving CAS outcomes.
+
 - Accept RFC JSON whitespace around exactly one Durable V1 head value while
   retaining full-byte size limits and fail-closed duplicate, malformed,
   non-UTF-8, BOM, and multiple-value handling.

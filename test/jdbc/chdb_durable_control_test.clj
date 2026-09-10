@@ -297,7 +297,55 @@
                                  :now 255.001M :expires-at 400M))]
       (check "normal takeover succeeds one millisecond above the boundary"
              2
-             (get-in (:head takeover) ["lease" "generation"]))))
+             (get-in (:head takeover) ["lease" "generation"]))
+      (check "expired normal takeover emits no forced-live warning"
+             [] (:warnings takeover))))
+  (let [store (backend/memory-backend)
+        _ (control/acquire! store base-options)
+        forced (control/acquire!
+                store (assoc base-options
+                             :owner "writer-2" :instance "instance-2"
+                             :now 101M :expires-at 300M :force? true))]
+    (check "successful forced live takeover returns one redacted warning"
+           [{:event control/forced-live-takeover-event
+             :severity :warning
+             :protocol-version 1
+             :lease-generation 2}]
+           (:warnings forced)))
+  (let [delegate (backend/memory-backend)
+        store (forwarding-backend delegate :land-ambiguous)
+        _ (control/acquire! store base-options)
+        forced (control/acquire!
+                store (assoc base-options
+                             :owner "writer-2" :instance "instance-2"
+                             :now 101M :expires-at 300M :force? true))]
+    (check "ambiguous landed forced takeover reconciles one warning"
+           [:reconciled
+           [{:event control/forced-live-takeover-event
+              :severity :warning
+              :protocol-version 1
+              :lease-generation 2}]]
+           [(:status forced) (:warnings forced)]))
+  (let [delegate (backend/memory-backend)
+        _ (control/acquire! delegate base-options)
+        store (forwarding-backend delegate :drop-ambiguous)]
+    (check "dropped ambiguous forced takeover returns no false warning"
+           ::control/commit-ambiguous
+           (error-type
+            #(control/acquire!
+              store (assoc base-options
+                           :owner "writer-2" :instance "instance-2"
+                           :now 101M :expires-at 300M :force? true
+                           :max-attempts 1)))))
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        _ (control/release! store (:token acquired))
+        forced (control/acquire!
+                store (assoc base-options
+                             :owner "writer-2" :instance "instance-2"
+                             :now 101M :expires-at 300M :force? true))]
+    (check "forced acquisition of a released lease emits no live warning"
+           [] (:warnings forced)))
   (let [store (backend/memory-backend)
         first-acquire (control/acquire! store base-options)
         token1 (:token first-acquire)]
@@ -307,6 +355,8 @@
            0 (get-in (:head first-acquire) ["manifest" "seq"]))
     (check "fresh result is the canonical stored JSON value"
            (:head first-acquire) (:head (control/read-head! store)))
+    (check "fresh acquisition emits no takeover warning"
+           [] (:warnings first-acquire))
     (check "a live competing writer is rejected"
            ::control/lease-held
            (error-type
@@ -832,15 +882,33 @@
                   :owner owner :instance instance :force? true
                   :expires-at (+ 200M (count (:events state)))))
           previous (:current state)
-          document (:head result)]
+          document (:head result)
+          generation (get-in document ["lease" "generation"])
+          sequence (get-in document ["manifest" "seq"])
+          expected-warnings
+          (if previous
+            [{:event control/forced-live-takeover-event
+              :severity :warning
+              :protocol-version 1
+              :lease-generation generation}]
+            [])]
+      (when-not (= expected-warnings (:warnings result))
+        (throw (ex-info "forced takeover warning contract was suppressed"
+                        {:hegel/origin
+                         "chdb/durable-control/forced-takeover-warning"})))
       (-> state
           (assoc :current (:token result) :head document)
           (update :stale #(cond-> % previous (conj previous)))
+          (cond-> previous
+            (append-event
+             {:kind :forced-warning
+              :generation generation
+              :sequence sequence}))
           (append-event
            {:kind :acquire
             :writer writer
-            :generation (get-in document ["lease" "generation"])
-            :sequence (get-in document ["manifest" "seq"])})))))
+            :generation generation
+            :sequence sequence})))))
 
 (defn- commit-step [state]
   (let [token (:current state)

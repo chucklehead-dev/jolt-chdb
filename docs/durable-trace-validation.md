@@ -106,6 +106,12 @@ Advice should emit bounded, privacy-shaped inputs and completed outcomes into
 a journal, then an ordinary test should snapshot and validate that journal.
 It must retain a plain, non-woven test lane.
 
+The completed `acquire!` result includes a closed `:warnings` vector. A live
+forced takeover contributes exactly one `:durable/forced-live-takeover` event;
+ordinary expiry and fresh acquisition contribute none. Advice can copy that
+already-redacted event without inspecting arguments or raw head state. The
+focused Hegel history rejects suppression of the required event.
+
 Do not instrument `ObjectBackend/put-bytes-if-absent!` and guess that every
 call is a semantic Durable publication. The backend operation lacks the
 writer/token context required by the exact reference model and also serves
