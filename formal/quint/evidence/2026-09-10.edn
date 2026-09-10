@@ -1,0 +1,66 @@
+{:schema :jolt-chdb/formal-evidence-delta-v1
+ :recorded-at "2026-09-10T03:39:43-07:00"
+ :status :validated-local-commit
+ :checkout {:jolt-chdb-implementation
+            "880d6a65d57e17ef44f743f220c697d9f5abded3"
+            :jolt-chdb-parent
+            "ece9cc1c5bb1226deeffe839eb336bf993c83053"
+            :publication :unpublished}
+ :command "scripts/check-durable-head-quint.sh --verify-only"
+ :tools {:quint "0.32.0" :apalache "0.56.1" :chez "10.4.1"}
+ :artifacts
+ {"formal/quint/durable-head-cas.md"
+  "b37192bbf93036746126d51c69b5961253c5a7910e2c7965928a1ff285f79f01"
+  "formal/quint/traces/engine-metadata.itf.json"
+  "8a4c7df8984ce0b320e041022e984281bda163ad1f7ba842a5d1d3c74a157fbf"
+  "scripts/check-durable-head-quint.sh"
+  "bc945e8e32d2c6b82102d10762b0c1b27ea1105479b777fadfbcf5f2815b1f60"
+  "scripts/generate-durable-engine-metadata-itf.sh"
+  "a0624de4d9838261f7344ccec2f1fb587c580daabd38e8181f69a4b4f5e57b72"
+  "target/formal/quint/durableHeadCas.qnt"
+  "82d56e43542665ad52fcecba284b3818a9f398095fb5d7856272c839c61034bc"
+  "target/formal/quint/durableEngineMetadata.qnt"
+  "2bcb2d24bc9ad73925c41d2dfb28794aa1f09436488fa120e6addd30b6e990cd"
+  "target/formal/quint/durableWriterBoundary.qnt"
+  "d074a3c7c6938c22fc6fe74bc7a941247dd12ca8845662129d798b163f4d614f"
+  "target/formal/quint/durableWriterLifecycle.qnt"
+  "c1da3e3d3250692cc4851e007cac4675ad56a12fe32df4338a384cf082d264e1"
+  "target/formal/quint/durablePublicationAck.qnt"
+  "7319d1f82a55943144290bceb08ce05f99f8f1a03f21a939e02f694b324a65c4"}
+ :results
+ {:exit 0
+  :typecheck {:status :pass :modules 12}
+  :corrected
+  {:engine-metadata {:max-steps 2
+                     :invariants ["engineMetadataIsSound"]}
+   :head-cas {:max-steps 6
+              :invariants ["staleWriterCannotChangeHead"
+                           "publicationAttemptIsFresh"
+                           "headReferenceIsCanonical"
+                           "headReferenceWasPublished"
+                           "attemptTransitionsRefineExactView"
+                           "exactTransitionsRefineContentView"
+                           "ambiguousLandedUsesOperationSpecificReconciliation"]}
+   :writer-boundary {:max-steps 5
+                     :invariants ["checkpointFallbackIsSound"
+                                  "failedFlushRetainsRecoveryObligation"]}
+   :writer-lifecycle {:max-steps 12
+                      :invariants ["heartbeatCoversCloseWork"
+                                   "leaseCoversCloseFlush"
+                                   "blockingIOLeavesHeartbeatIndependent"
+                                   "releaseFollowsHeartbeatJoin"
+                                   "noRenewAfterRelease"]}
+   :publication-acknowledgement
+   {:max-steps 1 :invariants ["publicationAcknowledgementIsSound"]}
+   :status :no-counterexample-through-bounds}
+  :mutants
+  {:status :all-required-counterexamples-found
+   :count 15
+   :engine-metadata 3
+   :head-cas 7
+   :writer-boundary 1
+   :writer-lifecycle 3
+   :publication-acknowledgement 1}}
+ :notes
+ ["This is an exact --verify-only delta; sampled TypeScript and Jolt replay evidence is recorded separately."
+  "Generated target models are build artifacts. Their hashes bind this run to the literate extraction consumed by Quint and Apalache."]}

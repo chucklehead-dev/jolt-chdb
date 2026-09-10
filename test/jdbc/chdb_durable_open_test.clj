@@ -63,8 +63,23 @@
                                   (.getBytes "abc" "UTF-8"))
     (control/commit-reference!
      store token {:kind :checkpoint :reference reference
+                  :engine-metadata {:version "26.7.2-rc.2"
+                                    :backup-format 1
+                                    :min-reader "26.7.2-rc.2"}
                   :verify-reference! control/verify-byte-reference!})
     (control/release! store token)
+    store))
+
+(defn- prepared-released-engine-store
+  [{:keys [version backup-format min-reader]}]
+  (let [store (backend/memory-backend)
+        acquired
+        (control/acquire!
+         store (assoc initial-options
+                      :engine-version version
+                      :backup-format backup-format
+                      :min-reader min-reader))]
+    (control/release! store (:token acquired))
     store))
 
 (defn- append-wal! [store sql]
@@ -101,6 +116,68 @@
           #(durable/check-engine-compatibility!
             {"engine" {"backup_format" 1 "min_reader" "26.8.0"}}
             "26.7.2")))
+
+  (let [store (prepared-released-engine-store
+               {:version "26.6.0" :backup-format 0 :min-reader "26.6.0"})
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        operations (support/fake-open-operations
+                    calls (atom [200000M 200001M])
+                    close-count cleanup-count)
+        opened (durable/open-writer!
+                {:store store :owner "new-writer" :instance "new-instance"
+                 :database "ignored" :lease-ttl-ms 100000M
+                 :operations operations})]
+    (try
+      (check "existing-head acquisition records the running producer version"
+             ["26.7.2-rc.2" 0 "26.6.0"]
+             (let [engine (get (:head (control/read-head! store)) "engine")]
+               [(get engine "version")
+                (get engine "backup_format")
+                (get engine "min_reader")]))
+      (check "checkpoint advances producer compatibility without lowering it"
+             ["26.7.2-rc.2" 1 "26.7.2-rc.2"]
+             (do
+               (writer/checkpoint! opened)
+               (let [engine (get (:head (control/read-head! store)) "engine")]
+                 [(get engine "version")
+                  (get engine "backup_format")
+                  (get engine "min_reader")])))
+      (finally (writer/close! opened))))
+
+  (doseq [[label metadata]
+          [["future backup format"
+            {:version "26.8.0" :backup-format 2 :min-reader "26.6.0"}]
+           ["future minimum reader"
+            {:version "26.8.0" :backup-format 1 :min-reader "26.8.0"}]]]
+    (let [store (prepared-released-engine-store metadata)
+          before (:head (control/read-head! store))
+          calls (atom [])
+          operations (support/fake-open-operations
+                      calls (atom [200000M]) (atom 0) (atom 0))]
+      (check (str label " rejects before writer recovery")
+             ::durable/engine-incompatible
+             (error-type
+              #(durable/open-writer!
+                {:store store :owner "new-writer" :instance "new-instance"
+                 :database "ignored" :lease-ttl-ms 100000M
+                 :operations operations})))
+      (check (str label " rejection has no native or head side effect")
+             [before []]
+             [(:head (control/read-head! store)) @calls])))
+
+  (let [store (prepared-released-engine-store
+               {:version "26.8.0" :backup-format 1 :min-reader "26.6.0"})
+        calls (atom [])
+        operations (support/fake-open-operations
+                    calls (atom [200000M]) (atom 0) (atom 0))
+        opened (durable/open-reader! {:store store :operations operations})]
+    (try
+      (check "a newer producer version is not an exact-match reader gate"
+             true
+             (some? (some #(= :create (first %)) @calls)))
+      (finally (reader/close! opened))))
 
   (let [namespace (backend/memory-backend)
         alpha-store (backend/object-backend namespace "alpha")

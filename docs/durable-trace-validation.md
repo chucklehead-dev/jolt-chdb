@@ -49,6 +49,15 @@ CAS/reconciliation, followed by heartbeat stop/join, lease release, native
 close, and scratch cleanup. The tests assert these schedules directly and check
 that a heartbeat failure retains exact Throwable identity.
 
+A second, deliberately small ADR-015 trace covers engine compatibility
+metadata without expanding the lease/reference state machine. It records the
+producer version, backup format, minimum reader, transition kind, and expected
+result across one existing-head takeover and one checkpoint. The
+`durable-engine-metadata-itf-test` adapter replays those transitions through
+the public writer open and checkpoint paths and compares the stored head after
+each step. The fast literate gate regenerates the trace from a fixed seed and
+requires byte identity with the checked-in fixture.
+
 ## Scheduler and lifecycle coverage manifest
 
 Keep the physical executor claim separate from the abstract storage claim. A

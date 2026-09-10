@@ -125,6 +125,9 @@
                 store token
                 {:kind :checkpoint
                  :reference reference
+                 :engine-metadata {:version "26.7.2-rc.2"
+                                   :backup-format 1
+                                   :min-reader "26.7.2-rc.2"}
                  :verify-reference! control/verify-file-reference!})]
     (when-not (= (get zero-file-digests (:size expected)) (:sha256 expected))
       (fail! "deterministic checkpoint digest differs from the known oracle"))

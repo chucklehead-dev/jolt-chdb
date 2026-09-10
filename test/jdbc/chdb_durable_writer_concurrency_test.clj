@@ -159,6 +159,9 @@
         (writer/start!
          {:store store :token (:token acquired) :handle :fake-handle
           :database "default" :lease-expiry 1000M
+          :engine-metadata {:version (:engine-version base-options)
+                            :backup-format (:backup-format base-options)
+                            :min-reader (:min-reader base-options)}
           :lease-ttl-ms 300 :heartbeat-interval-ms 100
           :operations operations})]
     (writer/execute! durable-writer "INSERT INTO t VALUES (1)")
@@ -229,6 +232,9 @@
         (writer/start!
          {:store store :token (:token acquired) :handle :fake-handle
           :database "default" :lease-expiry 1000M
+          :engine-metadata {:version (:engine-version base-options)
+                            :backup-format (:backup-format base-options)
+                            :min-reader (:min-reader base-options)}
           :lease-ttl-ms 300 :heartbeat-interval-ms 100
           :operations operations})]
     (writer/sql! durable-writer "INSERT INTO t VALUES (?)" [42])
@@ -684,6 +690,9 @@
         (writer/start!
          {:store store :token (:token acquired) :handle :fake-handle
           :database "default" :lease-expiry 1000M
+          :engine-metadata {:version (:engine-version base-options)
+                            :backup-format (:backup-format base-options)
+                            :min-reader (:min-reader base-options)}
           :lease-ttl-ms 300 :heartbeat-interval-ms 100
           :operations operations})]
     (writer/sql! durable-writer "INSERT INTO t VALUES (?)" [42])

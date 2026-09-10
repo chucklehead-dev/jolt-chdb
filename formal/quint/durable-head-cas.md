@@ -2377,3 +2377,317 @@ module durableLeaseTimeTest {
   }
 }
 ```
+
+## Engine compatibility metadata boundary
+
+The head-CAS state machine also abstracts the engine object, while the runtime
+must update compatibility metadata in the same CAS as lease acquisition or a
+checkpoint reference. This separate functional model uses ordered integer
+release ranks; the runtime tests retain the full chDB release/prerelease
+comparison. Acquisition changes only the producer version. A checkpoint records
+the producer and current archive format while refusing to lower either stored
+reader requirement. The parameterized model binds each fault independently:
+two omission mutants capture the previous behavior, while a lowering mutant
+starts from newer stored requirements and shows why unchecked writer
+requirements are unsafe. A
+generated two-transition ADR-015 trace carries the complete metadata,
+transition kind, and expected result; its executable adapter replays takeover
+and checkpoint through `open-writer!` and the real checkpoint head-CAS path.
+
+```quint target/formal/quint/durableEngineMetadata.qnt +=
+module durableEngineMetadata {
+  const OMIT_ACQUISITION_UPDATE: bool
+  const OMIT_CHECKPOINT_REQUIREMENTS: bool
+  const ALLOW_REQUIREMENT_LOWERING: bool
+  const START_WITH_NEWER_REQUIREMENTS: bool
+  type MetadataPhase = BeforeTakeover | BeforeCheckpoint | Complete
+  type TransitionKind = NoTransition | TakeoverTransition | CheckpointTransition
+  type ExpectedResult = NoResult | AppliedResult
+
+  type EngineMetadata = {
+    producerVersion: int,
+    backupFormat: int,
+    minReader: int,
+  }
+
+  type MetadataState = {
+    phase: MetadataPhase,
+    transitionKind: TransitionKind,
+    expectedResult: ExpectedResult,
+    metadata: EngineMetadata,
+  }
+
+  var state: MetadataState
+
+  pure def readerCompatible(
+    runningVersion: int,
+    readerBackupFormat: int,
+    metadata: EngineMetadata
+  ): bool = and {
+    metadata.backupFormat <= readerBackupFormat,
+    metadata.minReader <= runningVersion,
+  }
+
+  pure def acquireMetadata(
+    current: EngineMetadata,
+    runningVersion: int
+  ): EngineMetadata = {...current, producerVersion: runningVersion}
+
+  pure def checkpointMetadata(
+    current: EngineMetadata,
+    runningVersion: int,
+    writerBackupFormat: int
+  ): EngineMetadata = {
+    producerVersion: runningVersion,
+    backupFormat:
+      if (writerBackupFormat > current.backupFormat)
+        writerBackupFormat
+      else current.backupFormat,
+    minReader:
+      if (runningVersion > current.minReader)
+        runningVersion
+      else current.minReader,
+  }
+
+  pure def acquisitionOmissionMutant(
+    current: EngineMetadata,
+    runningVersion: int
+  ): EngineMetadata = current
+
+  pure def checkpointOmissionMutant(
+    current: EngineMetadata,
+    runningVersion: int,
+    writerBackupFormat: int
+  ): EngineMetadata = acquireMetadata(current, runningVersion)
+
+  pure def checkpointLoweringMutant(
+    current: EngineMetadata,
+    runningVersion: int,
+    writerBackupFormat: int
+  ): EngineMetadata = {
+    producerVersion: runningVersion,
+    backupFormat: writerBackupFormat,
+    minReader: runningVersion,
+  }
+
+  pure def canTakeover(current: MetadataState): bool =
+    current.phase == BeforeTakeover
+
+  pure def applyTakeover(current: MetadataState): MetadataState = {
+    ...current,
+    phase: BeforeCheckpoint,
+    transitionKind: TakeoverTransition,
+    expectedResult: AppliedResult,
+    metadata:
+      if (OMIT_ACQUISITION_UPDATE)
+        acquisitionOmissionMutant(current.metadata, 2)
+      else acquireMetadata(current.metadata, 2),
+  }
+
+  pure def canCheckpoint(current: MetadataState): bool =
+    current.phase == BeforeCheckpoint
+
+  pure def applyCheckpoint(current: MetadataState): MetadataState = {
+    ...current,
+    phase: Complete,
+    transitionKind: CheckpointTransition,
+    expectedResult: AppliedResult,
+    metadata:
+      if (OMIT_CHECKPOINT_REQUIREMENTS)
+        checkpointOmissionMutant(current.metadata, 2, 1)
+      else if (ALLOW_REQUIREMENT_LOWERING)
+        checkpointLoweringMutant(current.metadata, 2, 1)
+      else checkpointMetadata(current.metadata, 2, 1),
+  }
+
+  action init: bool = all {
+    state' = {
+      phase: BeforeTakeover,
+      transitionKind: NoTransition,
+      expectedResult: NoResult,
+      metadata:
+        if (START_WITH_NEWER_REQUIREMENTS) {
+          producerVersion: 3,
+          backupFormat: 2,
+          minReader: 3,
+        } else {
+          producerVersion: 1,
+          backupFormat: 0,
+          minReader: 1,
+        },
+    },
+  }
+
+  action takeover: bool = all {
+    canTakeover(state),
+    state' = applyTakeover(state),
+  }
+
+  action checkpoint: bool = all {
+    canCheckpoint(state),
+    state' = applyCheckpoint(state),
+  }
+
+  action step: bool = any {
+    takeover,
+    checkpoint,
+  }
+
+  val takeoverReached: bool = state.phase != BeforeTakeover
+  val checkpointReached: bool = state.phase == Complete
+
+  val requirementsNeverLower: bool = and {
+    state.metadata.backupFormat >=
+      (if (START_WITH_NEWER_REQUIREMENTS) 2 else 0),
+    state.metadata.minReader >=
+      (if (START_WITH_NEWER_REQUIREMENTS) 3 else 1),
+  }
+
+  val transitionMetadataIsComplete: bool = and {
+    if (state.phase == BeforeCheckpoint)
+      state.metadata.producerVersion == 2
+    else true,
+    if (state.phase == Complete) and {
+      state.metadata.producerVersion == 2,
+      state.metadata.backupFormat >= 1,
+      state.metadata.minReader >= 2,
+    } else true,
+  }
+
+  val engineMetadataIsSound: bool = and {
+    requirementsNeverLower,
+    transitionMetadataIsComplete,
+  }
+}
+
+module durableEngineMetadataCorrected {
+  import durableEngineMetadata(
+    OMIT_ACQUISITION_UPDATE = false,
+    OMIT_CHECKPOINT_REQUIREMENTS = false,
+    ALLOW_REQUIREMENT_LOWERING = false,
+    START_WITH_NEWER_REQUIREMENTS = false
+  ).*
+}
+
+module durableEngineMetadataAcquisitionOmissionMutant {
+  import durableEngineMetadata(
+    OMIT_ACQUISITION_UPDATE = true,
+    OMIT_CHECKPOINT_REQUIREMENTS = false,
+    ALLOW_REQUIREMENT_LOWERING = false,
+    START_WITH_NEWER_REQUIREMENTS = false
+  ).*
+}
+
+module durableEngineMetadataCheckpointOmissionMutant {
+  import durableEngineMetadata(
+    OMIT_ACQUISITION_UPDATE = false,
+    OMIT_CHECKPOINT_REQUIREMENTS = true,
+    ALLOW_REQUIREMENT_LOWERING = false,
+    START_WITH_NEWER_REQUIREMENTS = false
+  ).*
+}
+
+module durableEngineMetadataLoweringMutant {
+  import durableEngineMetadata(
+    OMIT_ACQUISITION_UPDATE = false,
+    OMIT_CHECKPOINT_REQUIREMENTS = false,
+    ALLOW_REQUIREMENT_LOWERING = true,
+    START_WITH_NEWER_REQUIREMENTS = true
+  ).*
+}
+```
+
+```quint target/formal/quint/durableEngineMetadataTest.qnt +=
+module durableEngineMetadataTest {
+  import durableEngineMetadata(
+    OMIT_ACQUISITION_UPDATE = false,
+    OMIT_CHECKPOINT_REQUIREMENTS = false,
+    ALLOW_REQUIREMENT_LOWERING = false,
+    START_WITH_NEWER_REQUIREMENTS = false
+  ).* from "./durableEngineMetadata"
+
+  pure val older: EngineMetadata = {
+    producerVersion: 1,
+    backupFormat: 0,
+    minReader: 1,
+  }
+
+  run acquisitionUpdatesOnlyProducerTest =
+    acquireMetadata(older, 2) == {
+      producerVersion: 2,
+      backupFormat: 0,
+      minReader: 1,
+    }
+
+  run checkpointAdvancesCompatibilityTest =
+    checkpointMetadata(older, 2, 1) == {
+      producerVersion: 2,
+      backupFormat: 1,
+      minReader: 2,
+    }
+
+  run checkpointNeverLowersRequirementsTest =
+    checkpointMetadata({
+      producerVersion: 3,
+      backupFormat: 2,
+      minReader: 3,
+    }, 2, 1) == {
+      producerVersion: 2,
+      backupFormat: 2,
+      minReader: 3,
+    }
+
+  run producerVersionIsNotEqualityGateTest =
+    readerCompatible(2, 1, {
+      producerVersion: 3,
+      backupFormat: 1,
+      minReader: 1,
+    })
+
+  run incompatibleBackupFormatIsRejectedTest =
+    not(readerCompatible(2, 1, {
+      producerVersion: 3,
+      backupFormat: 2,
+      minReader: 1,
+    }))
+
+  run incompatibleMinimumReaderIsRejectedTest =
+    not(readerCompatible(2, 1, {
+      producerVersion: 3,
+      backupFormat: 1,
+      minReader: 3,
+    }))
+
+  run acquisitionOmissionMutantWitnessTest =
+    acquisitionOmissionMutant(older, 2) != acquireMetadata(older, 2)
+
+  run checkpointOmissionMutantWitnessTest =
+    checkpointOmissionMutant(older, 2, 1)
+      != checkpointMetadata(older, 2, 1)
+
+  run checkpointLoweringMutantWitnessTest = {
+    val current = {
+      producerVersion: 3,
+      backupFormat: 2,
+      minReader: 3,
+    }
+    val lowered = checkpointLoweringMutant(current, 2, 1)
+    and {
+      lowered.backupFormat < current.backupFormat,
+      lowered.minReader < current.minReader,
+    }
+  }
+
+  run takeoverCheckpointTraceTest =
+    init
+      .then(takeover)
+      .then(checkpoint)
+      .expect(and {
+        state.phase == Complete,
+        state.transitionKind == CheckpointTransition,
+        state.expectedResult == AppliedResult,
+        state.metadata == checkpointMetadata(older, 2, 1),
+        engineMetadataIsSound,
+      })
+}
+```
