@@ -194,6 +194,8 @@
 
 (defn- do-checkpoint! [writer]
   (assert-writable! writer)
+  ((:validate-checkpoint! (:operations writer))
+   (:store writer) (:token writer))
   (let [path ((:create-checkpoint! (:operations writer))
               (:handle writer) (:database writer))]
     (try
@@ -402,6 +404,11 @@
           (fn [store token path]
             (control/publish-checkpoint-file!
              store token path retry-options))
+          :validate-checkpoint!
+          (fn [store token]
+            (when engine-metadata
+              (control/validate-checkpoint-metadata!
+               store token engine-metadata)))
           :commit-reference!
           (fn [store token options]
             (control/commit-reference!

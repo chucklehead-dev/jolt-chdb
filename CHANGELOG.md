@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reject malformed Durable producer and minimum-reader releases at fresh
+  acquisition, takeover, and checkpoint boundaries using the canonical pinned
+  compatibility parser, before conditional publication, verification, or head
+  replacement. Diagnostics retain neither the rejected release nor object
+  identity.
+
 - Bound Durable head JSON object/array nesting to 64 containers during both
   raw decoding and programmatic encoding, with redacted boundary diagnostics.
 
