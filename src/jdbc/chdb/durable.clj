@@ -355,7 +355,7 @@
            (when-not (and (map? record) (= #{"sql"} (set (keys record)))
                           (string? sql))
              (fail! ::corrupt "A Durable WAL record is invalid"))
-           (when (> (alength (.getBytes sql "UTF-8")) writer/max-statement-bytes)
+           (when (writer/statement-bytes-exceed? sql writer/max-statement-bytes)
              (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
            sql))
        (butlast (str/split text #"\n" -1)))
