@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-open-test
   (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [db.jdbc]
             [db.export :as export]
             [jdbc.chdb.durable :as durable]
@@ -78,8 +79,18 @@
 (def ^:private python-time-fixture
   "test/fixtures/durable/python-decimal-time-oracle.json")
 
+(def ^:private conformance-inventory
+  "resources/jdbc/chdb/durable_conformance_inventory.edn")
+
 (defn- decimal-time-fixture []
   (json/read-str (slurp python-time-fixture)))
+
+(defn- canonical-protocol-source []
+  (let [source (:source (edn/read-string (slurp conformance-inventory)))]
+    [(get source :repository)
+     (get source :commit)
+     (get-in source [:protocol :path])
+     (get-in source [:protocol :sha256])]))
 
 (defn- raw-head-expiry [bytes]
   ;; This is intentionally independent of durable.head/decode: the oracle
@@ -87,7 +98,11 @@
   (get-in (json/read-str (String. (byte-array bytes) "UTF-8") :bigdec true)
           ["lease" "expires_at"]))
 
-(defn- capture-public-open-heads []
+(defn- captured-heads [head-writes]
+  {:operations (mapv :operation @head-writes)
+   :expires-at (mapv #(raw-head-expiry (:bytes %)) @head-writes)})
+
+(defn- capture-public-open-result []
   (let [fixture (decimal-time-fixture)
         now-ms (bigdec (get-in fixture ["inputs_ms" "now"]))
         ttl-ms (bigdec (get-in fixture ["inputs_ms" "lease_ttl"]))
@@ -99,23 +114,20 @@
         close-count (atom 0)
         cleanup-count (atom 0)
         operations (support/fake-open-operations
-                    calls (atom [now-ms now-ms]) close-count cleanup-count)
-        opened (durable/open-writer!
-                {:store store :owner "raw-byte-oracle"
-                 :instance "raw-byte-attempt" :database "default"
-                 :lease-ttl-ms ttl-ms
-                 :heartbeat-interval-ms heartbeat-ms
-                 :operations operations})]
+                    calls (atom [now-ms now-ms]) close-count cleanup-count)]
     (try
-      {:operations (mapv :operation @head-writes)
-       :expires-at (mapv #(raw-head-expiry (:bytes %)) @head-writes)}
-      (finally (writer/close! opened)))))
-
-(defn- capture-public-open-result []
-  (try
-    {:capture (capture-public-open-heads)}
-    (catch Throwable error
-      {:error (:type (ex-data error))})))
+      (let [opened (durable/open-writer!
+                    {:store store :owner "raw-byte-oracle"
+                     :instance "raw-byte-attempt" :database "default"
+                     :lease-ttl-ms ttl-ms
+                     :heartbeat-interval-ms heartbeat-ms
+                     :operations operations})]
+        (try
+          {:capture (captured-heads head-writes)}
+          (finally (writer/close! opened))))
+      (catch Throwable error
+        {:capture (captured-heads head-writes)
+         :error (select-keys (ex-data error) [:type :path])}))))
 
 (defn- prepared-checkpoint-store []
   (let [store (backend/memory-backend)
@@ -183,6 +195,7 @@
 
   (let [fixture (decimal-time-fixture)
         expected (mapv bigdec (get fixture "expected_expires_at"))
+        mutant-first (bigint (get fixture "identity_mutant_first_expires_at"))
         observed (capture-public-open-result)
         conversion-var (ns-resolve 'jdbc.chdb.durable 'epoch-ms->seconds)
         mutant
@@ -194,17 +207,28 @@
             (get-in fixture ["inputs_ms" "lease_ttl"])
             (get-in fixture ["inputs_ms" "heartbeat_interval"])])
     (check "Python Decimal fixture pins the normative protocol revision"
-           ["66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
-            "docs/durable/protocol-v1.mdx"]
-           [(get-in fixture ["protocol" "commit"])
-            (get-in fixture ["protocol" "document"])])
+           (canonical-protocol-source)
+           [(get-in fixture ["protocol" "repository"])
+            (get-in fixture ["protocol" "commit"])
+            (get-in fixture ["protocol" "document"])
+            (get-in fixture ["protocol" "sha256"])])
     (check "public open records acquisition then recovery renewal head bytes"
            [:create :replace]
            (get-in observed [:capture :operations]))
     (check "independent raw JSON parsing matches Python Decimal epoch seconds"
            expected (get-in observed [:capture :expires-at]))
-    (check "identity conversion mutant fails the same raw-byte oracle"
-           false (= expected (get-in mutant [:capture :expires-at]))))
+    (check "identity mutant exposes the exact wrong-unit first raw expiry"
+           mutant-first (first (get-in mutant [:capture :expires-at])))
+    (check "identity mutant differs from the Python seconds oracle"
+           false (= (first expected)
+                    (first (get-in mutant [:capture :expires-at]))))
+    (check "identity mutant has no second active lease write"
+           [mutant-first]
+           (filterv some? (get-in mutant [:capture :expires-at])))
+    (check "identity mutant fails at the bounded wire lease-time category"
+           {:type :jdbc.chdb.durable.head/corrupt
+            :path ["lease" "expires_at"]}
+           (:error mutant)))
 
   (let [store (prepared-released-engine-store
                {:version "26.6.0" :backup-format 0 :min-reader "26.6.0"})

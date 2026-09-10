@@ -4,8 +4,9 @@
 
 - Check public Durable acquisition and recovery-renewal `head.json` bytes
   against an offline Python `Decimal` epoch-seconds fixture, with a CI drift
-  guard and an identity-conversion mutant. This is a narrow adapter unit oracle,
-  not a full upstream Python-writer interoperability claim.
+  guard bound to the canonical protocol pin and digest, plus a precise
+  wrong-unit identity-conversion mutant witness. This is a narrow adapter unit
+  oracle, not a full upstream Python-writer interoperability claim.
 
 - Bound Durable public TTL, heartbeat, skew, observed clocks, and derived lease
   comparisons to integral cross-runtime-safe milliseconds, while preserving

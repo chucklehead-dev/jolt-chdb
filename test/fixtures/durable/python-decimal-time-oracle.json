@@ -7,6 +7,7 @@
     "arithmetic": "python decimal.Decimal",
     "script": "scripts/generate-durable-python-time-fixture.py"
   },
+  "identity_mutant_first_expires_at": "1788230400500",
   "inputs_ms": {
     "heartbeat_interval": "125",
     "lease_ttl": "375",
@@ -15,7 +16,8 @@
   "protocol": {
     "commit": "66643e5030fb73c30ac5cdd31d4c7858ea040ed0",
     "document": "docs/durable/protocol-v1.mdx",
-    "repository": "https://github.com/chdb-io/chdb.git"
+    "repository": "https://github.com/chdb-io/chdb.git",
+    "sha256": "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"
   },
   "schema": 1
 }
