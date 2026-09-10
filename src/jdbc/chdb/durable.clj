@@ -551,7 +551,7 @@
                           (epoch-ms->seconds initial-expiry-ms)
                           :now now-seconds
                           :clock-skew (epoch-ms->seconds clock-skew-ms)
-                          :validate-acquire-head!
+                          :validate-existing-acquire-head!
                           #(validate-comparison-domain! % clock-skew-ms)
                           :force? force?
                           :database database :engine-version running-version
