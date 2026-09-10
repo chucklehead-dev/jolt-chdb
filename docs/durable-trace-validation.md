@@ -173,6 +173,16 @@ Use one transition vocabulary but keep four different claims explicit:
    the offline validator accepts them only when the Quint transition relation
    can replay the whole trace.
 
+Engine-version strings deliberately remain outside the Quint state projection.
+The model's finite version ranks express only the transition obligation that a
+checkpoint cannot lower `min_reader`; they cannot faithfully represent the
+pinned Python parser's variable-length numeric tuples, recognized prerelease
+markers, or stable fallback for unrecognized suffixes. Exact boundary ordering
+is instead checked by the independent SHA-pinned differential corpus and Hegel
+properties described in `docs/durable-conformance.md`. Extending the Quint rank
+set would add examples without proving parser refinement, so it would weaken the
+separation between the abstract non-lowering invariant and its concrete oracle.
+
 The intended CI split is:
 
 - every change: tangle, typecheck, deterministic Quint tests, sampling,
