@@ -60,7 +60,11 @@ An existing-head acquisition records the running chDB release in
 `engine.version` in the same CAS that advances the fencing generation. It
 preserves `backup_format`, `min_reader`, and unknown engine fields. The producer
 version says who wrote the object most recently; readers do not require an
-exact version match.
+exact version match. Fresh acquisition validates both `engine.version` and
+`engine.min_reader`, and every takeover validates the replacement producer
+version before the first backend read or conditional write. These checks call
+the same `compatibility/release-version?` parser used by the SHA-pinned release
+comparison oracle; the control layer does not maintain a second version syntax.
 
 A full-checkpoint commit atomically records its producer version and archive
 format with the new base reference. Its `backup_format` and `min_reader`
@@ -71,8 +75,14 @@ creation, native recovery, or mutation.
 
 Raw `commit-reference!` checkpoint callers must supply all three values in
 `:engine-metadata`; omission or lowering is rejected before object verification
-or head mutation. The public writer supplies them from the checked native
-capability, so ordinary callers do not configure these fields separately.
+or head mutation. Producer `version` and `min-reader` are also rejected there
+unless the canonical release parser accepts them. Validation errors are
+redacted: neither the rejected text nor storage and lease identities enter the
+exception. Writer composition preflights the same metadata against the owned
+head before checkpoint creation or immutable upload, then `commit-reference!`
+repeats the check before verification and head replacement. The public writer
+supplies this metadata from the checked native capability, so ordinary callers
+do not configure these fields separately.
 
 ## Immutable commits and ambiguity
 

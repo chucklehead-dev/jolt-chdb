@@ -182,6 +182,11 @@ is instead checked by the independent SHA-pinned differential corpus and Hegel
 properties described in `docs/durable-conformance.md`. Extending the Quint rank
 set would add examples without proving parser refinement, so it would weaken the
 separation between the abstract non-lowering invariant and its concrete oracle.
+The control adapter now enforces `compatibility/release-version?` as a validated
+precondition before a producer or minimum-reader string can be published. The
+Quint model continues to assume that precondition; public-boundary mutation
+tests, including a nonblank-only mutant, establish it at the concrete adapter
+instead of duplicating the parser in the abstract transition system.
 
 The intended CI split is:
 

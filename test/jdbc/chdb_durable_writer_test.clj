@@ -114,6 +114,36 @@
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 serialized writer operations")
+  (doseq [field [:version :min-reader]]
+    (let [store (backend/memory-backend)
+          acquired (control/acquire! store base-options)
+          calls (atom [])
+          close-count (atom 0)
+          operations
+          (assoc (fake-operations calls close-count)
+                 :create-checkpoint!
+                 (fn [_ _] (swap! calls conj :create) :checkpoint)
+                 :delete-checkpoint! (fn [_] nil)
+                 :publish-checkpoint!
+                 (fn [_ _ _]
+                   (swap! calls conj :upload)
+                   {:status :published :reference {}})
+                 :commit-reference!
+                 (fn [_ _ _] (swap! calls conj :replace) {:status :committed}))
+          durable-writer
+          (writer/start!
+           {:store store :token (:token acquired) :handle :fake-handle
+            :database "default"
+            :engine-metadata
+            (assoc {:version "26.8.0" :backup-format 2
+                    :min-reader "26.8.0"}
+                   field "not-a-release")
+            :operations operations})]
+      (check (str "malformed checkpoint " (name field)
+                  " fails before create, upload, or head replace")
+             [::control/invalid-options []]
+             [(error-type #(writer/checkpoint! durable-writer)) @calls])
+      (writer/close! durable-writer)))
   (let [{:keys [store calls close-count writer]} (new-writer)]
     (check "read query crosses classification before execution"
            {:sql "SELECT 1"}

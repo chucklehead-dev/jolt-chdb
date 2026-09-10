@@ -45,6 +45,12 @@
     (fail! ::invalid-options (str label " must be a nonblank string")))
   value)
 
+(defn- release-version! [value label]
+  (when-not (compatibility/release-version? value)
+    (fail! ::invalid-options
+           (str label " must be a recognized chDB release")))
+  value)
+
 (defn- nonnegative-time! [value label]
   (when-not (and (finite-number? value) (not (neg? value)))
     (fail! ::invalid-options (str label " must be a finite nonnegative number")))
@@ -130,10 +136,10 @@
   (nonblank! instance "instance")
   (nonnegative-time! expires-at "expires-at")
   (nonblank! database "database")
-  (nonblank! engine-version "engine-version")
+  (release-version! engine-version "engine-version")
   (when-not (and (integer? backup-format) (not (neg? backup-format)))
     (fail! ::invalid-options "backup-format must be a nonnegative integer"))
-  (nonblank! min-reader "min-reader")
+  (release-version! min-reader "min-reader")
   (head/validate!
    {"protocol" {"version" 1 "reader_features" [] "writer_features" []}
     "engine" {"name" "chdb"
@@ -274,7 +280,9 @@
           :as options}]
   (nonblank! owner "owner")
   (nonblank! instance "instance")
-  (nonblank! (:engine-version options) "engine-version")
+  ;; Every acquisition can replace the producer version, so reject it before
+  ;; the first backend read and before either conditional publication path.
+  (release-version! (:engine-version options) "engine-version")
   (nonnegative-time! expires-at "expires-at")
   (nonnegative-time! now "now")
   (nonnegative-time! clock-skew "clock-skew")
@@ -653,11 +661,11 @@
            "Checkpoint engine-metadata is required"))
   (let [{:keys [version backup-format min-reader]} metadata
         engine (get current "engine")]
-    (nonblank! version "engine-metadata version")
+    (release-version! version "engine-metadata version")
     (when-not (and (integer? backup-format) (not (neg? backup-format)))
       (fail! ::invalid-options
              "engine-metadata backup-format must be a nonnegative integer"))
-    (nonblank! min-reader "engine-metadata min-reader")
+    (release-version! min-reader "engine-metadata min-reader")
     (when (< backup-format (get engine "backup_format"))
       (fail! ::invalid-options
              "A checkpoint cannot lower the Durable backup format"))
@@ -674,6 +682,20 @@
         (assoc "version" version)
         (assoc "backup_format" backup-format)
         (assoc "min_reader" min-reader))))
+
+(defn validate-checkpoint-metadata!
+  "Validate checkpoint engine metadata against the current owned head.
+
+  Writer composition calls this before creating or uploading a checkpoint.
+  `commit-reference!` repeats the validation after publication so the head CAS
+  remains independently fail-closed."
+  [store token metadata]
+  (let [snapshot (or (read-head! store)
+                     (fail! ::lease-fenced
+                            "The Durable head no longer exists"))
+        current (assert-owned! (:head snapshot) token)]
+    (checkpoint-engine current metadata)
+    metadata))
 
 (defn- reference-transition
   [current token kind reference engine-metadata]

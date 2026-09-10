@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-control-test
-  (:require [hegel.core :as h]
+  (:require [clojure.string :as str]
+            [hegel.core :as h]
             [hegel.stateful :as hs]
             [hegel.trace :as ht]
             [jdbc.chdb.durable.backend :as backend]
@@ -19,6 +20,13 @@
 
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
+
+(defn- error-data [f]
+  (try
+    (f)
+    nil
+    (catch Throwable error
+      {:message (ex-message error) :data (ex-data error)})))
 
 (defn- stored-head-bytes [store]
   (vec (backend/get-bytes store control/head-key)))
@@ -72,6 +80,25 @@
         (backend/replace-if-match! delegate key bytes etag)))
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
+
+(defn- mutation-recording-backend [delegate mutations]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (swap! mutations conj :put-file)
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (swap! mutations conj :put-bytes)
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (swap! mutations conj :replace)
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- nonblank-only-version-mutant? [value]
+  (and (string? value) (not (str/blank? value))))
 
 (defn- delayed-ambiguous-head-backend [delegate hidden-reads replace-count]
   (let [remaining (atom 0)]
@@ -272,6 +299,86 @@
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 lease and head-CAS control")
+  (let [malformed "not-a-release"]
+    (check "nonblank-only validation mutant admits the malformed release"
+           true (nonblank-only-version-mutant? malformed))
+    (doseq [field [:engine-version :min-reader]]
+      (let [delegate (backend/memory-backend)
+            mutations (atom [])
+            store (mutation-recording-backend delegate mutations)
+            rejected (error-data
+                      #(control/acquire!
+                        store (assoc base-options field malformed)))]
+        (check (str "fresh acquire rejects malformed " (name field))
+               ::control/invalid-options (get-in rejected [:data :type]))
+        (check (str "fresh malformed " (name field)
+                    " performs no create, replace, or upload")
+               [] @mutations)
+        (check (str "fresh malformed " (name field)
+                    " leaves no head")
+               nil (backend/get-bytes delegate control/head-key))
+        (check (str "fresh malformed " (name field)
+                    " diagnostic is redacted")
+               false (str/includes? (pr-str rejected) malformed))))
+    (let [delegate (backend/memory-backend)
+          acquired (control/acquire! delegate base-options)
+          before-bytes (stored-head-bytes delegate)
+          before-lease (get (:head acquired) "lease")
+          mutations (atom [])
+          store (mutation-recording-backend delegate mutations)
+          rejected (error-data
+                    #(control/acquire!
+                      store (assoc base-options
+                                   :owner "writer-2"
+                                   :instance "instance-2"
+                                   :now 201M
+                                   :expires-at 300M
+                                   :engine-version malformed)))]
+      (check "takeover rejects a malformed producer version"
+             ::control/invalid-options (get-in rejected [:data :type]))
+      (check "malformed takeover performs no create, replace, or upload"
+             [] @mutations)
+      (check "malformed takeover preserves the exact head and lease"
+             [before-bytes before-lease]
+             [(stored-head-bytes delegate)
+              (get (:head (control/read-head! delegate)) "lease")])
+      (check "malformed takeover diagnostic is redacted"
+             false (str/includes? (pr-str rejected) malformed)))
+    (doseq [field [:version :min-reader]]
+      (let [delegate (backend/memory-backend)
+            acquired (control/acquire! delegate base-options)
+            token (:token acquired)
+            before-bytes (stored-head-bytes delegate)
+            before-lease (get (:head acquired) "lease")
+            mutations (atom [])
+            verifications (atom 0)
+            store (mutation-recording-backend delegate mutations)
+            rejected
+            (error-data
+             #(control/commit-reference!
+               store token
+               {:kind :checkpoint
+                :reference (checkpoint-reference 1 1)
+                :engine-metadata
+                (assoc {:version "26.8.0"
+                        :backup-format 2
+                        :min-reader "26.8.0"}
+                       field malformed)
+                :verify-reference!
+                (fn [_ _] (swap! verifications inc) true)}))]
+        (check (str "checkpoint rejects malformed " (name field))
+               ::control/invalid-options (get-in rejected [:data :type]))
+        (check (str "malformed checkpoint " (name field)
+                    " precedes verification and all backend mutation")
+               [0 []] [@verifications @mutations])
+        (check (str "malformed checkpoint " (name field)
+                    " preserves the exact head and lease")
+               [before-bytes before-lease]
+               [(stored-head-bytes delegate)
+                (get (:head (control/read-head! delegate)) "lease")])
+        (check (str "malformed checkpoint " (name field)
+                    " diagnostic is redacted")
+               false (str/includes? (pr-str rejected) malformed)))))
   (letfn [(store-at-boundary []
             (let [store (backend/memory-backend)
                   acquired (control/acquire! store base-options)]
