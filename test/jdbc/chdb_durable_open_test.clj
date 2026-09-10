@@ -234,13 +234,6 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
-(defn- await-writable-state [opened expected]
-  (loop [remaining 10000]
-    (let [actual (:writable? (writer/status opened))]
-      (if (or (= expected actual) (zero? remaining))
-        actual
-        (do (Thread/yield) (recur (dec remaining)))))))
-
 (defn- run-renewal-failure-conformance! []
   (println "Durable public writer renewal-loss self-fencing")
   (let [delegate (backend/memory-backend)
@@ -248,6 +241,7 @@
         replacement-events (ArrayBlockingQueue. 8)
         renewal-failures (ArrayBlockingQueue. 8)
         heartbeat-signals (ArrayBlockingQueue. 8)
+        heartbeat-awaits (ArrayBlockingQueue. 8)
         store (renewal-failure-backend
                delegate fail-replace? replacement-events renewal-failures)
         now (atom 100M)
@@ -267,7 +261,9 @@
                (fn [stop _]
                  (if (realized? stop)
                    :stop
-                   (.take ^ArrayBlockingQueue heartbeat-signals)))
+                   (do
+                     (.put ^ArrayBlockingQueue heartbeat-awaits :waiting)
+                     (.take ^ArrayBlockingQueue heartbeat-signals))))
                :execute-native!
                (fn [handle sql params]
                  (swap! execute-effects inc)
@@ -291,6 +287,8 @@
     ;; Public open performs one recovery renewal before returning. Remove that
     ;; event so the next observation belongs to the live heartbeat.
     (.clear ^ArrayBlockingQueue replacement-events)
+    (check "public heartbeat is waiting before the controlled renewal trace"
+           :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
     (let [read-before (writer/query! opened "SELECT ?" [4])
           expiry-before
           (get-in (:head (control/read-head! store))
@@ -298,6 +296,8 @@
       (.put ^ArrayBlockingQueue heartbeat-signals :tick)
       (check "successful heartbeat control reaches the public head CAS"
              :replaced (.take ^ArrayBlockingQueue replacement-events))
+      (check "successful heartbeat completes its cycle"
+             :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
       (let [expiry-after
             (get-in (:head (control/read-head! store))
                     ["lease" "expires_at"])]
@@ -307,17 +307,28 @@
         (.put ^ArrayBlockingQueue heartbeat-signals :tick)
         (check "injected live renewal loss reaches the public backend"
                :failed (.take ^ArrayBlockingQueue renewal-failures))
+        ;; Re-entry into await-heartbeat! can occur only after renew! throws,
+        ;; heartbeat-loop catches that error, evaluates its fencing condition,
+        ;; and starts the next cycle. This handshake makes the assertion below
+        ;; causal against an immediate-fence-in-catch mutant.
+        (check "failed renewal completes its heartbeat catch cycle"
+               :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
         (check "one failed renewal before expiry does not fence prematurely"
                [true expiry-after]
-               [(await-writable-state opened true)
+               [(:writable? (writer/status opened))
                 (get-in (:head (control/read-head! store))
                         ["lease" "expires_at"])]))
       ;; Advance beyond the last proved expiry. The next heartbeat opportunity
       ;; must fence locally rather than attempt another replacement.
       (reset! now 10000M)
       (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+      (check "expiry transition completes the heartbeat thread"
+             true
+             (not= ::heartbeat-timeout
+                   (deref (:outcome (:heartbeat opened))
+                          2000 ::heartbeat-timeout)))
       (check "renewal loss through expiry self-fences the public writer"
-             false (await-writable-state opened false))
+             false (:writable? (writer/status opened)))
       (let [calls-before @calls]
         (check "self-fenced public execute is refused"
                ::control/lease-fenced
