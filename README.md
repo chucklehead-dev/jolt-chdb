@@ -73,6 +73,9 @@ storage calls may block. During close, heartbeat remains live through queued
 work and the final flush, then is stopped and joined before lease release.
 Public lease and skew options are milliseconds; the interoperable
 `head.json` lease expiry is Unix epoch seconds with fractional precision.
+The adapter accepts only whole public milliseconds and bounds both forms to the
+JavaScript-safe millisecond magnitude; this is a local cross-runtime safety
+policy rather than a new Protocol V1 requirement.
 Durable is still experimental: the stable 26.7.0 library installed by
 `-M:setup-native` does not expose the required ABI, hosted native qualification
 covers only Linux x86-64, and a broader crash/corruption and platform matrix

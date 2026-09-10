@@ -10,6 +10,7 @@
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
+            [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.native :as native])
   (:import [java.util.concurrent ArrayBlockingQueue]))
 
@@ -44,6 +45,27 @@
     (fail! ::invalid-options (str label " must be a positive integer")))
   value)
 
+(defn- fence-invalid-time! [lease-state]
+  (when lease-state
+    (swap! lease-state assoc :fenced? true))
+  (fail! ::control/lease-fenced
+         "The Durable writer cannot prove a live lease"))
+
+(defn- sample-now-ms! [lease-state now-ms]
+  (let [value (try
+                (now-ms)
+                (catch Throwable _
+                  (fence-invalid-time! lease-state)))]
+    (when-not (time-domain/supported-nonnegative-milliseconds? value)
+      (fence-invalid-time! lease-state))
+    value))
+
+(defn- renewal-expiry! [lease-state expires-at renew-now ttl-ms]
+  (let [value (max (inc expires-at) (+ renew-now ttl-ms))]
+    (when-not (time-domain/supported-millisecond-magnitude? value)
+      (fence-invalid-time! lease-state))
+    value))
+
 (defn- wal-line [sql]
   (.getBytes (str (json/write-str {"sql" sql}) "\n") "UTF-8"))
 
@@ -75,7 +97,7 @@
 (defn- assert-writable! [writer]
   (when-let [lease-state (:lease-state writer)]
     (let [{:keys [expires-at fenced?]} @lease-state
-          now ((:now-ms (:operations writer)))]
+          now (sample-now-ms! lease-state (:now-ms (:operations writer)))]
       (when (or fenced? (>= now expires-at))
         (swap! lease-state assoc :fenced? true)
         (fail! ::control/lease-fenced
@@ -84,7 +106,8 @@
 (defn- retry-stopped? [lease-state now-ms]
   (when lease-state
     (let [{:keys [expires-at fenced?]} @lease-state
-          stopped? (or fenced? (>= (now-ms) expires-at))]
+          stopped? (or fenced?
+                       (>= (sample-now-ms! lease-state now-ms) expires-at))]
       (when stopped?
         (swap! lease-state assoc :fenced? true))
       stopped?)))
@@ -311,14 +334,16 @@
 (defn- heartbeat-loop [writer interval-ms ttl-ms]
   (loop []
     (let [{:keys [expires-at fenced?]} @(:lease-state writer)
-          now ((:now-ms (:operations writer)))
+          now (sample-now-ms! (:lease-state writer)
+                              (:now-ms (:operations writer)))
           wait-ms (long (max 1 (min interval-ms (- expires-at now))))
           signal ((:await-heartbeat! (:operations writer))
                   (:heartbeat-stop writer) wait-ms)]
       (when (and (= :tick signal)
                  (contains? #{:open :closing} @(:lifecycle writer))
                  (not (:fenced? @(:lease-state writer))))
-        (let [renew-now ((:now-ms (:operations writer)))]
+        (let [renew-now (sample-now-ms! (:lease-state writer)
+                                        (:now-ms (:operations writer)))]
           (if (>= renew-now expires-at)
             (swap! (:lease-state writer) assoc :fenced? true)
             (try
@@ -326,15 +351,18 @@
                          (contains? #{:open :closing}
                                     @(:lifecycle writer))
                          (not (:fenced? @(:lease-state writer))))
-                (let [renewed-expiry (max (inc expires-at)
-                                          (+ renew-now ttl-ms))
+                (let [renewed-expiry (renewal-expiry!
+                                      (:lease-state writer)
+                                      expires-at renew-now ttl-ms)
                       result
                       (call-with-backend-context
                        writer
                        #((:renew! (:operations writer))
                          (:store writer) (:token writer) renewed-expiry
                          (:retry-options writer)))]
-                  (if (>= ((:now-ms (:operations writer))) expires-at)
+                  (if (>= (sample-now-ms! (:lease-state writer)
+                                          (:now-ms (:operations writer)))
+                          expires-at)
                     (swap! (:lease-state writer) assoc :fenced? true)
                     (reset! (:lease-state writer)
                             {:expires-at (get-in (:head result)
@@ -342,7 +370,9 @@
                              :fenced? false}))))
               (catch Throwable error
                 (when (or (= ::control/lease-fenced (:type (ex-data error)))
-                          (>= ((:now-ms (:operations writer))) expires-at))
+                          (>= (sample-now-ms! (:lease-state writer)
+                                              (:now-ms (:operations writer)))
+                              expires-at))
                   (swap! (:lease-state writer) assoc :fenced? true))))))
         (when-not (:fenced? @(:lease-state writer))
           (recur))))))

@@ -3,6 +3,8 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb-durable-open-test-support :as support]
             [jdbc.chdb.durable.writer :as writer]))
 
@@ -49,6 +51,27 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- replace-on-second-head-read
+  [delegate replacement reads acquire-replaces]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key]
+      (if (and (= control/head-key key) (= 2 (swap! reads inc)))
+        (let [current (backend/get-with-etag delegate key)]
+          (backend/replace-if-match! delegate key (head/encode replacement)
+                                     (:etag current))
+          (backend/get-with-etag delegate key))
+        (backend/get-with-etag delegate key)))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (swap! acquire-replaces inc)
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- await-fenced! [opened]
   (loop [remaining 100000]
     (if (or (not (:writable? (writer/status opened)))
@@ -58,6 +81,30 @@
 
 (defn- operations [clocks calls close-count cleanup-count]
   (support/fake-open-operations calls clocks close-count cleanup-count))
+
+(defn- boundary-open-attempt [store clocks timing]
+  (let [calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        error
+        (try
+          (let [opened
+                (durable/open-writer!
+                 (merge {:store store
+                         :owner "boundary-writer"
+                         :instance "boundary-instance"
+                         :database "default"
+                         :lease-ttl-ms 375M
+                         :heartbeat-interval-ms 125M
+                         :operations (operations clocks calls close-count
+                                                 cleanup-count)}
+                        timing))]
+            (writer/close! opened))
+          nil
+          (catch Throwable caught caught))]
+    {:error error :calls @calls :close-count @close-count
+     :cleanup-count @cleanup-count
+     :head (control/read-head! store)}))
 
 (defn- open! [store now-ms opts]
   (let [calls (atom [])
@@ -84,6 +131,130 @@
 (defn run-checks! []
   (reset! failures 0)
   (println "Durable V1 epoch-seconds binding boundary")
+
+  (check "the old positive-number TTL predicate admits the fractional mutant"
+         true (and (number? 375.5M) (pos? 375.5M)))
+  (check "the bounded predicate distinguishes individually valid overflow terms"
+         [true true false]
+         [(time-domain/supported-wire-epoch-seconds?
+           time-domain/max-wire-epoch-seconds)
+          (time-domain/supported-nonnegative-milliseconds? 1M)
+          (time-domain/supported-nonnegative-milliseconds?
+           (+ (* time-domain/max-wire-epoch-seconds 1000M) 1M))])
+
+  (doseq [[label timing]
+          [["fractional TTL truncation mutant" {:lease-ttl-ms 375.5M}]
+           ["fractional heartbeat truncation mutant"
+            {:heartbeat-interval-ms 124.5M}]
+           ["fractional clock skew" {:clock-skew-ms 0.5M}]
+           ["TTL beyond the safe-ms boundary"
+            {:lease-ttl-ms
+             (inc time-domain/max-safe-epoch-milliseconds)}]
+           ["heartbeat beyond the safe-ms boundary"
+            {:lease-ttl-ms time-domain/max-safe-epoch-milliseconds
+             :heartbeat-interval-ms
+             (inc time-domain/max-safe-epoch-milliseconds)}]
+           ["clock skew beyond the safe-ms boundary"
+            {:clock-skew-ms
+             (inc time-domain/max-safe-epoch-milliseconds)}]]]
+    (let [result (boundary-open-attempt (backend/memory-backend)
+                                        (atom [python-now-ms]) timing)]
+      (check (str label " is rejected at direct open")
+             ::durable/invalid-options
+             (:type (ex-data (:error result))))
+      (check (str label " has no storage or native side effect")
+             [[] 0 0 nil]
+             [(:calls result) (:close-count result)
+              (:cleanup-count result) (:head result)])))
+
+  (let [result (boundary-open-attempt (backend/memory-backend)
+                                      (atom [0.5M]) {})]
+    (check "a fractional observed clock is rejected at direct open"
+           ::durable/invalid-options (:type (ex-data (:error result))))
+    (check "an unsupported observed clock has no storage or native effect"
+           [[] 0 0 nil]
+           [(:calls result) (:close-count result)
+            (:cleanup-count result) (:head result)]))
+
+  (let [store (backend/memory-backend)
+        now-ms (- time-domain/max-safe-epoch-milliseconds 376)
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        opened
+        (durable/open-writer!
+         {:store store :owner "boundary-writer"
+          :instance "boundary-instance" :database "default"
+          :lease-ttl-ms 375 :heartbeat-interval-ms 125
+          :operations (operations (atom [now-ms now-ms]) calls
+                                  close-count cleanup-count)})]
+    (try
+      (check "the last expiry with recovery headroom remains reachable"
+             time-domain/max-wire-epoch-seconds
+             (get-in (:head (control/read-head! store))
+                     ["lease" "expires_at"]))
+      (finally (writer/close! opened))))
+
+  (let [result
+        (boundary-open-attempt
+         (backend/memory-backend)
+         (atom [(- time-domain/max-safe-epoch-milliseconds 375)]) {})]
+    (check "an initial expiry at max is rejected for missing renewal headroom"
+           ::durable/invalid-options (:type (ex-data (:error result))))
+    (check "the headroom mutant is rejected before storage or native effects"
+           [[] 0 0 nil]
+           [(:calls result) (:close-count result)
+            (:cleanup-count result) (:head result)]))
+
+  (let [document (-> (head/decode (slurp python-fixture) :writer)
+                     (assoc-in ["lease" "expires_at"]
+                               time-domain/max-wire-epoch-seconds))
+        store (backend/memory-backend)
+        _ (backend/put-bytes-if-absent! store control/head-key
+                                       (head/encode document))
+        before (stored-head-bytes store)
+        result (boundary-open-attempt store (atom [0M])
+                                      {:clock-skew-ms 1M})]
+    (check "expiry plus skew overflow is rejected before takeover"
+           ::durable/invalid-options (:type (ex-data (:error result))))
+    (check "comparison overflow preserves the exact head and avoids native work"
+           [before [] 0 0]
+           [(stored-head-bytes store) (:calls result)
+            (:close-count result) (:cleanup-count result)]))
+
+  (let [delegate (fixture-store python-fixture)
+        replacement (-> (head/decode (slurp python-fixture) :writer)
+                        (assoc-in ["lease" "expires_at"]
+                                  time-domain/max-wire-epoch-seconds))
+        reads (atom 0)
+        acquire-replaces (atom 0)
+        store (replace-on-second-head-read delegate replacement reads
+                                           acquire-replaces)
+        result (boundary-open-attempt
+                store (atom [(+ python-now-ms 626M)])
+                {:clock-skew-ms 1M})]
+    (check "acquire validates the head that replaced the outer snapshot"
+           ::durable/invalid-options (:type (ex-data (:error result))))
+    (check "TOCTOU replacement is preserved before eligibility, warning, or CAS"
+           [replacement 0 []]
+           [(:head (control/read-head! delegate)) @acquire-replaces
+            (:calls result)]))
+
+  (let [document (-> (head/decode (slurp python-fixture) :writer)
+                     (assoc-in ["lease" "expires_at"] 1788230400.1255M))
+        store (backend/memory-backend)
+        _ (backend/put-bytes-if-absent! store control/head-key
+                                       (head/encode document))
+        opened (open! store (+ python-now-ms 626M)
+                      {:clock-skew-ms 500M})]
+    (try
+      (check "sub-millisecond wire fractions remain valid in takeover comparison"
+             [2 1788230401.002M]
+             [(get-in (:head (control/read-head! store))
+                      ["lease" "generation"])
+              (get-in (:head (control/read-head! store))
+                      ["lease" "expires_at"])])
+      (finally (writer/close! opened))))
 
   (let [mutant-store (fixture-store python-fixture)
         result

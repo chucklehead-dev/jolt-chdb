@@ -45,7 +45,10 @@ the JVM lane explicitly and the ordinary Jolt aggregate includes the same
 checks.
 
 An active lease's `expires_at` is a finite nonnegative Unix timestamp in
-seconds. Fractional seconds are preserved as a JSON number. The codec does not
+seconds, at most `9007199254740.991`. Fractional seconds are preserved as a
+JSON number. This ceiling keeps the corresponding millisecond magnitude inside
+the cross-runtime safe-integer domain. It is a validated jolt-chdb adapter
+precondition, not an additional normative Protocol V1 rule. The codec does not
 infer or migrate legacy millisecond values from their magnitude.
 
 ```clojure

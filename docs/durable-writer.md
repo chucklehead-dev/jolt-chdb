@@ -53,6 +53,17 @@ The writer-local expiry, heartbeat interval, and supplied `lease-ttl-ms` stay
 in milliseconds. The public open layer alone converts between those values and
 Protocol V1 epoch seconds before a control-plane acquire or renewal, and
 converts the confirmed wire expiry back before publishing local lease state.
+Public TTL and explicit heartbeat values are positive whole milliseconds and
+clock skew is a nonnegative whole millisecond value, all at most
+`9007199254740991`. Before acquisition, the open adapter rejects unsupported
+configuration and its initial wall-clock reading, derived expiry without
+recovery-renewal headroom, and every acquired-head expiry-plus-skew overflow.
+After acquisition, an invalid recovery clock sample fails open and runs owned
+cleanup. An invalid live-writer clock sample or overflowing renewal expiry
+self-fences before any subsequent data mutation or lease renewal; the normal
+close path then releases the acquired lease and cleans up owned resources.
+These are local cross-runtime safety preconditions rather than new Protocol V1
+requirements.
 Immutable publication and verification likewise leave heartbeat renewal
 unblocked. The manifest commit rereads the latest owned head afterward and
 retries only definite same-owner heartbeat CAS collisions; takeover fences it,

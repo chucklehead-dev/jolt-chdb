@@ -187,6 +187,14 @@ precondition before a producer or minimum-reader string can be published. The
 Quint model continues to assume that precondition; public-boundary mutation
 tests, including a nonblank-only mutant, establish it at the concrete adapter
 instead of duplicating the parser in the abstract transition system.
+The separate lease-time function model likewise names the safe-millisecond
+magnitude and checks its exact boundary and an unbounded-validator mutant. The
+runtime remains authoritative for integral public inputs, arbitrary JSON
+decimal decoding, observed clocks, and pre-mutation derived-sum checks; the main
+CAS model and SMT proofs still abstract elapsed time. The ITF unit tag is not an
+independent observation of production serialization, so this numeric-domain
+slice does not close the raw-byte cross-binding obligation tracked in issue
+`#51`.
 
 The intended CI split is:
 

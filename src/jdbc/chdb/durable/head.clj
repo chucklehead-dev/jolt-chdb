@@ -4,10 +4,11 @@
   Maps deliberately retain JSON string keys so fields unknown to this V1
   reader survive a decode/update/encode cycle unchanged."
   (:require [clojure.data.json :as json]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [jdbc.chdb.durable.time-domain :as time-domain]))
 
 (def max-head-bytes (* 1024 1024))
-(def max-safe-integer 9007199254740991)
+(def max-safe-integer time-domain/max-safe-epoch-milliseconds)
 (def max-json-depth
   "Maximum number of nested JSON object/array containers, including the root."
   64)
@@ -59,12 +60,6 @@
 (defn- limit! [message path]
   (fail! ::limit-exceeded message path))
 
-(defn- finite-number? [value]
-  (and (number? value)
-       (= value value)
-       (not= value ##Inf)
-       (not= value ##-Inf)))
-
 (defn- safe-integer? [value]
   (and (integer? value)
        (<= (- max-safe-integer) value max-safe-integer)))
@@ -101,7 +96,7 @@
       (corrupt! "head.json integer exceeds the cross-language safe range" path))
 
     (number? value)
-    (when-not (finite-number? value)
+    (when-not (time-domain/finite-number? value)
       (corrupt! "head.json number must be finite" path))
 
     (or (nil? value) (string? value) (boolean? value)) nil
@@ -224,10 +219,15 @@
         instance (required lease "instance" path)
         expires-at (required lease "expires_at" path)
         released? (and (nil? owner) (nil? instance) (nil? expires-at))
-        active? (and (string? owner) (not (str/blank? owner))
-                     (string? instance) (not (str/blank? instance))
-                     (finite-number? expires-at) (not (neg? expires-at)))]
-    (when-not (or released? active?)
+        active-identity? (and (string? owner) (not (str/blank? owner))
+                              (string? instance) (not (str/blank? instance)))]
+    (cond
+      released? nil
+      active-identity?
+      (when-not (time-domain/supported-wire-epoch-seconds? expires-at)
+        (corrupt! "head.json active lease expiry is outside the supported epoch range"
+                  (conj path "expires_at")))
+      :else
       (corrupt! "head.json lease must be wholly active or wholly released" path))
     generation))
 

@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [hegel.core :as h]
             [hegel.generator :as g]
-            [jdbc.chdb.durable.head :as head]))
+            [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.durable.time-domain :as time-domain]))
 
 (def failures (atom 0))
 
@@ -84,6 +85,28 @@
          valid-head (head/validate! valid-head :writer))
   (check "valid head round-trips as UTF-8 JSON"
          valid-head (head/decode (head/encode valid-head) :writer))
+  (let [at-boundary
+        (assoc-in valid-head ["lease" "expires_at"]
+                  time-domain/max-wire-epoch-seconds)]
+    (check "wire expiry accepts the exact cross-runtime boundary"
+           at-boundary (head/decode (head/encode at-boundary) :writer)))
+  (check "the old finite-only wire predicate admits the extreme mutant"
+         true (time-domain/finite-number? (bigdec "1e308")))
+  (doseq [[label expiry]
+          [["one millisecond beyond the wire boundary"
+            (+ time-domain/max-wire-epoch-seconds 0.001M)]
+           ["the finite-only extreme-expiry mutant" (bigdec "1e308")]]]
+    (let [mutant (assoc-in valid-head ["lease" "expires_at"] expiry)
+          encoded (json/write-str mutant)
+          error (caught-error #(head/decode encoded :writer))]
+      (check (str label " is rejected by the raw decoder")
+             ::head/corrupt (:type (ex-data error)))
+      (check (str label " reports only the known field path")
+             ["lease" "expires_at"] (:path (ex-data error)))
+      (check (str label " is also rejected before encoding")
+             ::head/corrupt (:type (error-data #(head/encode mutant))))
+      (check (str label " diagnostic does not disclose its value")
+             false (str/includes? (str error (ex-data error)) (str expiry)))))
   (check "known schema failures retain a diagnostic path"
          ["engine" "name"]
          (:path (error-data

@@ -6,6 +6,7 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-writer-test-support :as support]
             [jolt.fibers :as fibers]))
@@ -19,6 +20,9 @@
 
 (defn- error-type [f]
   (support/error-type f))
+
+(defn- stored-head-bytes [store]
+  (vec (backend/get-bytes store control/head-key)))
 
 (defn- fake-operations [calls close-count]
   (support/fake-operations calls close-count))
@@ -540,6 +544,85 @@
            (error-type #(writer/close! writer)))
     (check "self-fenced cleanup closes the engine exactly once"
            1 @close-count))
+
+  (doseq [[label invalid-now]
+          [["fractional" 100.5M]
+           ["above-max" (inc time-domain/max-safe-epoch-milliseconds)]
+           ["negative" -1M]
+           ["NaN" ##NaN]
+           ["positive-infinity" ##Inf]]]
+    (let [store (backend/memory-backend)
+          acquired (control/acquire! store base-options)
+          before (stored-head-bytes store)
+          calls (atom [])
+          close-count (atom 0)
+          heartbeat-sampled (promise)
+          now (atom 100M)
+          durable-writer
+          (writer/start!
+           {:store store :token (:token acquired) :handle :fake-handle
+            :database "default" :lease-expiry 1000M
+            :lease-ttl-ms 300 :heartbeat-interval-ms 100
+            :operations
+            (assoc (fake-operations calls close-count)
+                   :now-ms (fn []
+                             (deliver heartbeat-sampled true)
+                             @now)
+                   :await-heartbeat! (fn [stop _] @stop :stop))})]
+      @heartbeat-sampled
+      (reset! now invalid-now)
+      (check (str label " foreground clock sample self-fences")
+             ::control/lease-fenced
+             (error-type
+              #(writer/execute! durable-writer "INSERT INTO t VALUES (3)")))
+      (check (str label " foreground sample precedes native/head mutation")
+             [false [] before]
+             [(:writable? (writer/status durable-writer)) @calls
+              (stored-head-bytes store)])
+      (check (str label " fenced writer cleanup retains the primary error")
+             ::control/lease-fenced
+             (error-type #(writer/close! durable-writer)))))
+
+  (doseq [[label initial-now lease-expiry next-now]
+          [["fractional heartbeat sample" 100M 1000M 100.5M]
+           ["derived renewal overflow"
+            (- time-domain/max-safe-epoch-milliseconds 100)
+            time-domain/max-safe-epoch-milliseconds
+            (- time-domain/max-safe-epoch-milliseconds 100)]]]
+    (let [store (backend/memory-backend)
+          acquired (control/acquire! store base-options)
+          before (stored-head-bytes store)
+          calls (atom [])
+          close-count (atom 0)
+          now (atom initial-now)
+          ticked (promise)
+          durable-writer
+          (writer/start!
+           {:store store :token (:token acquired) :handle :fake-handle
+            :database "default" :lease-expiry lease-expiry
+            :lease-ttl-ms 300 :heartbeat-interval-ms 100
+            :operations
+            (assoc (fake-operations calls close-count)
+                   :now-ms #(deref now)
+                   :await-heartbeat!
+                   (fn [_ _]
+                     (reset! now next-now)
+                     (deliver ticked true)
+                     :tick)
+                   :renew! (fn [_ _ _ _] (swap! calls conj :renew)))})]
+      @ticked
+      (loop [remaining 10000]
+        (when (and (pos? remaining)
+                   (:writable? (writer/status durable-writer)))
+          (Thread/yield)
+          (recur (dec remaining))))
+      (check (str label " self-fences before renewal")
+             [false [] before]
+             [(:writable? (writer/status durable-writer)) @calls
+              (stored-head-bytes store)])
+      (check (str label " cleanup retains the fencing result")
+             ::control/lease-fenced
+             (error-type #(writer/close! durable-writer)))))
 
   (let [store (backend/memory-backend)
         acquired (control/acquire! store base-options)

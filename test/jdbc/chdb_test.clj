@@ -19,6 +19,7 @@
             [jdbc.chdb-durable-open-test :as durable-open]
             [jdbc.chdb-durable-compatibility-test :as durable-compatibility]
             [jdbc.chdb-durable-epoch-seconds-test :as durable-epoch-seconds]
+            [jdbc.chdb-durable-time-domain-test :as durable-time-domain]
             [jdbc.chdb-durable-dbspec-test :as durable-dbspec]
             [jdbc.chdb-durable-local-test :as durable-local]
             [jdbc.chdb-durable-s3-test :as durable-s3]
@@ -691,6 +692,7 @@
   (durable-open/run-checks!)
   (durable-compatibility/run-checks!)
   (durable-epoch-seconds/run-checks!)
+  (durable-time-domain/run-checks!)
   (durable-dbspec/run-checks!)
   (durable-local/run-checks!)
   (durable-s3/run-checks!)

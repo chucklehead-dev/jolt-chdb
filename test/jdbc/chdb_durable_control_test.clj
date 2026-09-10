@@ -81,6 +81,22 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- landed-ambiguous-head-create-backend [delegate]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (let [result (backend/put-bytes-if-absent! delegate key bytes)]
+        (if (and (= control/head-key key) (= :created (:status result)))
+          {:status :ambiguous}
+          result)))
+    (replace-if-match! [_ key bytes etag]
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- mutation-recording-backend [delegate mutations]
   (reify backend/ObjectBackend
     (get-bytes [_ key] (backend/get-bytes delegate key))
@@ -483,6 +499,25 @@
             #(control/acquire!
               (backend/memory-backend)
               (assoc base-options :expires-at 100M))))
+
+    (let [delegate (backend/memory-backend)
+          validations (atom 0)
+          acquired
+          (control/acquire!
+           (landed-ambiguous-head-create-backend delegate)
+           (assoc base-options
+                  :clock-skew 1000000M
+                  :validate-existing-acquire-head!
+                  (fn [_]
+                    (swap! validations inc)
+                    (throw (ex-info "existing-head validator called"
+                                    {:type ::unexpected-validation})))))]
+      (check "landed ambiguous fresh create reconciles exact desired head"
+             [:reconciled 1]
+             [(:status acquired)
+              (get-in (:head acquired) ["lease" "generation"])])
+      (check "fresh-create reconciliation skips existing-head eligibility validation"
+             0 @validations))
 
     (let [renewed (control/renew! store token1 250M)]
       (check "heartbeat preserves the fencing generation"

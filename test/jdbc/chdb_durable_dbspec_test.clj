@@ -5,6 +5,7 @@
             [hegel.generator :as g]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.local-posix :as local]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb-durable-open-test-support :as support]
@@ -83,6 +84,18 @@
               {:backend scoped :owner "collector" :database "default"}))
             (:backend (durable/snapshot-dbspec {:backend scoped}))]))
 
+  (let [storage (backend/memory-backend)
+        spec (durable/writer-dbspec
+              {:backend storage :owner "owner" :database "default"
+               :lease-ttl-ms time-domain/max-safe-epoch-milliseconds
+               :clock-skew-ms time-domain/max-safe-epoch-milliseconds
+               :heartbeat-interval-ms 1})]
+    (check "public lease fields accept the exact cross-runtime boundary"
+           [time-domain/max-safe-epoch-milliseconds
+            time-domain/max-safe-epoch-milliseconds 1]
+           [(:lease-ttl-ms spec) (:clock-skew-ms spec)
+            (:heartbeat-interval-ms spec)]))
+
   (doseq [key writer-only-keys]
     (check (str "snapshot rejects writer-only " key)
            ::durable/invalid-options
@@ -118,6 +131,23 @@
            ["fractional lease"
             {:backend (backend/memory-backend) :owner "owner"
              :database "default" :lease-ttl-ms 1.5}]
+           ["fractional clock skew"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :clock-skew-ms 0.5}]
+           ["fractional heartbeat"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :lease-ttl-ms 30
+             :heartbeat-interval-ms 9.5}]
+           ["lease above the cross-runtime boundary"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default"
+             :lease-ttl-ms
+             (inc time-domain/max-safe-epoch-milliseconds)}]
+           ["skew above the cross-runtime boundary"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default"
+             :clock-skew-ms
+             (inc time-domain/max-safe-epoch-milliseconds)}]
            ["overslow heartbeat"
             {:backend (backend/memory-backend) :owner "owner"
              :database "default" :lease-ttl-ms 30

@@ -213,9 +213,9 @@ path until your provider and failure boundaries have been qualified.
 | `:instance` | Nonblank identity for one process or writer attempt. `writer-dbspec` defaults it to a fresh UUIDv4; an explicitly supplied value must be unique per attempt. |
 | `:database` | Logical database to create for a new Durable object. An existing object's manifest remains authoritative. |
 | `:read-only?` | When true, open one immutable snapshot without a writer lease. |
-| `:lease-ttl-ms` | Writer lease lifetime; defaults to 30 seconds. |
-| `:heartbeat-interval-ms` | Renewal interval; defaults to one third of the TTL and may not exceed that bound. |
-| `:clock-skew-ms` | Extra time before normal expired-lease takeover; defaults to zero. |
+| `:lease-ttl-ms` | Positive whole-millisecond writer lease lifetime in the cross-runtime safe range; defaults to 30 seconds. |
+| `:heartbeat-interval-ms` | Positive whole-millisecond renewal interval in the same range; defaults to one third of the TTL and may not exceed that bound. |
+| `:clock-skew-ms` | Nonnegative whole-millisecond takeover allowance in the same range; defaults to zero. |
 | `:max-attempts` | Maximum control-plane attempts within one operation; defaults to four. |
 | `:retry-deadline-ms` | Monotonic budget shared by attempts, backoff, and ambiguity proof reads; defaults to 5 seconds. |
 | `:retry-initial-backoff-ms` | First retry delay; defaults to 10 milliseconds. |
@@ -228,6 +228,20 @@ milliseconds. On `head.json`, Protocol V1 freezes `lease.expires_at` as Unix
 epoch seconds. jolt-chdb converts at that boundary and preserves millisecond
 fractions; retry deadlines continue to use the monotonic millisecond clock and
 are never serialized.
+
+The local adapter range is `0..9007199254740991` milliseconds (TTL and an
+explicit heartbeat exclude zero). Active wire expiry remains a fractional Unix
+epoch-second number, bounded at `9007199254740.991`. Open rejects its initial
+observed/derived expiry outside that range before acquisition, and the control
+adapter checks each actual acquire snapshot's expiry-plus-skew before replacing
+a head. These integral-input and magnitude checks are jolt-chdb's
+validated cross-runtime safety policy; Protocol V1 itself requires the
+heartbeat/TTL relationship and the epoch-second wire unit but does not define
+these additional numeric limits.
+After acquisition, each recovery and live-writer clock sample is checked again.
+An invalid recovery sample fails open and cleans up the acquired attempt. An
+invalid live sample or renewal overflow self-fences before a later native data
+mutation or lease renewal; ordinary close then releases the lease and cleans up.
 
 ### Migrating heads written by older jolt-chdb builds
 
