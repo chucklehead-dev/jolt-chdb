@@ -7,6 +7,11 @@
   monotonic retry budgets in milliseconds. Python-shaped fixtures cover both
   interoperability directions and the explicit force-takeover migration from
   legacy Jolt millisecond heads.
+- Split Durable formal CI into an always-run fast model-linked tier and a
+  diff-gated exhaustive Apalache tier. Preserve the historical
+  `literate-model` check as an explicit successful no-op for byte-identical
+  model inputs, with conservative base/head classification and tested path
+  controls.
 - Positively join each Durable reader and writer operation OS thread before a
   public close returns or rethrows. Concurrent and repeated closes retain the
   exact original failure while cleanup and worker exit remain exactly once;

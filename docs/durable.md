@@ -524,8 +524,10 @@ Current CI separates the claims:
   backup/restore, and local WAL/checkpoint recovery suite against chDB
   26.7.2-rc.2 on Linux x86-64; and
 - [`durable-head-quint`](../.github/workflows/durable-head-quint.yml) tangles
-  the literate spec, replays the ITF corpus, and runs deterministic, sampled,
-  bounded corrected, and mutation-control checks; and
+  the literate spec and always runs fast deterministic, sampled,
+  mutation-control, and ITF replay checks on its Durable trigger paths. Its
+  stable `literate-model` job runs exhaustive Apalache only when exact model
+  inputs change, otherwise reporting a successful classified skip; and
 - [`durable-aws`](../.github/workflows/durable-aws.yml) is a manual,
   environment-protected GitHub OIDC lane for the shared provider suite against
   a pre-provisioned AWS S3 prefix. It uses no long-lived credentials; exact-main

@@ -172,3 +172,44 @@ An aspect journal is therefore a trace-validation input, never the model
 checker itself. The same normalized commands can be fed to Quint as a fixed
 execution constraint for replay, while unconstrained Quint verification
 continues to explore behaviors the application test did not happen to observe.
+
+The `durable-head-quint` workflow implements that split for its Durable trigger
+paths. `Durable model fast checks` always performs the tangle, typecheck, Quint
+tests and mutants, samples, generated-ITF comparison, and implementation replay.
+The historical `literate-model` check always reports a result, but launches
+Apalache only when a classified exhaustive input changes or a manual dispatch
+selects its default full option. A fast-only change logs the exact compared
+base/head, changed-path count, and a successful skip reason instead of skipping
+the required job. Pull requests classify the verified merge base through the
+exact head; pushes classify the exact before/head pair. Both objects are fetched
+and checked explicitly. Missing objects, zero revisions, a missing merge base,
+or a failed diff select exhaustive verification rather than a skip.
+
+Apalache directly consumes the Quint modules tangled from the literate sources
+and the bounds, invariants, mutants, and tool versions in the checker/workflow.
+The classifier deliberately treats every future path below `formal/quint/`, the
+SMT sources, checked trace/corpus inputs, generator/checker/tangler scripts, and
+the workflow itself as exhaustive. Some of those files currently affect only
+the fast or separate SMT evidence, not Apalache's transition system; this is an
+intentional conservative over-trigger so later formal wiring cannot silently
+bypass exhaustive CI. Durable implementation, adapter, ordinary test,
+dependency, README, and documentation changes remain fast-only when those
+inputs are byte-identical. The repository-local tests exercise literal paths
+and real temporary Git histories, including model addition/deletion/rename,
+diverged branches, merge-base selection, and failed boundaries:
+
+```sh
+scripts/classify-durable-model-paths.sh --paths \
+  formal/quint/durable-head-cas.md
+# exhaustive=true
+
+scripts/classify-durable-model-paths.sh --paths \
+  src/jdbc/chdb/durable/control.clj
+# exhaustive=false
+
+test/durable-model-path-classifier.sh
+```
+
+No model artifacts are cached or reused today. Any later cache must be keyed by
+the exact classified model inputs plus the pinned Quint/Apalache/`lmt` versions,
+never only by branch name.
