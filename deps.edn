@@ -15,6 +15,14 @@
  :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
+           :abi-babashka-jvm-test
+           {:extra-deps
+            {io.github.babashka/ffi
+             {:git/url "https://github.com/babashka/ffi.git"
+              :git/sha "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"}}
+            :extra-paths ["test"]
+            :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+            :main-opts ["-m" "jdbc.chdb-abi-babashka-test"]}
            :durable-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-native-test"]}

@@ -1,5 +1,8 @@
 (ns jdbc.chdb-abi-test
-  (:require [jdbc.chdb.abi :as abi]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [jdbc.chdb.abi :as abi]
             [jdbc.chdb.native :as native]
             [jolt.ffi :as ffi]))
 
@@ -79,9 +82,135 @@
    {:symbol "chdb_result_bytes_written" :args [:pointer] :return :uint64
     :contracts [:driver]}})
 
+(def smoke-function-ids
+  [:version :connect :close-conn :query-with-params-n
+   :destroy-query-result :result-buffer :result-length :result-error])
+
+(defn- read-edn [path]
+  (-> path io/file slurp edn/read-string))
+
+(defn- hosted-jdk-pin-matches?
+  [pins workflow]
+  (let [{:keys [corretto-version setup-java-cache-version url sha256]}
+        (get-in pins [:jvm :hosted-linux-x64-archive])]
+    (every? #(str/includes? workflow %)
+            [corretto-version setup-java-cache-version url sha256
+             "distribution: jdkfile"
+             "architecture: x64"])))
+
+(defn- hosted-bb-pin-matches?
+  [pins workflow]
+  (let [{:keys [linkage url sha256]}
+        (get-in pins [:babashka :hosted-linux-x64-archive])]
+    (and (= :dynamic linkage)
+         (every? #(str/includes? workflow %) [url sha256])
+         (not (str/includes? workflow "-linux-amd64-static.tar.gz"))
+         (not (re-find #"(?m)^\s+bb:" workflow)))))
+
+(defn- allocated-bytes! [allocated value]
+  (let [bytes (.getBytes (str value) "UTF-8")
+        pointer (ffi/alloc (max 1 (alength bytes)))]
+    (swap! allocated conj pointer)
+    (when (pos? (alength bytes))
+      (ffi/write-array pointer bytes))
+    {:pointer pointer :length (alength bytes)}))
+
+(defn- pointer-array! [allocated pointer]
+  (let [array (ffi/alloc (ffi/sizeof :pointer))]
+    (swap! allocated conj array)
+    (ffi/write array :pointer pointer 0)
+    array))
+
+(defn- length-array! [allocated length]
+  (let [array (ffi/alloc (ffi/sizeof :size_t))]
+    (swap! allocated conj array)
+    (ffi/write array :size_t length 0)
+    array))
+
+(defn- run-owned! [f]
+  (let [outcome (promise)
+        thread (Thread.
+                (fn []
+                  (deliver outcome
+                           (try {:value (f)}
+                                (catch Throwable error {:error error})))))]
+    (.setName thread "jolt-chdb-jolt-ffi-smoke")
+    (.start thread)
+    (.join thread)
+    (let [{:keys [value error]} @outcome]
+      (if error (throw error) value))))
+
+(defn- run-jolt-native-smoke []
+  (run-owned!
+   (fn []
+     (native/ensure-loaded!)
+     (let [native-version (native/chdb-version)
+           capabilities
+           (mapv (fn [{:keys [function symbol]}]
+                   {:function function
+                    :symbol symbol
+                    :available? (boolean (ffi/find-symbol symbol))})
+                 (abi/binding-specs smoke-function-ids))]
+       (when-not (every? :available? capabilities)
+         (throw (ex-info "selected libchdb lacks a required smoke symbol"
+                         {:capabilities capabilities})))
+       (let [handle (native/open! ":memory:")
+             destroyed (atom 0)
+             closed (atom 0)
+             copied (atom nil)]
+         (try
+           (native/with-live-handle
+            handle
+            (fn [connection]
+              (let [allocated (atom [])]
+                (try
+                  (let [query (allocated-bytes! allocated "SELECT {p1:UInt64}")
+                      format (allocated-bytes! allocated "CSV")
+                      name (allocated-bytes! allocated "p1")
+                      value (allocated-bytes! allocated "42")
+                      names (pointer-array! allocated (:pointer name))
+                      name-lengths (length-array! allocated (:length name))
+                      values (pointer-array! allocated (:pointer value))
+                      value-lengths (length-array! allocated (:length value))
+                      result
+                      (native/chdb-query-with-params-n
+                       connection
+                       (:pointer query) (:length query)
+                       (:pointer format) (:length format)
+                       names name-lengths values value-lengths 1)]
+                    (when (ffi/null? result)
+                      (throw (ex-info "chDB returned a null query result" {})))
+                    (try
+                      (when-let [message (native/chdb-result-error result)]
+                        (throw (ex-info (str "chDB query failed: " message) {})))
+                      (let [length (native/chdb-result-length result)]
+                        (reset! copied
+                                (vec (ffi/read-array
+                                      (native/chdb-result-buffer result) length))))
+                      (finally
+                        (native/chdb-destroy-query-result result)
+                        (swap! destroyed inc))))
+                  (finally
+                    (doseq [pointer (reverse @allocated)]
+                      (ffi/free pointer)))))))
+           (finally
+             (native/close! handle)
+             (swap! closed inc)))
+         ;; No native pointer or arena crosses the positive thread join.
+         {:native-version native-version
+          :capabilities capabilities
+          :bytes @copied
+          :destroyed @destroyed
+          :closed @closed})))))
+
 (defn- run-descriptor-checks []
   (println "chDB versioned ABI descriptor")
-  (let [descriptor (abi/descriptor)]
+  (let [descriptor (abi/descriptor)
+        pins (read-edn "resources/jdbc/chdb/ffi-compatibility.edn")
+        deps (read-edn "deps.edn")
+        workflow (slurp ".github/workflows/tests.yml")
+        ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
+        platform (select-keys (native/platform) [:os :arch])]
     (check "descriptor validates as schema 1" descriptor
            (abi/validate-descriptor! descriptor))
     (check "provenance names the exact upstream header and oracle commit"
@@ -111,6 +240,47 @@
            (get-in descriptor [:types :query-analysis-v1]))
     (check "compiled Jolt query-analysis layout is 16 bytes"
            16 (ffi/layout-size native/query-analysis-layout))
+    (check "ordered binding generation is derived from the canonical descriptor"
+           smoke-function-ids
+           (mapv :function (abi/binding-specs smoke-function-ids)))
+    (check "compatibility Jolt version agrees with deps.edn"
+           (:jolt/min-version deps) (get-in pins [:jolt :version]))
+    (check "JVM FFI revision agrees with the selected deps.edn alias"
+           (get-in deps ffi-path)
+           (get-in pins [:jvm :ffi-dependency :commit]))
+    (check "hosted BB uses the manifest-pinned dynamic artifact"
+           true (hosted-bb-pin-matches? pins workflow))
+    (check "a static hosted BB selection turns the guard red"
+           false
+           (hosted-bb-pin-matches?
+            (assoc-in pins [:babashka :hosted-linux-x64-archive :linkage]
+                      :static)
+            workflow))
+    (check "hosted exact-JDK archive agrees with the compatibility manifest"
+           true (hosted-jdk-pin-matches? pins workflow))
+    (check "hosted JDK checksum drift turns the guard red"
+           false
+           (hosted-jdk-pin-matches?
+            (assoc-in pins [:jvm :hosted-linux-x64-archive :sha256]
+                      (apply str (repeat 64 "0")))
+            workflow))
+    (check "hosted JDK archive-version drift turns the guard red"
+           false
+           (hosted-jdk-pin-matches?
+            (assoc-in pins
+                      [:jvm :hosted-linux-x64-archive :corretto-version]
+                      "25.0.2.10.0")
+            workflow))
+    (check "compatibility native version agrees with the production selector"
+           native/version (get-in pins [:native :version]))
+    (check "compatibility archive digest agrees with the production selector"
+           (get-in native/assets [[(:os platform) (:arch platform)] :sha256])
+           (get-in pins [:native :archive-sha256
+                         [(:os platform) (:arch platform)]]))
+    (check "the running native platform is explicitly qualified"
+           true
+           (boolean (some #{platform}
+                          (get-in pins [:native :qualified-platforms]))))
 
     ;; Each mutant changes a different contract dimension. A validator that
     ;; merely parses EDN, or a test that never reaches it, would let these pass.
@@ -175,10 +345,28 @@
         (check "single-symbol mutant is localized"
                [:classify-query-n] (:missing capability))))))
 
+(defn- run-jolt-smoke-checks []
+  (println "Jolt descriptor-driven owned-thread ABI smoke")
+  (let [result (run-jolt-native-smoke)]
+    (check "positive control crosses real chdb_version"
+           "26.7.0" (:native-version result))
+    (check "parameterized SELECT 42 is copied exactly before destruction"
+           [52 50 10] (:bytes result))
+    (check "query result is destroyed exactly once" 1 (:destroyed result))
+    (check "connection owner is closed exactly once" 1 (:closed result))
+    (check "only descriptor-selected capabilities are exercised"
+           smoke-function-ids (mapv :function (:capabilities result)))
+    (check "every descriptor-selected symbol is available"
+           true (every? :available? (:capabilities result)))
+    (check "no native owner, result, buffer, or arena escapes the worker"
+           #{:native-version :capabilities :bytes :destroyed :closed}
+           (set (keys result)))))
+
 (defn -main [& _]
   (reset! failures 0)
   (run-descriptor-checks)
   (run-stock-library-checks)
+  (run-jolt-smoke-checks)
   (if (zero? @failures)
     (println "all ABI checks passed")
     (throw (ex-info (str @failures " ABI checks failed")
