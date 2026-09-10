@@ -66,6 +66,13 @@ revision as an explicit JVM dependency on Corretto JDK `25.0.2+10-LTS`.
 Babashka does not expose the embedded FFI source revision at runtime, so the
 qualification verifies the exact Babashka tag and commit while recording that
 FFI revision as build-source provenance rather than a runtime-observed fact.
+The hosted lane installs the checksum-pinned, dynamically linked Linux x64
+Babashka release artifact explicitly. `setup-clojure` selects Babashka's static
+Linux artifact, which cannot load the dynamically linked glibc libchdb release;
+the compatibility guard rejects that artifact choice rather than skipping the
+BB lane or falling back to a different library. Loader failures report a
+bounded cause class/message chain and the selected path, without environment
+contents or library search-path expansion.
 Because setup-java's Corretto catalog accepts only major-version requests, the
 hosted lane does not request floating Java 25 and relabel it as this unit. It
 downloads Amazon's immutable `25.0.2.10.1` Linux x64 archive, verifies the

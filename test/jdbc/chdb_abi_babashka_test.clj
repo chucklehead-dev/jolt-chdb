@@ -22,11 +22,30 @@
       (throw (ex-info "qualification requires one Jolt-selected libchdb path"
                       {:type ::library-selection-missing}))))
 
+(defn- loader-causes [error]
+  (loop [cause (ex-cause error)
+         depth 0
+         summaries []]
+    (if (and cause (< depth 4))
+      (recur (ex-cause cause)
+             (inc depth)
+             (conj summaries
+                   {:class (.getName ^Class (class cause))
+                    :message (ex-message cause)}))
+      summaries)))
+
 (defn- selected-library! [path]
   (when-not (.isFile (io/file path))
     (throw (ex-info "selected libchdb does not exist"
                     {:type ::library-missing :path path})))
-  (ffi/load-library path))
+  (try
+    (ffi/load-library path)
+    (catch clojure.lang.ExceptionInfo error
+      (throw (ex-info "selected libchdb could not be loaded"
+                      {:type ::library-load-failed
+                       :path path
+                       :causes (loader-causes error)}
+                      error)))))
 
 (defn- bindings [library]
   {:functions
@@ -192,7 +211,15 @@
          #((ffi/cfn wrong-library
                     (:symbol (abi/function-spec :version))
                     (:args (abi/function-spec :version))
-                    (:return (abi/function-spec :version)))))]
+                    (:return (abi/function-spec :version)))))
+        loader-diagnostic-error
+        (exception-info
+         #(with-redefs
+            [ffi/load-library
+             (fn [_]
+               (throw (ex-info "bounded loader failure" {}
+                               (IllegalArgumentException. "dlopen cause"))))]
+            (selected-library! path)))]
     (when (= :babashka runtime)
       (assert (= expected-bb actual-bb)
               (str "expected Babashka " expected-bb ", got " actual-bb)))
@@ -221,6 +248,13 @@
     (assert (= (str "babashka.ffi: symbol not found: "
                     (:symbol (abi/function-spec :version)))
                (ex-message wrong-library-error)))
+    (assert (= ::library-load-failed
+               (:type (ex-data loader-diagnostic-error))))
+    (assert (= path (:path (ex-data loader-diagnostic-error))))
+    (assert (= [{:class "java.lang.IllegalArgumentException"
+                 :message "dlopen cause"}]
+               (:causes (ex-data loader-diagnostic-error)))
+            "loader diagnostics expose only bounded class/message causes")
     (println "ABI FFI characterization passed"
              {:runtime runtime
               :native-version (:native-version smoke)

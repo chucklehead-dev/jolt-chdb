@@ -16,7 +16,8 @@
   `babashka.ffi` compatibility units with an owned-thread parameterized-query
   lifecycle smoke, one Jolt-resolved native-library selection, typed exact-copy
   and selected-library negative controls, a checksum-pinned exact hosted
-  Corretto compatibility unit, and an explicit Phase 1 retirement boundary for
+  Corretto compatibility unit, a checksum-pinned dynamic Babashka artifact with
+  bounded loader diagnostics, and an explicit Phase 1 retirement boundary for
   the test-only adapter.
 - Positively join each Durable reader and writer operation OS thread before a
   public close returns or rethrows. Concurrent and repeated closes retain the

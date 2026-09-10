@@ -34,6 +34,19 @@ jobs:
       JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
     steps:
       - uses: actions/checkout@v4
+      - name: Install checksum-pinned dynamic Babashka
+        env:
+          BABASHKA_URL: https://github.com/babashka/babashka/releases/download/v1.13.220/babashka-1.13.220-linux-amd64.tar.gz
+          BABASHKA_SHA256: 5211ebf6267be2dbbf4857611cb01331b865bf6b0a8c9bc500c83a816df1a769
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/babashka-1.13.220-linux-amd64.tar.gz"
+          install_dir="$RUNNER_TEMP/babashka-dynamic-bin"
+          curl -fsSL --retry 2 --retry-all-errors -o "$archive" "$BABASHKA_URL"
+          echo "$BABASHKA_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir"
+          echo "$install_dir" >> "$GITHUB_PATH"
       - name: Download checksum-pinned Corretto 25.0.2
         env:
           CORRETTO_URL: https://corretto.aws/downloads/resources/25.0.2.10.1/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz
@@ -51,7 +64,6 @@ jobs:
           architecture: x64
       - uses: DeLaGuardo/setup-clojure@13.5
         with:
-          bb: 1.13.220
           cli: latest
       - name: Install Jolt v0.8.3
         run: |

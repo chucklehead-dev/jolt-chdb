@@ -98,6 +98,15 @@
              "distribution: jdkfile"
              "architecture: x64"])))
 
+(defn- hosted-bb-pin-matches?
+  [pins workflow]
+  (let [{:keys [linkage url sha256]}
+        (get-in pins [:babashka :hosted-linux-x64-archive])]
+    (and (= :dynamic linkage)
+         (every? #(str/includes? workflow %) [url sha256])
+         (not (str/includes? workflow "-linux-amd64-static.tar.gz"))
+         (not (re-find #"(?m)^\s+bb:" workflow)))))
+
 (defn- allocated-bytes! [allocated value]
   (let [bytes (.getBytes (str value) "UTF-8")
         pointer (ffi/alloc (max 1 (alength bytes)))]
@@ -239,6 +248,14 @@
     (check "JVM FFI revision agrees with the selected deps.edn alias"
            (get-in deps ffi-path)
            (get-in pins [:jvm :ffi-dependency :commit]))
+    (check "hosted BB uses the manifest-pinned dynamic artifact"
+           true (hosted-bb-pin-matches? pins workflow))
+    (check "a static hosted BB selection turns the guard red"
+           false
+           (hosted-bb-pin-matches?
+            (assoc-in pins [:babashka :hosted-linux-x64-archive :linkage]
+                      :static)
+            workflow))
     (check "hosted exact-JDK archive agrees with the compatibility manifest"
            true (hosted-jdk-pin-matches? pins workflow))
     (check "hosted JDK checksum drift turns the guard red"
