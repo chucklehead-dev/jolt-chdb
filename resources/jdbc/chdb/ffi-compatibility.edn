@@ -16,6 +16,11 @@
  :jvm
  {:jdk-distribution :corretto
   :jdk-version "25.0.2+10-LTS"
+  :hosted-linux-x64-archive
+  {:corretto-version "25.0.2.10.1"
+   :setup-java-cache-version "25.0.2+10.1"
+   :url "https://corretto.aws/downloads/resources/25.0.2.10.1/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz"
+   :sha256 "313e9921e573cf28a4876ab039d56b3a142e7b1b1e847b0dddd170b8dee80387"}
   :ffi-dependency
   {:commit "aacb153618bc39ca1e4c397b8f30fb81c76d0c4c"
    :deps-path [:aliases :abi-babashka-jvm-test :extra-deps

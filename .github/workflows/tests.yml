@@ -34,10 +34,21 @@ jobs:
       JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
     steps:
       - uses: actions/checkout@v4
+      - name: Download checksum-pinned Corretto 25.0.2
+        env:
+          CORRETTO_URL: https://corretto.aws/downloads/resources/25.0.2.10.1/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz
+          CORRETTO_SHA256: 313e9921e573cf28a4876ab039d56b3a142e7b1b1e847b0dddd170b8dee80387
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz"
+          curl -fsSL --retry 2 --retry-all-errors -o "$archive" "$CORRETTO_URL"
+          echo "$CORRETTO_SHA256  $archive" | sha256sum -c -
       - uses: actions/setup-java@v4
         with:
-          distribution: corretto
-          java-version: '25.0.2'
+          distribution: jdkfile
+          jdkFile: ${{ runner.temp }}/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz
+          java-version: '25.0.2+10.1'
+          architecture: x64
       - uses: DeLaGuardo/setup-clojure@13.5
         with:
           bb: 1.13.220

@@ -66,6 +66,13 @@ revision as an explicit JVM dependency on Corretto JDK `25.0.2+10-LTS`.
 Babashka does not expose the embedded FFI source revision at runtime, so the
 qualification verifies the exact Babashka tag and commit while recording that
 FFI revision as build-source provenance rather than a runtime-observed fact.
+Because setup-java's Corretto catalog accepts only major-version requests, the
+hosted lane does not request floating Java 25 and relabel it as this unit. It
+downloads Amazon's immutable `25.0.2.10.1` Linux x64 archive, verifies the
+manifest-pinned SHA-256, installs it through setup-java's local-file provider,
+and then checks the actual vendor and `25.0.2+10-LTS` runtime identity. A
+cross-file mutant guard fails if the workflow archive version or digest drifts
+from the compatibility manifest.
 The only qualified Phase 0 native target is stable
 libchdb `26.7.0` on Linux amd64. This is not a claim of Durable, Windows, or
 unqualified-platform support.

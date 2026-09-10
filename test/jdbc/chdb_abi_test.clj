@@ -1,6 +1,7 @@
 (ns jdbc.chdb-abi-test
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [jdbc.chdb.abi :as abi]
             [jdbc.chdb.native :as native]
             [jolt.ffi :as ffi]))
@@ -87,6 +88,15 @@
 
 (defn- read-edn [path]
   (-> path io/file slurp edn/read-string))
+
+(defn- hosted-jdk-pin-matches?
+  [pins workflow]
+  (let [{:keys [corretto-version setup-java-cache-version url sha256]}
+        (get-in pins [:jvm :hosted-linux-x64-archive])]
+    (every? #(str/includes? workflow %)
+            [corretto-version setup-java-cache-version url sha256
+             "distribution: jdkfile"
+             "architecture: x64"])))
 
 (defn- allocated-bytes! [allocated value]
   (let [bytes (.getBytes (str value) "UTF-8")
@@ -189,6 +199,7 @@
   (let [descriptor (abi/descriptor)
         pins (read-edn "resources/jdbc/chdb/ffi-compatibility.edn")
         deps (read-edn "deps.edn")
+        workflow (slurp ".github/workflows/tests.yml")
         ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
         platform (select-keys (native/platform) [:os :arch])]
     (check "descriptor validates as schema 1" descriptor
@@ -228,6 +239,21 @@
     (check "JVM FFI revision agrees with the selected deps.edn alias"
            (get-in deps ffi-path)
            (get-in pins [:jvm :ffi-dependency :commit]))
+    (check "hosted exact-JDK archive agrees with the compatibility manifest"
+           true (hosted-jdk-pin-matches? pins workflow))
+    (check "hosted JDK checksum drift turns the guard red"
+           false
+           (hosted-jdk-pin-matches?
+            (assoc-in pins [:jvm :hosted-linux-x64-archive :sha256]
+                      (apply str (repeat 64 "0")))
+            workflow))
+    (check "hosted JDK archive-version drift turns the guard red"
+           false
+           (hosted-jdk-pin-matches?
+            (assoc-in pins
+                      [:jvm :hosted-linux-x64-archive :corretto-version]
+                      "25.0.2.10.0")
+            workflow))
     (check "compatibility native version agrees with the production selector"
            native/version (get-in pins [:native :version]))
     (check "compatibility archive digest agrees with the production selector"
