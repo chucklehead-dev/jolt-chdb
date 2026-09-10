@@ -27,11 +27,11 @@ commit, and release preserve it. A stale writer is rejected before object
 verification or head mutation.
 
 Normal takeover becomes eligible only when
-`now >= expires_at + clock_skew`. Explicit force can take over an unexpired
-lease. A new lease expiry must be later than the acquisition time, and a
-heartbeat must strictly extend the existing expiry. Scheduling heartbeats at no
-more than one third of the TTL is owned by the public writer's independent
-heartbeat worker.
+`now > expires_at + clock_skew`; equality remains held. Explicit force can
+take over an unexpired lease. A new lease expiry must be later than the
+acquisition time, and a heartbeat must strictly extend the existing expiry.
+Scheduling heartbeats at no more than one third of the TTL is owned by the
+public writer's independent heartbeat worker.
 
 At this low-level protocol seam, `now`, `expires-at`, and `clock-skew` are all
 epoch seconds, matching Python's `time.time()` and the frozen `expires_at`
@@ -95,6 +95,12 @@ self-fence once it is reached, and nested S3 retries observe that predicate
 before another request. Deployments should configure per-request backend
 timeouts within their renewal slack when continued availability under a
 stalled request matters.
+
+That equality behavior is intentionally asymmetric. A competing writer must
+wait until strictly after the skew-adjusted expiry before normal takeover, but
+the current writer self-fences as soon as its locally proved expiry is reached.
+The overlap-free interval is conservative under clock uncertainty; force
+takeover remains an explicit operator override.
 
 `verify-byte-reference!` is an in-memory verifier for bounded statement WAL
 objects. It uses the pinned `jolt-lang/jolt-crypto` MessageDigest shim on Jolt

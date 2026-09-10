@@ -62,7 +62,7 @@
               store
               (assoc base-options
                      :owner "writer-2" :instance "instance-2"
-                     :now 1000M :expires-at 2000M)))
+                     :now 1000.001M :expires-at 2000M)))
            publication)
 
          (publish-checkpoint! store token path))))))
@@ -477,7 +477,7 @@
         acquired (control/acquire! store base-options)
         calls (atom [])
         close-count (atom 0)
-        now (atom 1000M)
+        now (atom 999M)
         writer
         (writer/start!
          {:store store :token (:token acquired) :handle :fake-handle
@@ -487,12 +487,21 @@
           (assoc (fake-operations calls close-count)
                  :now-ms #(deref now)
                  :await-heartbeat! (fn [stop _] @stop :stop))})]
-    (check "a locally expired lease fences a mutation before engine access"
+    (check "a local lease remains writable one millisecond before expiry"
+           {:sql "INSERT INTO t VALUES (0)"}
+           (writer/execute! writer "INSERT INTO t VALUES (0)"))
+    (reset! now 1000M)
+    (check "a local lease self-fences at exact expiry before engine access"
            ::control/lease-fenced
            (error-type #(writer/execute! writer "INSERT INTO t VALUES (1)")))
     (check "local self-fencing is visible without exposing lease identity"
-           [false []]
+           [false [[:analyze-execute "INSERT INTO t VALUES (0)" "default"]
+                   [:execute "INSERT INTO t VALUES (0)"]]]
            [(:writable? (writer/status writer)) @calls])
+    (reset! now 1001M)
+    (check "a writer fenced at equality remains fenced above expiry"
+           ::control/lease-fenced
+           (error-type #(writer/execute! writer "INSERT INTO t VALUES (2)")))
     (check "self-fenced close still performs cleanup"
            ::control/lease-fenced
            (error-type #(writer/close! writer)))

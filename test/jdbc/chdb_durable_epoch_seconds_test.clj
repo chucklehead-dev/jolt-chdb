@@ -31,6 +31,9 @@
      store control/head-key (.getBytes (str/trim (slurp path)) "UTF-8"))
     store))
 
+(defn- stored-head-bytes [store]
+  (vec (backend/get-bytes store control/head-key)))
+
 (defn- fail-one-replace-backend [delegate failure-at replace-count]
   (reify backend/ObjectBackend
     (get-bytes [_ key] (backend/get-bytes delegate key))
@@ -71,6 +74,13 @@
                                      calls close-count cleanup-count)}
             opts))))
 
+(defn- open-result [store now-ms opts]
+  (try
+    (let [opened (open! store now-ms opts)]
+      (try :opened (finally (writer/close! opened))))
+    (catch Throwable error
+      (:type (ex-data error)))))
+
 (defn run-checks! []
   (reset! failures 0)
   (println "Durable V1 epoch-seconds binding boundary")
@@ -104,22 +114,48 @@
               (get lease "owner")
               (get lease "expires_at")])))
 
-  (let [held-store (fixture-store python-fixture)
-        takeover-store (fixture-store python-fixture)]
-    (check "clock skew remains milliseconds at the public boundary"
+  (let [below-store (fixture-store python-fixture)
+        equal-store (fixture-store python-fixture)
+        above-store (fixture-store python-fixture)
+        below-before (stored-head-bytes below-store)
+        equal-before (stored-head-bytes equal-store)]
+    (check "clock skew keeps the lease held one millisecond below the boundary"
            ::control/lease-held
-           (error-type #(open! held-store (+ python-now-ms 624M)
-                               {:clock-skew-ms 500M})))
-    (let [opened (open! takeover-store (+ python-now-ms 625M)
+           (open-result below-store (+ python-now-ms 624M)
+                        {:clock-skew-ms 500M}))
+    (check "a rejected below-boundary takeover leaves the stored head unchanged"
+           below-before
+           (stored-head-bytes below-store))
+    (check "clock skew keeps the lease held at the inclusive boundary"
+           ::control/lease-held
+           (open-result equal-store (+ python-now-ms 625M)
+                        {:clock-skew-ms 500M}))
+    (check "a rejected equality takeover leaves the stored head unchanged"
+           equal-before
+           (stored-head-bytes equal-store))
+    (let [opened (open! above-store (+ python-now-ms 626M)
                         {:clock-skew-ms 500M})]
       (try
-        (check "fractional-seconds takeover increments fencing generation once"
-               [2 "jolt-writer" 1788230401.001M]
-               (let [lease (get-in (:head (control/read-head! takeover-store))
+        (check "takeover one millisecond above the boundary increments once"
+               [2 "jolt-writer" 1788230401.002M]
+               (let [lease (get-in (:head (control/read-head! above-store))
                                    ["lease"])]
                  [(get lease "generation")
                   (get lease "owner")
                   (get lease "expires_at")]))
+        (finally (writer/close! opened)))))
+
+  (doseq [[label offset] [["below" 624M]
+                          ["at" 625M]
+                          ["above" 626M]]]
+    (let [store (fixture-store python-fixture)
+          opened (open! store (+ python-now-ms offset)
+                        {:clock-skew-ms 500M :force? true})]
+      (try
+        (check (str "force takeover bypasses a lease " label " the boundary")
+               [2 "jolt-writer"]
+               (let [lease (get-in (:head (control/read-head! store)) ["lease"])]
+                 [(get lease "generation") (get lease "owner")]))
         (finally (writer/close! opened)))))
 
   (let [store (backend/memory-backend)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep a Durable V1 lease held through equality at
+  `expires_at + clock_skew`, allowing normal takeover only after that boundary
+  while preserving the current writer's conservative self-fence at expiry.
 - Write and compare Durable V1 `lease.expires_at` as epoch seconds, including
   fractional seconds, while keeping the public `*-ms` configuration and
   monotonic retry budgets in milliseconds. Python-shaped fixtures cover both
