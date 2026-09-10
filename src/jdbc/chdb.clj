@@ -300,30 +300,39 @@
                                0
                                (native/chdb-result-rows-written result)))))))
 
+(defn- execute-prepared
+  "Run a statement whose placeholders have already been rewritten.
+
+  Split out of `execute-native` so that a caller holding a large body of
+  encoded row data can reach the native call without that data being walked
+  as SQL. See `insert-rows!`."
+  [handle rewritten parameters format consume]
+  (native/with-live-handle
+   handle
+   (fn [connection]
+     (let [allocated (atom [])]
+       (try
+         (let [query-buffer (allocate-encoded! allocated rewritten)
+               format-buffer (allocate-encoded! allocated format)
+               name-buffers (mapv (fn [i] (allocate-encoded! allocated (str "p" (inc i))))
+                                  (range (count parameters)))
+               value-buffers (mapv (fn [p] (allocate-encoded! allocated (:value p))) parameters)
+               names (pointer-array! allocated name-buffers)
+               name-lengths (length-array! allocated name-buffers)
+               values (pointer-array! allocated value-buffers)
+               value-lengths (length-array! allocated value-buffers)]
+           (consume handle connection
+             (native/chdb-query-with-params-n
+             connection
+             (:pointer query-buffer) (:length query-buffer)
+             (:pointer format-buffer) (:length format-buffer)
+             names name-lengths values value-lengths (count parameters))))
+         (finally
+           (doseq [ptr (reverse @allocated)] (ffi/free ptr))))))))
+
 (defn- execute-native [handle sql params format consume]
   (let [{rewritten :sql parameters :parameters} (rewrite-placeholders sql params)]
-    (native/with-live-handle
-     handle
-     (fn [connection]
-       (let [allocated (atom [])]
-         (try
-           (let [query-buffer (allocate-encoded! allocated rewritten)
-                 format-buffer (allocate-encoded! allocated format)
-                 name-buffers (mapv (fn [i] (allocate-encoded! allocated (str "p" (inc i))))
-                                    (range (count parameters)))
-                 value-buffers (mapv (fn [p] (allocate-encoded! allocated (:value p))) parameters)
-                 names (pointer-array! allocated name-buffers)
-                 name-lengths (length-array! allocated name-buffers)
-                 values (pointer-array! allocated value-buffers)
-                 value-lengths (length-array! allocated value-buffers)]
-             (consume handle connection
-               (native/chdb-query-with-params-n
-               connection
-               (:pointer query-buffer) (:length query-buffer)
-               (:pointer format-buffer) (:length format-buffer)
-               names name-lengths values value-lengths (count parameters))))
-           (finally
-             (doseq [ptr (reverse @allocated)] (ffi/free ptr)))))))))
+    (execute-prepared handle rewritten parameters format consume)))
 
 (defn execute-any [handle sql params]
   (execute-native handle sql params "JSONCompactEachRowWithNamesAndTypes"
@@ -631,6 +640,71 @@
       (execute-query-bytes-handle handle sql params options))))
 
 (driver/register! chdb-driver)
+
+(defn- validate-insert-sql!
+  "The prefix of a bulk insert must be one INSERT carrying no FORMAT clause of
+  its own. `insert-rows!` appends the FORMAT clause and the row data, and never
+  reads that data as SQL, so this prefix is the only part the driver parses and
+  it has to be unambiguous."
+  [sql]
+  (let [trimmed (str/trim sql)]
+    (when-not (re-find #"(?i)^insert\s" trimmed)
+      (throw (ex-info "chDB bulk insert must begin with INSERT"
+                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
+    (when (str/includes? trimmed ";")
+      (throw (ex-info "chDB bulk insert may not contain a statement separator"
+                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
+    (when (re-find #"(?i)\bformat\s+\w+\s*$" trimmed)
+      (throw (ex-info "chDB bulk insert must not carry its own FORMAT clause"
+                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
+    trimmed))
+
+(defn- validate-insert-format! [format]
+  ;; The format name is interpolated into the statement, so it may only be a
+  ;; bare identifier -- never caller text that could close the clause.
+  (when-not (and (string? format) (re-matches #"[A-Za-z0-9_]+" format))
+    (throw (ex-info "chDB insert format must be a bare identifier"
+                    {:format format :jdbc/sql-error true
+                     :db.chdb/insert-rows true})))
+  format)
+
+(defn insert-rows!
+  "Insert pre-encoded rows through the ordinary query API.
+
+  `sql` is the INSERT prefix -- `insert into events (id, message)` -- and `rows`
+  is a string of encoded row data in `:format`, JSONEachRow unless given. The
+  two are joined with the FORMAT clause and sent as one statement.
+
+  `rows` is data, not SQL. This driver never scans, rewrites or escapes it; its
+  encoding belongs to the caller. That is the whole point of this entry point.
+  `execute!` rewrites `?` placeholders across the entire statement, and for a
+  bulk insert that means walking every character of the row data, conj!-ing each
+  one into a transient vector and rebuilding the string, hunting for
+  placeholders that encoded rows cannot contain. Measured on a 131 KB payload
+  that scan costs 77 ms against 3.5 ms to produce the data, and removing it
+  took a five-signal telemetry export from 1,752 to 12,705 rows per second.
+
+  Only `sql` is read as SQL: it is validated, and its `?` placeholders are bound
+  from `:params` exactly as `execute!` binds them.
+
+  Ordinary `:chdb` connections only. A Durable connection routes its writes
+  through its own serialized writer, which owns the lease and the WAL.
+
+  Returns what `execute!` returns."
+  ([conn sql rows] (insert-rows! conn sql rows nil))
+  ([conn sql rows {:keys [format params]
+                   :or {format "JSONEachRow" params []}}]
+   (let [prefix (validate-insert-sql! sql)
+         fmt (validate-insert-format! format)
+         {rewritten :sql parameters :parameters} (rewrite-placeholders prefix params)
+         shim-conn (proto/connection conn)
+         {:keys [handle]} (shim/driver-context shim-conn :chdb)]
+     (execute-prepared handle
+                       (str rewritten " FORMAT " fmt "\n" rows)
+                       parameters
+                       "JSONCompactEachRowWithNamesAndTypes"
+                       (fn [_ _ result] (consume-json-result result))))))
+
 
 (defn stream-insert!
   "Insert bounded format-encoded chunks. The native stream never escapes this
