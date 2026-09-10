@@ -9,6 +9,12 @@
   a live Durable lease, including reconciled ambiguous success, while keeping
   fresh and expired acquisitions silent and preserving CAS outcomes.
 
+- Match the SHA-pinned upstream Durable V1 engine-version comparator exactly,
+  including variable numeric tuples, numeric prerelease ranks, stable fallback
+  suffixes, malformed fail-closed inputs, and non-lowering minimum-reader floors.
+  A differential Python oracle, causal mutants, and bounded Hegel properties
+  guard the compatibility boundary independently of the Quint rank projection.
+
 - Accept RFC JSON whitespace around exactly one Durable V1 head value while
   retaining full-byte size limits and fail-closed duplicate, malformed,
   non-UTF-8, BOM, and multiple-value handling.

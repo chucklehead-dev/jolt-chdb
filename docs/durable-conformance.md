@@ -14,6 +14,23 @@ explicit not-applicable rationale, or a blocker tracked by issue 47. A mapped
 anchor means the named local assertion exists; it is not a claim that every
 Python fixture, provider, or lifecycle detail has become language-neutral.
 
+Engine-version ordering has an additional differential oracle. The corpus at
+`test/fixtures/durable/version-ordering.json` records parse and less-than results
+from `chdb/durable/protocol.py` at the same upstream commit, plus the exact file
+digest. CI downloads that immutable source, verifies its digest and independent
+repository/commit/path pins, imports the upstream functions, and compares every
+golden result:
+
+```sh
+scripts/verify-durable-version-oracle.sh
+```
+
+The focused Jolt compatibility suite consumes the fixed corpus without Python
+or network access, checks the implementation and non-lowering minimum-reader
+gate, then runs bounded Hegel properties. Four causal comparator mutants prove
+the corpus distinguishes lexical rc ordering, reversed release/prerelease
+precedence, unknown-suffix prerelease treatment, and fixed three-part parsing.
+
 Run the focused, offline gate with the mandatory compiler selector:
 
 ```sh

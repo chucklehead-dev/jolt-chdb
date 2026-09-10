@@ -2,53 +2,67 @@
   "Pure chDB release precedence shared by compatibility and head transitions."
   (:require [clojure.string :as str]))
 
+(def ^:private prerelease-ranks
+  {"alpha" 0 "a" 0 "beta" 1 "b" 1 "pre" 2 "rc" 3})
+
+(def ^:private release-rank (count prerelease-ranks))
+
+;; Python str.strip() whitespace, made explicit so Jolt and the JVM do not
+;; inherit a host trim definition that accepts a different version language.
+(def ^:private python-whitespace
+  (into #{133 160 5760 8232 8233 8239 8287 12288}
+        (concat (range 9 14) (range 28 33) (range 8192 8203))))
+
+(defn- python-strip [text]
+  (let [length (count text)
+        start (loop [index 0]
+                (if (and (< index length)
+                         (contains? python-whitespace (int (nth text index))))
+                  (recur (inc index))
+                  index))
+        end (loop [index length]
+              (if (and (> index start)
+                       (contains? python-whitespace
+                                  (int (nth text (dec index)))))
+                (recur (dec index))
+                index))]
+    (subs text start end)))
+
 (defn- version-parts [version]
   (when (string? version)
-    (when-let [[_ major minor patch prerelease]
+    (when-let [[_ release prerelease prerelease-number]
                (re-matches
-                #"(?i)^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?(?:\+[0-9a-z.-]+)?$"
-                version)]
-      {:core [(bigint major) (bigint minor) (bigint patch)]
-       :prerelease (when prerelease (str/split prerelease #"\."))})))
+                #"(?i)([0-9]+(?:\.[0-9]+)*)(?:[-.]([A-Za-z]+)\.?([0-9]+)?)?(?:[-.+].*)?"
+                (python-strip version))]
+      (let [rank (when prerelease
+                   (get prerelease-ranks (str/lower-case prerelease)))]
+        {:release (mapv bigint (str/split release #"\."))
+         :prerelease-rank (or rank release-rank)
+         :prerelease-number (if rank
+                              (bigint (or prerelease-number "0"))
+                              0)}))))
 
 (defn release-version? [version]
   (boolean (version-parts version)))
 
-(defn- compare-prerelease-part [left right]
-  (let [left-number? (boolean (re-matches #"\d+" left))
-        right-number? (boolean (re-matches #"\d+" right))]
-    (cond
-      (and left-number? right-number?)
-      (compare (bigint left) (bigint right))
-
-      left-number? -1
-      right-number? 1
-      :else (compare left right))))
-
-(defn- compare-prerelease [left right]
-  (cond
-    (and (nil? left) (nil? right)) 0
-    (nil? left) 1
-    (nil? right) -1
-    :else
-    (loop [left left right right]
-      (cond
-        (and (empty? left) (empty? right)) 0
-        (empty? left) -1
-        (empty? right) 1
-        :else (let [comparison (compare-prerelease-part
-                                (first left) (first right))]
-                (if (zero? comparison)
-                  (recur (next left) (next right))
-                  comparison))))))
+(defn- pad-release [release width]
+  (into release (repeat (- width (count release)) 0)))
 
 (defn compare-release-versions
-  "Compare valid chDB releases by numeric release/prerelease precedence."
+  "Compare chDB versions using Durable V1's pinned Python precedence.
+
+  Returns nil when either input is unrecognized. Numeric release tuples are
+  zero-padded to equal width. Only alpha/a, beta/b, pre, and rc are prerelease
+  markers; every other suffix has stable-release precedence."
   [left right]
   (let [left (version-parts left)
         right (version-parts right)]
     (when (and left right)
-      (let [core-comparison (compare (:core left) (:core right))]
-        (if (zero? core-comparison)
-          (compare-prerelease (:prerelease left) (:prerelease right))
-          core-comparison)))))
+      (let [width (max (count (:release left)) (count (:release right)))
+            release-comparison
+            (compare (pad-release (:release left) width)
+                     (pad-release (:release right) width))]
+        (if-not (zero? release-comparison)
+          release-comparison
+          (compare [(:prerelease-rank left) (:prerelease-number left)]
+                   [(:prerelease-rank right) (:prerelease-number right)]))))))
