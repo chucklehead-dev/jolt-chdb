@@ -148,7 +148,7 @@
 (defn- expired? [document now clock-skew]
   (let [expires-at (get-in document ["lease" "expires_at"])]
     (and (number? expires-at)
-         (>= now (+ expires-at clock-skew)))))
+         (> now (+ expires-at clock-skew)))))
 
 (defn- next-generation [document]
   (let [generation (get-in document ["lease" "generation"])]
@@ -233,7 +233,8 @@
   seconds. The public Durable API converts its millisecond configuration at
   this boundary.
 
-  Normal takeover is allowed only at `expires_at + clock-skew`. Every
+  Normal takeover is allowed only after `expires_at + clock-skew`; equality
+  remains held. Every
   acquisition of an existing head increments its generation. The bounded
   retry count covers CAS collisions; it does not wait for a live lease."
   [store {:keys [owner instance expires-at now clock-skew force? max-attempts]

@@ -2280,7 +2280,10 @@ binding conversion explicit. Public wall-clock values are integer epoch
 milliseconds; the V1 wire value is epoch seconds represented here as whole
 seconds plus a millisecond fraction. Nominal unit tags prevent a value from
 silently crossing the boundary unchanged. The wrong-unit function is retained
-only as a red control.
+only as a red control. The same public millisecond domain pins lease eligibility:
+a lease remains held at the skew-adjusted expiry, and normal takeover becomes
+eligible one millisecond later. The main head-CAS model still abstracts the
+eligibility decision as a successful acquisition choice.
 
 ```quint target/formal/quint/durableLeaseTime.qnt +=
 module durableLeaseTime {
@@ -2312,6 +2315,24 @@ module durableLeaseTime {
     wire.millisecondFraction >= 0,
     wire.millisecondFraction < 1000,
   }
+
+  pure def leaseHeldAt(
+    nowMillis: int,
+    expiresAtMillis: int,
+    clockSkewMillis: int
+  ): bool = nowMillis <= expiresAtMillis + clockSkewMillis
+
+  pure def takeoverEligible(
+    nowMillis: int,
+    expiresAtMillis: int,
+    clockSkewMillis: int
+  ): bool = not(leaseHeldAt(nowMillis, expiresAtMillis, clockSkewMillis))
+
+  pure def atOrAfterExpiryMutant(
+    nowMillis: int,
+    expiresAtMillis: int,
+    clockSkewMillis: int
+  ): bool = nowMillis >= expiresAtMillis + clockSkewMillis
 }
 ```
 
@@ -2340,5 +2361,19 @@ module durableLeaseTimeTest {
 
   run wrongUnitMutantIsDetectedTest =
     not(wellDimensioned(wrongUnitMutant(1788230400125)))
+
+  run leaseIsHeldBelowBoundaryTest =
+    leaseHeldAt(624, 125, 500)
+
+  run leaseIsHeldAtInclusiveBoundaryTest =
+    leaseHeldAt(625, 125, 500)
+
+  run takeoverIsEligibleAboveBoundaryTest =
+    takeoverEligible(626, 125, 500)
+
+  run atOrAfterMutantEqualityWitnessTest = and {
+    atOrAfterExpiryMutant(625, 125, 500),
+    not(takeoverEligible(625, 125, 500)),
+  }
 }
 ```

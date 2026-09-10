@@ -402,7 +402,7 @@
       ;; manifest. Writer 1 must observe the new generation and self-fence.
       (control/acquire!
        store (assoc base-options :owner "writer-2" :instance "instance-2"
-                    :now 1000M :expires-at 2000M))
+                    :now 1000.001M :expires-at 2000M))
       (deliver release-reconciliation true)
       (check "takeover fences an ambiguous manifest reconciliation"
              ::control/lease-fenced (fibers/join flushing)))
@@ -649,7 +649,7 @@
       @publish-entered
       (control/acquire!
        store (assoc base-options :owner "writer-2" :instance "instance-2"
-                    :now 1000M :expires-at 2000M))
+                    :now 1000.001M :expires-at 2000M))
       (deliver release-publish true)
       (check "takeover during blocked publication fences the old flush"
              ::control/lease-fenced (fibers/join flushing)))
@@ -692,7 +692,7 @@
       @verify-entered
       (control/acquire!
        store (assoc base-options :owner "writer-2" :instance "instance-2"
-                    :now 1000M :expires-at 2000M))
+                    :now 1000.001M :expires-at 2000M))
       (deliver release-verify true)
       (check "takeover during blocked verification fences before head CAS"
              ::control/lease-fenced (fibers/join flushing)))

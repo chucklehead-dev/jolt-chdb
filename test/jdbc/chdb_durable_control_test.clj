@@ -19,6 +19,9 @@
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
 
+(defn- stored-head-bytes [store]
+  (vec (backend/get-bytes store control/head-key)))
+
 (def base-options
   {:owner "writer-1"
    :instance "instance-1"
@@ -268,6 +271,32 @@
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 lease and head-CAS control")
+  (letfn [(store-at-boundary []
+            (let [store (backend/memory-backend)
+                  acquired (control/acquire! store base-options)]
+              (control/renew! store (:token acquired) 250M)
+              store))]
+    (doseq [[label now] [["below" 254.999M] ["at" 255M]]]
+      (let [store (store-at-boundary)
+            before (stored-head-bytes store)]
+        (check (str "normal takeover is rejected " label " the inclusive boundary")
+               ::control/lease-held
+               (error-type
+                #(control/acquire!
+                  store (assoc base-options
+                               :owner "writer-2" :instance "instance-2"
+                               :now now :expires-at 400M))))
+        (check (str "rejected " label "-boundary takeover preserves head bytes")
+               before
+               (stored-head-bytes store))))
+    (let [store (store-at-boundary)
+          takeover (control/acquire!
+                    store (assoc base-options
+                                 :owner "writer-2" :instance "instance-2"
+                                 :now 255.001M :expires-at 400M))]
+      (check "normal takeover succeeds one millisecond above the boundary"
+             2
+             (get-in (:head takeover) ["lease" "generation"]))))
   (let [store (backend/memory-backend)
         first-acquire (control/acquire! store base-options)
         token1 (:token first-acquire)]
