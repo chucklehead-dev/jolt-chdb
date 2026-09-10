@@ -66,12 +66,12 @@ not a claim of full Python-writer interoperability.
 
 ## Public-open format and reference verification
 
-The public-open corpus deliberately rewrites a valid stored head with sorted
-root keys and internal indentation, proves those bytes differ from the canonical
-encoder output, then recovers the WAL through `open-reader!` and runs a query on
-the returned reader. This covers the pinned upstream JSON-shape obligation at
-the public recovery boundary rather than inferring key-order independence from
-a codec round-trip.
+The public-open corpus deliberately rewrites a valid stored head with
+recursively sorted keys and internal indentation, proves those bytes differ
+from the canonical encoder output, then recovers the WAL through `open-reader!`
+and runs a query on the returned reader. This covers the pinned upstream
+JSON-shape obligation at the public recovery boundary rather than inferring
+key-order independence from a codec round-trip.
 
 The same focused suite covers missing checkpoint and WAL objects, plus wrong
 size and wrong digest for both reference kinds. Every fault is a schema-valid

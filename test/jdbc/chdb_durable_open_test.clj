@@ -341,9 +341,7 @@
            [1 1] [@close-count @cleanup-count])))
 
 (defn- run-reference-conformance! []
-  (println "Durable public-open missing checkpoint and WAL references")
-  (println "Durable public-open checkpoint size and digest verification")
-  (println "Durable public-open WAL size and digest verification")
+  (println "Durable public-open reference verification")
   ;; Positive controls prove that the fake recovery boundary can reach the
   ;; stages which each malformed reference must prevent.
   (doseq [[kind reached-stage]
@@ -364,54 +362,82 @@
                true (boolean (some #(= reached-stage (first %)) @calls)))
         (finally (reader/close! opened)))))
 
-  (doseq [[kind fault expected-shape]
-          [[:checkpoint :missing [false true true]]
-           [:wal :missing [false true true]]
-           [:checkpoint :size [true false true]]
-           [:checkpoint :digest [true true false]]
-           [:wal :size [true false true]]
-           [:wal :digest [true true false]]]
-          mode [:reader :writer]]
-    (let [{:keys [reference] :as fixture} (reference-fixture kind fault)
-          before (:head (control/read-head! (:store fixture)))
-          _ (check (str (name kind) " " (name fault)
-                        " fixture isolates the intended verification fault")
-                   expected-shape (fixture-fault-shape fixture))
-          _ (check (str (name kind) " " (name fault)
-                        " fixture is a schema-valid head")
-                   true (map? (head/decode
-                               (backend/get-bytes (:store fixture)
-                                                  control/head-key)
-                               :read-only)))
-          result (open-reference-fixture mode fixture)
-          forbidden (if (= :checkpoint kind)
-                      #{:restore :use :analyze-execute :execute}
-                      #{:analyze-execute :execute})
-          reached (filterv #(contains? forbidden (first %)) (:calls result))
-          after (:head result)
-          after-reference
-          (if (= :checkpoint kind)
-            (get-in after ["manifest" "base"])
-            (first (get-in after ["manifest" "wal"])))]
-      (check (str (name mode) " rejects " (name fault) " " (name kind)
-                  " as public corrupt despite cleanup failures")
-             ::durable/corrupt (:error result))
-      (check (str (name mode) " " (name fault) " " (name kind)
-                  " verification prevents restore or replay")
-             [] reached)
-      (check (str (name mode) " " (name fault) " " (name kind)
-                  " closes native state and removes scratch")
-             [1 1] [(:close-count result) (:cleanup-count result)])
-      (check (str (name mode) " " (name fault) " " (name kind)
-                  " preserves the manifest reference")
-             reference after-reference)
-      (when (= :writer mode)
-        (check (str "writer " (name fault) " " (name kind)
-                    " failure releases its acquired lease")
-               [nil nil (inc (get-in before ["lease" "generation"]))]
-               [(get-in after ["lease" "owner"])
-                (get-in after ["lease" "instance"])
-                (get-in after ["lease" "generation"])])))))
+  (let [outcomes (atom [])]
+    (doseq [[kind fault expected-shape]
+            [[:checkpoint :missing [false true true]]
+             [:wal :missing [false true true]]
+             [:checkpoint :size [true false true]]
+             [:checkpoint :digest [true true false]]
+             [:wal :size [true false true]]
+             [:wal :digest [true true false]]]
+            mode [:reader :writer]]
+      (let [{:keys [reference] :as fixture} (reference-fixture kind fault)
+            before (:head (control/read-head! (:store fixture)))
+            actual-shape (fixture-fault-shape fixture)
+            schema-valid?
+            (map? (head/decode
+                   (backend/get-bytes (:store fixture) control/head-key)
+                   :read-only))
+            result (open-reference-fixture mode fixture)
+            forbidden (if (= :checkpoint kind)
+                        #{:restore :use :analyze-execute :execute}
+                        #{:analyze-execute :execute})
+            reached (filterv #(contains? forbidden (first %)) (:calls result))
+            after (:head result)
+            after-reference
+            (if (= :checkpoint kind)
+              (get-in after ["manifest" "base"])
+              (first (get-in after ["manifest" "wal"])))
+            expected-lease
+            [nil nil (inc (get-in before ["lease" "generation"]))]
+            actual-lease
+            [(get-in after ["lease" "owner"])
+             (get-in after ["lease" "instance"])
+             (get-in after ["lease" "generation"])]
+            outcome-ok?
+            (and (= expected-shape actual-shape)
+                 schema-valid?
+                 (= ::durable/corrupt (:error result))
+                 (empty? reached)
+                 (= [1 1] [(:close-count result) (:cleanup-count result)])
+                 (= reference after-reference)
+                 (or (= :reader mode) (= expected-lease actual-lease)))]
+        (check (str (name kind) " " (name fault)
+                    " fixture isolates the intended verification fault")
+               expected-shape actual-shape)
+        (check (str (name kind) " " (name fault)
+                    " fixture is a schema-valid head")
+               true schema-valid?)
+        (check (str (name mode) " rejects " (name fault) " " (name kind)
+                    " as public corrupt despite cleanup failures")
+               ::durable/corrupt (:error result))
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " verification prevents restore or replay")
+               [] reached)
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " closes native state and removes scratch")
+               [1 1] [(:close-count result) (:cleanup-count result)])
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " preserves the manifest reference")
+               reference after-reference)
+        (when (= :writer mode)
+          (check (str "writer " (name fault) " " (name kind)
+                      " failure releases its acquired lease")
+                 expected-lease actual-lease))
+        (swap! outcomes conj {:kind kind :fault fault :mode mode
+                              :ok? outcome-ok?})))
+    (doseq [[label kinds faults expected-count]
+            [["public-open missing checkpoint and WAL references"
+              #{:checkpoint :wal} #{:missing} 4]
+             ["public-open checkpoint size and digest verification"
+              #{:checkpoint} #{:size :digest} 4]
+             ["public-open WAL size and digest verification"
+              #{:wal} #{:size :digest} 4]]]
+      (let [selected (filterv #(and (contains? kinds (:kind %))
+                                    (contains? faults (:fault %)))
+                              @outcomes)]
+        (check label [expected-count true]
+               [(count selected) (every? :ok? selected)])))))
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 public writer open and recovery")
