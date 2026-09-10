@@ -641,70 +641,80 @@
 
 (driver/register! chdb-driver)
 
-(defn- validate-insert-sql!
-  "The prefix of a bulk insert must be one INSERT carrying no FORMAT clause of
-  its own. `insert-rows!` appends the FORMAT clause and the row data, and never
-  reads that data as SQL, so this prefix is the only part the driver parses and
-  it has to be unambiguous."
-  [sql]
-  (let [trimmed (str/trim sql)]
-    (when-not (re-find #"(?i)^insert\s" trimmed)
-      (throw (ex-info "chDB bulk insert must begin with INSERT"
-                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
-    (when (str/includes? trimmed ";")
-      (throw (ex-info "chDB bulk insert may not contain a statement separator"
-                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
-    (when (re-find #"(?i)\bformat\s+\w+\s*$" trimmed)
-      (throw (ex-info "chDB bulk insert must not carry its own FORMAT clause"
-                      {:jdbc/sql-error true :db.chdb/insert-rows true})))
-    trimmed))
+(def ^:private bare-identifier #"[A-Za-z_][A-Za-z0-9_]*")
+
+(defn- quote-part
+  "Backtick-quote one already-validated identifier part. Validation forbids a
+  backtick, so nothing here can close the quoting."
+  [part]
+  (str "`" part "`"))
+
+(defn- validate-table! [table]
+  (let [parts (when (string? table) (str/split table #"\." -1))]
+    (when-not (and (seq parts) (every? #(re-matches bare-identifier %) parts))
+      (throw (ex-info "chDB insert table must be a bare identifier, optionally database-qualified"
+                      {:table table :jdbc/sql-error true :db.chdb/insert-rows true})))
+    (str/join "." (map quote-part parts))))
+
+(defn- validate-column! [column]
+  ;; A dot inside a column name belongs to the name -- `Events.Timestamp` is one
+  ;; ClickHouse Nested subcolumn, not a qualified reference -- so unlike a table
+  ;; the whole thing is quoted as a unit.
+  (when-not (and (string? column)
+                 (re-matches #"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*" column))
+    (throw (ex-info "chDB insert column must be a bare identifier"
+                    {:column column :jdbc/sql-error true :db.chdb/insert-rows true})))
+  (quote-part column))
 
 (defn- validate-insert-format! [format]
   ;; The format name is interpolated into the statement, so it may only be a
   ;; bare identifier -- never caller text that could close the clause.
-  (when-not (and (string? format) (re-matches #"[A-Za-z0-9_]+" format))
+  (when-not (and (string? format) (re-matches bare-identifier format))
     (throw (ex-info "chDB insert format must be a bare identifier"
                     {:format format :jdbc/sql-error true
                      :db.chdb/insert-rows true})))
   format)
 
 (defn insert-rows!
-  "Insert pre-encoded rows through the ordinary query API.
+  "Insert pre-encoded rows into `table`.
 
-  `sql` is the INSERT prefix -- `insert into events (id, message)` -- and `rows`
-  is a string of encoded row data in `:format`, JSONEachRow unless given. The
-  two are joined with the FORMAT clause and sent as one statement.
+  `columns` is a sequence of column names, or nil to let the input format's own
+  field names choose the columns. `rows` is a string of encoded row data in
+  `:format`, JSONEachRow unless given.
 
-  `rows` is data, not SQL. This driver never scans, rewrites or escapes it; its
-  encoding belongs to the caller. That is the whole point of this entry point.
-  `execute!` rewrites `?` placeholders across the entire statement, and for a
-  bulk insert that means walking every character of the row data, conj!-ing each
-  one into a transient vector and rebuilding the string, hunting for
-  placeholders that encoded rows cannot contain. Measured on a 131 KB payload
-  that scan costs 77 ms against 3.5 ms to produce the data, and removing it
-  took a five-signal telemetry export from 1,752 to 12,705 rows per second.
+  The caller supplies no SQL. This function builds the statement from the
+  table, the columns and the format, each of which must be a bare identifier
+  and each of which is validated and backtick-quoted. There is no text a caller
+  can pass that becomes a second statement, a comment, or a clause -- not
+  because the input is scanned for those, but because the input is never SQL.
 
-  Only `sql` is read as SQL: it is validated, and its `?` placeholders are bound
-  from `:params` exactly as `execute!` binds them.
+  `rows` is data. It is never scanned, rewritten or escaped by this driver; its
+  encoding belongs to the caller. That is the point of this entry point.
+  `execute!` rewrites `?` placeholders across the whole statement, and for a
+  bulk insert that means walking every character of the row data, conj!-ing
+  each one into a transient vector and rebuilding the string, hunting for
+  placeholders that encoded rows cannot contain. Measured on jolt 0.8.6 with a
+  131 KB JSONEachRow payload, that scan costs 77 ms against 3.5 ms to produce
+  the payload. A `?` in a log body or a URL query string is now structurally
+  irrelevant rather than merely protected by the scanner's quote tracking.
 
   Ordinary `:chdb` connections only. A Durable connection routes its writes
   through its own serialized writer, which owns the lease and the WAL.
 
   Returns what `execute!` returns."
-  ([conn sql rows] (insert-rows! conn sql rows nil))
-  ([conn sql rows {:keys [format params]
-                   :or {format "JSONEachRow" params []}}]
-   (let [prefix (validate-insert-sql! sql)
+  ([conn table columns rows] (insert-rows! conn table columns rows nil))
+  ([conn table columns rows {:keys [format] :or {format "JSONEachRow"}}]
+   (let [quoted-table (validate-table! table)
+         quoted-columns (when (seq columns) (mapv validate-column! columns))
          fmt (validate-insert-format! format)
-         {rewritten :sql parameters :parameters} (rewrite-placeholders prefix params)
          shim-conn (proto/connection conn)
-         {:keys [handle]} (shim/driver-context shim-conn :chdb)]
-     (execute-prepared handle
-                       (str rewritten " FORMAT " fmt "\n" rows)
-                       parameters
-                       "JSONCompactEachRowWithNamesAndTypes"
+         {:keys [handle]} (shim/driver-context shim-conn :chdb)
+         statement (str "insert into " quoted-table
+                        (when quoted-columns
+                          (str " (" (str/join ", " quoted-columns) ")"))
+                        " FORMAT " fmt "\n" rows)]
+     (execute-prepared handle statement [] "JSONCompactEachRowWithNamesAndTypes"
                        (fn [_ _ result] (consume-json-result result))))))
-
 
 (defn stream-insert!
   "Insert bounded format-encoded chunks. The native stream never escapes this
