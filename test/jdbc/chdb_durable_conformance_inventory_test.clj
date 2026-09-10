@@ -19,7 +19,7 @@
            :case-count 49}})
 
 (def ^:private expected-disposition-counts
-  {:total 49 :mapped 44 :blocked 3 :not-applicable 2})
+  {:total 49 :mapped 45 :blocked 2 :not-applicable 2})
 
 (def ^:private expected-case-names
   ["test_empty_object"

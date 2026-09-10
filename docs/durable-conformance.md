@@ -83,10 +83,22 @@ native-close and scratch-cleanup errors prove cleanup cannot replace the primary
 verification error.
 
 Together with the merged live-force warning tests, the executable ledger is now
-44 mapped, 3 blocked, and 2 binding-level not applicable cases. The remaining
-behavior blockers are the two secret-bearing exception/WAL redaction scenarios
-and the renewal-failure sequence that must fence execute, flush, and checkpoint
-while preserving reads.
+45 mapped, 2 blocked, and 2 binding-level not applicable cases. The remaining
+behavior blockers are the two secret-bearing exception/WAL redaction scenarios.
+
+The public writer renewal-loss corpus starts with a successful heartbeat as a
+positive control, injects a real head-replacement failure before expiry, and
+proves that one transient failure does not fence prematurely or change the
+stored expiry. Time then advances beyond the last proved expiry. The public
+writer self-fences, execute/flush/checkpoint each return `lease-fenced` with
+their effect counters still zero, and a public queued query on the opened local
+handle returns the same injected result observed before renewal loss. This
+focused fake-operation test does not claim native restored-data coverage. The
+matching literate Quint module isolates
+that four-step boundary from the existing close-lifecycle model. Its corrected
+trace and deterministic ITF projection cover renewal success, pre-expiry loss,
+expiry fencing, and public outcomes; fence-on-first-failure, ignore-expiry,
+allow-fenced-effects, and drop-read mutants each expose the intended invariant.
 
 Run the focused, offline gate with the mandatory compiler selector:
 
@@ -106,8 +118,7 @@ This inventory intentionally leaves the remaining issue-47 obligations open:
 full Python-writer fixture exchange, the earlier-archive/new-engine and
 header/library cross-version matrices, current-source AWS OIDC qualification,
 release evidence across claimed platforms/providers/runtimes, protocol
-clarification and refinement-model work, the upstream renewal-failure fencing
-sequence including read survival, both secret-bearing scenarios, and final
-review of the eventual full matrix.
+clarification and refinement-model work, both secret-bearing scenarios, and
+final review of the eventual full matrix.
 Stable chDB 26.7.0 still lacks the Durable ABI, so the pinned rc.2 ABI
 qualification is not an ordinary-install conformance claim.

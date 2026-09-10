@@ -73,8 +73,13 @@
   {:case :upstream/heartbeat-renews-without-moving-generation-or-seq :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "heartbeat preserves the fencing generation"}
                  {:path "test/jdbc/chdb_durable_writer_concurrency_test.clj" :anchor "manifest retry preserves renewal and advances exactly once"}]}
-  {:case :upstream/writer-self-fences-when-renewal-fails :disposition :blocked
-   :blocker {:issue 47 :rationale "Local tests cover expiry and retry self-fencing, but not the upstream renewal-failure path together with execute, flush, checkpoint, and read-survival assertions."}}
+  {:case :upstream/writer-self-fences-when-renewal-fails :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "injected live renewal loss reaches the public backend"}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "failed renewal completes its heartbeat catch cycle"}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "one failed renewal before expiry does not fence prematurely"}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "renewal loss through expiry self-fences the public writer"}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "post-fence execute flush and checkpoint effect counters stay zero"}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "opened public writer queued read remains stable after self-fencing"}]}
   {:case :upstream/takeover-fences-the-previous-writer :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "takeover during checkpoint publication fences the stale writer"}]}
   {:case :upstream/close-releases-and-then-refuses :disposition :mapped
