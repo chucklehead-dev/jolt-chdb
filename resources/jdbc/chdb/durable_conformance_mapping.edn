@@ -11,12 +11,12 @@
    :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "fresh reader restores the folded checkpoint"}]}
   {:case :upstream/quoted-database-name :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "writer open creates, selects, and replays the stored database"}]}
-  {:case :upstream/missing-base-and-wal :disposition :blocked
-   :blocker {:issue 47 :rationale "No focused public-open test covers both missing checkpoint and missing WAL references."}}
-  {:case :upstream/bad-base-size-and-digest :disposition :blocked
-   :blocker {:issue 47 :rationale "Local verification units do not yet reproduce both full-open base size and digest failures."}}
-  {:case :upstream/bad-wal-size-and-digest :disposition :blocked
-   :blocker {:issue 47 :rationale "Local verification units do not yet reproduce both full-open WAL size and digest failures before replay."}}
+  {:case :upstream/missing-base-and-wal :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "public-open missing checkpoint and WAL references"}]}
+  {:case :upstream/bad-base-size-and-digest :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "public-open checkpoint size and digest verification"}]}
+  {:case :upstream/bad-wal-size-and-digest :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "public-open WAL size and digest verification"}]}
   {:case :upstream/unknown-reader-feature :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "unknown reader feature fails closed"}]}
   {:case :upstream/unknown-writer-feature :disposition :mapped
@@ -31,8 +31,8 @@
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "future backup formats fail closed"}]}
   {:case :upstream/unknown-fields-round-trip :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "updating a known field preserves unknown fields"}]}
-  {:case :upstream/json-shape-is-not-frozen :disposition :blocked
-   :blocker {:issue 47 :rationale "The codec round-trip is covered, but no local test deliberately varies input whitespace and key order."}}
+  {:case :upstream/json-shape-is-not-frozen :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "sorted and internally indented head supports public read-only recovery"}]}
   {:case :upstream/gates-cannot-be-bypassed-by-method-choice :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "mutation through query"}
                  {:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "read through execute"}]}
@@ -84,8 +84,10 @@
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "a live competing writer is rejected"}]}
   {:case :upstream/expired-lease-is-taken-without-force :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "normal takeover waits through clock skew and increments generation"}]}
-  {:case :upstream/unexpired-lease-needs-force :disposition :blocked
-   :blocker {:issue 47 :rationale "Force takeover exists, but the required public warning remains a focused issue-47 blocker."}}
+  {:case :upstream/unexpired-lease-needs-force :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "a live competing writer is rejected"}
+                 {:path "test/jdbc/chdb_durable_epoch_seconds_test.clj" :anchor "force takeover bypasses a lease"}
+                 {:path "test/jdbc/chdb_durable_control_test.clj" :anchor "successful forced live takeover returns one redacted warning"}]}
   {:case :upstream/object-id-validation-and-path-traversal :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_backend_test.clj" :anchor "unsafe object id fails closed"}]}
   {:case :upstream/sibling-isolation :disposition :mapped

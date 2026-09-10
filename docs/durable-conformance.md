@@ -64,6 +64,30 @@ the pinned boundary case. It does not execute the upstream Python Durable
 writer, its storage providers, recovery lifecycle, or heartbeat loop, and is
 not a claim of full Python-writer interoperability.
 
+## Public-open format and reference verification
+
+The public-open corpus deliberately rewrites a valid stored head with sorted
+root keys and internal indentation, proves those bytes differ from the canonical
+encoder output, then recovers the WAL through `open-reader!` and runs a query on
+the returned reader. This covers the pinned upstream JSON-shape obligation at
+the public recovery boundary rather than inferring key-order independence from
+a codec round-trip.
+
+The same focused suite covers missing checkpoint and WAL objects, plus wrong
+size and wrong digest for both reference kinds. Every fault is a schema-valid
+head and is exercised through both `open-reader!` and `open-writer!`. Valid
+checkpoint and WAL controls reach restore and replay respectively; their faulted
+counterparts return the stable public `corrupt` category without reaching those
+stages. Writer failures release the acquired lease, and injected secondary
+native-close and scratch-cleanup errors prove cleanup cannot replace the primary
+verification error.
+
+Together with the merged live-force warning tests, the executable ledger is now
+44 mapped, 3 blocked, and 2 binding-level not applicable cases. The remaining
+behavior blockers are the two secret-bearing exception/WAL redaction scenarios
+and the renewal-failure sequence that must fence execute, flush, and checkpoint
+while preserving reads.
+
 Run the focused, offline gate with the mandatory compiler selector:
 
 ```sh
@@ -83,6 +107,7 @@ full Python-writer fixture exchange, the earlier-archive/new-engine and
 header/library cross-version matrices, current-source AWS OIDC qualification,
 release evidence across claimed platforms/providers/runtimes, protocol
 clarification and refinement-model work, the upstream renewal-failure fencing
-sequence including read survival, and final review of the eventual full matrix.
+sequence including read survival, both secret-bearing scenarios, and final
+review of the eventual full matrix.
 Stable chDB 26.7.0 still lacks the Durable ABI, so the pinned rc.2 ABI
 qualification is not an ordinary-install conformance claim.

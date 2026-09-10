@@ -18,6 +18,9 @@
            :sha256 "5b9a97a3bccc0c29b10aca6b6e9a72edceea6a79e19d9a54c900b10d24f5eee6"
            :case-count 49}})
 
+(def ^:private expected-disposition-counts
+  {:total 49 :mapped 44 :blocked 3 :not-applicable 2})
+
 (def ^:private expected-case-names
   ["test_empty_object"
    "test_readonly_missing_object"
@@ -187,6 +190,8 @@
         ;; This call must throw. It is the externally runnable red control.
         (validate-inventory! mutant-inventory mutant-mapping))
       (let [summary (validate-inventory! inventory mapping)]
+        (require-equal! "conformance disposition count drift"
+                        expected-disposition-counts summary)
         (doseq [[name mutant]
                 [["name drift" "name-drift"]
                  ["SHA drift" "sha-drift"]

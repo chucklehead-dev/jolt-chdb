@@ -21,6 +21,13 @@ manifest and line order through the internal engine path, never through the
 public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
+The focused public-open conformance corpus exercises missing, wrong-size, and
+wrong-digest checkpoint and WAL references through both reader and writer open.
+Valid controls reach restore or replay; malformed references return `corrupt`
+before those stages. Writer failure still releases the acquired lease and both
+open modes close native state and remove scratch without allowing secondary
+cleanup errors to replace the verification result.
+
 The active writer runs its operation queue and heartbeat on separate owned OS
 threads; the read-only queue likewise owns an OS thread. These are deliberately
 not Jolt fibers because native chDB and storage calls may block a shared fiber
