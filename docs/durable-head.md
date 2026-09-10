@@ -28,6 +28,22 @@ The current Babashka path cannot load the repository's pinned
 Babashka head-codec qualification remains a #46/Phase 2 gap rather than an
 inferred claim.
 
+The complete document may contain at most 64 nested JSON object or array
+containers, counting the required root object. This resource bound applies to
+known and preserved unknown fields, and to both decoding and encoding. The raw
+scanner rejects deeper input before handing it to the recursive JSON parser;
+validation applies the same limit to programmatically constructed heads. Depth
+errors retain only a redacted path. The independently pinned boundary cases in
+`test/fixtures/durable/head-json-depth.edn` cover nested objects and arrays at
+the exact limit and one level beyond it.
+
+This is an executable input/resource assumption, not a lease/CAS transition.
+The Quint and SMT control models begin after a head has passed bounded decode;
+they do not claim to prove JSON parser stack safety. The focused Jolt and JVM
+boundary corpus is the implementation oracle for this limit; hosted tests run
+the JVM lane explicitly and the ordinary Jolt aggregate includes the same
+checks.
+
 An active lease's `expires_at` is a finite nonnegative Unix timestamp in
 seconds. Fractional seconds are preserved as a JSON number. The codec does not
 infer or migrate legacy millisecond values from their magnitude.

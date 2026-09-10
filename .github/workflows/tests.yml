@@ -76,6 +76,8 @@ jobs:
         run: test "$(jolt --version)" = "jolt v0.8.3"
       - name: Verify pinned Durable conformance inventory
         run: jolt -Srepro -M:durable-conformance-inventory-test
+      - name: Qualify the Durable JSON nesting bound on JVM Clojure
+        run: clojure -M:durable-head-depth-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
       - name: Qualify the selected native ABI on Jolt, Babashka, and JVM
