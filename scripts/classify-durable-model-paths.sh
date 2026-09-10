@@ -21,6 +21,7 @@ is_exhaustive_input() {
     scripts/check-durable-head-quint.sh | \
     scripts/check-durable-head-itf-corpus.sh | \
     scripts/generate-durable-head-itf.sh | \
+    scripts/generate-durable-engine-metadata-itf.sh | \
     scripts/durable-head-itf-commands.jq | \
     scripts/durable-head-itf-coverage.jq | \
     scripts/classify-durable-model-paths.sh)

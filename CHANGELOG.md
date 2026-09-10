@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Record the running producer version when acquiring an existing Durable head,
+  and atomically record that producer plus non-lowering backup-format and
+  minimum-reader requirements with each full checkpoint.
 - Keep a Durable V1 lease held through equality at
   `expires_at + clock_skew`, allowing normal takeover only after that boundary
   while preserving the current writer's conservative self-fence at expiry.

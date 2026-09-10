@@ -45,6 +45,26 @@ boundary, not cosmetic normalization: JSON may serialize an integral decimal
 as an integer, and ambiguous reconciliation must compare the exact semantic
 value a reread will produce.
 
+## Engine compatibility metadata
+
+An existing-head acquisition records the running chDB release in
+`engine.version` in the same CAS that advances the fencing generation. It
+preserves `backup_format`, `min_reader`, and unknown engine fields. The producer
+version says who wrote the object most recently; readers do not require an
+exact version match.
+
+A full-checkpoint commit atomically records its producer version and archive
+format with the new base reference. Its `backup_format` and `min_reader`
+requirements may advance but never decrease. WAL commits, heartbeat renewal,
+and release preserve all engine metadata. Public writer open checks the stored
+format and minimum-reader requirement before lease acquisition, scratch
+creation, native recovery, or mutation.
+
+Raw `commit-reference!` checkpoint callers must supply all three values in
+`:engine-metadata`; omission or lowering is rejected before object verification
+or head mutation. The public writer supplies them from the checked native
+capability, so ordinary callers do not configure these fields separately.
+
 ## Immutable commits and ambiguity
 
 `publish-wal-bytes!` is the semantic publication seam for bounded statement

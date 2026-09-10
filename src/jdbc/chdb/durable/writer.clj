@@ -351,12 +351,15 @@
   This is the composition seam for the later public Durable `open!`. The
   caller retains responsibility for recovery and must not use `handle` outside
   this writer after start. Optional operation functions exist for deterministic
-  conformance tests; production callers should use the defaults. At this raw
-  seam, `lease-expiry`, `lease-ttl-ms`, `heartbeat-interval-ms`, and `:now-ms`
-  are all milliseconds. The public open layer owns conversion to and from the
-  Protocol V1 epoch-seconds control seam."
+  conformance tests; production callers should use the defaults. A caller that
+  can publish checkpoints through the default control operation must supply the
+  running producer's `engine-metadata`. At this raw seam, `lease-expiry`,
+  `lease-ttl-ms`, `heartbeat-interval-ms`, and `:now-ms` are all milliseconds.
+  The public open layer owns conversion to and from the Protocol V1
+  epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
-           lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options]
+           lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
+           engine-metadata]
     :or {queue-capacity default-queue-capacity}}]
   (when-not store (fail! ::invalid-options "store is required"))
   (when-not (map? token) (fail! ::invalid-options "token is required"))
@@ -402,7 +405,10 @@
           :commit-reference!
           (fn [store token options]
             (control/commit-reference!
-             store token (merge options retry-options)))
+             store token
+             (cond-> (merge options retry-options)
+               (= :checkpoint (:kind options))
+               (assoc :engine-metadata engine-metadata))))
           :verify-checkpoint-reference! control/verify-file-reference!
           :create-checkpoint!
           (fn [_ _]

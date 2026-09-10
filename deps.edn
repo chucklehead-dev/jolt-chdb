@@ -49,6 +49,9 @@
               :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-itf-test"]}
+           :durable-engine-metadata-itf-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-engine-metadata-itf-test"]}
            :durable-writer-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
