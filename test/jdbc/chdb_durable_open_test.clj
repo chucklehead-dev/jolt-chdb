@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-open-test
-  (:require [db.jdbc]
+  (:require [clojure.data.json :as json]
+            [db.jdbc]
             [db.export :as export]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
@@ -52,6 +53,69 @@
 (defn- prepared-wal-store []
   (prepared-raw-wal-store
    (.getBytes "{\"sql\":\"INSERT INTO t VALUES (1)\"}\n" "UTF-8")))
+
+(defn- recording-object-backend [delegate head-writes]
+  (letfn [(record! [operation key bytes result]
+            (when (and (= control/head-key key)
+                       (contains? #{:created :replaced} (:status result)))
+              (swap! head-writes conj
+                     {:operation operation :bytes (vec bytes)}))
+            result)]
+    (reify backend/ObjectBackend
+      (get-bytes [_ key] (backend/get-bytes delegate key))
+      (get-with-etag [_ key] (backend/get-with-etag delegate key))
+      (put-file-if-absent! [_ key path]
+        (backend/put-file-if-absent! delegate key path))
+      (put-bytes-if-absent! [_ key bytes]
+        (record! :create key bytes
+                 (backend/put-bytes-if-absent! delegate key bytes)))
+      (replace-if-match! [_ key bytes etag]
+        (record! :replace key bytes
+                 (backend/replace-if-match! delegate key bytes etag)))
+      (download-to-file! [_ key path]
+        (backend/download-to-file! delegate key path)))))
+
+(def ^:private python-time-fixture
+  "test/fixtures/durable/python-decimal-time-oracle.json")
+
+(defn- decimal-time-fixture []
+  (json/read-str (slurp python-time-fixture)))
+
+(defn- raw-head-expiry [bytes]
+  ;; This is intentionally independent of durable.head/decode: the oracle
+  ;; observes the public adapter's stored bytes and parses only generic JSON.
+  (get-in (json/read-str (String. (byte-array bytes) "UTF-8") :bigdec true)
+          ["lease" "expires_at"]))
+
+(defn- capture-public-open-heads []
+  (let [fixture (decimal-time-fixture)
+        now-ms (bigdec (get-in fixture ["inputs_ms" "now"]))
+        ttl-ms (bigdec (get-in fixture ["inputs_ms" "lease_ttl"]))
+        heartbeat-ms
+        (bigdec (get-in fixture ["inputs_ms" "heartbeat_interval"]))
+        head-writes (atom [])
+        store (recording-object-backend (backend/memory-backend) head-writes)
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        operations (support/fake-open-operations
+                    calls (atom [now-ms now-ms]) close-count cleanup-count)
+        opened (durable/open-writer!
+                {:store store :owner "raw-byte-oracle"
+                 :instance "raw-byte-attempt" :database "default"
+                 :lease-ttl-ms ttl-ms
+                 :heartbeat-interval-ms heartbeat-ms
+                 :operations operations})]
+    (try
+      {:operations (mapv :operation @head-writes)
+       :expires-at (mapv #(raw-head-expiry (:bytes %)) @head-writes)}
+      (finally (writer/close! opened)))))
+
+(defn- capture-public-open-result []
+  (try
+    {:capture (capture-public-open-heads)}
+    (catch Throwable error
+      {:error (:type (ex-data error))})))
 
 (defn- prepared-checkpoint-store []
   (let [store (backend/memory-backend)
@@ -116,6 +180,31 @@
           #(durable/check-engine-compatibility!
             {"engine" {"backup_format" 1 "min_reader" "26.8.0"}}
             "26.7.2")))
+
+  (let [fixture (decimal-time-fixture)
+        expected (mapv bigdec (get fixture "expected_expires_at"))
+        observed (capture-public-open-result)
+        conversion-var (ns-resolve 'jdbc.chdb.durable 'epoch-ms->seconds)
+        mutant
+        (with-redefs-fn {conversion-var identity}
+          capture-public-open-result)]
+    (check "Python Decimal fixture pins the requested public millisecond inputs"
+           ["1788230400125" "375" "125"]
+           [(get-in fixture ["inputs_ms" "now"])
+            (get-in fixture ["inputs_ms" "lease_ttl"])
+            (get-in fixture ["inputs_ms" "heartbeat_interval"])])
+    (check "Python Decimal fixture pins the normative protocol revision"
+           ["66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
+            "docs/durable/protocol-v1.mdx"]
+           [(get-in fixture ["protocol" "commit"])
+            (get-in fixture ["protocol" "document"])])
+    (check "public open records acquisition then recovery renewal head bytes"
+           [:create :replace]
+           (get-in observed [:capture :operations]))
+    (check "independent raw JSON parsing matches Python Decimal epoch seconds"
+           expected (get-in observed [:capture :expires-at]))
+    (check "identity conversion mutant fails the same raw-byte oracle"
+           false (= expected (get-in mutant [:capture :expires-at]))))
 
   (let [store (prepared-released-engine-store
                {:version "26.6.0" :backup-format 0 :min-reader "26.6.0"})

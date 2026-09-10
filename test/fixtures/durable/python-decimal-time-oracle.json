@@ -1,0 +1,21 @@
+{
+  "expected_expires_at": [
+    "1788230400.500",
+    "1788230400.501"
+  ],
+  "generator": {
+    "arithmetic": "python decimal.Decimal",
+    "script": "scripts/generate-durable-python-time-fixture.py"
+  },
+  "inputs_ms": {
+    "heartbeat_interval": "125",
+    "lease_ttl": "375",
+    "now": "1788230400125"
+  },
+  "protocol": {
+    "commit": "66643e5030fb73c30ac5cdd31d4c7858ea040ed0",
+    "document": "docs/durable/protocol-v1.mdx",
+    "repository": "https://github.com/chdb-io/chdb.git"
+  },
+  "schema": 1
+}

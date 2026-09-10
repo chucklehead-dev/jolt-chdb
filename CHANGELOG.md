@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Check public Durable acquisition and recovery-renewal `head.json` bytes
+  against an offline Python `Decimal` epoch-seconds fixture, with a CI drift
+  guard and an identity-conversion mutant. This is a narrow adapter unit oracle,
+  not a full upstream Python-writer interoperability claim.
+
 - Bound Durable public TTL, heartbeat, skew, observed clocks, and derived lease
   comparisons to integral cross-runtime-safe milliseconds, while preserving
   bounded fractional epoch seconds on the wire. Direct open and raw head decode
@@ -9,8 +14,8 @@
   clock sample fail before acquisition; an invalid recovery sample cleans up
   the acquired attempt, while invalid live samples self-fence before subsequent
   data or renewal effects and defer release/cleanup to close. These checks are
-  documented as local adapter policy, with the independent cross-binding unit
-  oracle remaining open in issue #51.
+  documented as local adapter policy; the independent cross-binding unit oracle
+  is recorded separately above.
 
 - Reject malformed Durable producer and minimum-reader releases at fresh
   acquisition, takeover, and checkpoint boundaries using the canonical pinned
