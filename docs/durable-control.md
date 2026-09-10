@@ -33,6 +33,15 @@ acquisition time, and a heartbeat must strictly extend the existing expiry.
 Scheduling heartbeats at no more than one third of the TTL is owned by the
 public writer's independent heartbeat worker.
 
+A successful forced takeover of a still-live lease returns exactly one
+structured warning in the acquisition result's `:warnings` vector. The event
+contains only its stable name, warning severity, protocol version, and new lease
+generation; it never retains the prior or new owner/instance, object key,
+credentials, SQL, paths, or backend response. Fresh, released, and normally
+expired acquisitions return an empty vector. Landed ambiguous CAS results carry
+the same single warning through reconciliation, so observation advice sees one
+completed warning without changing fencing or acknowledgement semantics.
+
 At this low-level protocol seam, `now`, `expires-at`, and `clock-skew` are all
 epoch seconds, matching Python's `time.time()` and the frozen `expires_at`
 field. The public Durable API remains millisecond-configured and converts

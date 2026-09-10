@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Return one structured, redacted warning after a successful forced takeover of
+  a live Durable lease, including reconciled ambiguous success, while keeping
+  fresh and expired acquisitions silent and preserving CAS outcomes.
 - Keep a Durable V1 lease held through equality at
   `expires_at + clock_skew`, allowing normal takeover only after that boundary
   while preserving the current writer's conservative self-fence at expiry.
