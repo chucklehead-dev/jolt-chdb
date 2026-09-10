@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Close four pinned Durable public-open conformance gaps with executable
+  sorted-key/indented head recovery and a reader/writer matrix for missing,
+  wrong-size, and wrong-digest checkpoint and WAL references. Valid controls
+  prove restore/replay reachability; faulted writers release their lease and
+  cleanup while retaining `corrupt` over injected secondary cleanup errors.
+  Together with the merged live-force warning coverage, the 49-case ledger is
+  now 44 mapped, 3 blocked, and 2 binding-level not applicable.
+
 - Check public Durable acquisition and recovery-renewal `head.json` bytes
   against an offline Python `Decimal` epoch-seconds fixture, with a CI drift
   guard bound to the canonical protocol pin and digest, plus a precise

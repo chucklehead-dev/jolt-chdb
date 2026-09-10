@@ -1,11 +1,13 @@
 (ns jdbc.chdb-durable-open-test
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
+            [clojure.string :as str]
             [db.jdbc]
             [db.export :as export]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.head :as head]
             [jdbc.chdb-durable-open-test-support :as support]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.writer :as writer]
@@ -54,6 +56,138 @@
 (defn- prepared-wal-store []
   (prepared-raw-wal-store
    (.getBytes "{\"sql\":\"INSERT INTO t VALUES (1)\"}\n" "UTF-8")))
+
+(def ^:private abc-digest
+  "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+(def ^:private wal-digest
+  "d6b567596ae76c14b2757c09a4c80f6f2dc3580e9a65ec57ec2988586fa8dd0d")
+
+(def ^:private zero-digest
+  (apply str (repeat 64 "0")))
+
+(defn- replace-head-bytes! [store bytes]
+  (let [current (control/read-head! store)
+        result (backend/replace-if-match!
+                store control/head-key bytes (:etag current))]
+    (when-not (= :replaced (:status result))
+      (throw (ex-info "test fixture could not replace head" {:result result})))
+    store))
+
+(defn- replace-head! [store document]
+  (replace-head-bytes! store (head/encode document)))
+
+(defn- reference-fixture
+  [kind fault]
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store initial-options)
+        _ (control/release! store (:token acquired))
+        payload (if (= :checkpoint kind)
+                  (.getBytes "abc" "UTF-8")
+                  (.getBytes "{\"sql\":\"INSERT INTO t VALUES (1)\"}\n" "UTF-8"))
+        actual-size (alength payload)
+        actual-digest (if (= :checkpoint kind) abc-digest wal-digest)
+        key (if (= :checkpoint kind)
+              "checkpoints/1-1-00000021.tar.gz"
+              "wal/1-1-00000022.jsonl")
+        reference {"key" key
+                   "size" (if (= :size fault) (inc actual-size) actual-size)
+                   "sha256" (if (= :digest fault) zero-digest actual-digest)}
+        current (:head (control/read-head! store))
+        manifest (if (= :checkpoint kind)
+                   {"db" "tenant`one" "base" reference "wal" [] "seq" 1}
+                   {"db" "tenant`one" "base" nil "wal" [reference] "seq" 1})]
+    (when-not (= :missing fault)
+      (backend/put-bytes-if-absent! store key payload))
+    (replace-head! store (assoc current "manifest" manifest))
+    {:store store :reference reference :payload payload
+     :actual-size actual-size :actual-digest actual-digest}))
+
+(defn- fixture-fault-shape
+  [{:keys [store reference actual-size actual-digest]}]
+  (let [stored (backend/get-bytes store (get reference "key"))]
+    [(boolean stored)
+     (= actual-size (get reference "size"))
+     (= actual-digest (get reference "sha256"))]))
+
+(defn- open-reference-fixture
+  [mode {:keys [store]}]
+  (let [calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        base-operations
+        (support/fake-open-operations
+         calls (atom [200000M 200001M]) close-count cleanup-count)
+        secondary-error
+        (fn [type]
+          (throw (ex-info "injected cleanup failure" {:type type})))
+        operations
+        (assoc base-operations
+               :close-native!
+               (fn [handle]
+                 ((:close-native! base-operations) handle)
+                 (secondary-error ::secondary-close-failure))
+               :cleanup-scratch!
+               (fn [path]
+                 ((:cleanup-scratch! base-operations) path)
+                 (secondary-error ::secondary-cleanup-failure)))
+        error
+        (try
+          (let [opened
+                (case mode
+                  :reader (durable/open-reader!
+                           {:store store :operations operations})
+                  :writer (durable/open-writer!
+                           {:store store :owner "verification-writer"
+                            :instance "verification-attempt"
+                            :database "ignored" :lease-ttl-ms 100000M
+                            :operations operations}))]
+            (case mode
+              :reader (reader/close! opened)
+              :writer (writer/close! opened))
+            nil)
+          (catch Throwable caught
+            (loop [current caught]
+              (when current
+                (or (:type (ex-data current))
+                    (recur (.getCause current)))))))]
+    {:error error :calls @calls :close-count @close-count
+     :cleanup-count @cleanup-count
+     :head (:head (control/read-head! store))}))
+
+(defn- reshaped-head-json [document]
+  ;; Mirror Python json.dumps(sort_keys=True, indent=4) without using the
+  ;; production head encoder or assuming its map iteration order.
+  (letfn [(padding [depth]
+            (apply str (repeat (* 4 depth) " ")))
+          (render [value depth]
+            (cond
+              (map? value)
+              (if (empty? value)
+                "{}"
+                (str "{\n"
+                     (str/join
+                      ",\n"
+                      (map (fn [key]
+                             (str (padding (inc depth))
+                                  (json/write-str key) ": "
+                                  (render (get value key) (inc depth))))
+                           (sort (keys value))))
+                     "\n" (padding depth) "}"))
+
+              (vector? value)
+              (if (empty? value)
+                "[]"
+                (str "[\n"
+                     (str/join
+                      ",\n"
+                      (map #(str (padding (inc depth))
+                                 (render % (inc depth)))
+                           value))
+                     "\n" (padding depth) "]"))
+
+              :else (json/write-str value)))]
+    (str (render document 0) "\n")))
 
 (defn- recording-object-backend [delegate head-writes]
   (letfn [(record! [operation key bytes result]
@@ -172,8 +306,143 @@
                   :verify-reference! control/verify-byte-reference!})
     (control/release! store token)))
 
+(defn- run-json-shape-conformance! []
+  (println "Durable public-open JSON key-order and indentation conformance")
+  (let [store (prepared-wal-store)
+        original (backend/get-bytes store control/head-key)
+        document (head/decode original :read-only)
+        reshaped-text (reshaped-head-json document)
+        reshaped (.getBytes reshaped-text "UTF-8")
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        operations
+        (support/fake-open-operations
+         calls (atom [0M]) close-count cleanup-count)]
+    (check "sorted raw head differs from the canonical stored serialization"
+           false (= (vec original) (vec reshaped)))
+    (check "sorted raw head recursively reorders keys with internal indentation"
+           true (and (< (.indexOf reshaped-text "\"engine\"")
+                        (.indexOf reshaped-text "\"protocol\""))
+                     (not= -1 (.indexOf reshaped-text "\n    \"manifest\""))
+                     (not= -1 (.indexOf reshaped-text
+                                              "\n        \"backup_format\""))))
+    (replace-head-bytes! store reshaped)
+    (let [opened (durable/open-reader! {:store store :operations operations})]
+      (try
+        (check "sorted and internally indented head supports public read-only recovery"
+               ["INSERT INTO t VALUES (1)"]
+               (mapv second (filter #(= :execute (first %)) @calls)))
+        (check "reshaped public reader remains queryable after recovery"
+               {:labels ["value"] :rows [[11]] :count 1}
+               (reader/query! opened "SELECT ?" [11]))
+        (finally (reader/close! opened))))
+    (check "reshaped public reader closes and removes scratch"
+           [1 1] [@close-count @cleanup-count])))
+
+(defn- run-reference-conformance! []
+  (println "Durable public-open reference verification")
+  ;; Positive controls prove that the fake recovery boundary can reach the
+  ;; stages which each malformed reference must prevent.
+  (doseq [[kind reached-stage]
+          [[:checkpoint :restore]
+           [:wal :execute]]]
+    (let [{:keys [store]} (reference-fixture kind :valid)
+          calls (atom [])
+          close-count (atom 0)
+          cleanup-count (atom 0)
+          opened
+          (durable/open-reader!
+           {:store store
+            :operations (support/fake-open-operations
+                         calls (atom [0M]) close-count cleanup-count)})]
+      (try
+        (check (str "valid " (name kind)
+                    " control reaches its recovery stage")
+               true (boolean (some #(= reached-stage (first %)) @calls)))
+        (finally (reader/close! opened)))))
+
+  (let [outcomes (atom [])]
+    (doseq [[kind fault expected-shape]
+            [[:checkpoint :missing [false true true]]
+             [:wal :missing [false true true]]
+             [:checkpoint :size [true false true]]
+             [:checkpoint :digest [true true false]]
+             [:wal :size [true false true]]
+             [:wal :digest [true true false]]]
+            mode [:reader :writer]]
+      (let [{:keys [reference] :as fixture} (reference-fixture kind fault)
+            before (:head (control/read-head! (:store fixture)))
+            actual-shape (fixture-fault-shape fixture)
+            schema-valid?
+            (map? (head/decode
+                   (backend/get-bytes (:store fixture) control/head-key)
+                   :read-only))
+            result (open-reference-fixture mode fixture)
+            forbidden (if (= :checkpoint kind)
+                        #{:restore :use :analyze-execute :execute}
+                        #{:analyze-execute :execute})
+            reached (filterv #(contains? forbidden (first %)) (:calls result))
+            after (:head result)
+            after-reference
+            (if (= :checkpoint kind)
+              (get-in after ["manifest" "base"])
+              (first (get-in after ["manifest" "wal"])))
+            expected-lease
+            [nil nil (inc (get-in before ["lease" "generation"]))]
+            actual-lease
+            [(get-in after ["lease" "owner"])
+             (get-in after ["lease" "instance"])
+             (get-in after ["lease" "generation"])]
+            outcome-ok?
+            (and (= expected-shape actual-shape)
+                 schema-valid?
+                 (= ::durable/corrupt (:error result))
+                 (empty? reached)
+                 (= [1 1] [(:close-count result) (:cleanup-count result)])
+                 (= reference after-reference)
+                 (or (= :reader mode) (= expected-lease actual-lease)))]
+        (check (str (name kind) " " (name fault)
+                    " fixture isolates the intended verification fault")
+               expected-shape actual-shape)
+        (check (str (name kind) " " (name fault)
+                    " fixture is a schema-valid head")
+               true schema-valid?)
+        (check (str (name mode) " rejects " (name fault) " " (name kind)
+                    " as public corrupt despite cleanup failures")
+               ::durable/corrupt (:error result))
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " verification prevents restore or replay")
+               [] reached)
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " closes native state and removes scratch")
+               [1 1] [(:close-count result) (:cleanup-count result)])
+        (check (str (name mode) " " (name fault) " " (name kind)
+                    " preserves the manifest reference")
+               reference after-reference)
+        (when (= :writer mode)
+          (check (str "writer " (name fault) " " (name kind)
+                      " failure releases its acquired lease")
+                 expected-lease actual-lease))
+        (swap! outcomes conj {:kind kind :fault fault :mode mode
+                              :ok? outcome-ok?})))
+    (doseq [[label kinds faults expected-count]
+            [["public-open missing checkpoint and WAL references"
+              #{:checkpoint :wal} #{:missing} 4]
+             ["public-open checkpoint size and digest verification"
+              #{:checkpoint} #{:size :digest} 4]
+             ["public-open WAL size and digest verification"
+              #{:wal} #{:size :digest} 4]]]
+      (let [selected (filterv #(and (contains? kinds (:kind %))
+                                    (contains? faults (:fault %)))
+                              @outcomes)]
+        (check label [expected-count true]
+               [(count selected) (every? :ok? selected)])))))
+
 (defn- run-deterministic-checks! []
   (println "Durable V1 public writer open and recovery")
+  (run-json-shape-conformance!)
+  (run-reference-conformance!)
   (check "release precedence orders release after its prerelease"
          true (pos? (durable/compare-release-versions
                      "26.7.2" "26.7.2-rc.2")))
