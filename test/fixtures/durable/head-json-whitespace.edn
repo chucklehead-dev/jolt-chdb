@@ -1,0 +1,21 @@
+{:schema 1
+ :source {:repository "https://github.com/chdb-io/chdb.git"
+          :commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
+          :protocol "docs/durable/protocol-v1.mdx"
+          :suite "tests/test_durable.py"
+          :case "test_json_shape_is_not_frozen"}
+ :document "{\"protocol\":{\"version\":1,\"reader_features\":[],\"writer_features\":[]},\"engine\":{\"name\":\"chdb\",\"version\":\"26.7.2-rc.2\",\"backup_format\":1,\"min_reader\":\"26.7.2-rc.2\"},\"lease\":{\"generation\":1,\"owner\":null,\"instance\":null,\"expires_at\":null},\"manifest\":{\"db\":\"default\",\"base\":null,\"wal\":[],\"seq\":0}}"
+ :expected {"protocol" {"version" 1 "reader_features" [] "writer_features" []}
+            "engine" {"name" "chdb" "version" "26.7.2-rc.2"
+                      "backup_format" 1 "min_reader" "26.7.2-rc.2"}
+            "lease" {"generation" 1 "owner" nil "instance" nil
+                     "expires_at" nil}
+            "manifest" {"db" "default" "base" nil "wal" [] "seq" 0}}
+ :cases [{:id :trailing-space :leading [] :trailing [32]}
+         {:id :trailing-tab :leading [] :trailing [9]}
+         {:id :trailing-cr :leading [] :trailing [13]}
+         {:id :trailing-lf :leading [] :trailing [10]}
+         {:id :trailing-crlf :leading [] :trailing [13 10]}
+         {:id :trailing-combination :leading [] :trailing [32 9 13 10 32]}
+         {:id :surrounding-combination
+          :leading [9 13 10 32] :trailing [32 10 13 9]}]}

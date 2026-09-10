@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Accept RFC JSON whitespace around exactly one Durable V1 head value while
+  retaining full-byte size limits and fail-closed duplicate, malformed,
+  non-UTF-8, BOM, and multiple-value handling.
+
 - Keep a Durable V1 lease held through equality at
   `expires_at + clock_skew`, allowing normal takeover only after that boundary
   while preserving the current writer's conservative self-fence at expiry.

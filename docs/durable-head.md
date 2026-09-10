@@ -12,6 +12,22 @@ with JSON string keys. Keeping string keys is intentional: fields unknown to a
 V1 reader survive `decode`, an update to a known field, and `encode` without
 being renamed or discarded.
 
+The same pinned upstream revision treats the head as JSON rather than a frozen
+serialization; `tests/test_durable.py::test_json_shape_is_not_frozen` varies
+key order and indentation. Accordingly, `decode` accepts the four RFC JSON
+whitespace bytes (space, tab, carriage return, and line feed) before and after
+exactly one value. Whitespace is still part of the stored object, so the 1 MiB
+limit is checked before parsing over all received bytes. A BOM, invalid UTF-8,
+duplicate object key, malformed value, or any second value remains corrupt.
+
+`test/fixtures/durable/head-json-whitespace.edn` is an encoder-independent raw
+byte corpus for the individual whitespace bytes, CRLF, combinations, and
+surrounding whitespace. The focused corpus passes under Jolt and JVM Clojure.
+The current Babashka path cannot load the repository's pinned
+`clojure.data.json` fork because that implementation defines a JVM interface;
+Babashka head-codec qualification remains a #46/Phase 2 gap rather than an
+inferred claim.
+
 An active lease's `expires_at` is a finite nonnegative Unix timestamp in
 seconds. Fractional seconds are preserved as a JSON number. The codec does not
 infer or migrate legacy millisecond values from their magnitude.

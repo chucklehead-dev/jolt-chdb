@@ -6,6 +6,7 @@
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
             [jdbc.chdb-durable-head-test :as durable-head]
+            [jdbc.chdb-durable-head-whitespace-test :as durable-head-whitespace]
             [jdbc.chdb-durable-backend-test :as durable-backend]
             [jdbc.chdb-durable-aspect-manifest-test :as durable-aspect-manifest]
             [jdbc.chdb-durable-control-test :as durable-control]
@@ -674,6 +675,7 @@
   (run-logical-database-checks)
   (run-storage-checks)
   (durable-head/run-checks!)
+  (durable-head-whitespace/run-checks!)
   (durable-backend/run-checks!)
   (durable-aspect-manifest/run-checks!)
   (durable-control/run-checks!)
