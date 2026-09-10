@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Accept RFC JSON whitespace around exactly one Durable V1 head value while
+  retaining full-byte size limits and fail-closed duplicate, malformed,
+  non-UTF-8, BOM, and multiple-value handling.
+
 - Add an offline, SHA-pinned inventory of all 49 upstream Durable V1 cases, an
   obligation-by-obligation local mapping/blocker record, and a focused drift
   gate. This is Phase 1 qualification evidence, not a full V1 conformance claim.

@@ -360,14 +360,21 @@
       \" (scan-json-string text index)
       (scan-json-primitive text index))))
 
-(defn- reject-duplicate-keys! [text]
+(defn- single-json-value-bounds [text]
   ;; data.json intentionally resolves duplicate keys last-value-wins. Scan the
   ;; original token stream first so another binding cannot reach a different
-  ;; lease/fencing decision from byte-identical input. All scanner detail is
-  ;; discarded because an object key may itself contain a credential.
+  ;; lease/fencing decision from byte-identical input. The same scan proves
+  ;; that JSON whitespace surrounds exactly one value; only that value is
+  ;; passed to data.json because parser handling of trailing whitespace differs
+  ;; across runtimes. All scanner detail is discarded because an object key may
+  ;; itself contain a credential.
   (try
-    (scan-json-value text 0)
-    nil
+    (let [start (skip-json-whitespace text 0)
+          end (scan-json-value text start)
+          document-end (skip-json-whitespace text end)]
+      (when-not (= document-end (count text))
+        (throw (ex-info "second JSON value" {})))
+      [start end])
     (catch Throwable _
       (corrupt! "head.json is not valid unambiguous JSON" []))))
 
@@ -385,9 +392,9 @@
      (let [text (String. bytes "UTF-8")]
        (when-not (= (vec bytes) (vec (.getBytes text "UTF-8")))
          (corrupt! "head.json is not canonical UTF-8" []))
-       (reject-duplicate-keys! text)
-       (let [head (try
-                    (json/read-str text
+       (let [[start end] (single-json-value-bounds text)
+             head (try
+                    (json/read-str (subs text start end)
                                    :bigdec true
                                    :extra-data-fn json/on-extra-throw)
                     (catch Throwable _
