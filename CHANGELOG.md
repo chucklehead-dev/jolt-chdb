@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound Durable head JSON object/array nesting to 64 containers during both
+  raw decoding and programmatic encoding, with redacted boundary diagnostics.
+
 - Return one structured, redacted warning after a successful forced takeover of
   a live Durable lease, including reconciled ambiguous success, while keeping
   fresh and expired acquisitions silent and preserving CAS outcomes.

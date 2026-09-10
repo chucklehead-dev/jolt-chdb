@@ -1,0 +1,9 @@
+{:schema 1
+ :source {:repository "https://github.com/chdb-io/chdb.git"
+          :commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
+          :protocol "docs/durable/protocol-v1.mdx"
+          :requirement "head.json is bounded implementation input"}
+ :maximum-container-depth 64
+ :causal-mutant-depth 256
+ :cases [{:id :array :container "array"}
+         {:id :object :container "object"}]}

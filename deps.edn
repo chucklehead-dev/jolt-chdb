@@ -94,6 +94,9 @@
            :durable-head-whitespace-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-head-whitespace-test"]}
+           :durable-head-depth-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-head-depth-test"]}
            :durable-backend-test
            {:extra-deps
            {io.github.chucklehead-dev/jolt-hegel
@@ -174,6 +177,7 @@
          durable-dbspec-test "jolt -M:durable-dbspec-test"
          durable-head-test "jolt -M:durable-head-test"
          durable-head-whitespace-test "jolt -M:durable-head-whitespace-test"
+         durable-head-depth-test "jolt -M:durable-head-depth-test"
          durable-backend-test "jolt -M:durable-backend-test"
          durable-local-test "jolt -M:durable-local-test"
          durable-s3-test "jolt -M:durable-s3-test"

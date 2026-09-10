@@ -8,6 +8,9 @@
 
 (def max-head-bytes (* 1024 1024))
 (def max-safe-integer 9007199254740991)
+(def max-json-depth
+  "Maximum number of nested JSON object/array containers, including the root."
+  64)
 
 (def protocol-source
   {:repository "https://github.com/chdb-io/chdb.git"
@@ -66,24 +69,32 @@
   (and (integer? value)
        (<= (- max-safe-integer) value max-safe-integer)))
 
-(defn- valid-json-value! [value path schema]
+(defn- valid-json-value! [value path schema depth]
   (cond
     (map? value)
-    (doseq [[key child] value]
-      (when-not (string? key)
-        (corrupt! "head.json object keys must be strings" path))
-      ;; Known keys are constants from the frozen schema and are safe to expose.
-      ;; Unknown key names may themselves contain credentials, so once traversal
-      ;; crosses one, neither that key nor any descendant key reaches error data.
-      (let [known? (and (map? schema) (contains? schema key))]
-        (valid-json-value! child
-                           (if known? (conj path key) redacted-object-path)
-                           (when known? (get schema key)))))
+    (do
+      (when (>= depth max-json-depth)
+        (corrupt! "head.json exceeds the JSON nesting limit" path))
+      (doseq [[key child] value]
+        (when-not (string? key)
+          (corrupt! "head.json object keys must be strings" path))
+        ;; Known keys are constants from the frozen schema and are safe to expose.
+        ;; Unknown key names may themselves contain credentials, so once traversal
+        ;; crosses one, neither that key nor any descendant key reaches error data.
+        (let [known? (and (map? schema) (contains? schema key))]
+          (valid-json-value! child
+                             (if known? (conj path key) redacted-object-path)
+                             (when known? (get schema key))
+                             (inc depth)))))
 
     (vector? value)
-    (let [element-schema (when (vector? schema) (first schema))]
-      (doseq [[index child] (map-indexed vector value)]
-        (valid-json-value! child (conj path index) element-schema)))
+    (do
+      (when (>= depth max-json-depth)
+        (corrupt! "head.json exceeds the JSON nesting limit" path))
+      (let [element-schema (when (vector? schema) (first schema))]
+        (doseq [[index child] (map-indexed vector value)]
+          (valid-json-value! child (conj path index) element-schema
+                             (inc depth)))))
 
     (integer? value)
     (when-not (safe-integer? value)
@@ -259,7 +270,7 @@
    (when-not (contains? #{:read-only :writer} mode)
      (throw (ex-info "Durable head validation mode is invalid"
                      {:type ::invalid-mode :mode mode})))
-   (valid-json-value! head [] head-json-schema)
+   (valid-json-value! head [] head-json-schema 0)
    (object! head [])
    (validate-protocol! head mode)
    (validate-engine! head)
@@ -299,7 +310,7 @@
   ;; spellings such as "owner" and "ow\u006eer" compare as the same key.
   (json/read-str (subs text start end)))
 
-(defn- scan-json-object [text start]
+(defn- scan-json-object [text start depth]
   (loop [index (skip-json-whitespace text (inc start))
          seen #{}]
     (when (>= index (count text))
@@ -317,7 +328,7 @@
             (when-not (and (< colon (count text))
                            (= \: (.charAt text colon)))
               (throw (ex-info "missing JSON object colon" {})))
-            (let [value-end (scan-json-value text (inc colon))
+            (let [value-end (scan-json-value text (inc colon) depth)
                   delimiter (skip-json-whitespace text value-end)]
               (when (>= delimiter (count text))
                 (throw (ex-info "unterminated JSON object" {})))
@@ -327,13 +338,13 @@
                 \} (inc delimiter)
                 (throw (ex-info "invalid JSON object delimiter" {}))))))))))
 
-(defn- scan-json-array [text start]
+(defn- scan-json-array [text start depth]
   (loop [index (skip-json-whitespace text (inc start))]
     (when (>= index (count text))
       (throw (ex-info "unterminated JSON array" {})))
     (if (= \] (.charAt text index))
       (inc index)
-      (let [value-end (scan-json-value text index)
+      (let [value-end (scan-json-value text index depth)
             delimiter (skip-json-whitespace text value-end)]
         (when (>= delimiter (count text))
           (throw (ex-info "unterminated JSON array" {})))
@@ -350,15 +361,21 @@
       index
       (recur (inc index)))))
 
-(defn- scan-json-value [text start]
-  (let [index (skip-json-whitespace text start)]
-    (when (>= index (count text))
-      (throw (ex-info "missing JSON value" {})))
-    (case (.charAt text index)
-      \{ (scan-json-object text index)
-      \[ (scan-json-array text index)
-      \" (scan-json-string text index)
-      (scan-json-primitive text index))))
+(defn- scan-json-value
+  ([text start] (scan-json-value text start 0))
+  ([text start depth]
+   (let [index (skip-json-whitespace text start)]
+     (when (>= index (count text))
+       (throw (ex-info "missing JSON value" {})))
+     (case (.charAt text index)
+       \{ (do (when (>= depth max-json-depth)
+                (throw (ex-info "JSON nesting limit exceeded" {})))
+              (scan-json-object text index (inc depth)))
+       \[ (do (when (>= depth max-json-depth)
+                (throw (ex-info "JSON nesting limit exceeded" {})))
+              (scan-json-array text index (inc depth)))
+       \" (scan-json-string text index)
+       (scan-json-primitive text index)))))
 
 (defn- single-json-value-bounds [text]
   ;; data.json intentionally resolves duplicate keys last-value-wins. Scan the
