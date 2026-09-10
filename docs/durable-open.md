@@ -44,6 +44,13 @@ sequence while ownership remains intact; ambiguous renewal proves the same token
 and an expiry at least as late as requested. Thus either order preserves both
 effects without turning an already-landed WAL into a duplicate retry.
 
+A failed heartbeat replacement does not fence the writer while the last proved
+lease remains live. If renewal loss continues through that expiry, the writer
+self-fences: public execute, flush, and checkpoint calls fail with
+`lease-fenced` before native or persistence effects. Queries remain available
+against the already-restored local database. Closing still stops owned threads
+and attempts all local cleanup while retaining the fencing error.
+
 Failure after acquisition attempts native close, lease release, and scratch
 cleanup without replacing the primary error. A restore failure after the
 compatibility gate is reported as `engine-incompatible`, as required by the
