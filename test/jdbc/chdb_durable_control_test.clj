@@ -4,6 +4,7 @@
             [hegel.trace :as ht]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.head :as head]
             [jolt.fibers :as fibers]))
 
 (def failures (atom 0))
@@ -337,17 +338,34 @@
              ::control/invalid-options
              (error-type #(control/renew! store token1 250M))))
 
+    (let [snapshot (control/read-head! store)
+          extended (assoc-in (:head snapshot)
+                             ["engine" "producer_extension"]
+                             {"retained" true})]
+      (backend/replace-if-match!
+       store control/head-key (head/encode extended) (:etag snapshot)))
+
     (let [takeover (control/acquire!
                     store (assoc base-options
                                  :owner "writer-2"
                                  :instance "instance-2"
                                  :now 256M
-                                 :expires-at 400M))
+                                 :expires-at 400M
+                                 :engine-version "26.8.0"
+                                 :backup-format 9
+                                 :min-reader "99.0.0"))
           token2 (:token takeover)
           before (:head (control/read-head! store))
           stale-reference (wal-reference 1 1)]
       (check "normal takeover waits through clock skew and increments generation"
              2 (:generation token2))
+      (check "takeover updates only producer version and preserves engine fields"
+             ["26.8.0" 1 "26.7.2-rc.2" {"retained" true}]
+             (let [engine (get (:head takeover) "engine")]
+               [(get engine "version")
+                (get engine "backup_format")
+                (get engine "min_reader")
+                (get engine "producer_extension")]))
       (check "the stale writer is fenced before object verification"
              ::control/lease-fenced
              (error-type
@@ -444,13 +462,54 @@
               (control/commit-reference!
                store token2
                {:kind :checkpoint :reference reference
+                :engine-metadata {:version "26.9.0"
+                                  :backup-format 2
+                                  :min-reader "26.9.0"}
                 :verify-reference! control/verify-byte-reference!})]
           (check "checkpoint advances the manifest exactly once"
                  2 (get-in (:head checkpoint) ["manifest" "seq"]))
           (check "checkpoint replaces base and clears covered WAL"
                  [reference []]
                  [(get-in (:head checkpoint) ["manifest" "base"])
-                  (get-in (:head checkpoint) ["manifest" "wal"])])))
+                  (get-in (:head checkpoint) ["manifest" "wal"])])
+          (check "checkpoint advances metadata and preserves unknown engine fields"
+                 ["26.9.0" 2 "26.9.0" {"retained" true}]
+                 (let [engine (get (:head checkpoint) "engine")]
+                   [(get engine "version")
+                    (get engine "backup_format")
+                    (get engine "min_reader")
+                    (get engine "producer_extension")])))
+
+        (let [before (:head (control/read-head! store))
+              verify-count (atom 0)
+              reference (checkpoint-reference 2 3)]
+          (check "checkpoint rejects omitted metadata before verification"
+                 ::control/invalid-options
+                 (error-type
+                  #(control/commit-reference!
+                    store token2
+                    {:kind :checkpoint :reference reference
+                     :verify-reference!
+                     (fn [_ _] (swap! verify-count inc) true)})))
+          (doseq [[label metadata]
+                  [["backup format" {:version "26.9.0"
+                                     :backup-format 1
+                                     :min-reader "26.9.0"}]
+                   ["minimum reader" {:version "26.9.0"
+                                      :backup-format 2
+                                      :min-reader "26.8.0"}]]]
+            (check (str "checkpoint rejects lowering " label " before verification")
+                   ::control/invalid-options
+                   (error-type
+                    #(control/commit-reference!
+                      store token2
+                      {:kind :checkpoint :reference reference
+                       :engine-metadata metadata
+                       :verify-reference!
+                       (fn [_ _] (swap! verify-count inc) true)}))))
+          (check "rejected checkpoint metadata leaves the head untouched"
+                 [0 before]
+                 [@verify-count (:head (control/read-head! store))])))
 
       (control/release! store token2)
       (check "release retains generation and clears all owner fields"
@@ -473,6 +532,28 @@
            :reconciled (:status committed))
     (check "reconciled ambiguous CAS has the intended sequence"
            1 (get-in (:head committed) ["manifest" "seq"])))
+
+  (let [delegate (backend/memory-backend)
+        store (forwarding-backend delegate :land-ambiguous)
+        acquired (control/acquire! store base-options)
+        token (:token acquired)
+        reference (checkpoint-reference 1 1)]
+    (backend/put-bytes-if-absent!
+     store (get reference "key") (.getBytes "abc" "UTF-8"))
+    (let [committed
+          (control/commit-reference!
+           store token
+           {:kind :checkpoint :reference reference
+            :engine-metadata {:version "26.8.0"
+                              :backup-format 2
+                              :min-reader "26.8.0"}
+            :verify-reference! control/verify-byte-reference!})]
+      (check "ambiguous checkpoint reconciliation proves metadata atomically"
+             [:reconciled "26.8.0" 2 "26.8.0"]
+             [(:status committed)
+              (get-in (:head committed) ["engine" "version"])
+              (get-in (:head committed) ["engine" "backup_format"])
+              (get-in (:head committed) ["engine" "min_reader"])])))
 
   (let [delegate (backend/memory-backend)
         token (:token (control/acquire! delegate base-options))

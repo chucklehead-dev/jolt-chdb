@@ -98,6 +98,9 @@
         :token (:token acquired)
         :handle :fake-handle
         :database "default"
+        :engine-metadata {:version (:engine-version base-options)
+                          :backup-format (:backup-format base-options)
+                          :min-reader (:min-reader base-options)}
         :operations operations})})))
 
 (defn- stored-wal-lines [store]

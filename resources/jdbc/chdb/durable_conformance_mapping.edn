@@ -1,0 +1,107 @@
+{:schema 1
+ :inventory "resources/jdbc/chdb/durable_conformance_inventory.edn"
+ :mappings
+ [{:case :upstream/empty-object :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "fresh acquisition retains an empty manifest"}]}
+  {:case :upstream/readonly-missing-object :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "read-only not-found does not create head.json"}]}
+  {:case :upstream/checkpoint-only :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "read-only reopen restores checkpoint rows"}]}
+  {:case :upstream/checkpoint-plus-wal :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "fresh reader restores the folded checkpoint"}]}
+  {:case :upstream/quoted-database-name :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "writer open creates, selects, and replays the stored database"}]}
+  {:case :upstream/missing-base-and-wal :disposition :blocked
+   :blocker {:issue 47 :rationale "No focused public-open test covers both missing checkpoint and missing WAL references."}}
+  {:case :upstream/bad-base-size-and-digest :disposition :blocked
+   :blocker {:issue 47 :rationale "Local verification units do not yet reproduce both full-open base size and digest failures."}}
+  {:case :upstream/bad-wal-size-and-digest :disposition :blocked
+   :blocker {:issue 47 :rationale "Local verification units do not yet reproduce both full-open WAL size and digest failures before replay."}}
+  {:case :upstream/unknown-reader-feature :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "unknown reader feature fails closed"}]}
+  {:case :upstream/unknown-writer-feature :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "unknown writer feature prevents writer acquisition"}]}
+  {:case :upstream/future-protocol-version :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "future protocol fails closed"}]}
+  {:case :upstream/producer-version-differs-but-compatible :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "a newer producer version is not an exact-match reader gate"}]}
+  {:case :upstream/engine-reader-too-old :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "an older running core fails the minimum-reader gate"}]}
+  {:case :upstream/backup-format-too-new :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "future backup formats fail closed"}]}
+  {:case :upstream/unknown-fields-round-trip :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "updating a known field preserves unknown fields"}]}
+  {:case :upstream/json-shape-is-not-frozen :disposition :blocked
+   :blocker {:issue 47 :rationale "The codec round-trip is covered, but no local test deliberately varies input whitespace and key order."}}
+  {:case :upstream/gates-cannot-be-bypassed-by-method-choice :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "mutation through query"}
+                 {:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "read through execute"}]}
+  {:case :upstream/multi-statement-and-parallel-with-refused :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real multi-statement query"}]}
+  {:case :upstream/writes-outside-the-object-refused :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real cross-database mutation"}]}
+  {:case :upstream/database-lifecycle-refused :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "database lifecycle mutation"}]}
+  {:case :upstream/mutating-global-refused :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real global mutation"}]}
+  {:case :upstream/control-statements-refused :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real control statement"}]}
+  {:case :upstream/secret-mutation-refused-without-leaking :disposition :blocked
+   :blocker {:issue 47 :rationale "Admission is covered, but the upstream-shaped secret-bearing exception redaction assertion is not."}}
+  {:case :upstream/secret-read-only-runs-and-is-not-logged :disposition :blocked
+   :blocker {:issue 47 :rationale "Read admission is covered, but an engine-error redaction and zero-WAL scenario is not."}}
+  {:case :upstream/unknown-statement-fails-closed :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "unknown statement"}]}
+  {:case :upstream/limits-report-limit-exceeded :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "statement limit rejects before classification and execution"}
+                 {:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "a multibyte record that crosses the cumulative limit is rejected"}
+                 {:path "test/jdbc/chdb_durable_head_test.clj" :anchor "one byte over the head limit is rejected"}]}
+  {:case :upstream/conditional-create-race :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_backend_test.clj" :anchor "second conditional create loses"}]}
+  {:case :upstream/wal-put-lands-but-head-cas-fails :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_concurrency_test.clj" :anchor "exhausted commit verifies once, advances zero times, and retains WAL"}]}
+  {:case :upstream/head-cas-committed-but-response-lost :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "ambiguous CAS is acknowledged only after exact reread proof"}]}
+  {:case :upstream/unprovable-commit-is-ambiguous :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "an unprovable ambiguous CAS is distinguishable"}]}
+  {:case :upstream/wal-upload-landed-but-response-lost :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "ambiguous publication retries only its delayed proof read"}]}
+  {:case :upstream/checkpoint-put-lands-but-head-cas-fails :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "failed checkpoint fallback retains WAL and checkpoint requirement"}]}
+  {:case :upstream/restore-failure-frees-the-engine :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "failed recovery closes, releases, and removes scratch"}]}
+  {:case :upstream/heartbeat-renews-without-moving-generation-or-seq :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "heartbeat preserves the fencing generation"}
+                 {:path "test/jdbc/chdb_durable_writer_concurrency_test.clj" :anchor "manifest retry preserves renewal and advances exactly once"}]}
+  {:case :upstream/writer-self-fences-when-renewal-fails :disposition :blocked
+   :blocker {:issue 47 :rationale "Local tests cover expiry and retry self-fencing, but not the upstream renewal-failure path together with execute, flush, checkpoint, and read-survival assertions."}}
+  {:case :upstream/takeover-fences-the-previous-writer :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "takeover during checkpoint publication fences the stale writer"}]}
+  {:case :upstream/close-releases-and-then-refuses :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "close flushes, releases, and closes exactly once"}
+                 {:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "operations after close fail with the public closed category"}]}
+  {:case :upstream/lease-exclusion-and-same-owner-instance :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "a live competing writer is rejected"}]}
+  {:case :upstream/expired-lease-is-taken-without-force :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "normal takeover waits through clock skew and increments generation"}]}
+  {:case :upstream/unexpired-lease-needs-force :disposition :blocked
+   :blocker {:issue 47 :rationale "Force takeover exists, but the required public warning remains a focused issue-47 blocker."}}
+  {:case :upstream/object-id-validation-and-path-traversal :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_backend_test.clj" :anchor "unsafe object id fails closed"}]}
+  {:case :upstream/sibling-isolation :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_local_test.clj" :anchor "local sibling cannot observe another object's head"}]}
+  {:case :upstream/destroy-refuses-an-active-lease :disposition :not-applicable
+   :not-applicable {:rationale "The upstream test itself marks destroy as not a V1 operation; jolt-chdb exposes no Durable destroy API."}}
+  {:case :upstream/scan-across-objects :disposition :not-applicable
+   :not-applicable {:rationale "Namespace scan is a Python binding convenience, not a Durable V1 protocol operation or jolt-chdb API."}}
+  {:case :upstream/reopen-honors-persisted-db :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "writer open creates, selects, and replays the stored database"}]}
+  {:case :upstream/cold-open-lands-in-the-objects-database :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "writer open creates, selects, and replays the stored database"}]}
+  {:case :upstream/wal-replay-uses-the-objects-database :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "namespace/object open recovers the selected object's WAL"}]}
+  {:case :upstream/wal-keys-are-unique :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "every immutable publication attempt has a unique key"}]}
+  {:case :upstream/constructor-validation :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "fractional lease"}
+                 {:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "overslow heartbeat"}]}]}

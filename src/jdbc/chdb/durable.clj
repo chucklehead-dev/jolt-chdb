@@ -7,6 +7,7 @@
             [db.jdbc-shim :as shim]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.compatibility :as compatibility]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.policy :as policy]
@@ -211,56 +212,16 @@
       (snapshot-dbspec options)
       (writer-dbspec options))))
 
-(defn- version-parts [version]
-  (when (string? version)
-    (when-let [[_ major minor patch prerelease]
-               (re-matches
-                #"(?i)^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?(?:\+[0-9a-z.-]+)?$"
-                version)]
-      {:core [(bigint major) (bigint minor) (bigint patch)]
-       :prerelease (when prerelease (str/split prerelease #"\."))})))
-
-(defn- compare-prerelease-part [left right]
-  (let [left-number? (boolean (re-matches #"\d+" left))
-        right-number? (boolean (re-matches #"\d+" right))]
-    (cond
-      (and left-number? right-number?)
-      (compare (bigint left) (bigint right))
-
-      left-number? -1
-      right-number? 1
-      :else (compare left right))))
-
-(defn- compare-prerelease [left right]
-  (cond
-    (and (nil? left) (nil? right)) 0
-    (nil? left) 1
-    (nil? right) -1
-    :else
-    (loop [left left right right]
-      (cond
-        (and (empty? left) (empty? right)) 0
-        (empty? left) -1
-        (empty? right) 1
-        :else (let [comparison (compare-prerelease-part
-                                (first left) (first right))]
-                (if (zero? comparison)
-                  (recur (next left) (next right))
-                  comparison))))))
-
 (defn compare-release-versions
   "Compare two chDB releases by numeric release/prerelease precedence."
   [left right]
-  (let [left (or (version-parts left)
-                 (fail! ::engine-incompatible
-                        "The running chDB release cannot be compared"))
-        right (or (version-parts right)
-                  (fail! ::engine-incompatible
-                         "The Durable minimum reader release cannot be compared"))
-        core-comparison (compare (:core left) (:core right))]
-    (if (zero? core-comparison)
-      (compare-prerelease (:prerelease left) (:prerelease right))
-      core-comparison)))
+  (when-not (compatibility/release-version? left)
+    (fail! ::engine-incompatible
+           "The running chDB release cannot be compared"))
+  (when-not (compatibility/release-version? right)
+    (fail! ::engine-incompatible
+           "The Durable minimum reader release cannot be compared"))
+  (compatibility/compare-release-versions left right))
 
 (defn check-engine-compatibility!
   "Fail closed unless this reader can restore the manifest's engine state."
@@ -584,6 +545,10 @@
                 (writer/start!
                  {:store store :token token :handle @handle
                   :database logical-database
+                  :engine-metadata
+                  {:version running-version
+                   :backup-format reader-backup-format
+                   :min-reader running-version}
                   :lease-expiry renewed-expiry
                   :lease-ttl-ms (long lease-ttl-ms)
                   :heartbeat-interval-ms
@@ -604,6 +569,16 @@
                          (fn [handle database]
                            ((:create-checkpoint! operations)
                             handle database @scratch))
+                         :commit-reference!
+                         (fn [store token commit-options]
+                           (control/commit-reference!
+                            store token
+                            (cond-> (merge commit-options retry-options)
+                              (= :checkpoint (:kind commit-options))
+                              (assoc :engine-metadata
+                                     {:version running-version
+                                      :backup-format reader-backup-format
+                                      :min-reader running-version}))))
                          :cleanup-scratch!
                          (fn [] ((:cleanup-scratch! operations) @scratch)))})))
             (catch Throwable primary
