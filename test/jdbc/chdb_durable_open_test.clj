@@ -211,6 +211,23 @@
       (download-to-file! [_ key path]
         (backend/download-to-file! delegate key path)))))
 
+(def ^:private queue-wait-nanoseconds 2000000000)
+
+(defn- poll-event [queue]
+  (let [deadline (+ (System/nanoTime) queue-wait-nanoseconds)]
+    (loop []
+      (if-some [event (.poll ^ArrayBlockingQueue queue)]
+        event
+        (if (>= (System/nanoTime) deadline)
+          ::queue-timeout
+          (do (Thread/yield) (recur)))))))
+
+(defn- offer-event! [queue event]
+  (when-not (.offer ^ArrayBlockingQueue queue event)
+    (throw (ex-info "renewal test event queue is full"
+                    {:type ::event-queue-full :event event})))
+  event)
+
 (defn- renewal-failure-backend
   [delegate fail-replace? replacement-events renewal-failures]
   (reify backend/ObjectBackend
@@ -223,13 +240,13 @@
     (replace-if-match! [_ key bytes etag]
       (if (and (= control/head-key key) @fail-replace?)
         (do
-          (.put ^ArrayBlockingQueue renewal-failures :failed)
+          (offer-event! renewal-failures :failed)
           (throw (ex-info "injected renewal replacement failure"
                           {:type ::renewal-replace-failed})))
         (let [result (backend/replace-if-match! delegate key bytes etag)]
           (when (and (= control/head-key key)
                      (= :replaced (:status result)))
-            (.put ^ArrayBlockingQueue replacement-events :replaced))
+            (offer-event! replacement-events :replaced))
           result)))
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
@@ -262,8 +279,8 @@
                  (if (realized? stop)
                    :stop
                    (do
-                     (.put ^ArrayBlockingQueue heartbeat-awaits :waiting)
-                     (.take ^ArrayBlockingQueue heartbeat-signals))))
+                     (offer-event! heartbeat-awaits :waiting)
+                     (poll-event heartbeat-signals))))
                :execute-native!
                (fn [handle sql params]
                  (swap! execute-effects inc)
@@ -288,31 +305,31 @@
     ;; event so the next observation belongs to the live heartbeat.
     (.clear ^ArrayBlockingQueue replacement-events)
     (check "public heartbeat is waiting before the controlled renewal trace"
-           :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
+           :waiting (poll-event heartbeat-awaits))
     (let [read-before (writer/query! opened "SELECT ?" [4])
           expiry-before
           (get-in (:head (control/read-head! store))
                   ["lease" "expires_at"])]
-      (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+      (offer-event! heartbeat-signals :tick)
       (check "successful heartbeat control reaches the public head CAS"
-             :replaced (.take ^ArrayBlockingQueue replacement-events))
+             :replaced (poll-event replacement-events))
       (check "successful heartbeat completes its cycle"
-             :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
+             :waiting (poll-event heartbeat-awaits))
       (let [expiry-after
             (get-in (:head (control/read-head! store))
                     ["lease" "expires_at"])]
         (check "successful heartbeat control extends the public lease"
                true (> expiry-after expiry-before))
         (reset! fail-replace? true)
-        (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+        (offer-event! heartbeat-signals :tick)
         (check "injected live renewal loss reaches the public backend"
-               :failed (.take ^ArrayBlockingQueue renewal-failures))
+               :failed (poll-event renewal-failures))
         ;; Re-entry into await-heartbeat! can occur only after renew! throws,
         ;; heartbeat-loop catches that error, evaluates its fencing condition,
         ;; and starts the next cycle. This handshake makes the assertion below
         ;; causal against an immediate-fence-in-catch mutant.
         (check "failed renewal completes its heartbeat catch cycle"
-               :waiting (.take ^ArrayBlockingQueue heartbeat-awaits))
+               :waiting (poll-event heartbeat-awaits))
         (check "one failed renewal before expiry does not fence prematurely"
                [true expiry-after]
                [(:writable? (writer/status opened))
@@ -321,7 +338,7 @@
       ;; Advance beyond the last proved expiry. The next heartbeat opportunity
       ;; must fence locally rather than attempt another replacement.
       (reset! now 10000M)
-      (.put ^ArrayBlockingQueue heartbeat-signals :tick)
+      (offer-event! heartbeat-signals :tick)
       (check "expiry transition completes the heartbeat thread"
              true
              (not= ::heartbeat-timeout
@@ -341,7 +358,7 @@
                ::control/lease-fenced
                (error-type #(writer/checkpoint! opened)))
         (let [read-after (writer/query! opened "SELECT ?" [4])]
-          (check "established public writer reads survive self-fencing"
+          (check "opened public writer queued read remains stable after self-fencing"
                  read-before read-after))
         (check "fenced operations stop before native or persistence effects"
                [[:analyze-query "SELECT ?" "default"]

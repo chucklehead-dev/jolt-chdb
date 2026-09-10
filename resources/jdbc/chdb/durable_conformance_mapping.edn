@@ -79,7 +79,7 @@
                  {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "one failed renewal before expiry does not fence prematurely"}
                  {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "renewal loss through expiry self-fences the public writer"}
                  {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "post-fence execute flush and checkpoint effect counters stay zero"}
-                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "established public writer reads survive self-fencing"}]}
+                 {:path "test/jdbc/chdb_durable_open_test.clj" :anchor "opened public writer queued read remains stable after self-fencing"}]}
   {:case :upstream/takeover-fences-the-previous-writer :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_writer_test.clj" :anchor "takeover during checkpoint publication fences the stale writer"}]}
   {:case :upstream/close-releases-and-then-refuses :disposition :mapped

@@ -91,12 +91,14 @@ positive control, injects a real head-replacement failure before expiry, and
 proves that one transient failure does not fence prematurely or change the
 stored expiry. Time then advances beyond the last proved expiry. The public
 writer self-fences, execute/flush/checkpoint each return `lease-fenced` with
-their effect counters still zero, and a real queued query returns the same local
-result observed before renewal loss. The matching literate Quint module isolates
+their effect counters still zero, and a public queued query on the opened local
+handle returns the same injected result observed before renewal loss. This
+focused fake-operation test does not claim native restored-data coverage. The
+matching literate Quint module isolates
 that four-step boundary from the existing close-lifecycle model. Its corrected
 trace and deterministic ITF projection cover renewal success, pre-expiry loss,
-expiry fencing, and public outcomes; ignore-expiry, allow-fenced-effects, and
-drop-read mutants each expose the intended invariant.
+expiry fencing, and public outcomes; fence-on-first-failure, ignore-expiry,
+allow-fenced-effects, and drop-read mutants each expose the intended invariant.
 
 Run the focused, offline gate with the mandatory compiler selector:
 

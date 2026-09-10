@@ -398,11 +398,13 @@ module durableWriterLifecycleBlockingIOMutantTest {
 The close model above deliberately assumes that heartbeat renewal remains
 available. The public writer has a separate boundary when replacement keeps
 failing: one failure before the current expiry is tolerated, but failure
-through expiry self-fences mutation and persistence while queries against the
-already-restored local database remain available. This small model does not
+through expiry self-fences mutation and persistence while queued reads on the
+already-opened local handle remain available. This small model does not
 duplicate head CAS or close sequencing. It records only the causal renewal-loss
 trace and the four public outcomes required by the pinned upstream case.
 
+`FENCE_ON_FAILED_RENEWAL_MUTANT` incorrectly fences on the first failed renewal
+while the last proved lease is still live.
 `IGNORE_EXPIRY_FENCE_MUTANT` represents a heartbeat that observes expiry after
 renewal loss but leaves the writer writable. `ALLOW_FENCED_EFFECTS_MUTANT`
 allows execute, flush, and checkpoint effects after fencing.
@@ -431,6 +433,7 @@ module durableWriterRenewalLoss {
   }
 
   const IGNORE_EXPIRY_FENCE_MUTANT: bool
+  const FENCE_ON_FAILED_RENEWAL_MUTANT: bool
   const ALLOW_FENCED_EFFECTS_MUTANT: bool
   const DROP_FENCED_READ_MUTANT: bool
   var renewalLoss: RenewalLossState
@@ -466,6 +469,7 @@ module durableWriterRenewalLoss {
       ...renewalLoss,
       phase: RenewalFailed,
       renewalAttempts: renewalLoss.renewalAttempts + 1,
+      fenced: FENCE_ON_FAILED_RENEWAL_MUTANT,
     },
   }
 
@@ -540,6 +544,7 @@ module durableWriterRenewalLoss {
 module durableWriterRenewalLossCorrected {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -548,6 +553,16 @@ module durableWriterRenewalLossCorrected {
 module durableWriterRenewalLossIgnoreExpiryMutant {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = true,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+}
+
+module durableWriterRenewalLossFenceOnFailureMutant {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = true,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -556,6 +571,7 @@ module durableWriterRenewalLossIgnoreExpiryMutant {
 module durableWriterRenewalLossAllowEffectsMutant {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = true,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -564,6 +580,7 @@ module durableWriterRenewalLossAllowEffectsMutant {
 module durableWriterRenewalLossDropReadMutant {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = true
   ).* from "./durableWriterLifecycle"
@@ -578,6 +595,7 @@ same sequence rather than through an unrelated fixture.
 module durableWriterRenewalLossCorrectedTest {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -603,6 +621,7 @@ module durableWriterRenewalLossCorrectedTest {
 module durableWriterRenewalLossIgnoreExpiryMutantTest {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = true,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -615,9 +634,25 @@ module durableWriterRenewalLossIgnoreExpiryMutantTest {
       .expect(not(failedRenewalThroughExpiryFences))
 }
 
+module durableWriterRenewalLossFenceOnFailureMutantTest {
+  import durableWriterRenewalLoss(
+    IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = true,
+    ALLOW_FENCED_EFFECTS_MUTANT = false,
+    DROP_FENCED_READ_MUTANT = false
+  ).* from "./durableWriterLifecycle"
+
+  run prematureFenceWitnessTest =
+    init
+      .then(extendLease)
+      .then(failRenewalBeforeExpiry)
+      .expect(not(failedBeforeExpiryStaysWritable))
+}
+
 module durableWriterRenewalLossAllowEffectsMutantTest {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = true,
     DROP_FENCED_READ_MUTANT = false
   ).* from "./durableWriterLifecycle"
@@ -634,6 +669,7 @@ module durableWriterRenewalLossAllowEffectsMutantTest {
 module durableWriterRenewalLossDropReadMutantTest {
   import durableWriterRenewalLoss(
     IGNORE_EXPIRY_FENCE_MUTANT = false,
+    FENCE_ON_FAILED_RENEWAL_MUTANT = false,
     ALLOW_FENCED_EFFECTS_MUTANT = false,
     DROP_FENCED_READ_MUTANT = true
   ).* from "./durableWriterLifecycle"
@@ -663,5 +699,5 @@ variants. `--verify` additionally checks the corrected lifecycle invariants and
 requires the stopped-at-admission, blocking-I/O, and release-before-join mutants
 to produce their bounded counterexamples. The renewal-loss command is a smaller
 TypeScript-only gate: it tangles and typechecks the lifecycle files, runs the
-corrected trace and all three causal mutants, and compares the deterministic
+corrected trace and all four causal mutants, and compares the deterministic
 ITF projection. It does not invoke Apalache or the broader model suite.

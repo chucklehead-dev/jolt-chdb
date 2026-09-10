@@ -41,6 +41,7 @@ quint typecheck "$tests"
 for module in \
   durableWriterRenewalLossCorrectedTest \
   durableWriterRenewalLossIgnoreExpiryMutantTest \
+  durableWriterRenewalLossFenceOnFailureMutantTest \
   durableWriterRenewalLossAllowEffectsMutantTest \
   durableWriterRenewalLossDropReadMutantTest
 do

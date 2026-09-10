@@ -4,9 +4,9 @@
 
 - Cover the pinned public writer renewal-loss sequence end to end: tolerate one
   failed heartbeat before expiry, self-fence after the last proved lease
-  expires, refuse execute/flush/checkpoint before effects, and preserve queries
-  against the restored local database. A separate literate Quint module,
-  deterministic ITF projection, and three causal mutants cover the same
+  expires, refuse execute/flush/checkpoint before effects, and preserve a public
+  queued read on the opened local handle. A separate literate Quint module,
+  deterministic ITF projection, and four causal mutants cover the same
   boundary. The conformance ledger is now 45 mapped, 2 blocked, and 2
   binding-level not applicable.
 
