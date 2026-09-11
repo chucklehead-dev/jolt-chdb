@@ -7,6 +7,11 @@
   rows/s at p99, causal instrumentation and exact recovery reconciliation.
   Current measurements are diagnostic baselines, not qualification evidence.
 
+- Update the pinned `data.json` writer to bulk-append unescaped string runs.
+  A bounded paired probe cuts the isolated outer-WAL JSON stage by about half
+  and improves realistic Durable admission, while remaining diagnostic rather
+  than evidence that the throughput targets are met.
+
 - Cover the pinned public writer renewal-loss sequence end to end: tolerate one
   failed heartbeat before expiry, self-fence after the last proved lease
   expires, refuse execute/flush/checkpoint before effects, and preserve a public
