@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Validate and replay Durable WAL segments with two bounded streaming passes
+  over the private, already size-and-digest-verified scratch file. Recovery now
+  retains at most one JSONL record instead of materializing the complete WAL as
+  bytes, text, persistent byte vectors, split lines, and decoded SQL, while
+  preserving complete-segment validation before the first engine effect.
+
 - Bound Durable scale and qualification harness retention to one row batch,
   including pre-encoded modes, and fold fresh-reader recovery aggregates
   incrementally instead of retaining the complete approximately 50,000-row

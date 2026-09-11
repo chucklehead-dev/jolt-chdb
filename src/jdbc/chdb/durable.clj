@@ -17,8 +17,8 @@
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto])
-  (:import [java.io File]
-           [java.nio.file CopyOption Files Path Paths StandardCopyOption]
+  (:import [java.io ByteArrayOutputStream File]
+           [java.nio.file CopyOption Files OpenOption Path Paths StandardCopyOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util UUID]))
 
@@ -323,30 +323,118 @@
           (Files/deleteIfExists attempt)
           (throw error))))))
 
-(defn- decode-wal! [path]
-  (let [bytes (Files/readAllBytes ^Path path)
-        length (alength bytes)
-        text (String. bytes "UTF-8")]
-    (when (or (zero? length) (not= 10 (bit-and 255 (aget bytes (dec length)))))
-      (fail! ::corrupt "A Durable WAL is not newline terminated"))
-    (when-not (= (vec bytes) (vec (.getBytes text "UTF-8")))
+(def ^:private wal-read-buffer-bytes (* 64 1024))
+
+(defn- same-bytes? [left right]
+  (and (= (alength left) (alength right))
+       (loop [index 0]
+         (if (= index (alength left))
+           true
+           (and (= (aget left index) (aget right index))
+                (recur (inc index)))))))
+
+(defn- decode-wal-text! [bytes]
+  (let [text (String. bytes "UTF-8")]
+    (when-not (same-bytes? bytes (.getBytes text "UTF-8"))
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))
-    (try
-      (mapv
-       (fn [line]
-         (let [record (json/read-str line)
-               sql (get record "sql")]
-           (when-not (and (map? record) (= #{"sql"} (set (keys record)))
-                          (string? sql))
-             (fail! ::corrupt "A Durable WAL record is invalid"))
-           (when (> (alength (.getBytes sql "UTF-8")) writer/max-statement-bytes)
-             (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
-           sql))
-       (butlast (str/split text #"\n" -1)))
-      (catch Throwable error
-        (if (:type (ex-data error))
-          (throw error)
-          (fail! ::corrupt "A Durable WAL record cannot be decoded"))))))
+    text))
+
+(defn- decode-wal-record! [text]
+  (let [record (try
+                 (json/read-str text)
+                 (catch Throwable _
+                   (fail! ::corrupt
+                          "A Durable WAL record cannot be decoded")))
+        sql (get record "sql")]
+    (when-not (and (map? record) (= #{"sql"} (set (keys record)))
+                   (string? sql))
+      (fail! ::corrupt "A Durable WAL record is invalid"))
+    (when (> (alength (.getBytes sql "UTF-8")) writer/max-statement-bytes)
+      (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
+    sql))
+
+(defn- visit-wal!
+  "Stream, validate, and visit each record without retaining another record.
+
+  The caller supplies the already size/digest-verified private scratch file.
+  A raw LF cannot occur inside a valid JSON string, so byte scanning preserves
+  the same JSONL record boundary as the wire format while allowing strict UTF-8
+  validation before decoding."
+  [path visit! delay-failure-until-termination?]
+  (with-open [input (Files/newInputStream
+                     ^Path path (make-array OpenOption 0))]
+    (let [chunk (byte-array wal-read-buffer-bytes)
+          line (ByteArrayOutputStream.)
+          utf8-failure (atom nil)
+          first-failure (atom nil)]
+      (loop [record-count 0]
+        (let [read-count (.read input chunk)]
+          (cond
+            (= -1 read-count)
+            (do
+              (when (or (zero? record-count) (pos? (.size line)))
+                (fail! ::corrupt "A Durable WAL is not newline terminated"))
+              (when-let [failure @utf8-failure]
+                (throw failure))
+              (when-let [failure @first-failure]
+                (throw failure))
+              record-count)
+
+            (zero? read-count)
+            ;; A regular-file stream with a non-empty destination should make
+            ;; progress or report EOF. Fail closed if a provider violates that
+            ;; contract instead of allowing recovery to spin indefinitely.
+            (fail! ::corrupt "A Durable WAL could not be read")
+
+            :else
+            (let [next-record-count
+                  (loop [index 0 start 0 count record-count]
+                    (if (= index read-count)
+                      (do
+                        (when (< start read-count)
+                          (.write line chunk start (- read-count start)))
+                        count)
+                      (if (= 10 (bit-and 255 (aget chunk index)))
+                        (do
+                          (when (< start index)
+                            (.write line chunk start (- index start)))
+                          (try
+                            ;; UTF-8 has whole-segment precedence over record
+                            ;; parsing and limits in the legacy decoder. Even
+                            ;; after remembering a record failure, validate the
+                            ;; encoding of every later record before EOF.
+                            (let [text (decode-wal-text! (.toByteArray line))]
+                              (when-not @first-failure
+                                (try
+                                  (visit! (decode-wal-record! text))
+                                  (catch Throwable error
+                                    (if delay-failure-until-termination?
+                                      (reset! first-failure error)
+                                      (throw error))))))
+                            (catch Throwable error
+                              (if delay-failure-until-termination?
+                                (when-not @utf8-failure
+                                  (reset! utf8-failure error))
+                                (throw error))))
+                          (.reset line)
+                          (recur (inc index) (inc index) (inc count)))
+                        (recur (inc index) start count))))]
+              (recur next-record-count))))))))
+
+(defn- validate-wal! [path]
+  ;; The old whole-file decoder classified an unterminated segment first and
+  ;; whole-segment UTF-8 corruption second, before record parsing and limits.
+  ;; Retain that ordering while scanning once by remembering failures until the
+  ;; final raw byte is known to be LF.
+  (visit-wal! path (fn [_] nil) true))
+
+(defn- replay-wal! [path operations handle logical-database]
+  (visit-wal!
+   path
+   (fn [sql]
+     ((:analyze-execute! operations) handle sql logical-database)
+     ((:execute-native! operations) handle sql []))
+   false))
 
 (defn- required-operation! [operations key]
   (when-not (fn? (get operations key))
@@ -447,9 +535,11 @@
       (let [path (download-reference!
                   store scratch (str "wal-" index ".jsonl") reference
                   writer/max-wal-segment-bytes)]
-        (doseq [sql (decode-wal! path)]
-          ((:analyze-execute! operations) handle sql logical-database)
-          ((:execute-native! operations) handle sql []))))
+        ;; A corrupt tail must not leave a prefix applied. The first bounded
+        ;; pass validates the complete immutable scratch copy without engine
+        ;; effects; the second pass revalidates each record before replay.
+        (validate-wal! path)
+        (replay-wal! path operations handle logical-database)))
     logical-database))
 
 (defn open-reader!

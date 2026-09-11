@@ -79,6 +79,11 @@ Public lease and skew options are milliseconds; the interoperable
 The adapter accepts only whole public milliseconds and bounds both forms to the
 JavaScript-safe millisecond magnitude; this is a local cross-runtime safety
 policy rather than a new Protocol V1 requirement.
+Recovery downloads each WAL segment into its private scratch directory and
+checks the declared size and digest before decoding. It then validates the
+complete JSONL segment in one bounded streaming pass before a second bounded
+pass revalidates and replays each statement. This keeps corrupt-tail recovery
+atomic without retaining the whole segment or its decoded statements in memory.
 Durable is still experimental: the stable 26.7.0 library installed by
 `-M:setup-native` does not expose the required ABI, hosted native qualification
 covers only Linux x86-64, and a broader crash/corruption and platform matrix
