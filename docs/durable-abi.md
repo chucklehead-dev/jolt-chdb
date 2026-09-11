@@ -59,7 +59,10 @@ performs version and capability checks, opens an in-memory connection, binds
 destroys the result and closes the connection owner exactly once.
 
 The checked compatibility unit is recorded in
-`resources/jdbc/chdb/ffi-compatibility.edn`: Babashka `v1.13.220` at commit
+`resources/jdbc/chdb/ffi-compatibility.edn`: Jolt `v0.8.6` (a release build or
+a commit derived from that release), with hosted CI pinned to the exact
+`integration/aspects` compiler commit recorded alongside it; Babashka
+`v1.13.220` at commit
 `b98575c98a0ef4df77775ff25fd7fc7b591b1afd` with embedded `babashka.ffi`
 source revision `aacb153618bc39ca1e4c397b8f30fb81c76d0c4c`, and the same FFI
 revision as an explicit JVM dependency on Corretto JDK `25.0.2+10-LTS`.

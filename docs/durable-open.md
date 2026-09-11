@@ -106,7 +106,8 @@ driver applies the same validation to handwritten maps for fail-closed
 compatibility. A generated writer instance is UUIDv4; protocol ordering comes
 from the lease generation, not UUID sorting.
 
-Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
+Run the focused gate with the pinned Jolt v0.8.6 aspect compiler and Chez
+10.4.1 (the shared maintainer
 workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 
 ```sh

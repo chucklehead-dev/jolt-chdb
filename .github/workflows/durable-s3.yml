@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - .github/actions/install-jolt-aspects/action.yml
       - .github/workflows/durable-s3.yml
       - deps.edn
       - docs/durable-s3.md
@@ -31,22 +32,15 @@ permissions:
 jobs:
   linux-x86-64:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.3
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-fd216943
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-fd216943
       MINIO_IMAGE: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     steps:
       - uses: actions/checkout@v4
-      - name: Install Jolt v0.8.3
-        run: |
-          set -euo pipefail
-          install_dir="$RUNNER_TEMP/jolt-bin"
-          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/v0.8.3/install \
-            | bash -s -- --dir "$install_dir" --version 0.8.3
-          echo "$install_dir" >> "$GITHUB_PATH"
-      - name: Assert Jolt version
-        run: test "$(jolt --version)" = "jolt v0.8.3"
+      - name: Install the pinned Jolt aspect compiler
+        uses: ./.github/actions/install-jolt-aspects
       - name: Test semantic S3 contract
         run: jolt -M:durable-s3-test
       - name: Test libcurl SigV4 loopback transport

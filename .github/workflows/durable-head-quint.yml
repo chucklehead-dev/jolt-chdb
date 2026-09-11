@@ -10,6 +10,7 @@ on:
         default: true
   pull_request:
     paths:
+      - .github/actions/install-jolt-aspects/action.yml
       - .github/workflows/durable-head-quint.yml
       - formal/durable-head-cas*.smt2
       - formal/quint/**
@@ -32,6 +33,7 @@ on:
     branches:
       - main
     paths:
+      - .github/actions/install-jolt-aspects/action.yml
       - .github/workflows/durable-head-quint.yml
       - formal/durable-head-cas*.smt2
       - formal/quint/**
@@ -134,10 +136,10 @@ jobs:
     needs: classify-model-inputs
     if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.3
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-fd216943
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-fd216943
     steps:
       - name: Require a successful path decision
         run: test "${{ needs.classify-model-inputs.result }}" = success
@@ -152,17 +154,12 @@ jobs:
         run: |
           npm install --global @informalsystems/quint@0.32.0
           go install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
-      - name: Install Jolt v0.8.3
-        run: |
-          set -euo pipefail
-          install_dir="$RUNNER_TEMP/jolt-bin"
-          curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/v0.8.3/install \
-            | bash -s -- --dir "$install_dir" --version 0.8.3
-          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Install the pinned Jolt aspect compiler
+        uses: ./.github/actions/install-jolt-aspects
       - name: Assert tool versions
         run: |
           test "$(quint --version)" = "0.32.0"
-          test "$(jolt --version)" = "jolt v0.8.3"
+          test "$(jolt --version)" = "jolt v0.8.6-219-gfd216943"
           test "$(go version -m "$(command -v lmt)" | awk '$1 == "mod" { print $3 }')" = "v0.0.0-20210421124901-62fe18f2f6a6"
       - name: Replay one deterministic Quint ITF corpus through memory and S3
         run: scripts/check-durable-head-itf-corpus.sh --with-s3

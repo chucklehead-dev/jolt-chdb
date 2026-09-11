@@ -4,6 +4,7 @@
             [hegel.core :as h]
             [hegel.stateful :as hs]
             [jdbc.chdb :as chdb]
+            [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.time-domain :as time-domain]
@@ -12,6 +13,9 @@
             [jolt.fibers :as fibers]))
 
 (def failures (atom 0))
+
+(defn- require-wal-byte-writer-capability? []
+  (= "1" (System/getenv "JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER")))
 
 (def ^:private base-options support/base-options)
 
@@ -115,6 +119,91 @@
             str/split-lines
             (mapv #(json/read-str %))))
      (get-in head ["manifest" "wal"]))))
+
+(defn- stored-wal-bytes [store]
+  (let [head (:head (control/read-head! store))
+        reference (first (get-in head ["manifest" "wal"]))]
+    (backend/get-bytes store (get reference "key"))))
+
+(def ^:private wal-byte-writer-unavailable-message
+  (str "Durable WAL streaming requires correct "
+       "OutputStreamWriter.append(CharSequence, start, end); "
+       "use a Jolt build containing casselc/jolt#73"))
+
+(defn- start-capability-attempt [override]
+  (let [store (backend/memory-backend)
+        calls (atom [])
+        close-count (atom 0)
+        start #(writer/start!
+                {:store store :token {} :handle :fake-handle
+                 :database "default"
+                 :operations (fake-operations calls close-count)})
+        error (try
+                (if override
+                  (with-redefs-fn
+                   {(ns-resolve 'jdbc.chdb.durable.writer
+                                'output-stream-writer-ranged-append-capable?)
+                    override}
+                   start)
+                  (start))
+                nil
+                (catch Throwable thrown thrown))]
+    {:error error :calls @calls :close-count @close-count
+     :head (backend/get-bytes store control/head-key)}))
+
+(defn- open-capability-attempt [override]
+  (let [store (backend/memory-backend)
+        calls (atom [])
+        open #(durable/open-writer!
+               {:backend store :owner "writer-1" :instance "instance-1"
+                :database "default"
+                :operations {:now-ms (fn [] (swap! calls conj :now) 0M)}})
+        error (try
+                (if override
+                  (with-redefs-fn
+                   {(ns-resolve 'jdbc.chdb.durable.writer
+                                'output-stream-writer-ranged-append-capable?)
+                    override}
+                   open)
+                  (open))
+                nil
+                (catch Throwable thrown thrown))]
+    {:error error :calls @calls
+     :head (backend/get-bytes store control/head-key)}))
+
+(defn- run-capability-checks! []
+  (let [actual-error (try
+                       (writer/require-wal-byte-writer-capability!)
+                       nil
+                       (catch Throwable thrown thrown))
+        supported? (nil? actual-error)
+        override (when supported? (delay false))
+        {:keys [error calls close-count head]}
+        (start-capability-attempt override)
+        open-result (open-capability-attempt override)]
+    (when supported?
+      (check "the running ranged-append capability passes"
+             true
+             (writer/require-wal-byte-writer-capability!)))
+    (check (if supported?
+             "a simulated broken ranged append is rejected at writer construction"
+             "the running broken ranged append is rejected at writer construction")
+           [::writer/wal-byte-writer-unavailable
+            wal-byte-writer-unavailable-message]
+           [(:type (ex-data error)) (ex-message error)])
+    (check "capability rejection precedes worker, native, WAL, and head effects"
+           [[] 0 nil]
+           [calls close-count head])
+    (check "public open reports the stable ranged-append capability error"
+           [::writer/wal-byte-writer-unavailable
+            wal-byte-writer-unavailable-message]
+           [(-> open-result :error ex-data :type)
+            (some-> open-result :error ex-message)])
+    (check (str "public capability rejection precedes clock, acquisition, "
+                "and native effects")
+           [[] nil]
+           [(:calls open-result) (:head open-result)])
+    supported?))
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 serialized writer operations")
@@ -220,6 +309,46 @@
             [:execute "INSERT INTO t VALUES (1)"]]
            (subvec @calls 0 4)))
 
+  (let [sql-values [(str "a" (char 34) (char 92) "b")
+                    (str (char 10) (char 9) (char 0))
+                    "😀"]
+        expected-wal-bytes
+        [123 34 115 113 108 34 58 34 97 92 34 92 92 98 34 125 10
+         123 34 115 113 108 34 58 34 92 110 92 116 92 117 48 48 48 48
+         34 125 10
+         123 34 115 113 108 34 58 34 92 117 100 56 51 100 92 117 100
+         101 48 48 34 125 10]
+        {:keys [store writer]} (new-writer)]
+    (try
+      (doseq [sql sql-values]
+        (writer/execute! writer sql))
+      (writer/flush! writer)
+      (check "streamed WAL JSON round-trips quote, control, and Unicode SQL"
+             [(mapv (fn [sql] {"sql" sql}) sql-values)]
+             (stored-wal-lines store))
+      (check (str "streamed WAL bytes match fixed escaped, control, "
+                  "and astral UTF-8 oracles")
+             expected-wal-bytes
+             (vec (stored-wal-bytes store)))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        encode-error (ex-info "WAL encode failed" {:type ::encode-failure})
+        {:keys [writer]} (new-writer calls close-count)]
+    (try
+      (check "WAL encoding failure is returned unchanged"
+             ::encode-failure
+             (with-redefs [json/write (fn [& _] (throw encode-error))]
+               (error-type #(writer/execute! writer
+                                             "INSERT INTO t VALUES (1)"))))
+      (check "WAL encoding failure reaches neither analysis, native execution, nor pending WAL"
+             [[] 0 0]
+             [@calls
+              (:pending-statements (writer/status writer))
+              (:pending-wal-bytes (writer/status writer))])
+      (finally (writer/close! writer))))
+
   (let [{:keys [writer calls]} (new-writer)]
     (try
       (with-redefs [writer/max-statement-bytes 3]
@@ -227,6 +356,26 @@
                ::writer/limit-exceeded
                (error-type #(writer/execute! writer "1234"))))
       (check "limit rejection has no engine side effect" [] @calls)
+      (finally (writer/close! writer))))
+
+  (let [sql "β"
+        sql-bytes (alength (.getBytes sql "UTF-8"))
+        calls (atom [])
+        close-count (atom 0)
+        {:keys [writer]} (new-writer calls close-count)]
+    (try
+      (with-redefs [writer/max-statement-bytes sql-bytes]
+        (writer/execute! writer sql))
+      (check "a multibyte statement may exactly fill its byte limit"
+             [1 [[:analyze-execute sql "default"] [:execute sql]]]
+             [(:pending-statements (writer/status writer)) @calls])
+      (with-redefs [writer/max-statement-bytes (dec sql-bytes)]
+        (check "a multibyte statement crossing its byte limit is rejected"
+               ::writer/limit-exceeded
+               (error-type #(writer/execute! writer sql))))
+      (check "statement boundary rejection adds no engine or WAL effect"
+             [1 [[:analyze-execute sql "default"] [:execute sql]]]
+             [(:pending-statements (writer/status writer)) @calls])
       (finally (writer/close! writer))))
 
   (let [{:keys [writer calls]} (new-writer)]
@@ -574,7 +723,9 @@
              ::engine-failure
              (error-type #(writer/execute! writer "INSERT INTO t VALUES (1)")))
       (check "engine mutation failure appends no WAL record"
-             0 (:pending-statements (writer/status writer)))
+             [0 0]
+             (let [status (writer/status writer)]
+               [(:pending-statements status) (:pending-wal-bytes status)]))
       (finally (writer/close! writer))))
 
   (let [calls (atom [])
@@ -1033,12 +1184,22 @@
 
 (defn run-checks! []
   (reset! failures 0)
-  (run-deterministic-checks!)
-  (run-stateful-property!)
-  (when-not (zero? @failures)
-    (throw (ex-info (str @failures " Durable writer checks failed")
-                    {:failures @failures})))
-  (println "all Durable writer checks passed")
+  (let [supported? (run-capability-checks!)]
+    (if supported?
+      (do
+        (run-deterministic-checks!)
+        (run-stateful-property!))
+      (do
+        (println (str "SKIPPED Durable writer functional and Hegel checks: "
+                      "WAL byte-writer capability unsupported"))
+        (when (require-wal-byte-writer-capability?)
+          (swap! failures inc)
+          (println "  FAIL CI requires the WAL byte-writer capability"))))
+    (when-not (zero? @failures)
+      (throw (ex-info (str @failures " Durable writer checks failed")
+                      {:failures @failures})))
+    (when supported?
+      (println "all Durable writer checks passed")))
   true)
 
 (defn -main [& _]

@@ -67,7 +67,8 @@ semantics while still proving that publication occurred.
 The September 10, 2026 probe at main `5bbe8651b6c24cd713a826a8a9a0f3fcb56fcd24`
 used Jolt 0.8.3, Chez 10.4.1, chDB `26.7.2-rc.2`, and a 348,877-byte statement
 containing 512 realistic OTel log rows. Two samples are causal diagnostics, not
-a latency qualification:
+a latency qualification. These historical measurements predate the current
+Jolt 0.8.6 support floor:
 
 | Path or isolated stage | Observed batch latency |
 | --- | ---: |
@@ -118,7 +119,8 @@ A bounded paired probe compared the prior `data.json` pin
 `932444043c0c06f9e295ba4963419b2481e9dd07` with merge
 `95b1e6430b48ce4fb4e649656b79f7cabc4702a7`, changing no Durable code. Both
 runs used the same 512-row workload, Jolt 0.8.3, Chez 10.4.1, and native chDB
-digest, then reopened immutable state and reconciled the same aggregates.
+digest, then reopened immutable state and reconciled the same aggregates. This
+historical comparison also predates the current Jolt 0.8.6 support floor.
 
 | Path or isolated stage | Prior pin | Bulk-run pin |
 | --- | ---: | ---: |

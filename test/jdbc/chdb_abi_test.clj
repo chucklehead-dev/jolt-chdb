@@ -107,6 +107,19 @@
          (not (str/includes? workflow "-linux-amd64-static.tar.gz"))
          (not (re-find #"(?m)^\s+bb:" workflow)))))
 
+(defn- hosted-jolt-pin-matches?
+  [pins action workflows]
+  (let [{:keys [line commit version]} (get-in pins [:jolt :compiler])
+        action-ref "uses: ./.github/actions/install-jolt-aspects"]
+    (and (= "integration/aspects" line)
+         (every? string? [commit version])
+         (str/includes? action commit)
+         (str/includes? action (str "JOLT_VERSION=\"v" version "\""))
+         (str/includes? action
+                        (str "test \"$actual_version\" = \"jolt v"
+                             version "\""))
+         (every? #(str/includes? % action-ref) workflows))))
+
 (defn- allocated-bytes! [allocated value]
   (let [bytes (.getBytes (str value) "UTF-8")
         pointer (ffi/alloc (max 1 (alength bytes)))]
@@ -209,6 +222,13 @@
         pins (read-edn "resources/jdbc/chdb/ffi-compatibility.edn")
         deps (read-edn "deps.edn")
         workflow (slurp ".github/workflows/tests.yml")
+        jolt-action (slurp ".github/actions/install-jolt-aspects/action.yml")
+        jolt-workflows (mapv slurp
+                             [".github/workflows/tests.yml"
+                              ".github/workflows/durable-native.yml"
+                              ".github/workflows/durable-s3.yml"
+                              ".github/workflows/durable-aws.yml"
+                              ".github/workflows/durable-head-quint.yml"])
         ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
         platform (select-keys (native/platform) [:os :arch])]
     (check "descriptor validates as schema 1" descriptor
@@ -245,6 +265,19 @@
            (mapv :function (abi/binding-specs smoke-function-ids)))
     (check "compatibility Jolt version agrees with deps.edn"
            (:jolt/min-version deps) (get-in pins [:jolt :version]))
+    (check "hosted Jolt compiler agrees with the compatibility manifest"
+           true (hosted-jolt-pin-matches? pins jolt-action jolt-workflows))
+    (check "hosted Jolt commit drift turns the guard red"
+           false
+           (hosted-jolt-pin-matches?
+            (assoc-in pins [:jolt :compiler :commit]
+                      (apply str (repeat 40 "0")))
+            jolt-action jolt-workflows))
+    (check "hosted Jolt version drift turns the guard red"
+           false
+           (hosted-jolt-pin-matches?
+            (assoc-in pins [:jolt :compiler :version] "0.8.6-0-g00000000")
+            jolt-action jolt-workflows))
     (check "JVM FFI revision agrees with the selected deps.edn alias"
            (get-in deps ffi-path)
            (get-in pins [:jvm :ffi-dependency :commit]))

@@ -89,7 +89,7 @@ boundary.
 
 The object/path/read/write/move layer is deliberately the same
 `java.nio.file.Files` surface used by `babashka.fs`. A focused probe and the
-shared-provider suite run unchanged on Jolt 0.8.3, JVM Clojure, and Babashka.
+shared-provider suite run unchanged on Jolt 0.8.6, JVM Clojure, and Babashka.
 Only process locking, atomic private creation, and file/directory durability
 barriers are host adapters. The current production adapter is Jolt POSIX;
 JVM/Babashka adapters can use `FileChannel` without cloning the CAS or envelope
