@@ -188,6 +188,10 @@
    (fn [sql params]
      (timed-stage metrics :classification-sql 0
                   #(chdb/classification-sql sql params)))
+   :prepare-query!
+   (fn [sql params]
+     (timed-stage metrics :prepare-query 0
+                  #(chdb/prepare-query sql params)))
    :classify!
    (fn [handle sql database]
      (timed-stage metrics :native-classify 0
@@ -195,7 +199,11 @@
    :execute-native!
    (fn [handle sql params]
      (timed-stage metrics :native-execute 0
-                  #(chdb/execute-any handle sql params)))})
+                  #(chdb/execute-any handle sql params)))
+   :execute-prepared-native!
+   (fn [handle prepared]
+     (timed-stage metrics :native-execute 0
+                  #(chdb/execute-prepared-any handle prepared)))})
 
 (defn- instrumentation-contract! []
   (let [operations (timed-operations (atom {}))]
@@ -433,7 +441,7 @@
               statement-bytes @(-> samples first :statement-total)
               stage-values @metrics
               expected-stage-calls
-              (cond-> {:classification-sql batches :native-classify batches
+              (cond-> {:prepare-query batches :native-classify batches
                        :native-execute batches
                        :backend/put-bytes-if-absent 1
                        :backend/replace-if-match 1}

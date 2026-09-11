@@ -296,6 +296,76 @@
 
   (let [calls (atom [])
         close-count (atom 0)
+        prepared-sql (str "INSERT INTO t VALUES ('" (apply str (repeat 64 "?")) "')")
+        prepared-request (atom nil)
+        prepared-count (atom 0)
+        executed-request (atom nil)
+        operations
+        (assoc (fake-operations calls close-count)
+               :prepare-query!
+               (fn [sql params]
+                 (swap! prepared-count inc)
+                 (check "request-local preparation receives the original request"
+                        [prepared-sql []] [sql (vec params)])
+                 (let [prepared (chdb/prepare-query sql params)]
+                   (reset! prepared-request prepared)
+                   prepared))
+               :execute-prepared-native!
+               (fn [_ prepared]
+                 (reset! executed-request prepared)
+                 :prepared-execution)
+               :execute-native!
+               (fn [_ _ _]
+                 (swap! calls conj :legacy-execution)
+                 :legacy-execution))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (try
+      (check "one prepared request is reused for classification and execution"
+             [:prepared-execution 1 true]
+             [(writer/sql! writer prepared-sql [])
+              @prepared-count
+              (identical? @prepared-request @executed-request)])
+      (check "classification uses the exact prepared SQL with quoted question marks"
+             prepared-sql (chdb/prepared-sql @prepared-request))
+      (check "prepared execution does not fall back to a second legacy rewrite"
+             false (boolean (some #{:legacy-execution} @calls)))
+      (check "request-local prepared values do not print encoded bindings"
+             false
+             (str/includes?
+              (pr-str (chdb/prepare-query "SELECT ?" ["prepared-secret"]))
+              "prepared-secret"))
+      (finally (writer/close! writer))))
+
+  (let [secret "prepared-invalid-bound-secret"
+        calls (atom [])
+        close-count (atom 0)
+        execution-count (atom 0)
+        operations
+        (assoc (fake-operations calls close-count)
+               :prepare-query! chdb/prepare-query
+               :execute-prepared-native!
+               (fn [_ _]
+                 (swap! execution-count inc)
+                 :unexpected-execution))
+        {:keys [writer]} (new-writer calls close-count operations)
+        error (try
+                (writer/sql! writer "INSERT INTO t VALUES (?)"
+                             [{:secret secret}])
+                nil
+                (catch Throwable thrown thrown))]
+    (try
+      (check "default prepared values fail before native execution"
+             [true 0] [(some? error) @execution-count])
+      (check "default prepared-value diagnostics do not retain the value"
+             false
+             (str/includes? (pr-str [(ex-message error) (ex-data error)])
+                            secret))
+      (check "invalid default preparation precedes classification"
+             [] @calls)
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
         {:keys [store writer]}
         (new-writer calls close-count
                     (model-checkpoint-operations calls close-count))]

@@ -189,6 +189,36 @@
                 :else
                 (recur (inc i) mode block-depth pindex (conj! out c))))))))))
 
+(defprotocol ^:private PreparedQueryValue
+  (-prepared-query-sql [prepared])
+  (-prepared-query-parameters [prepared]))
+
+(deftype ^:private PreparedQuery [sql parameters]
+  Object
+  (toString [_] "#<chDB prepared query>")
+  PreparedQueryValue
+  (-prepared-query-sql [_] sql)
+  (-prepared-query-parameters [_] parameters))
+
+(defn prepare-query
+  "Prepare one request's SQL and typed parameters for native execution.
+
+  The returned value is request-local: it may contain encoded parameter values
+  and must not be cached, logged, or retained after execution. Durable writers
+  use it to give policy classification and native execution the exact same
+  placeholder rewrite without scanning or rebuilding a large statement twice."
+  [sql params]
+  (let [{:keys [sql parameters]} (rewrite-placeholders sql params)]
+    (PreparedQuery. sql parameters)))
+
+(defn prepared-sql
+  "Return the value-free SQL shape from a request-local prepared query."
+  [prepared]
+  (when-not (instance? PreparedQuery prepared)
+    (throw (ex-info "invalid chDB prepared query"
+                    {:jdbc/sql-error true})))
+  (-prepared-query-sql prepared))
+
 (defn classification-sql
   "Return the value-free SQL shape executed for a parameterized query.
 
@@ -197,7 +227,7 @@
   so the core classifier sees the same parseable statement shape that native
   execution receives."
   [sql params]
-  (:sql (rewrite-placeholders sql params)))
+  (prepared-sql (prepare-query sql params)))
 
 (defn- allocate-encoded! [allocated value]
   (if (bytes? value)
@@ -300,8 +330,9 @@
                                0
                                (native/chdb-result-rows-written result)))))))
 
-(defn- execute-native [handle sql params format consume]
-  (let [{rewritten :sql parameters :parameters} (rewrite-placeholders sql params)]
+(defn- execute-prepared-native [handle prepared format consume]
+  (let [rewritten (prepared-sql prepared)
+        parameters (-prepared-query-parameters prepared)]
     (native/with-live-handle
      handle
      (fn [connection]
@@ -325,9 +356,19 @@
            (finally
              (doseq [ptr (reverse @allocated)] (ffi/free ptr)))))))))
 
+(defn execute-prepared-any
+  "Execute one request-local value returned by `prepare-query`.
+
+  This low-level seam exists so a Durable request can reuse its validated
+  placeholder rewrite for classification and execution. Callers must neither
+  persist nor log the prepared value because it can contain encoded bindings."
+  [handle prepared]
+  (execute-prepared-native
+   handle prepared "JSONCompactEachRowWithNamesAndTypes"
+   (fn [_ _ result] (consume-json-result result))))
+
 (defn execute-any [handle sql params]
-  (execute-native handle sql params "JSONCompactEachRowWithNamesAndTypes"
-                  (fn [_ _ result] (consume-json-result result))))
+  (execute-prepared-any handle (prepare-query sql params)))
 
 (defn- validate-encoded-sql! [sql]
   (let [trimmed (str/trim sql)
@@ -538,10 +579,11 @@
   (let [native-format (get-in encoded-formats [format :native-format])
         bounded-sql (bounded-select (validate-encoded-sql! sql)
                                     max-rows max-bytes)]
-    ;; execute-native enters native/with-live-handle exactly once and retains
+    ;; execute-prepared-native enters native/with-live-handle exactly once and retains
     ;; that lock through result destruction and stale-format recovery.
-    (execute-native handle bounded-sql params native-format
-                    #(consume-encoded-result %1 %2 %3 max-bytes))))
+    (execute-prepared-native
+     handle (prepare-query bounded-sql params) native-format
+     #(consume-encoded-result %1 %2 %3 max-bytes))))
 
 (defn query-bytes
   "Execute one result-bounded SELECT and return an owned Arrow or Parquet byte

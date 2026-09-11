@@ -397,12 +397,14 @@
    :analyze-query! policy/analyze-query!
    :analyze-execute! policy/analyze-execute!
    :classification-sql! chdb/classification-sql
+   :prepare-query! chdb/prepare-query
    :classify! native/classify-query!
    :query-native! (fn [handle sql params]
                     (chdb/execute-any handle sql params))
    :query-bytes-native! chdb/execute-query-bytes-handle
    :execute-native! (fn [handle sql params]
-                      (chdb/execute-any handle sql params))})
+                      (chdb/execute-any handle sql params))
+   :execute-prepared-native! chdb/execute-prepared-any})
 
 (defn- epoch-ms->seconds
   "Convert the runtime wall-clock representation to the frozen V1 wire unit."
@@ -504,7 +506,25 @@
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
-  (let [operations (merge (default-open-operations) operations)
+  (let [configured-operations operations
+        configured-preparation?
+        (contains? configured-operations :prepare-query!)
+        configured-prepared-execution?
+        (contains? configured-operations :execute-prepared-native!)
+        _ (when-not (= configured-preparation?
+                       configured-prepared-execution?)
+            (fail! ::invalid-options
+                   "prepared-query operation overrides must be supplied together"))
+        operations (merge (default-open-operations) configured-operations)
+        ;; A test or embedding that replaces either legacy preparation or
+        ;; execution operation must retain its old seam unless it explicitly
+        ;; supplies the matching prepared pair as well.
+        operations
+        (if (and (not configured-preparation?)
+                 (or (contains? configured-operations :classification-sql!)
+                     (contains? configured-operations :execute-native!)))
+          (dissoc operations :prepare-query! :execute-prepared-native!)
+          operations)
         required [:now-ms :monotonic-ms! :await-backoff!
                   :durable-capability :create-scratch! :cleanup-scratch!
                   :open-native! :close-native! :restore-database!
