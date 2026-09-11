@@ -225,21 +225,32 @@
 (defn- durable-handle [connection]
   (:handle (shim/driver-context (proto/connection connection) :chdb-durable)))
 
-(defn- expected-trace-flags [rows]
-  (reduce + 0 (map #(get % "TraceFlags") rows)))
+(def ^:private empty-expected-aggregates
+  {:n 0 :flags 0 :severity_sum 0 :body_bytes 0 :question_bodies 0
+   :min_trace nil :max_trace nil :min_span nil :max_span nil})
 
-(defn- expected-aggregates [rows question-mark?]
-  (let [trace-ids (mapv #(get % "TraceId") rows)
-        span-ids (mapv #(get % "SpanId") rows)
-        ordered-traces (vec (sort trace-ids))
-        ordered-spans (vec (sort span-ids))]
-    {:n (count rows)
-     :flags (expected-trace-flags rows)
-     :severity_sum (reduce + 0 (map #(get % "SeverityNumber") rows))
-     :body_bytes (reduce + 0 (map #(alength (.getBytes (get % "Body") "UTF-8")) rows))
-     :question_bodies (if question-mark? (count rows) 0)
-     :min_trace (first ordered-traces) :max_trace (peek ordered-traces)
-     :min_span (first ordered-spans) :max_span (peek ordered-spans)}))
+(defn- lesser-string [left right]
+  (if (or (nil? left) (neg? (compare right left))) right left))
+
+(defn- greater-string [left right]
+  (if (or (nil? left) (pos? (compare right left))) right left))
+
+(defn- accumulate-expected-row [expected row question-mark?]
+  (let [trace-id (get row "TraceId")
+        span-id (get row "SpanId")]
+    (-> expected
+        (update :n inc)
+        (update :flags + (get row "TraceFlags"))
+        (update :severity_sum + (get row "SeverityNumber"))
+        (update :body_bytes + (alength (.getBytes (get row "Body") "UTF-8")))
+        (update :question_bodies + (if question-mark? 1 0))
+        (update :min_trace lesser-string trace-id)
+        (update :max_trace greater-string trace-id)
+        (update :min_span lesser-string span-id)
+        (update :max_span greater-string span-id))))
+
+(defn- accumulate-expected-batch [expected rows question-mark?]
+  (reduce #(accumulate-expected-row %1 %2 question-mark?) expected rows))
 
 (defn- verify-counts! [connection expected label]
   (let [actual (jdbc/fetch-one
@@ -256,15 +267,27 @@
                       {:label label :expected expected :actual actual})))
     actual))
 
-(defn- make-batches [batch-size batches question-mark? start]
-  (mapv (fn [batch]
-          (mapv #(log-row % question-mark?)
-                (range (+ start (* batch batch-size))
-                       (+ start (* (inc batch) batch-size)))))
-        (range batches)))
+(defn- reduce-row-batches
+  "Constructs exactly one batch at a time and does not retain consumed batches.
 
-(defn- encode-all [row-batches]
-  (mapv encode-batch-production row-batches))
+  row-fn is explicit so the focused contract test can causally observe that a
+  10k-row configuration reaches its consumer once per batch rather than only
+  after constructing the complete approximately 50k-row workload."
+  [row-fn batch-size batches question-mark? start initial reduce-batch]
+  (reduce (fn [acc batch]
+            (let [batch-start (+ start (* batch batch-size))
+                  rows (mapv #(row-fn % question-mark?)
+                             (range batch-start (+ batch-start batch-size)))]
+              (reduce-batch acc batch rows)))
+          initial
+          (range batches)))
+
+(defn- one-row-batch [batch-size question-mark? start]
+  (reduce-row-batches log-row batch-size 1 question-mark? start nil
+                      (fn [_ _ rows] rows)))
+
+(defn- add-counter-delta [total delta]
+  (merge-with + total delta))
 
 (defn- durable-uninstrumented-trial
   [{:keys [batch-size batches warmup-batches question-mark? encode-included?
@@ -274,14 +297,7 @@
         _ (.mkdirs root-file)
         store (local/local-backend (.getAbsolutePath root-file))
         object-id (str "bench-" trial "-" (random-uuid))
-        warmup-rows (make-batches batch-size warmup-batches question-mark? 0)
-        measured-rows (make-batches batch-size batches question-mark?
-                                    (* batch-size warmup-batches))
-        preencoded (when-not encode-included? (encode-all measured-rows))
-        warmup-encoded (encode-all warmup-rows)
-        all-rows (vec (concat (apply concat warmup-rows)
-                              (apply concat measured-rows)))
-        expected (expected-aggregates all-rows question-mark?)
+        expected (atom empty-expected-aggregates)
         trial-result (atom nil)
         configuration {:namespace-backend store :object-id object-id
                        :owner "durable-throughput-benchmark"
@@ -291,28 +307,39 @@
       (with-open [connection (jdbc/connection (durable/writer-dbspec configuration))]
         (jdbc/execute! connection logs-ddl)
         (durable/flush! connection)
-        (doseq [{:keys [sql]} warmup-encoded] (jdbc/execute! connection sql))
+        (reduce-row-batches
+         log-row batch-size warmup-batches question-mark? 0 nil
+         (fn [_ _ rows]
+           (swap! expected accumulate-expected-batch rows question-mark?)
+           (jdbc/execute! connection (:sql (encode-batch-production rows)))))
         (durable/flush! connection)
         (System/gc)
-        (let [payload-total (atom 0)
-              statement-total (atom 0)
-              before (counter-sample)
-              start (System/nanoTime)
-              samples
-              (mapv
-               (fn [index]
-                 (let [batch-start (System/nanoTime)
+        (let [measured
+              (reduce-row-batches
+               log-row batch-size batches question-mark?
+               (* batch-size warmup-batches)
+               {:samples [] :payload-bytes 0 :statement-bytes 0
+                :counter-deltas {}}
+               (fn [acc _ rows]
+                 (swap! expected accumulate-expected-batch rows question-mark?)
+                 (let [preencoded (when-not encode-included?
+                                    (encode-batch-production rows))
+                       before (counter-sample)
+                       batch-start (System/nanoTime)
                        encoded (if encode-included?
-                                 (encode-batch-production
-                                  (nth measured-rows index))
-                                 (nth preencoded index))]
-                   (swap! payload-total + (:payload-bytes encoded))
-                   (swap! statement-total + (:statement-bytes encoded))
-                   (jdbc/execute! connection (:sql encoded))
-                   (- (System/nanoTime) batch-start)))
-               (range batches))
-              ingest-nanos (- (System/nanoTime) start)
-              after (counter-sample)
+                                 (encode-batch-production rows)
+                                 preencoded)
+                       _ (jdbc/execute! connection (:sql encoded))
+                       elapsed (- (System/nanoTime) batch-start)
+                       after (counter-sample)]
+                   (-> acc
+                       (update :samples conj elapsed)
+                       (update :payload-bytes + (:payload-bytes encoded))
+                       (update :statement-bytes + (:statement-bytes encoded))
+                       (update :counter-deltas add-counter-delta
+                               (counter-delta before after))))))
+              samples (:samples measured)
+              ingest-nanos (reduce + 0 samples)
               pending (writer/status (durable-handle connection))
               _ (when-not (= batches (:pending-statements pending))
                   (throw (ex-info "Durable pending WAL count mismatch"
@@ -348,21 +375,21 @@
                    :persisted-rows-per-second
                    (/ (double (* batch-size batches 1000000000))
                       (+ ingest-nanos flush-nanos))
-                   :ingest-counters (counter-delta before after)
+                   :ingest-counters (:counter-deltas measured)
                    :flush-counters (counter-delta flush-before flush-after)
                    :pending-before-flush pending
-                   :payload-bytes @payload-total
-                   :statement-bytes @statement-total})))
+                   :payload-bytes (:payload-bytes measured)
+                   :statement-bytes (:statement-bytes measured)})))
       (let [recovery-start (System/nanoTime)
             actual
             (with-open [reader (jdbc/connection
                                 (durable/snapshot-dbspec
                                  {:namespace-backend store :object-id object-id}))]
-              (verify-counts! reader expected :durable-recovery))]
+              (verify-counts! reader @expected :durable-recovery))]
         (assoc @trial-result
                :recovery {:result actual
                           :ms (ms (- (System/nanoTime) recovery-start))
-                          :expected expected}))
+                          :expected @expected}))
       (finally
         (delete-tree! root-file)))))
 
@@ -376,14 +403,7 @@
         raw-store (local/local-backend (.getAbsolutePath root-file))
         store (instrumented-backend raw-store metrics)
         object-id (str "bench-" trial "-" (random-uuid))
-        warmup-rows (make-batches batch-size warmup-batches question-mark? 0)
-        measured-rows (make-batches batch-size batches question-mark?
-                                    (* batch-size warmup-batches))
-        preencoded (when-not encode-included? (encode-all measured-rows))
-        warmup-encoded (encode-all warmup-rows)
-        all-rows (vec (concat (apply concat warmup-rows)
-                              (apply concat measured-rows)))
-        expected (expected-aggregates all-rows question-mark?)
+        expected (atom empty-expected-aggregates)
         trial-result (atom nil)
         configuration {:namespace-backend store :object-id object-id
                        :owner "durable-throughput-benchmark"
@@ -394,37 +414,48 @@
       (with-open [connection (jdbc/connection (durable/writer-dbspec configuration))]
         (jdbc/execute! connection logs-ddl)
         (durable/flush! connection)
-        (doseq [{:keys [sql]} warmup-encoded] (jdbc/execute! connection sql))
+        (reduce-row-batches
+         log-row batch-size warmup-batches question-mark? 0 nil
+         (fn [_ _ rows]
+           (swap! expected accumulate-expected-batch rows question-mark?)
+           (jdbc/execute! connection (:sql (encode-batch-production rows)))))
         (durable/flush! connection)
         (reset! metrics {})
         (System/gc)
-        (let [before (counter-sample)
-              start (System/nanoTime)
-              samples
-              (let [payload-total (atom 0)
-                    statement-total (atom 0)]
-                (mapv (fn [index]
-                      (let [batch-start (System/nanoTime)
-                            encoded (if encode-included?
-                                      (let [result (encode-batch-profiled
-                                                    (nth measured-rows index))]
-                                        (record-stage! metrics :data-json
-                                                       (:json-nanos result)
-                                                       (:payload-bytes result))
-                                        (record-stage! metrics :exporter-materialization
-                                                       (:materialize-nanos result)
-                                                       (:payload-bytes result))
-                                        result)
-                                      (nth preencoded index))]
-                        (swap! payload-total + (:payload-bytes encoded))
-                        (swap! statement-total + (:statement-bytes encoded))
-                        (jdbc/execute! connection (:sql encoded))
-                        {:nanos (- (System/nanoTime) batch-start)
-                         :payload-total payload-total
-                         :statement-total statement-total}))
-                    (range batches)))
-              ingest-nanos (- (System/nanoTime) start)
-              after (counter-sample)
+        (let [measured
+              (reduce-row-batches
+               log-row batch-size batches question-mark?
+               (* batch-size warmup-batches)
+               {:samples [] :payload-bytes 0 :statement-bytes 0
+                :counter-deltas {}}
+               (fn [acc _ rows]
+                 (swap! expected accumulate-expected-batch rows question-mark?)
+                 (let [preencoded (when-not encode-included?
+                                    (encode-batch-production rows))
+                       before (counter-sample)
+                       batch-start (System/nanoTime)
+                       encoded
+                       (if encode-included?
+                         (let [result (encode-batch-profiled rows)]
+                           (record-stage! metrics :data-json
+                                          (:json-nanos result)
+                                          (:payload-bytes result))
+                           (record-stage! metrics :exporter-materialization
+                                          (:materialize-nanos result)
+                                          (:payload-bytes result))
+                           result)
+                         preencoded)
+                       _ (jdbc/execute! connection (:sql encoded))
+                       elapsed (- (System/nanoTime) batch-start)
+                       after (counter-sample)]
+                   (-> acc
+                       (update :samples conj elapsed)
+                       (update :payload-bytes + (:payload-bytes encoded))
+                       (update :statement-bytes + (:statement-bytes encoded))
+                       (update :counter-deltas add-counter-delta
+                               (counter-delta before after))))))
+              samples-nanos (:samples measured)
+              ingest-nanos (reduce + 0 samples-nanos)
               pending (writer/status (durable-handle connection))
               _ (when-not (= batches (:pending-statements pending))
                   (throw (ex-info "Durable pending WAL count mismatch"
@@ -437,9 +468,6 @@
               _ (when-not (= :committed (:status flush-result))
                   (throw (ex-info "Durable measured flush did not commit"
                                   {:result flush-result})))
-              samples-nanos (mapv :nanos samples)
-              payload-bytes @(-> samples first :payload-total)
-              statement-bytes @(-> samples first :statement-total)
               stage-values @metrics
               expected-stage-calls
               (cond-> {:prepare-query batches :native-classify batches
@@ -478,12 +506,12 @@
                      :persisted-rows-per-second
                      (/ (double (* batch-size batches 1000000000))
                         (+ ingest-nanos flush-nanos))
-                     :ingest-counters (counter-delta before after)
+                     :ingest-counters (:counter-deltas measured)
                      :flush-counters (counter-delta flush-before flush-after)
                      :pending-before-flush pending
                      :stages (stage-report metrics)
-                     :payload-bytes payload-bytes
-                     :statement-bytes statement-bytes})))
+                     :payload-bytes (:payload-bytes measured)
+                     :statement-bytes (:statement-bytes measured)})))
       ;; Closing above releases the writer. This open must recover solely from
       ;; the persisted checkpoint/WAL objects and exact manifest order.
       (let [recovery-start (System/nanoTime)
@@ -492,40 +520,49 @@
                                 (durable/snapshot-dbspec
                                  {:namespace-backend store :object-id object-id
                                   :operations (timed-operations metrics)}))]
-              (verify-counts! reader expected :durable-recovery))
+              (verify-counts! reader @expected :durable-recovery))
             recovery-nanos (- (System/nanoTime) recovery-start)]
         (assoc @trial-result
                :recovery {:result actual :ms (ms recovery-nanos)
-                          :expected expected}
+                          :expected @expected}
                :stages-through-recovery (stage-report metrics)))
       (finally
         (delete-tree! root-file)))))
 
 (defn- native-trial
   [{:keys [batch-size batches warmup-batches question-mark? trial]}]
-  (let [warmup-rows (make-batches batch-size warmup-batches question-mark? 0)
-        measured-rows (make-batches batch-size batches question-mark?
-                                    (* batch-size warmup-batches))
-        warmup-encoded (encode-all warmup-rows)
-        measured-encoded (encode-all measured-rows)
-        all-rows (vec (concat (apply concat warmup-rows)
-                              (apply concat measured-rows)))
-        expected (expected-aggregates all-rows question-mark?)]
+  (let [expected (atom empty-expected-aggregates)]
     (with-open [connection (jdbc/connection "chdb::memory:")]
       (jdbc/execute! connection logs-ddl)
-      (doseq [{:keys [sql]} warmup-encoded] (jdbc/execute! connection sql))
+      (reduce-row-batches
+       log-row batch-size warmup-batches question-mark? 0 nil
+       (fn [_ _ rows]
+         (swap! expected accumulate-expected-batch rows question-mark?)
+         (jdbc/execute! connection (:sql (encode-batch-production rows)))))
       (System/gc)
-      (let [before (counter-sample)
-            start (System/nanoTime)
-            samples
-            (mapv (fn [{:keys [sql]}]
-                    (let [batch-start (System/nanoTime)]
-                      (jdbc/execute! connection sql)
-                      (- (System/nanoTime) batch-start)))
-                  measured-encoded)
-            elapsed (- (System/nanoTime) start)
-            after (counter-sample)
-            actual (verify-counts! connection expected :ordinary-native)]
+      (let [measured
+            (reduce-row-batches
+             log-row batch-size batches question-mark?
+             (* batch-size warmup-batches)
+             {:samples [] :payload-bytes 0 :statement-bytes 0
+              :counter-deltas {}}
+             (fn [acc _ rows]
+               (swap! expected accumulate-expected-batch rows question-mark?)
+               (let [encoded (encode-batch-production rows)
+                     before (counter-sample)
+                     batch-start (System/nanoTime)
+                     _ (jdbc/execute! connection (:sql encoded))
+                     elapsed (- (System/nanoTime) batch-start)
+                     after (counter-sample)]
+                 (-> acc
+                     (update :samples conj elapsed)
+                     (update :payload-bytes + (:payload-bytes encoded))
+                     (update :statement-bytes + (:statement-bytes encoded))
+                     (update :counter-deltas add-counter-delta
+                             (counter-delta before after))))))
+            samples (:samples measured)
+            elapsed (reduce + 0 samples)
+            actual (verify-counts! connection @expected :ordinary-native)]
         {:trial trial :mode :ordinary-native-preencoded
          :measured-rows (* batch-size batches)
          :batch-size batch-size :batches batches
@@ -535,13 +572,13 @@
          :ingest-ms (ms elapsed)
          :ingest-rows-per-second
          (/ (double (* batch-size batches 1000000000)) elapsed)
-         :counters (counter-delta before after)
-         :payload-bytes (reduce + 0 (map :payload-bytes measured-encoded))
-         :statement-bytes (reduce + 0 (map :statement-bytes measured-encoded))
-         :reconciliation {:result actual :expected expected}}))))
+         :counters (:counter-deltas measured)
+         :payload-bytes (:payload-bytes measured)
+         :statement-bytes (:statement-bytes measured)
+         :reconciliation {:result actual :expected @expected}}))))
 
 (defn- isolated-stage-profile [batch-size question-mark? repetitions]
-  (let [rows (first (make-batches batch-size 1 question-mark? 0))
+  (let [rows (one-row-batch batch-size question-mark? 0)
         encoded (encode-batch-production rows)
         sql (:sql encoded)
         wal-line (ns-resolve 'jdbc.chdb.durable.writer 'wal-line)
@@ -842,12 +879,13 @@
         _ (.mkdirs root-file)
         store (local/local-backend (.getAbsolutePath root-file))
         object-id (str "diagnostic-" (random-uuid))
-        warmup-rows (first (make-batches 512 1 false 0))
-        measured-rows (first (make-batches 512 1 false 512))
+        warmup-rows (one-row-batch 512 false 0)
+        measured-rows (one-row-batch 512 false 512)
         warmup (encode-batch-production warmup-rows)
         measured (encode-batch-production measured-rows)
-        all-rows (vec (concat warmup-rows measured-rows))
-        expected (expected-aggregates all-rows false)
+        expected (-> empty-expected-aggregates
+                     (accumulate-expected-batch warmup-rows false)
+                     (accumulate-expected-batch measured-rows false))
         progress (atom {:schema-version 1 :profile :diagnostic
                         :runtime (runtime-metadata)
                         :configuration {:batch-size 512 :measured-batches 1

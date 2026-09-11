@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bound Durable scale and qualification harness retention to one row batch,
+  including pre-encoded modes, and fold fresh-reader recovery aggregates
+  incrementally instead of retaining the complete approximately 50,000-row
+  trial workload. Per-batch admission timing boundaries, deterministic indices,
+  warmup, pending-WAL checks, one-flush cadence, and recovery reconciliation are
+  preserved.
+
 - Make Durable throughput evidence reproducible across the requested 512,
   1,000, 5,000, and 10,000-row batch sweep. The manual harness now has explicit
   `scale` and `qualification` profiles, rejects unknown profile names, requires
