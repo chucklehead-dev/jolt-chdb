@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Make Durable throughput evidence reproducible across the requested 512,
+  1,000, 5,000, and 10,000-row batch sweep. The manual harness now has explicit
+  `scale` and `qualification` profiles, rejects unknown profile names, requires
+  exact clean-worktree provenance for evidence-producing runs, and labels p99
+  summaries non-qualifying when fewer than 100 batch observations exist.
+
 - Stream Durable V1 WAL JSON through the generic `data.json` writer directly
   into UTF-8 bytes, avoiding an intermediate complete JSON string while keeping
   statement and segment validation before native mutation and WAL append after

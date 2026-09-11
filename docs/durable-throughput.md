@@ -9,11 +9,21 @@ only after native success, and published by an explicit later flush.
 The primary acceptance workload is 512 rows per `FORMAT JSONEachRow` statement.
 Encoding-inclusive Durable admission must have p50 batch latency no greater
 than 20.48 ms (25,000 rows/s) and p99 no greater than 25.60 ms (20,000 rows/s).
-The qualification profile measures 100 batches per trial and five trials per
+The explicit `qualification` profile measures 100 batches per trial and five trials per
 mode, so each trial p99 has 100 observations and the report's
 `batch-latency-across-trials` summary has 500. The smaller `smoke` and `probe`
 profiles are causal diagnostics only; their p99 values do not qualify the
 latency target.
+
+The `scale` profile runs about 50,000 measured rows per trial at batch sizes
+512, 1,000, 5,000, and 10,000, with five trials per mode. Its 512- and
+1,000-row configurations have at least 100 pooled batch observations and may
+report an empirical p99. The larger configurations deliberately report
+`:p99-qualification? false`; their p99 values are directional diagnostics
+until a later run supplies at least 100 observations. Under the nearest-rank
+calculation used here, a p99 over fewer than 100 samples degenerates to the
+observed maximum; do not quote that number as a qualified tail percentile.
+
 The report keeps these measurements separate:
 
 - encoding-inclusive Durable admission before flush;
@@ -35,10 +45,32 @@ BENCH_JOLT_VERSION="$(jolt --version)" \
 BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
 BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
 BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
+BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || printf dirty)" \
 BENCH_STARTED_AT="$(date -Iseconds)" \
 JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
 /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
   jolt -M:durable-throughput probe target/profiles/probe.edn
+```
+
+Accepted profiles are `smoke`, `probe`, `diagnostic`, `scale`, and
+`qualification`. Unknown names fail before any database work. `scale` and
+`qualification` additionally reject missing Jolt, Git, timestamp, or native
+library digest/size provenance, and reject a dirty worktree; their reports are
+intended to be comparable evidence rather than anonymous or locally modified
+samples.
+
+Use `scale` for the checked-in batch sweep:
+
+```sh
+BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt --version)" \
+BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
+BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
+BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
+BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || printf dirty)" \
+BENCH_STARTED_AT="$(date -Iseconds)" \
+JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
+/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  jolt -M:durable-throughput scale target/profiles/scale.edn
 ```
 
 Reports under `target/profiles/` are ignored. The harness writes bounded phase

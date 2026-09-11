@@ -106,6 +106,7 @@
 (defn- latency-summary [samples]
   (let [ordered (vec (sort samples))]
     {:count (count ordered)
+     :p99-qualification? (>= (count ordered) 100)
      :total-ms (ms (reduce + 0 ordered))
      :p50-ms (ms (percentile ordered 0.50))
      :p95-ms (ms (percentile ordered 0.95))
@@ -644,7 +645,8 @@
              (.toPath (File. "bench/jdbc/chdb_durable_throughput.clj")))}
    :git {:head (System/getenv "BENCH_GIT_HEAD")
          :parent (System/getenv "BENCH_GIT_PARENT")
-         :tree (System/getenv "BENCH_GIT_TREE")}
+         :tree (System/getenv "BENCH_GIT_TREE")
+         :status (System/getenv "BENCH_GIT_STATUS")}
    :started-at (System/getenv "BENCH_STARTED_AT")
    :os-name (System/getProperty "os.name")
    :os-version (System/getProperty "os.version")
@@ -657,6 +659,86 @@
                       (catch Throwable _ nil))}))
 
 (def ^:dynamic *progress!* (fn [_ _] nil))
+
+(def ^:private supported-profiles
+  #{:smoke :probe :scale :qualification :diagnostic})
+
+(defn- parse-profile! [profile-text]
+  (let [profile (keyword (or profile-text "smoke"))]
+    (when-not (contains? supported-profiles profile)
+      (throw (ex-info "unknown Durable throughput profile"
+                      {:type ::unknown-profile
+                       :profile profile
+                       :supported (vec (sort supported-profiles))})))
+    profile))
+
+(defn- profile-configs [profile]
+  (case profile
+    :smoke
+    [{:label :smoke-batched :batch-size 32 :batches 2
+      :warmup-batches 1 :trials 1 :question-mark? false
+      :modes [:durable-encode-included :durable-preencoded
+              :ordinary-native-preencoded]}]
+
+    :probe
+    [{:label :probe-batched-512 :batch-size 512 :batches 2
+      :warmup-batches 1 :trials 1 :question-mark? false
+      :modes [:durable-encode-included :durable-preencoded
+              :ordinary-native-preencoded]}]
+
+    :scale
+    (mapv (fn [[batch-size batches warmup-batches]]
+            {:label (keyword (str "scale-batched-" batch-size))
+             :batch-size batch-size :batches batches
+             :warmup-batches warmup-batches :trials 5
+             :question-mark? false
+             :modes [:durable-encode-included :durable-preencoded
+                     :ordinary-native-preencoded]})
+          [[512 100 2] [1000 50 2] [5000 10 1] [10000 5 1]])
+
+    :qualification
+    [{:label :batched-512 :batch-size 512 :batches 100
+      :warmup-batches 2 :trials 5 :question-mark? false
+      :modes [:durable-encode-included :durable-preencoded
+              :ordinary-native-preencoded]}
+     {:label :batched-512-question-mark :batch-size 512 :batches 100
+      :warmup-batches 2 :trials 5 :question-mark? true
+      :modes [:durable-preencoded]}
+     {:label :single-row :batch-size 1 :batches 128
+      :warmup-batches 16 :trials 5 :question-mark? false
+      :modes [:durable-encode-included :durable-preencoded
+              :ordinary-native-preencoded]}]
+
+    (throw (ex-info "profile does not use the Durable trial runner"
+                    {:type ::unsupported-run-profile
+                     :profile profile
+                     :supported [:probe :qualification :scale :smoke]}))))
+
+(defn- require-qualification-provenance! [profile runtime]
+  (when (contains? #{:scale :qualification} profile)
+    (let [required {:jolt-version (:jolt-version runtime)
+                    :started-at (:started-at runtime)
+                    :native-library-sha256
+                    (get-in runtime [:native-library :sha256])
+                    :git-head (get-in runtime [:git :head])
+                    :git-parent (get-in runtime [:git :parent])
+                    :git-tree (get-in runtime [:git :tree])
+                    :git-status (get-in runtime [:git :status])}
+          missing (->> required
+                       (keep (fn [[field value]]
+                               (when (or (nil? value) (str/blank? value)) field)))
+                       vec)]
+      (when (seq missing)
+        (throw (ex-info "scale and qualification profiles require complete provenance"
+                        {:type ::missing-provenance :missing missing})))
+      (when-not (pos? (get-in runtime [:native-library :bytes] 0))
+        (throw (ex-info "scale and qualification profiles require a nonempty native library"
+                        {:type ::missing-provenance
+                         :missing [:native-library-bytes]})))
+      (when-not (= "clean" (:git-status required))
+        (throw (ex-info "scale and qualification profiles require a clean worktree"
+                        {:type ::dirty-provenance
+                         :git-status (:git-status required)}))))))
 
 (defn- run-config [configuration]
   (let [{:keys [trials modes]} configuration
@@ -717,36 +799,12 @@
            modes)}))
 
 (defn run! [profile]
-  (let [instrumentation-contract (instrumentation-contract!)
+  (let [configs (profile-configs profile)
+        instrumentation-contract (instrumentation-contract!)
         smoke? (= profile :smoke)
-        probe? (= profile :probe)
-        configs
-        (cond
-          smoke?
-          [{:label :smoke-batched :batch-size 32 :batches 2
-            :warmup-batches 1 :trials 1 :question-mark? false
-            :modes [:durable-encode-included :durable-preencoded
-                    :ordinary-native-preencoded]}]
-
-          probe?
-          [{:label :probe-batched-512 :batch-size 512 :batches 2
-            :warmup-batches 1 :trials 1 :question-mark? false
-            :modes [:durable-encode-included :durable-preencoded
-                    :ordinary-native-preencoded]}]
-
-          :else
-          [{:label :batched-512 :batch-size 512 :batches 100
-            :warmup-batches 2 :trials 5 :question-mark? false
-            :modes [:durable-encode-included :durable-preencoded
-                    :ordinary-native-preencoded]}
-           {:label :batched-512-question-mark :batch-size 512 :batches 100
-            :warmup-batches 2 :trials 5 :question-mark? true
-            :modes [:durable-preencoded]}
-           {:label :single-row :batch-size 1 :batches 128
-            :warmup-batches 16 :trials 5 :question-mark? false
-            :modes [:durable-encode-included :durable-preencoded
-                    :ordinary-native-preencoded]}])]
+        probe? (= profile :probe)]
     (let [runtime (runtime-metadata)
+          _ (require-qualification-provenance! profile runtime)
           _ (*progress!* :started {:runtime runtime :profile profile})
           configuration-results (mapv run-config configs)
           _ (*progress!* :uninstrumented-complete
@@ -872,7 +930,7 @@
         (delete-tree! root-file)))))
 
 (defn -main [& [profile-text output]]
-  (let [profile (keyword (or profile-text "smoke"))
+  (let [profile (parse-profile! profile-text)
         output (or output (str "target/profiles/durable-throughput-"
                                (name profile) ".edn"))]
     (.mkdirs (.getParentFile (File. output)))
