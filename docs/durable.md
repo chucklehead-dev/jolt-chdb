@@ -558,6 +558,11 @@ remaining native platform runners. Those are
 pending tests and qualifications, not hidden features of the current
 implementation.
 
+The manual [Durable JSONEachRow throughput qualification](durable-throughput.md)
+keeps admission, explicit-flush persistence, native-engine, and serialization
+costs separate. Its latency thresholds are performance targets, not protocol
+conformance gates.
+
 ## Development commands
 
 The commands below assume `jolt` selects Jolt v0.8.3 with Chez 10.4.1. In the

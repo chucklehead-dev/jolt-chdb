@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a reproducible production-path Durable JSONEachRow throughput harness
+  with explicit 512-row targets of at least 25,000 rows/s at p50 and 20,000
+  rows/s at p99, causal instrumentation and exact recovery reconciliation.
+  Current measurements are diagnostic baselines, not qualification evidence.
+
 - Cover the pinned public writer renewal-loss sequence end to end: tolerate one
   failed heartbeat before expiry, self-fence after the last proved lease
   expires, refuse execute/flush/checkpoint before effects, and preserve a public
