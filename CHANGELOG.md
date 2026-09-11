@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve the original SQL object when an empty-parameter request contains no
+  question mark, avoiding placeholder output construction while retaining the
+  lexical scanner whenever a question mark is present.
+
 - Reuse one request-local prepared query for Durable mutation classification
   and native execution, eliminating a second placeholder rewrite without a
   global cache or any change to WAL-before-mutation ordering. Prepared values
