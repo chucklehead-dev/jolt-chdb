@@ -118,6 +118,34 @@
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 serialized writer operations")
+  (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
+        prepared (chdb/prepare-query sql [])
+        quoted-sql "SELECT '?'"
+        line-comment-sql "SELECT 1 -- ?\n"
+        block-comment-sql "SELECT /* ? */ 1"
+        unbound-error
+        (try
+          (chdb/prepare-query "SELECT ?" [])
+          nil
+          (catch Throwable thrown thrown))]
+    (check "empty parameters and no question mark preserve SQL identity"
+           true (identical? sql (chdb/prepared-sql prepared)))
+    (check "quoted question marks keep lexical placeholder behavior"
+           quoted-sql
+           (chdb/prepared-sql (chdb/prepare-query quoted-sql [])))
+    (check "line-comment question marks keep lexical placeholder behavior"
+           line-comment-sql
+           (chdb/prepared-sql (chdb/prepare-query line-comment-sql [])))
+    (check "block-comment question marks keep lexical placeholder behavior"
+           block-comment-sql
+           (chdb/prepared-sql (chdb/prepare-query block-comment-sql [])))
+    (check "code-position question marks still rewrite typed parameters"
+           "SELECT {p1:Int64}"
+           (chdb/prepared-sql (chdb/prepare-query "SELECT ?" [42])))
+    (check "unbound code-position question marks still fail"
+           ["more chDB placeholders than parameters" true]
+           [(ex-message unbound-error)
+            (:jdbc/sql-error (ex-data unbound-error))]))
   (doseq [field [:version :min-reader]]
     (let [store (backend/memory-backend)
           acquired (control/acquire! store base-options)

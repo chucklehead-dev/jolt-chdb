@@ -126,7 +126,7 @@
                   :else (str value))]
     {:type inferred :value encoded}))
 
-(defn- rewrite-placeholders [sql params]
+(defn- rewrite-placeholders-with-scan [sql params]
   (let [parameters (mapv parameter params)
         n (count sql)]
     (loop [i 0 mode :code block-depth 0 pindex 0 out (transient [])]
@@ -188,6 +188,11 @@
                 (recur (inc i) :code 0 pindex (conj! out c))
                 :else
                 (recur (inc i) mode block-depth pindex (conj! out c))))))))))
+
+(defn- rewrite-placeholders [sql params]
+  (if (and (empty? params) (= -1 (.indexOf sql "?")))
+    {:sql sql :parameters []}
+    (rewrite-placeholders-with-scan sql params)))
 
 (defprotocol ^:private PreparedQueryValue
   (-prepared-query-sql [prepared])
