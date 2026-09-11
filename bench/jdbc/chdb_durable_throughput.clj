@@ -625,7 +625,7 @@
    :scheme-version (host/scheme-version)
    :machine-type (host/machine-type)
    :native-chdb (native/durable-capability)
-   :native-library {:path library
+   :native-library {:file-name (when library-file (.getName library-file))
                     :bytes (when (and library-file (.isFile library-file))
                              (.length library-file))
                     :sha256 (when (and library-file (.isFile library-file))

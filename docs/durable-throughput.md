@@ -46,6 +46,8 @@ evidence after each uninstrumented trial, then isolated stages, then one
 instrumented causal control. If a later phase times out, completed evidence is
 still readable. The `diagnostic` profile is a one-batch, pre-encoded trace with
 timestamps around open, DDL, warmup, admission, flush, close, and recovery.
+Runtime metadata records only the native library's file name, size, and digest;
+it does not expose its host filesystem path.
 
 Every Durable run asserts the pending statement count, commits exactly one
 measured flush, opens a fresh immutable reader, and reconciles count, trace-flag
