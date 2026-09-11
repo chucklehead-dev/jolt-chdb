@@ -9,6 +9,11 @@ only after native success, and published by an explicit later flush.
 The primary acceptance workload is 512 rows per `FORMAT JSONEachRow` statement.
 Encoding-inclusive Durable admission must have p50 batch latency no greater
 than 20.48 ms (25,000 rows/s) and p99 no greater than 25.60 ms (20,000 rows/s).
+The qualification profile measures 100 batches per trial and five trials per
+mode, so each trial p99 has 100 observations and the report's
+`batch-latency-across-trials` summary has 500. The smaller `smoke` and `probe`
+profiles are causal diagnostics only; their p99 values do not qualify the
+latency target.
 The report keeps these measurements separate:
 
 - encoding-inclusive Durable admission before flush;
@@ -48,6 +53,12 @@ and severity sums, total body bytes, question-mark bodies, and min/max trace and
 span IDs. The instrumented control additionally asserts one classification,
 native execution, immutable WAL PUT, and head CAS per expected operation. It
 records only operation labels, counts, byte counts, and timings.
+
+The instrumented benchmark deliberately does not replace the production
+`publish-wal!` operation. That closure owns the complete operation retry budget,
+including the lease-aware stop predicate. Immutable WAL PUT and head-CAS timing
+come from the instrumented backend instead, preserving retry and fencing
+semantics while still proving that publication occurred.
 
 ## Current-main diagnostic result
 

@@ -12,7 +12,6 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
-            [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.local-posix :as local]
             [jdbc.chdb.durable.policy :as policy]
@@ -181,6 +180,10 @@
                    #(backend/download-to-file! delegate key path)))))
 
 (defn- timed-operations [metrics]
+  ;; Do not replace :publish-wal!. The production writer operation closes over
+  ;; its complete retry options, including the lease-aware :stopped? predicate.
+  ;; Publication remains visible through the timed immutable PUT and head-CAS
+  ;; backend operations without changing that control contract.
   {:classification-sql!
    (fn [sql params]
      (timed-stage metrics :classification-sql 0
@@ -192,11 +195,18 @@
    :execute-native!
    (fn [handle sql params]
      (timed-stage metrics :native-execute 0
-                  #(chdb/execute-any handle sql params)))
-   :publish-wal!
-   (fn [store token payload]
-     (timed-stage metrics :publish-wal (alength payload)
-                  #(control/publish-wal-bytes! store token payload)))})
+                  #(chdb/execute-any handle sql params)))})
+
+(defn- instrumentation-contract! []
+  (let [operations (timed-operations (atom {}))]
+    (when (contains? operations :publish-wal!)
+      (throw (ex-info
+              "benchmark must retain the production retry-aware WAL publisher"
+              {:operation :publish-wal!})))
+    {:publish-wal-operation :production
+     :retry-options :writer-owned
+     :publication-observation [:backend/put-bytes-if-absent
+                               :backend/replace-if-match]}))
 
 (defn- delete-tree! [^File root]
   (when (.exists root)
@@ -316,6 +326,7 @@
                    :batch-size batch-size :batches batches
                    :question-mark-every-row? question-mark?
                    :batch-latency (latency-summary samples)
+                   ::batch-latency-samples samples
                    :ingest-ms (ms ingest-nanos)
                    :ingest-rows-per-second
                    (/ (double (* batch-size batches 1000000000)) ingest-nanos)
@@ -423,7 +434,7 @@
               stage-values @metrics
               expected-stage-calls
               (cond-> {:classification-sql batches :native-classify batches
-                       :native-execute batches :publish-wal 1
+                       :native-execute batches
                        :backend/put-bytes-if-absent 1
                        :backend/replace-if-match 1}
                 encode-included?
@@ -437,7 +448,8 @@
                                     {:stage stage :expected expected-calls
                                      :actual actual-stage-calls}))))
               _ (when-not (= (:pending-wal-bytes pending)
-                             (get-in stage-values [:publish-wal :bytes]))
+                             (get-in stage-values
+                                     [:backend/put-bytes-if-absent :bytes]))
                   (throw (ex-info "published WAL byte count mismatch"
                                   {:pending pending :stages stage-values})))]
             (reset! trial-result
@@ -510,6 +522,7 @@
          :batch-size batch-size :batches batches
          :question-mark-every-row? question-mark?
          :batch-latency (latency-summary samples)
+         ::batch-latency-samples samples
          :ingest-ms (ms elapsed)
          :ingest-rows-per-second
          (/ (double (* batch-size batches 1000000000)) elapsed)
@@ -639,7 +652,7 @@
 
 (defn- run-config [configuration]
   (let [{:keys [trials modes]} configuration
-        results
+        measured-results
         (reduce
          (fn [acc trial]
            (let [rotation (mod (dec trial) (count modes))
@@ -669,27 +682,35 @@
                                  :payload-bytes :statement-bytes :recovery]))
                   (conj acc result)))
               acc ordered-modes)))
-         [] (range 1 (inc trials)))]
+         [] (range 1 (inc trials)))
+        results (mapv #(dissoc % ::batch-latency-samples) measured-results)]
     {:configuration (dissoc configuration :modes)
      :results results
      :summaries
      (into {}
            (map (fn [mode]
-                  (let [selected (filterv #(= mode (:mode %)) results)]
+                  (let [selected (filterv #(= mode (:mode %)) measured-results)
+                        batch-latency
+                        (latency-summary
+                         (mapcat ::batch-latency-samples selected))]
                     [mode
                      (if (= mode :ordinary-native-preencoded)
-                       (trial-rate-summary selected :ingest-rows-per-second
-                                           :ingest-ms)
+                       (assoc
+                        (trial-rate-summary selected :ingest-rows-per-second
+                                            :ingest-ms)
+                        :batch-latency-across-trials batch-latency)
                        {:admission
                         (trial-rate-summary selected :ingest-rows-per-second
                                             :ingest-ms)
                         :persisted
                         (trial-rate-summary selected :persisted-rows-per-second
-                                            :persisted-ms)})])))
+                                            :persisted-ms)
+                        :batch-latency-across-trials batch-latency})])))
            modes)}))
 
 (defn run! [profile]
-  (let [smoke? (= profile :smoke)
+  (let [instrumentation-contract (instrumentation-contract!)
+        smoke? (= profile :smoke)
         probe? (= profile :probe)
         configs
         (cond
@@ -706,11 +727,11 @@
                     :ordinary-native-preencoded]}]
 
           :else
-          [{:label :batched-512 :batch-size 512 :batches 40
+          [{:label :batched-512 :batch-size 512 :batches 100
             :warmup-batches 2 :trials 5 :question-mark? false
             :modes [:durable-encode-included :durable-preencoded
                     :ordinary-native-preencoded]}
-           {:label :batched-512-question-mark :batch-size 512 :batches 40
+           {:label :batched-512-question-mark :batch-size 512 :batches 100
             :warmup-batches 2 :trials 5 :question-mark? true
             :modes [:durable-preencoded]}
            {:label :single-row :batch-size 1 :batches 128
@@ -736,6 +757,7 @@
     {:schema-version 1
      :profile profile
      :runtime runtime
+     :instrumentation-contract instrumentation-contract
      :workload {:shape :clickstack-otel-log-jsoneachrow
                 :invariants [:exact-recovered-count :exact-trace-flags-sum
                              :pending-wal-statement-count
