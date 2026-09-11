@@ -155,6 +155,9 @@
            :durable-file-allocation
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-file-allocation"]}
+           :durable-throughput
+           {:extra-paths ["bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-throughput"]}
            ;; JVM-only, dev-time Typed Clojure pilot. Neither this path nor the
            ;; checker dependency is visible to ordinary/Jolt consumers.
            :typed-check {:extra-paths ["script" "typed"]

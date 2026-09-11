@@ -3,4 +3,5 @@
 .native/
 *.chdb/
 target/formal/quint/
+target/profiles/
 _apalache-out/
