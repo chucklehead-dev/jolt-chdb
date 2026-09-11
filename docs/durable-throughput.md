@@ -62,7 +62,7 @@ including the lease-aware stop predicate. Immutable WAL PUT and head-CAS timing
 come from the instrumented backend instead, preserving retry and fencing
 semantics while still proving that publication occurred.
 
-## Current-main diagnostic result
+## Pre-optimization diagnostic result
 
 The September 10, 2026 probe at main `5bbe8651b6c24cd713a826a8a9a0f3fcb56fcd24`
 used Jolt 0.8.3, Chez 10.4.1, chDB `26.7.2-rc.2`, and a 348,877-byte statement
@@ -111,6 +111,30 @@ The lowest-risk optimization order is:
 Do not overlap WAL construction with native execution under V1. That changes a
 failure cut: native success followed by encoder failure could leave engine state
 without replay state.
+
+## Generic `data.json` transfer probe
+
+A bounded paired probe compared the prior `data.json` pin
+`932444043c0c06f9e295ba4963419b2481e9dd07` with merge
+`95b1e6430b48ce4fb4e649656b79f7cabc4702a7`, changing no Durable code. Both
+runs used the same 512-row workload, Jolt 0.8.3, Chez 10.4.1, and native chDB
+digest, then reopened immutable state and reconciled the same aggregates.
+
+| Path or isolated stage | Prior pin | Bulk-run pin |
+| --- | ---: | ---: |
+| Durable encoding-inclusive admission | 133.08 rows/s | 178.05 rows/s |
+| Durable pre-encoded admission | 171.91 rows/s | 206.30 rows/s |
+| Generic `data.json` WAL encoding, p50 | 1,786.69 ms | 851.59 ms |
+| Exporter encoding, p50 | 878.82 ms | 803.06 ms |
+| Placeholder rewrite, p50 | 719.87 ms | 715.21 ms |
+
+The generic WAL stage also allocated about 45 percent fewer Scheme heap bytes
+in this probe. The unchanged placeholder stage acts as a useful negative
+control. Each side has only two latency samples, and the ordinary native
+control varied in the opposite direction, so these figures establish a causal
+direction and justify the dependency update but do not qualify latency or tail
+throughput. The remaining gap is still dominated by managed encoding and
+placeholder handling.
 
 ## AWS S3 qualification design
 
