@@ -9,6 +9,16 @@
   `OutputStreamWriter.append(CharSequence, start, end)` range fix tracked by
   `casselc/jolt#73`; writer construction now rejects affected runtimes before
   acquisition or native work instead of risking malformed replay bytes.
+- Raise the supported Jolt floor to 0.8.6 and make every hosted workflow build
+  and verify the same immutable revision from the canonical append-only
+  `integration/aspects` line. Multi-runtime ABI qualification accepts the exact
+  release or a git-described compiler derived from it, while the install action
+  separately asserts the selected compiler commit and complete version banner;
+  causal cross-file mutants prevent that hosted pin from drifting away from the
+  checked compatibility manifest.
+  The main CI gate also makes an unsupported WAL byte-writer capability a
+  failure, so its functional and Hegel coverage cannot be reported green
+  through a skip.
 
 - Preserve the original SQL object when an empty-parameter request contains no
   question mark, avoiding placeholder output construction while retaining the

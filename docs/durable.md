@@ -565,10 +565,10 @@ conformance gates.
 
 ## Development commands
 
-The commands below assume `jolt` selects Jolt v0.8.3 with Chez 10.4.1. In the
-shared `ai-src` maintainer workspace, run them through the pinned wrapper named
-in the parent `AGENTS.md`; external checkouts should provide the same versions
-through their own toolchain setup.
+The commands below assume `jolt` selects the pinned Jolt v0.8.6 aspect compiler
+with Chez 10.4.1. In the shared `ai-src` maintainer workspace, run them through
+the pinned wrapper named in the parent `AGENTS.md`; external checkouts should
+provide the same versions through their own toolchain setup.
 
 ```sh
 jolt -M:durable-open-test

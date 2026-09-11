@@ -34,9 +34,12 @@ positional parameter API:
                      :where [:= :id 1]}))
 ```
 
-Jolt 0.8.3 or newer is required. The repository uses the released unboxed-array,
-block-copy, and current FFI contracts directly and declares that floor with
-`:jolt/min-version`; there is no older-Jolt compatibility lane.
+Jolt 0.8.6 or newer is required. Durable WAL streaming additionally probes for
+the `OutputStreamWriter.append(CharSequence, start, end)` correction carried by
+the pinned aspect-capable compiler used in CI. Writer construction fails before
+acquisition or native work when that capability is absent. The repository
+declares the release floor with `:jolt/min-version`; there is no older-Jolt
+compatibility lane.
 
 `nil` has no inferable ClickHouse type. Use `(jdbc.chdb/typed-param
 "Nullable(String)" nil)` when binding it. Transactions and generated keys are

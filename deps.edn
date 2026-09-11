@@ -1,5 +1,5 @@
 {:paths ["src" "resources"]
- :jolt/min-version "0.8.3"
+ :jolt/min-version "0.8.6"
  :deps {io.github.casselc/db
         {:git/url "https://github.com/casselc/db.git"
          :git/sha "a5bf25d9e141e8dcf28d6d07cd053fceb0019563"}

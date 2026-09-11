@@ -95,7 +95,8 @@ successful close publishes a full checkpoint and never serializes or logs the
 values. Streaming inserts remain outside the Durable writer contract. Read
 queries and `query-bytes` also retain native bound parameters.
 
-Run the focused gate with Jolt v0.8.3 and Chez 10.4.1 (the shared maintainer
+Run the focused gate with the pinned Jolt v0.8.6 aspect compiler and Chez
+10.4.1 (the shared maintainer
 workspace supplies its pinned wrapper through the parent `AGENTS.md`):
 
 ```sh

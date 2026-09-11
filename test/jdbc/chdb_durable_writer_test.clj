@@ -14,6 +14,9 @@
 
 (def failures (atom 0))
 
+(defn- require-wal-byte-writer-capability? []
+  (= "1" (System/getenv "JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER")))
+
 (def ^:private base-options support/base-options)
 
 (defn- check [label expected actual]
@@ -1186,8 +1189,12 @@
       (do
         (run-deterministic-checks!)
         (run-stateful-property!))
-      (println (str "SKIPPED Durable writer functional and Hegel checks: "
-                    "WAL byte-writer capability unsupported")))
+      (do
+        (println (str "SKIPPED Durable writer functional and Hegel checks: "
+                      "WAL byte-writer capability unsupported"))
+        (when (require-wal-byte-writer-capability?)
+          (swap! failures inc)
+          (println "  FAIL CI requires the WAL byte-writer capability"))))
     (when-not (zero? @failures)
       (throw (ex-info (str @failures " Durable writer checks failed")
                       {:failures @failures})))

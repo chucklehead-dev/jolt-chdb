@@ -22,7 +22,14 @@ expected_bb_tag=$(compat_value babashka tag)
 expected_bb_commit=$(compat_value babashka tag-commit)
 expected_jdk_version=$(compat_value jvm jdk-version)
 
-test "$("${jolt_command[@]}" --version)" = "jolt v$expected_jolt_version"
+actual_jolt_version=$("${jolt_command[@]}" --version)
+case "$actual_jolt_version" in
+  "jolt v$expected_jolt_version"|"jolt v$expected_jolt_version"-[0-9]*-g[0-9a-f]*) ;;
+  *)
+    echo "expected Jolt v$expected_jolt_version release or derived commit, got: $actual_jolt_version" >&2
+    exit 1
+    ;;
+esac
 test "$(bb --version)" = "babashka $expected_bb_tag"
 test "$(bb describe | bb -i -e '(print (:git/sha (read-string (slurp *in*))))')" = \
   "$expected_bb_commit"

@@ -65,6 +65,6 @@ separate project.
 One validated local run used checker 1.3.0, Clojure 1.12.5, Corretto JDK 25.0.2,
 and Linux x86-64. With dependencies cached, it took 15.61 seconds and peaked at
 496460 KiB RSS. The hosted job has a ten-minute timeout; record its actual
-billed duration from the first CI run. Released Jolt 0.8.3 remains the
-production runtime and is validated separately by `jolt -M:abi-test` and
-`jolt -M:test`.
+billed duration from the first CI run. The pinned Jolt 0.8.6 aspect compiler
+remains the production runtime and is validated separately by
+`jolt -M:abi-test` and `jolt -M:test`.

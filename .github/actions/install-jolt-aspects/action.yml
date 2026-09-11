@@ -1,0 +1,76 @@
+name: Install pinned Jolt aspect compiler
+description: Build and cache the exact aspect-capable Jolt compiler required by jolt-chdb
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the pinned Jolt compiler
+      id: cache-jolt
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.tool_cache }}/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
+        key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
+
+    - name: Install compiler build dependencies
+      if: steps.cache-jolt.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev libncurses-dev uuid-dev
+
+    - name: Cache Chez Scheme 10.4.1
+      if: steps.cache-jolt.outputs.cache-hit != 'true'
+      id: cache-chez
+      uses: actions/cache@v4
+      with:
+        path: /opt/chez
+        key: chez-${{ runner.os }}-${{ env.ImageOS }}-v10.4.1-x11off-pic
+
+    - name: Build Chez Scheme 10.4.1
+      if: steps.cache-jolt.outputs.cache-hit != 'true' && steps.cache-chez.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git "$RUNNER_TEMP/chez-src"
+        cd "$RUNNER_TEMP/chez-src"
+        ./configure --installprefix=/opt/chez --threads --disable-x11 CFLAGS+=-fPIC
+        make -j"$(nproc)"
+        sudo make install
+        sudo chown -R "$USER" /opt/chez
+
+    - name: Build the exact Jolt compiler
+      if: steps.cache-jolt.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
+        chmod +x /opt/chez/bin/chez
+        test "$(/opt/chez/bin/chez --version)" = "10.4.1"
+
+        source_dir="$RUNNER_TEMP/jolt-aspects-source"
+        git init "$source_dir"
+        git -C "$source_dir" remote add origin https://github.com/casselc/jolt.git
+        git -C "$source_dir" fetch --depth 1 origin fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
+        git -C "$source_dir" checkout --detach FETCH_HEAD
+        test "$(git -C "$source_dir" rev-parse HEAD)" = "fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        git -C "$source_dir" submodule update --init --recursive --depth 1
+
+        PATH="/opt/chez/bin:$PATH" \
+          JOLT_VERSION="v0.8.6-219-gfd216943" \
+          make -C "$source_dir" -j1 jolt-release
+
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        mkdir -p "$install_dir"
+        cp "$source_dir/target/release/jolt" "$install_dir/jolt"
+        chmod +x "$install_dir/jolt"
+
+    - name: Select and verify the pinned Jolt compiler
+      shell: bash
+      run: |
+        set -euo pipefail
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        actual_version="$("$install_dir/jolt" --version)"
+        echo "Built $actual_version from casselc/jolt@fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        test "$actual_version" = "jolt v0.8.6-219-gfd216943"
+        echo "$install_dir" >> "$GITHUB_PATH"
