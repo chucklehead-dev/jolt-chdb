@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse one request-local prepared query for Durable mutation classification
+  and native execution, eliminating a second placeholder rewrite without a
+  global cache or any change to WAL-before-mutation ordering. Prepared values
+  are explicitly ephemeral because typed bindings can contain secrets.
+
 - Add a reproducible production-path Durable JSONEachRow throughput harness
   with explicit 512-row targets of at least 25,000 rows/s at p50 and 20,000
   rows/s at p99, causal instrumentation and exact recovery reconciliation.

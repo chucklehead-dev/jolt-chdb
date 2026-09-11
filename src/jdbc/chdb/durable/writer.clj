@@ -144,9 +144,23 @@
       (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
     line))
 
-(defn- execute-admitted! [writer sql params line]
-  (let [result ((:execute-native! (:operations writer))
-                (:handle writer) sql params)]
+(defn- prepare-execution! [writer sql params]
+  (let [operations (:operations writer)
+        prepare-query! (:prepare-query! operations)
+        execute-prepared-native! (:execute-prepared-native! operations)]
+    (if (and prepare-query! execute-prepared-native!)
+      (let [prepared (prepare-query! sql params)]
+        {:classification-sql (chdb/prepared-sql prepared)
+         :execute! #(execute-prepared-native! (:handle writer) prepared)})
+      ;; Preserve the raw start! test seam and third-party operation overrides.
+      ;; Public Durable open supplies the paired prepared-query operations.
+      {:classification-sql
+       ((:classification-sql! operations) sql params)
+       :execute!
+       #((:execute-native! operations) (:handle writer) sql params)})))
+
+(defn- execute-admitted! [writer execute! line]
+  (let [result (execute!)]
     ;; Local failure must not create recovery state. An exact materialized
     ;; statement enters V1 WAL; a bound mutation instead requires a full
     ;; checkpoint because V1 has no typed-parameter WAL record.
@@ -161,14 +175,17 @@
   (let [line (prepare-wal-line! writer sql)]
     ((:analyze-execute! (:operations writer))
      (:handle writer) sql (:database writer))
-    (execute-admitted! writer sql [] line)))
+    (execute-admitted!
+     writer
+     #((:execute-native! (:operations writer)) (:handle writer) sql [])
+     line)))
 
 (defn- do-sql! [writer sql params]
   (require-string! sql "sql")
   (when-not (sequential? params)
     (fail! ::invalid-options "params must be sequential"))
-  (let [classification-sql
-        ((:classification-sql! (:operations writer)) sql params)
+  (let [{:keys [classification-sql execute!]}
+        (prepare-execution! writer sql params)
         analysis ((:classify! (:operations writer))
                   (:handle writer) classification-sql (:database writer))]
     (case (:query-class analysis)
@@ -184,7 +201,7 @@
         (let [line (if (seq params)
                      (do (validate-statement-size! sql) nil)
                      (prepare-wal-line! writer sql))]
-          (execute-admitted! writer sql params line)))
+          (execute-admitted! writer execute! line)))
 
       (policy/authorize-query! analysis))))
 
