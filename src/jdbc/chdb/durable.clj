@@ -505,6 +505,7 @@
          force? false
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
+  (writer/require-wal-byte-writer-capability!)
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
   (let [configured-operations operations
         configured-preparation?

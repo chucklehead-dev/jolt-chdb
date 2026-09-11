@@ -12,11 +12,17 @@
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.native :as native])
-  (:import [java.util.concurrent ArrayBlockingQueue]))
+  (:import [java.io ByteArrayOutputStream OutputStreamWriter]
+           [java.util.concurrent ArrayBlockingQueue]))
 
 (def max-statement-bytes (* 64 1024 1024))
 (def max-wal-segment-bytes (* 128 1024 1024))
 (def default-queue-capacity 64)
+
+(def ^:private wal-byte-writer-unavailable-message
+  (str "Durable WAL streaming requires correct "
+       "OutputStreamWriter.append(CharSequence, start, end); "
+       "use a Jolt build containing casselc/jolt#73"))
 
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
@@ -66,8 +72,37 @@
       (fence-invalid-time! lease-state))
     value))
 
+(defn- probe-output-stream-writer-ranged-append []
+  (try
+    (let [output (ByteArrayOutputStream.)
+          text-output (OutputStreamWriter. output "UTF-8")]
+      ;; The affected Jolt implementation ignored the range and appended the
+      ;; complete value, which corrupts data.json whenever it flushes a run.
+      ;; An ASCII probe avoids conflating that defect with Jolt's documented
+      ;; code-point string indexing.
+      (.append text-output "abc" 1 2)
+      (.flush text-output)
+      (= [98] (vec (.toByteArray output))))
+    (catch Throwable _ false)))
+
+(def ^:private output-stream-writer-ranged-append-capable?
+  (delay (probe-output-stream-writer-ranged-append)))
+
+(defn require-wal-byte-writer-capability!
+  "Fail before Durable writer effects when UTF-8 streaming is not byte-exact."
+  []
+  (when-not @output-stream-writer-ranged-append-capable?
+    (fail! ::wal-byte-writer-unavailable
+           wal-byte-writer-unavailable-message))
+  true)
+
 (defn- wal-line [sql]
-  (.getBytes (str (json/write-str {"sql" sql}) "\n") "UTF-8"))
+  (let [output (ByteArrayOutputStream.)
+        text-output (OutputStreamWriter. output "UTF-8")]
+    (json/write {"sql" sql} text-output)
+    (.append text-output "\n")
+    (.flush text-output)
+    (.toByteArray output)))
 
 (defn- append-wal! [writer line]
   (swap! (:wal-state writer)
@@ -410,6 +445,7 @@
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
            engine-metadata]
     :or {queue-capacity default-queue-capacity}}]
+  (require-wal-byte-writer-capability!)
   (when-not store (fail! ::invalid-options "store is required"))
   (when-not (map? token) (fail! ::invalid-options "token is required"))
   (when-not handle (fail! ::invalid-options "handle is required"))

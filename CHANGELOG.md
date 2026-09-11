@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Stream Durable V1 WAL JSON through the generic `data.json` writer directly
+  into UTF-8 bytes, avoiding an intermediate complete JSON string while keeping
+  statement and segment validation before native mutation and WAL append after
+  native success. This path requires the Jolt
+  `OutputStreamWriter.append(CharSequence, start, end)` range fix tracked by
+  `casselc/jolt#73`; writer construction now rejects affected runtimes before
+  acquisition or native work instead of risking malformed replay bytes.
+
 - Preserve the original SQL object when an empty-parameter request contains no
   question mark, avoiding placeholder output construction while retaining the
   lexical scanner whenever a question mark is present.
