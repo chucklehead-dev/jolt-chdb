@@ -24,6 +24,16 @@ until a later run supplies at least 100 observations. Under the nearest-rank
 calculation used here, a p99 over fewer than 100 samples degenerates to the
 observed maximum; do not quote that number as a qualified tail percentile.
 
+Trial workload construction is bounded by the configured batch size. Warmup
+and measured row maps are generated one batch at a time, pre-encoded modes keep
+only the next statement outside the admission timer, and expected recovery
+aggregates are folded into scalars as each batch is consumed. Row generation
+and pre-encoding remain outside pre-encoded timing; encoding remains inside
+encoding-inclusive timing. The harness therefore does not retain the complete
+approximately 50,000-row workload or a second copy for reconciliation.
+Aggregate admission time is the sum of those same per-batch samples, excluding
+row generation, oracle folding, and counter collection between batches.
+
 The report keeps these measurements separate:
 
 - encoding-inclusive Durable admission before flush;
