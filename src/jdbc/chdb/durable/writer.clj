@@ -164,11 +164,27 @@
   ((:query-bytes-native! (:operations writer))
    (:handle writer) sql params options))
 
+(defn- exact-statement-bytes-exceed? [^String sql ^long limit]
+  (> (alength (.getBytes sql "UTF-8")) limit))
+
+(defn- statement-bytes-exceed?
+  "Whether `sql` encodes to more than `limit` UTF-8 bytes.
+
+  Jolt indexes Unicode scalar values, each of which occupies one to four UTF-8
+  bytes. The JVM indexes UTF-16 code units; valid pairs need four bytes for two
+  units and an isolated surrogate is replaced within the same conservative
+  bound. Character count therefore proves the common far-from-limit cases. An
+  exact encoding remains authoritative inside the narrow uncertain band."
+  [^String sql ^long limit]
+  (let [characters (.length sql)]
+    (cond
+      (> characters limit) true
+      (<= characters (quot limit 4)) false
+      :else (exact-statement-bytes-exceed? sql limit))))
+
 (defn- validate-statement-size! [sql]
-  (let [statement-bytes (alength (.getBytes sql "UTF-8"))]
-    (when (> statement-bytes max-statement-bytes)
-      (fail! ::limit-exceeded "Durable SQL statement exceeds 64 MiB"))
-    statement-bytes))
+  (when (statement-bytes-exceed? sql max-statement-bytes)
+    (fail! ::limit-exceeded "Durable SQL statement exceeds 64 MiB")))
 
 (defn- prepare-wal-line! [writer sql]
   (validate-statement-size! sql)
