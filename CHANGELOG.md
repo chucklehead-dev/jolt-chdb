@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Pin all hosted Jolt lanes and performance provenance fixtures to the merged
+  `casselc/jolt` `OutputStreamWriter` fast path. Each consuming workflow now
+  checks the shared install action's exact source revision and version output,
+  as well as the selected binary banner, before running its gate.
+
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
   preserving complete validation before recovery effects and failure ordering.

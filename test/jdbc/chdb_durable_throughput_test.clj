@@ -33,9 +33,9 @@
         report-contract @#'throughput/report-contract
         wal-size-observation #'throughput/wal-size-observation
         recovery-memory-observation #'throughput/recovery-memory-observation
-        clean-runtime {:jolt-version "jolt v0.8.6"
+        clean-runtime {:jolt-version "jolt v0.8.6-8-gcf0b6928"
                        :jolt-source-sha
-                       "fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+                       "cf0b69284b17d390449517c29fd418ef317d34cb"
                        :jolt-executable {:bytes 1 :sha256 "jolt-digest"}
                        :started-at "2026-09-11T00:00:00Z"
                        :native-library {:bytes 1 :sha256 "digest"}
@@ -149,7 +149,7 @@
            :jdbc.chdb-durable-throughput/invalid-provenance
            (rejected-type
             #(provenance! :scale (assoc clean-runtime
-                                        :jolt-source-sha "fd216943"))))
+                                        :jolt-source-sha "cf0b6928"))))
     (check "empty Jolt executable provenance fails closed"
            :jdbc.chdb-durable-throughput/missing-provenance
            (rejected-type
