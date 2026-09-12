@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Pin `casselc/data.json` to merge `36b19024`, whose direct long-string reader
+  scan removes the dominant per-character recovery allocation while retaining
+  its existing escape, surrogate, control, and EOF semantics. A source-candidate
+  comparison reduced one immutable 6,144-row, 13-record recovery open from
+  12.159 s to 3.806 s; a fresh-cache consumer run selected the byte-identical
+  merged source and retained the allocation reduction and exact reconciliation,
+  but took 9.304 s. These bounded diagnostics do not qualify a stable latency or
+  representative percentile; the 80% Rust target remains open. The
+  strict-decoder compiler pin remains `120643d6`.
+
 - Avoid an unconditional statement-sized UTF-8 allocation when Durable checks
   the 64 MiB mutation limit. Conservative character-count bounds now settle
   ordinary far-from-limit statements, while the narrow uncertain band retains

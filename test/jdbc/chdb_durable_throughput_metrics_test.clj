@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-throughput-metrics-test
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [jdbc.chdb-durable-throughput-metrics :as metrics]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.s3 :as s3])
@@ -16,6 +17,14 @@
 
 (defn- rejected [f]
   (try (f) nil (catch Throwable error error)))
+
+(def ^:private expected-data-json-coordinate
+  '{:git/url "https://github.com/casselc/data.json.git"
+    :git/sha "36b1902459b39487cd518c90e82d1848db3c043b"})
+
+(defn- exact-data-json-pin? [deps]
+  (= expected-data-json-coordinate
+     (get-in deps [:deps 'org.clojure/data.json])))
 
 (defn run-checks! []
   (println "Durable throughput metrics redaction contracts")
@@ -293,7 +302,9 @@
                     (pr-str [(ex-message failure) (ex-data failure)]) %)
                   ["signed-url-canary" "session-canary" "etag-canary"]))))
 
-  (let [workflow (slurp ".github/workflows/durable-aws.yml")
+  (let [deps (edn/read-string (slurp "deps.edn"))
+        durable-doc (slurp "docs/durable-throughput.md")
+        workflow (slurp ".github/workflows/durable-aws.yml")
         action (slurp ".github/actions/install-jolt-aspects/action.yml")
         benchmark (slurp "bench/jdbc/chdb_durable_throughput.clj")
         metrics-source
@@ -304,6 +315,25 @@
                 (file-seq (java.io.File. ".github/workflows")))
         hosted-text (str action "\n" (str/join "\n" (map slurp workflow-files)))
         stale-pin (str "fd" "216943")]
+    (check "project resolves the exact merged data.json recovery fast path"
+           true (exact-data-json-pin? deps))
+    (check "exact-pin contract rejects the superseded data.json revision"
+           false
+           (exact-data-json-pin?
+            (assoc-in deps
+                      [:deps 'org.clojure/data.json :git/sha]
+                      "95b1e6430b48ce4fb4e649656b79f7cabc4702a7")))
+    (check "exact-pin contract rejects a different data.json source"
+           false
+           (exact-data-json-pin?
+            (assoc-in deps
+                      [:deps 'org.clojure/data.json :git/url]
+                      "https://github.com/clojure/data.json.git")))
+    (check "recovery performance documentation binds the merged reader pin"
+           true
+           (str/includes?
+            durable-doc
+            "36b1902459b39487cd518c90e82d1848db3c043b"))
     (check "throughput waits for successful provider qualification"
            true
            (and (str/includes? workflow "needs: s3-provider")
