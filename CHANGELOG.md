@@ -7,6 +7,12 @@
   checks the shared install action's exact source revision and version output,
   as well as the selected binary banner, before running its gate.
 
+- Add a manual cross-binding Durable recovery oracle that makes Jolt and a
+  pinned `chdb-rust` revision recover one byte-identical immutable local
+  fixture with the same native library, aggregate reconciliation, cache
+  condition, per-trial provenance, peak RSS, and explicit 80% throughput / 1.25x
+  elapsed acceptance ratios.
+
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
   preserving complete validation before recovery effects and failure ordering.

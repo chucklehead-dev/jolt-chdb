@@ -164,6 +164,9 @@
            :durable-throughput-contract-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-test"]}
+           :durable-cross-binding-recovery
+           {:extra-paths ["bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
            ;; JVM-only, dev-time Typed Clojure pilot. Neither this path nor the
            ;; checker dependency is visible to ordinary/Jolt consumers.
            :typed-check {:extra-paths ["script" "typed"]

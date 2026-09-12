@@ -178,6 +178,73 @@ The paths under `:output-contract` that describe those values and recovery
 memory are relative to each entry under `:configurations[*] :results[*]`, as
 recorded by `:relative-trial-paths-to :configuration-result`.
 
+## Matched chdb-rust recovery oracle
+
+The ordinary scale harness proves Jolt recovery correctness and absolute
+latency, but it cannot by itself support a Rust ratio: a separately generated
+Rust workload may have different statement bytes, manifest segmentation, or
+cache history. The manual
+[`profile-durable-cross-binding-recovery.sh`](../scripts/profile-durable-cross-binding-recovery.sh)
+runner therefore creates one immutable Durable object with the pinned
+`chdb-rust` revision, then gives that exact object to both read-only recovery
+paths. Every trial validates the complete file/link inventory before and after,
+opens a fresh process, native engine and scratch tree, reconciles the same nine
+ClickStack aggregates, and includes close in its timed region.
+
+The local providers have intentionally different private ETag representations:
+Jolt stores an envelope while Rust uses a local head-version chain. The matched
+local oracle must not silently compare those different physical stores. It
+uses Rust's fixture bytes as the authority and a benchmark-only raw read-only
+Jolt adapter. This isolates protocol recovery and native replay. Existing Jolt
+scale results remain the evidence for production local-provider overhead. A
+later S3 comparison can use both production S3 providers against an immutable
+copied prefix, because S3 supplies the shared physical object boundary.
+
+The checked condition is a warm provider cache with a fresh process, engine,
+and scratch tree for every measured trial. A content-addressed run manifest
+requires a successful Rust prime followed by a successful Jolt prime, then
+five or more trials in an exact alternating order. The summarizer rejects a
+missing prime, an extra or missing numbered result/time file, a reused process
+ID, or a workload/configuration mismatch. Local cold-cache claims would
+require privileged OS cache eviction or separately justified equivalent
+machinery and are deliberately not inferred from directory copies. With five
+trials, p50 is descriptive; p95 and p99 are explicitly exploratory rather than
+tail-qualification statistics.
+
+Run from a clean checkout with the exact Jolt executable and the same native
+library used to compile the Rust helper:
+
+```sh
+scripts/profile-durable-cross-binding-recovery.sh \
+  target/profiles/cross-binding-recovery \
+  /absolute/path/to/jolt JOLT_SOURCE_COMMIT \
+  /absolute/path/to/libchdb.so
+```
+
+The default fixture is the scale-512 shape: two warmup batches plus 100 measured
+512-row batches, published as separate warmup and measured WAL segments after
+the schema segment. The summary fails closed unless the fixture producer and
+every prime/measured process name the same exact native library, header, and
+version. It also checks the full Jolt and `chdb-rust` source revisions,
+toolchain versions, executable digests, a clean exact harness commit or
+content-addressed dirty diff, Durable manifest/WAL shape, workload, aggregate
+reconciliation, inventory, and cache condition. The acceptance metric is only
+the in-region read-only open, aggregate reconciliation, and close. For that
+region it reports `Jolt throughput / Rust throughput` and `Jolt elapsed / Rust
+elapsed`; the target is at least `0.80` and at most `1.25`, respectively. A
+separate whole-process diagnostic uses GNU time wall duration and includes
+executable/runtime initialization, dependency loading, provenance/inventory
+work, recovery, and report emission. It is not labeled or used as startup.
+
+The output directory must be absent or empty and is never silently replaced.
+It contains the immutable fixture, content-addressed harness state and patch,
+run manifest, prime/per-trial JSON, GNU-time wall/RSS files, and
+`reports/summary.json`. By default it also contains the exact Cargo target;
+`BENCH_RUST_TARGET_DIR` may name a previously compiled target for bounded
+reruns. The Rust dependency is pinned to
+full commit `e685da930ecf02198c0b9e72a412cbc25842deb1`; its lock file is part of
+the harness evidence. This is an opt-in qualification, not a CI timing gate.
+
 The instrumented benchmark deliberately does not replace the production
 `publish-wal!` operation. That closure owns the complete operation retry budget,
 including the lease-aware stop predicate. Immutable WAL PUT and head-CAS timing
