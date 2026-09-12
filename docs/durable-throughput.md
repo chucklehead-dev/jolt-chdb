@@ -366,8 +366,9 @@ dependency-level optimization; Durable's WAL bytes, strict UTF-8 validation,
 complete validation before replay, record ordering, checksums, and read-only
 recovery semantics do not change.
 
-A bounded paired diagnostic opened the same immutable 6,144-row, 13-record WAL
-fixture before and after the reader change. The exact compiler remained
+A bounded source-candidate diagnostic opened the same immutable 6,144-row,
+13-record WAL fixture before and after the reader change. The exact compiler
+remained
 `casselc/jolt` `120643d6bc322800a700e870de5c8087ad6085fa`, the native library and
 fixture were byte-identical, and operation counts plus recovered aggregates
 reconciled exactly.
@@ -379,12 +380,22 @@ reconciled exactly.
 | GC time | 0.670 s | 0.164 s |
 | Scheme heap allocation | 4.024 GB | 1.115 GB |
 
-This single-process diagnostic establishes a bounded 3.19x improvement and
-confirms the reader was the dominant measured cost at that scale. It is not a
-representative percentile qualification, does not establish the 80% Rust
-throughput target, and leaves issue #83 open. A future compiler-level portable
-`String.indexOf` fast path may reduce the remaining managed/native boundary
-cost, but is not required for this dependency update.
+That source-candidate comparison establishes a bounded 3.19x improvement and
+confirms the reader was the dominant measured cost at that scale. A subsequent
+fresh-cache consumer run resolved the merged dependency at the exact SHA above
+and used a byte-identical `json.clj`, but opened the same fixture in 9.304 s
+with 8.506 s of process CPU. It retained the reduced allocation shape
+(1.125 GB), the same 13 analyze/native calls, and exact aggregate
+reconciliation, but did not reproduce the earlier absolute latency. With one
+consumer sample, the
+difference cannot be assigned to cache, host conditions, or another cause.
+These diagnostics therefore confirm dependency selection, semantics, and the
+allocation reduction, but do not qualify a stable latency gain.
+
+Neither run is a representative percentile qualification; the evidence does
+not establish the 80% Rust throughput target and leaves issue #83 open. A future
+compiler-level portable `String.indexOf` fast path may reduce the remaining
+managed/native boundary cost, but is not required for this dependency update.
 
 ## AWS S3 qualification design
 
