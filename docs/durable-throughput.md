@@ -214,9 +214,13 @@ tail-qualification statistics.
 Every Jolt prime and measured process uses `-Srepro`, the repository's
 `deps.edn`, and cache/gitlibs directories owned by that one output directory.
 The runner captures `jolt-sdescribe.edn`, requires project-only configuration
-with no user config, and binds its real version suffix to the supplied full
-Jolt source SHA. The report retains the description's file identity and fixed
-resolution/cache-mode labels rather than trusting the source argument alone.
+with no user config, and records three distinct pieces of compiler provenance:
+the caller-asserted full source SHA, the abbreviated revision actually exposed
+by the version banner, and the executable digest. It requires the full assertion
+to start with the banner revision, but does not claim that an eight-character
+banner cryptographically identifies the remaining source digits. The report
+also retains the description's file identity and fixed resolution/cache-mode
+labels rather than trusting the source argument alone.
 The Jolt prime warms this isolated cache before measured processes; compilation
 and dependency resolution remain outside the in-region acceptance timer.
 
@@ -233,7 +237,7 @@ library used to compile the Rust helper:
 ```sh
 scripts/profile-durable-cross-binding-recovery.sh \
   target/profiles/cross-binding-recovery \
-  /absolute/path/to/jolt JOLT_SOURCE_COMMIT \
+  /absolute/path/to/jolt JOLT_SOURCE_SHA_ASSERTED \
   /absolute/path/to/libchdb.so
 ```
 
@@ -241,11 +245,13 @@ The default fixture is the scale-512 shape: two warmup batches plus 100 measured
 512-row batches, published as separate warmup and measured WAL segments after
 the schema segment. The summary fails closed unless the fixture producer and
 every prime/measured process name the same exact native library, header, and
-version. It also checks the full Jolt and `chdb-rust` source revisions,
-toolchain versions, executable digests, a clean exact harness commit or
-content-addressed dirty diff, Durable manifest/WAL shape, workload, aggregate
-reconciliation, inventory, and cache condition. The acceptance metric is only
-the in-region read-only open, aggregate reconciliation, and close. For that
+version. It also checks the caller-asserted full Jolt source revision against
+the executable-confirmed abbreviated banner revision, the full `chdb-rust`
+source revision, toolchain versions, executable digests, a clean exact harness
+commit or content-addressed dirty diff, Durable manifest/WAL shape, workload,
+aggregate reconciliation, inventory, and cache condition. The acceptance
+metric is only the in-region read-only open, aggregate reconciliation, and
+close. For that
 region it reports `Jolt throughput / Rust throughput` and `Jolt elapsed / Rust
 elapsed`; the target is at least `0.80` and at most `1.25`, respectively. A
 separate whole-process diagnostic uses GNU time wall duration and includes

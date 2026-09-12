@@ -204,7 +204,8 @@
     (validate-harness-state! harness)
     {:runtime "jolt"
      :jolt_version (required-env "BENCH_JOLT_VERSION")
-     :jolt_source_sha (required-env "BENCH_JOLT_SOURCE_SHA")
+     :jolt_source_sha_asserted (required-env "BENCH_JOLT_SOURCE_SHA_ASSERTED")
+     :jolt_executable_revision (required-env "BENCH_JOLT_EXECUTABLE_REVISION")
      :jolt_sdescribe (file-metadata "BENCH_JOLT_DESCRIBE")
      :jolt_config_mode "Srepro-project-only"
      :jolt_cache_scope "run-scoped-isolated-after-prime"

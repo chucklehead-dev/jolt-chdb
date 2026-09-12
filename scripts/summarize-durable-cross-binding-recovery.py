@@ -36,16 +36,23 @@ def actual_file_identity(path):
     except OSError as error: fail(f"cannot read {path.name}: {error}")
     return {"file_name": path.name, "bytes": len(data), "sha256": digest(data)}
 
-def validate_jolt_source_binding(version, source_sha):
-    nonempty("Jolt version", version); git_sha("Jolt source SHA", source_sha)
+def validate_jolt_source_evidence(version, source_sha_asserted, executable_revision):
+    nonempty("Jolt version", version)
+    if not isinstance(source_sha_asserted, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha_asserted):
+        fail("caller-asserted Jolt source SHA is not one full 40-character Git SHA")
     if not version.startswith("jolt v"):
         fail("Jolt banner is not an actual jolt --version banner")
+    if not isinstance(executable_revision, str) or not re.fullmatch(r"[0-9a-f]{8,40}", executable_revision):
+        fail("Jolt executable-confirmed revision is not a valid abbreviated Git revision")
     match = re.search(r"-g([0-9a-f]{8,40})$", version)
-    if not match or not source_sha.startswith(match.group(1)):
-        fail("Jolt banner does not identify its full source SHA")
+    if not match or match.group(1) != executable_revision:
+        fail("Jolt banner does not match its executable-confirmed revision")
+    if not source_sha_asserted.startswith(executable_revision):
+        fail("Jolt banner revision does not agree with the caller-asserted source SHA")
 
-def validate_jolt_describe_content(path, version, source_sha, repo=None, gitlibs=None):
-    validate_jolt_source_binding(version, source_sha)
+def validate_jolt_describe_content(path, version, source_sha_asserted, executable_revision,
+                                   repo=None, gitlibs=None):
+    validate_jolt_source_evidence(version, source_sha_asserted, executable_revision)
     try: text = path.read_text(encoding="utf-8")
     except OSError as error: fail(f"cannot read Jolt Sdescribe: {error}")
     described_version = version.removeprefix("jolt ")
@@ -147,9 +154,10 @@ def validate_provenance(label, value, runtime, harness):
         git_sha(f"{label} chdb-rust SHA", value.get("chdb_rust_git_sha"))
         for field in ("chdb_rust_crate_version", "oracle_crate_version", "rustc_version", "cargo_version", "engine_source"): nonempty(f"{label} {field}", value.get(field))
     else:
-        keys = common | {"jolt_version", "jolt_source_sha", "scheme_version", "machine_type",
+        keys = common | {"jolt_version", "jolt_source_sha_asserted", "jolt_executable_revision",
+                         "scheme_version", "machine_type",
                          "jolt_sdescribe", "jolt_config_mode", "jolt_cache_scope"}
-        git_sha(f"{label} Jolt SHA", value.get("jolt_source_sha"))
+        git_sha(f"{label} caller-asserted Jolt SHA", value.get("jolt_source_sha_asserted"))
         for field in ("jolt_version", "scheme_version", "machine_type"): nonempty(f"{label} {field}", value.get(field))
     exact(f"{label} provenance", value, keys)
     if value["runtime"] != runtime or value["harness_state"] != harness: fail(f"{label} runtime/harness differs")
@@ -158,7 +166,8 @@ def validate_provenance(label, value, runtime, harness):
     if runtime == "jolt":
         file_identity(f"{label} Jolt Sdescribe", value["jolt_sdescribe"])
         if value["jolt_config_mode"] != "Srepro-project-only" or value["jolt_cache_scope"] != "run-scoped-isolated-after-prime": fail(f"{label} Jolt resolution mode differs")
-        validate_jolt_source_binding(value["jolt_version"], value["jolt_source_sha"])
+        validate_jolt_source_evidence(value["jolt_version"], value["jolt_source_sha_asserted"],
+                                      value["jolt_executable_revision"])
     return value
 
 def gnu_time(path):
@@ -181,10 +190,10 @@ def runtime_summary(reports, timings):
             "maximum_rss_kib": {"p50": rank([t["maximum_rss_kib"] for t in timings], .5), "max": max(t["maximum_rss_kib"] for t in timings)}}
 
 def main():
-    if len(sys.argv) == 7 and sys.argv[1] == "--validate-jolt-describe":
+    if len(sys.argv) == 8 and sys.argv[1] == "--validate-jolt-describe":
         identity = validate_jolt_describe_content(
-            pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4],
-            pathlib.Path(sys.argv[5]), pathlib.Path(sys.argv[6]))
+            pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5],
+            pathlib.Path(sys.argv[6]), pathlib.Path(sys.argv[7]))
         print(json.dumps({"status": "ok", "jolt_sdescribe": identity}, sort_keys=True))
         return
     if len(sys.argv) != 3: fail("usage: summarizer REPORT_DIR OUTPUT_JSON")
@@ -220,9 +229,11 @@ def main():
     rust_keys = ("chdb_rust_git_sha", "chdb_rust_crate_version", "oracle_crate_version", "rustc_version", "cargo_version", "engine_source", "executable")
     if any(any(r["runtime"][k] != producer[k] for k in rust_keys) for e, r in reports if e["runtime"] == "rust"): fail("Rust provenance differs")
     jolts = [r["runtime"] for e, r in reports if e["runtime"] == "jolt"]
-    if any(any(item[k] != jolts[0][k] for k in ("jolt_source_sha", "jolt_version", "scheme_version", "machine_type", "executable", "jolt_sdescribe", "jolt_config_mode", "jolt_cache_scope")) for item in jolts[1:]): fail("Jolt provenance differs")
+    if any(any(item[k] != jolts[0][k] for k in ("jolt_source_sha_asserted", "jolt_executable_revision", "jolt_version", "scheme_version", "machine_type", "executable", "jolt_sdescribe", "jolt_config_mode", "jolt_cache_scope")) for item in jolts[1:]): fail("Jolt provenance differs")
     describe_path = report_dir / "jolt-sdescribe.edn"
-    described = validate_jolt_describe_content(describe_path, jolts[0]["jolt_version"], jolts[0]["jolt_source_sha"])
+    described = validate_jolt_describe_content(
+        describe_path, jolts[0]["jolt_version"], jolts[0]["jolt_source_sha_asserted"],
+        jolts[0]["jolt_executable_revision"])
     if described != jolts[0]["jolt_sdescribe"]: fail("Jolt Sdescribe file identity differs")
     summaries = {runtime: runtime_summary([r for e, r in reports if e["phase"] == "measured" and e["runtime"] == runtime], [t for e, t in timings if e["phase"] == "measured" and e["runtime"] == runtime]) for runtime in ("jolt", "rust")}
     def ratios(region, elapsed):

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-import copy, hashlib, json, pathlib, subprocess, tempfile, unittest
+import copy, hashlib, json, os, pathlib, subprocess, tempfile, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SUMMARY = ROOT / "scripts/summarize-durable-cross-binding-recovery.py"
 PREPARE = ROOT / "scripts/prepare-durable-cross-binding-run.py"
 PROFILE = ROOT / "scripts/profile-durable-cross-binding-recovery.sh"
+SHELL_LIB = ROOT / "scripts/durable-cross-binding-recovery-lib.sh"
 def canonical(v): return json.dumps(v, sort_keys=True, separators=(",", ":")).encode()
 def sha(v): return hashlib.sha256(v).hexdigest()
 def schedule(trials):
@@ -33,7 +34,7 @@ class SummaryTest(unittest.TestCase):
         describe='{:version "v0.8.6-1-geeeeeeee"\n :project-dir "."\n :config-files ["./deps.edn"]\n :config-user nil\n :config-project "./deps.edn"\n :gitlibs-dir "/tmp/oracle/jolt-gitlibs"\n :mvn-local-repo "/tmp/m2"\n :repro true\n :aliases []}\n'
         (reports/"jolt-sdescribe.edn").write_text(describe)
         describe_identity={"file_name":"jolt-sdescribe.edn","bytes":len(describe.encode()),"sha256":sha(describe.encode())}
-        jolt={"runtime":"jolt","jolt_version":"jolt v0.8.6-1-geeeeeeee","jolt_source_sha":"e"*40,"jolt_sdescribe":describe_identity,"jolt_config_mode":"Srepro-project-only","jolt_cache_scope":"run-scoped-isolated-after-prime","scheme_version":"10.4.1","machine_type":"ta6le","native_version":"26.7.2","harness_state":state,"native_library":native,"native_header":header,"executable":{"file_name":"jolt","bytes":20,"sha256":"f"*64}}
+        jolt={"runtime":"jolt","jolt_version":"jolt v0.8.6-1-geeeeeeee","jolt_source_sha_asserted":"e"*40,"jolt_executable_revision":"e"*8,"jolt_sdescribe":describe_identity,"jolt_config_mode":"Srepro-project-only","jolt_cache_scope":"run-scoped-isolated-after-prime","scheme_version":"10.4.1","machine_type":"ta6le","native_version":"26.7.2","harness_state":state,"native_library":native,"native_header":header,"executable":{"file_name":"jolt","bytes":20,"sha256":"f"*64}}
         for entry in run["schedule"]:
             provenance=rust if entry["runtime"]=="rust" else jolt; elapsed=1_000_000_000 if entry["runtime"]=="rust" else 1_200_000_000; ordinal=entry["ordinal"]
             report={"schema_version":1,"run_id":run["run_id"],"schedule_ordinal":ordinal,"phase":entry["phase"],"runtime":provenance,"trial":entry["trial"],"process_id":1000+ordinal,"process_started_epoch_ms":2000+2*ordinal,"process_finished_epoch_ms":2001+2*ordinal,"cache_condition":"warm-provider-cache-fresh-process-engine-and-scratch","fixture":{"inventory_sha256":fixture["inventory_sha256"],"batch_size":512,"warmup_batches":2,"measured_batches":8,"wal_segments":3,"recovered_rows":5120},"recovery":{"elapsed_ns":elapsed,"rows_per_second":5120e9/elapsed,"expected":expected,"actual":expected,"inventory_unchanged":True}}
@@ -53,7 +54,7 @@ class SummaryTest(unittest.TestCase):
           ("fixture.json",lambda x:x["producer"].update(native_version=None),"native version"),
           ("fixture.json",lambda x:x["expected"].update(n="5119"),"expected count"),
           ("fixture.json",lambda x:x.update(unknown=True),"unknown fields"),
-          ("jolt-trial-1.json",lambda x:x["runtime"].update(jolt_source_sha="short"),"Jolt SHA"),
+          ("jolt-trial-1.json",lambda x:x["runtime"].update(jolt_source_sha_asserted="short"),"Jolt SHA"),
           ("rust-trial-1.json",lambda x:x["runtime"].pop("cargo_version"),"cargo_version is missing"),
           ("rust-trial-2.json",lambda x:x["runtime"].update(oracle_crate_version="changed"),"Rust provenance differs"),
           ("rust-trial-3.json",lambda x:x["runtime"].update(engine_source="changed"),"Rust provenance differs"),
@@ -88,10 +89,10 @@ class SummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reports=self.corpus(pathlib.Path(tmp))
             for path in reports.glob("jolt-*.json"):
-                self.mutate_json(reports,path.name,lambda x:x["runtime"].update(jolt_source_sha="a"*40))
+                self.mutate_json(reports,path.name,lambda x:x["runtime"].update(jolt_source_sha_asserted="a"*40))
             result,_=self.run_summary(reports)
             self.assertNotEqual(0,result.returncode)
-            self.assertIn("banner does not identify",result.stderr)
+            self.assertIn("does not agree",result.stderr)
         with tempfile.TemporaryDirectory() as tmp:
             reports=self.corpus(pathlib.Path(tmp))
             (reports/"jolt-sdescribe.edn").write_text("changed")
@@ -106,6 +107,15 @@ class SummaryTest(unittest.TestCase):
             self.assertNotEqual(0,result.returncode)
             self.assertIn("actual jolt --version banner",result.stderr)
 
+    def test_same_banner_prefix_does_not_overclaim_full_source_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports=self.corpus(pathlib.Path(tmp))
+            same_prefix=("e"*8)+("a"*32)
+            for path in reports.glob("jolt-*.json"):
+                self.mutate_json(reports,path.name,lambda x:x["runtime"].update(jolt_source_sha_asserted=same_prefix))
+            result,_=self.run_summary(reports)
+            self.assertEqual(0,result.returncode,result.stderr)
+
     def test_acceptance_region_reconciles_before_elapsed_capture(self):
         jolt=(ROOT/"bench/jdbc/chdb_durable_cross_binding_recovery.clj").read_text()
         rust=(ROOT/"bench/rust-durable-recovery-oracle/src/main.rs").read_text()
@@ -114,16 +124,68 @@ class SummaryTest(unittest.TestCase):
         self.assertLess(rust.index("if actual != descriptor.expected"),
                         rust.index("let elapsed_ns = start.elapsed()"))
 
-    def test_profile_isolates_jolt_and_rechecks_harness_before_each_runtime(self):
-        profile=PROFILE.read_text()
-        self.assertIn('JOLT_CACHE_DIR="$jolt_cache"',profile)
-        self.assertIn('JOLT_GITLIBS_DIR="$jolt_gitlibs"',profile)
-        self.assertIn('"$wrapper" "$jolt_bin" -Srepro -M:durable-cross-binding-recovery',profile)
-        self.assertIn('git -C "$repo_root" check-ignore -q',profile)
-        rust_body=profile[profile.index("run_rust() {"):profile.index("run_jolt() {")]
-        jolt_body=profile[profile.index("run_jolt() {"):profile.index("# Prime both")]
-        self.assertIn("verify_harness_state",rust_body)
-        self.assertIn("verify_harness_state",jolt_body)
+    def shell_contract_trace(self, library):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp); lib=root/"lib.sh"; trace=root/"trace"
+            lib.write_text(library)
+            timer=root/"time"; timer.write_text('#!/usr/bin/env bash\nset -eu\nshift\n[[ "$1" == "-o" ]]\nshift\ntime_file=$1\nshift\n: > "$time_file"\nexec "$@"\n'); timer.chmod(0o755)
+            executable=root/"runtime"; executable.write_text('#!/usr/bin/env bash\nprintf "%s|%s|%s|%s\\n" "${ROLE:-rust}" "${JOLT_CACHE_DIR:-}" "${JOLT_GITLIBS_DIR:-}" "$*" >> "$TRACE"\n'); executable.chmod(0o755)
+            script='''set -euo pipefail
+source "$1"
+verify_harness_state() { printf 'verify\\n' >> "$TRACE"; }
+report_dir="$2/reports"; mkdir -p "$report_dir"; time_bin="$3"; wrapper="$4"; rust_bin="$4"
+native_dir="$2/native"; libchdb="$2/native/libchdb.so"; native_header="$2/native/chdb.h"
+rustc_version=rustc; cargo_version=cargo; harness_state="$2/state"; fixture_root="$2/fixture"
+object_id=object; descriptor="$2/descriptor"; run_manifest="$2/manifest"
+jolt_cache="$2/cache"; jolt_gitlibs="$2/gitlibs"; jolt_bin="$2/jolt"
+jolt_source_sha_asserted=eeeeeeeeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+jolt_executable_revision=eeeeeeee; jolt_version=jolt-v; jolt_describe="$2/describe"
+ROLE=jolt run_jolt trial-1 "$2/jolt.json" 2
+ROLE=rust run_rust trial-1 "$2/rust.json" 3
+'''
+            env={**os.environ,"TRACE":str(trace)}
+            result=subprocess.run(["bash","-c",script,"bash",str(lib),str(root),str(timer),str(executable)],text=True,capture_output=True,env=env)
+            self.assertEqual(0,result.returncode,result.stderr)
+            lines=trace.read_text().splitlines()
+            self.assertEqual("verify",lines[0]); self.assertEqual("verify",lines[2])
+            self.assertTrue(lines[1].startswith(f"jolt|{root}/cache|{root}/gitlibs|"),lines[1])
+            self.assertIn(" -Srepro -M:durable-cross-binding-recovery ",f" {lines[1]} ")
+            self.assertTrue(lines[3].startswith("rust|||recover "),lines[3])
+
+    def test_shell_runtime_contract_is_mutation_sensitive(self):
+        library=SHELL_LIB.read_text(); self.shell_contract_trace(library)
+        mutations=[
+            ('"$jolt_bin" -Srepro -M:durable-cross-binding-recovery','"$jolt_bin" -M:durable-cross-binding-recovery'),
+            ('    env JOLT_CACHE_DIR="$jolt_cache" \\\n','    env \\\n'),
+            ('        JOLT_GITLIBS_DIR="$jolt_gitlibs" \\\n','        \\\n'),
+            ('run_jolt() {','run_jolt() {')]
+        jolt_start=library.index("run_jolt() {")
+        verify_at=library.index("  verify_harness_state",jolt_start)
+        mutations[-1]=(library[verify_at:verify_at+len("  verify_harness_state")],"  :")
+        for old,new in mutations:
+            with self.subTest(mutation=old):
+                mutated=library.replace(old,new,1)
+                self.assertNotEqual(library,mutated)
+                with self.assertRaises(AssertionError): self.shell_contract_trace(mutated)
+
+    def output_contract(self, library, repo, output):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=pathlib.Path(tmp)/"lib.sh"; lib.write_text(library)
+            return subprocess.run(["bash","-c",'source "$1"; validate_output_dir "$2" "$3"',"bash",str(lib),str(repo),str(output)],text=True,capture_output=True)
+
+    def test_in_repo_output_guard_is_causal_and_mutation_sensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=pathlib.Path(tmp)/"repo"; repo.mkdir(); subprocess.run(["git","init","-q",str(repo)],check=True)
+            (repo/".gitignore").write_text("ignored/\n")
+            library=SHELL_LIB.read_text()
+            rejected=self.output_contract(library,repo,repo/"unignored"/"run")
+            self.assertEqual(2,rejected.returncode); self.assertIn("must be git-ignored",rejected.stderr)
+            accepted=self.output_contract(library,repo,repo/"ignored"/"run")
+            self.assertEqual(0,accepted.returncode,accepted.stderr)
+            mutated=library.replace('if [[ -z "$relative" ]] || ! git -C "$repository" check-ignore -q -- "$relative"; then','if false; then',1)
+            self.assertNotEqual(library,mutated)
+            incorrectly_accepted=self.output_contract(mutated,repo,repo/"unignored"/"run")
+            self.assertEqual(0,incorrectly_accepted.returncode)
 
     def test_preparer_content_addresses_dirty_tracked_and_untracked_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
