@@ -354,6 +354,38 @@ direction and justify the dependency update but do not qualify latency or tail
 throughput. The remaining gap is still dominated by managed encoding and
 placeholder handling.
 
+## Generic `data.json` recovery reader probe
+
+Durable recovery now pins `casselc/data.json`
+`36b1902459b39487cd518c90e82d1848db3c043b`. That merge gives its
+`StringPushbackReader` a direct run scanner: ordinary string content advances
+to the next quote or backslash with `String.indexOf`, is appended in bulk, and
+then returns to the existing escape, surrogate, control-character, and EOF
+decoder. The generic `ReaderPushbackReader` path is unchanged. This is a
+dependency-level optimization; Durable's WAL bytes, strict UTF-8 validation,
+complete validation before replay, record ordering, checksums, and read-only
+recovery semantics do not change.
+
+A bounded paired diagnostic opened the same immutable 6,144-row, 13-record WAL
+fixture before and after the reader change. The exact compiler remained
+`casselc/jolt` `120643d6bc322800a700e870de5c8087ad6085fa`, the native library and
+fixture were byte-identical, and operation counts plus recovered aggregates
+reconciled exactly.
+
+| Recovery measurement | Prior pin | Reader fast-path pin |
+| --- | ---: | ---: |
+| Full recovery open | 12.159 s | 3.806 s |
+| Process CPU | 11.698 s | 3.737 s |
+| GC time | 0.670 s | 0.164 s |
+| Scheme heap allocation | 4.024 GB | 1.115 GB |
+
+This single-process diagnostic establishes a bounded 3.19x improvement and
+confirms the reader was the dominant measured cost at that scale. It is not a
+representative percentile qualification, does not establish the 80% Rust
+throughput target, and leaves issue #83 open. A future compiler-level portable
+`String.indexOf` fast path may reduce the remaining managed/native boundary
+cost, but is not required for this dependency update.
+
 ## AWS S3 qualification design
 
 S3 is a separate qualification slice. The local selectors and memory
