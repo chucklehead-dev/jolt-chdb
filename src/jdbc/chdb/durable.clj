@@ -331,7 +331,14 @@
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))
     text))
 
-(defn- decode-wal-record! [text]
+(defn- exact-statement-bytes-exceed? [sql limit]
+  (> (alength (.getBytes sql "UTF-8")) limit))
+
+(defn- statement-bytes-exceed? [sql record-wire-bytes limit]
+  (and (> record-wire-bytes limit)
+       (exact-statement-bytes-exceed? sql limit)))
+
+(defn- decode-wal-record! [text record-wire-bytes]
   (let [record (try
                  (json/read-str text)
                  (catch Throwable _
@@ -341,7 +348,14 @@
     (when-not (and (map? record) (= #{"sql"} (set (keys record)))
                    (string? sql))
       (fail! ::corrupt "A Durable WAL record is invalid"))
-    (when (> (alength (.getBytes sql "UTF-8")) writer/max-statement-bytes)
+    ;; A decoded JSON string cannot contain more UTF-8 bytes than its complete
+    ;; JSON record: quotes, the key, and syntax add bytes, while every escape is
+    ;; at least as long as the decoded scalar. Most records therefore prove the
+    ;; 64 MiB statement bound from the streaming buffer's size without creating
+    ;; and discarding another statement-sized byte array. Only a record already
+    ;; above that bound needs the exact fallback.
+    (when (statement-bytes-exceed?
+           sql record-wire-bytes writer/max-statement-bytes)
       (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
     sql))
 
@@ -395,10 +409,12 @@
                             ;; parsing and limits in the legacy decoder. Even
                             ;; after remembering a record failure, validate the
                             ;; encoding of every later record before EOF.
-                            (let [text (decode-wal-text! (.toByteArray line))]
+                            (let [record-wire-bytes (.size line)
+                                  text (decode-wal-text! (.toByteArray line))]
                               (when-not @first-failure
                                 (try
-                                  (visit! (decode-wal-record! text))
+                                  (visit! (decode-wal-record!
+                                           text record-wire-bytes))
                                   (catch Throwable error
                                     (if delay-failure-until-termination?
                                       (reset! first-failure error)
