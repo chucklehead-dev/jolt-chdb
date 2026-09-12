@@ -4,5 +4,6 @@
 *.chdb/
 target/formal/quint/
 target/profiles/
+bench/rust-durable-recovery-oracle/target/
 target/aws-throughput/
 _apalache-out/

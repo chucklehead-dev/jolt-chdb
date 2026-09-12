@@ -164,6 +164,9 @@
            :durable-throughput-contract-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-test"]}
+           :durable-cross-binding-recovery
+           {:extra-paths ["bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}

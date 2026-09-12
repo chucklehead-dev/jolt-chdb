@@ -7,6 +7,16 @@
   checks the shared install action's exact source revision and version output,
   as well as the selected binary banner, before running its gate.
 
+- Add a manual cross-binding Durable recovery oracle that makes Jolt and a
+  pinned `chdb-rust` revision recover one byte-identical immutable local
+  fixture with the same native library, aggregate reconciliation, cache
+  condition, per-trial provenance, peak RSS, and explicit 80% throughput / 1.25x
+  elapsed acceptance ratios. Jolt trials use project-only `-Srepro` resolution
+  and run-scoped caches, record the caller-asserted full source SHA separately
+  from the banner-confirmed abbreviated revision, executable digest, and
+  captured `-Sdescribe`, and fail if repository state changes between any prime
+  or measured process.
+
 - Add the non-live manual AWS S3 throughput qualification harness with reusable
   execution-only backend parameterization and separate redacted logical-backend
   and transport-attempt metrics. Fake-transport canaries cover credentials,
@@ -16,9 +26,9 @@
   recovery provider phases, records sanitized hosted provenance, and uploads
   only bounded scanned artifacts with 14-day retention. A live curve remains
   gated on the exact merged `cf0b6928` runtime baseline and manual review.
-  Aggregation estimates reject NaN and infinite admission or flush inputs.
-  Flush controls now validate exact committed or bounded ambiguity-reconciled
-  logical call shapes instead of rejecting valid reconciliation proof reads.
+   Aggregation estimates reject NaN and infinite admission or flush inputs.
+   Flush controls now validate exact committed or bounded ambiguity-reconciled
+   logical call shapes instead of rejecting valid reconciliation proof reads.
 
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
