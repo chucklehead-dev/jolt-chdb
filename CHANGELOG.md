@@ -7,6 +7,16 @@
   checks the shared install action's exact source revision and version output,
   as well as the selected binary banner, before running its gate.
 
+- Add the non-live manual AWS S3 throughput qualification harness with reusable
+  execution-only backend parameterization and separate redacted logical-backend
+  and transport-attempt metrics. Fake-transport canaries cover credentials,
+  transport metadata, object identity, SQL-shaped bytes, payload-shaped bytes,
+  bounded EDN, and captured output. The opt-in OIDC job stops each 512-row
+  curve at measured pending WAL targets, separates admission/flush/close/
+  recovery provider phases, records sanitized hosted provenance, and uploads
+  only bounded scanned artifacts with 14-day retention. A live curve remains
+  gated on the exact merged `cf0b6928` runtime baseline and manual review.
+
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
   preserving complete validation before recovery effects and failure ordering.

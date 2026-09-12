@@ -4,4 +4,5 @@
 *.chdb/
 target/formal/quint/
 target/profiles/
+target/aws-throughput/
 _apalache-out/
