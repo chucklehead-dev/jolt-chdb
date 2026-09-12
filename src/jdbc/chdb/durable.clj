@@ -20,7 +20,7 @@
   (:import [java.io ByteArrayOutputStream File]
            [java.nio.file CopyOption Files OpenOption Path Paths StandardCopyOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
-           [java.util UUID]))
+           [java.util Arrays UUID]))
 
 (def reader-backup-format 1)
 (def default-lease-ttl-ms 30000)
@@ -325,17 +325,9 @@
 
 (def ^:private wal-read-buffer-bytes (* 64 1024))
 
-(defn- same-bytes? [left right]
-  (and (= (alength left) (alength right))
-       (loop [index 0]
-         (if (= index (alength left))
-           true
-           (and (= (aget left index) (aget right index))
-                (recur (inc index)))))))
-
 (defn- decode-wal-text! [bytes]
   (let [text (String. bytes "UTF-8")]
-    (when-not (same-bytes? bytes (.getBytes text "UTF-8"))
+    (when-not (Arrays/equals bytes (.getBytes text "UTF-8"))
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))
     text))
 

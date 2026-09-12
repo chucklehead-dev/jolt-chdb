@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use the supported primitive byte-array equality operation for canonical
+  Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
+  preserving complete validation before recovery effects and failure ordering.
+
 - Require performance qualification to record the exact Jolt source revision
   and executable digest, and let the Durable native qualification script select
   an explicit `JOLT_BIN` instead of silently depending on ambient `PATH`.
