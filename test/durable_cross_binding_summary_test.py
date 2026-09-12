@@ -199,23 +199,29 @@ ROLE=rust run_rust trial-1 "$2/rust.json" 3
             jolt=repo/"fake-jolt"; jolt.write_text("#!/usr/bin/env bash\nexit 0\n"); jolt.chmod(0o755)
             native=repo/"libchdb.so"; native.write_bytes(b"stub")
             output=repo/("ignored" if ignored else "unignored")/"run"
-            return subprocess.run(["bash",str(runner),str(output),str(jolt),"e"*40,str(native),"5","16","1","1"],text=True,capture_output=True)
+            result=subprocess.run(["bash",str(runner),str(output),str(jolt),"e"*40,str(native),"5","16","1","1"],text=True,capture_output=True)
+            return result,output.exists(),output.parent.exists()
 
     def assert_profile_rejects_unignored_output(self, profile, library):
-        result=self.profile_guard_result(profile,library,False)
+        result,output_exists,parent_exists=self.profile_guard_result(profile,library,False)
         self.assertEqual(2,result.returncode,result.stderr)
         self.assertIn("must be git-ignored",result.stderr)
         self.assertNotIn("PREPARE_REACHED",result.stderr)
+        self.assertFalse(output_exists,"rejected output directory was created")
+        self.assertFalse(parent_exists,"rejected output parent was created")
 
     def test_profile_sources_and_invokes_output_guard_causally(self):
         profile=PROFILE.read_text(); library=SHELL_LIB.read_text()
         self.assert_profile_rejects_unignored_output(profile,library)
-        accepted=self.profile_guard_result(profile,library,True)
+        accepted,output_exists,parent_exists=self.profile_guard_result(profile,library,True)
         self.assertEqual(77,accepted.returncode,accepted.stderr)
         self.assertIn("PREPARE_REACHED",accepted.stderr)
+        self.assertTrue(output_exists); self.assertTrue(parent_exists)
         mutations=[
             ('source "$repo_root/scripts/durable-cross-binding-recovery-lib.sh"','source /dev/null'),
-            ('validate_output_dir "$repo_root" "$output_dir"',':')]
+            ('validate_output_dir "$repo_root" "$output_dir"',':'),
+            ('validate_output_dir "$repo_root" "$output_dir"\nmkdir -p "$output_dir" "$report_dir"',
+             'mkdir -p "$output_dir" "$report_dir"\nvalidate_output_dir "$repo_root" "$output_dir"')]
         for old,new in mutations:
             with self.subTest(mutation=old):
                 mutated=profile.replace(old,new,1)
