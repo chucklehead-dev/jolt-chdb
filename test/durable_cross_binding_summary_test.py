@@ -187,6 +187,42 @@ ROLE=rust run_rust trial-1 "$2/rust.json" 3
             incorrectly_accepted=self.output_contract(mutated,repo,repo/"unignored"/"run")
             self.assertEqual(0,incorrectly_accepted.returncode)
 
+    def profile_guard_result(self, profile, library, ignored):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=pathlib.Path(tmp)/"repo"; scripts=repo/"scripts"; scripts.mkdir(parents=True)
+            subprocess.run(["git","init","-q",str(repo)],check=True)
+            (repo/".gitignore").write_text("ignored/\n")
+            runner=scripts/"profile-durable-cross-binding-recovery.sh"; runner.write_text(profile)
+            (scripts/"durable-cross-binding-recovery-lib.sh").write_text(library)
+            prepare=scripts/"prepare-durable-cross-binding-run.py"
+            prepare.write_text('#!/usr/bin/env python3\nimport sys\nprint("PREPARE_REACHED", file=sys.stderr)\nraise SystemExit(77)\n')
+            jolt=repo/"fake-jolt"; jolt.write_text("#!/usr/bin/env bash\nexit 0\n"); jolt.chmod(0o755)
+            native=repo/"libchdb.so"; native.write_bytes(b"stub")
+            output=repo/("ignored" if ignored else "unignored")/"run"
+            return subprocess.run(["bash",str(runner),str(output),str(jolt),"e"*40,str(native),"5","16","1","1"],text=True,capture_output=True)
+
+    def assert_profile_rejects_unignored_output(self, profile, library):
+        result=self.profile_guard_result(profile,library,False)
+        self.assertEqual(2,result.returncode,result.stderr)
+        self.assertIn("must be git-ignored",result.stderr)
+        self.assertNotIn("PREPARE_REACHED",result.stderr)
+
+    def test_profile_sources_and_invokes_output_guard_causally(self):
+        profile=PROFILE.read_text(); library=SHELL_LIB.read_text()
+        self.assert_profile_rejects_unignored_output(profile,library)
+        accepted=self.profile_guard_result(profile,library,True)
+        self.assertEqual(77,accepted.returncode,accepted.stderr)
+        self.assertIn("PREPARE_REACHED",accepted.stderr)
+        mutations=[
+            ('source "$repo_root/scripts/durable-cross-binding-recovery-lib.sh"','source /dev/null'),
+            ('validate_output_dir "$repo_root" "$output_dir"',':')]
+        for old,new in mutations:
+            with self.subTest(mutation=old):
+                mutated=profile.replace(old,new,1)
+                self.assertNotEqual(profile,mutated)
+                with self.assertRaises(AssertionError):
+                    self.assert_profile_rejects_unignored_output(mutated,library)
+
     def test_preparer_content_addresses_dirty_tracked_and_untracked_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp); repo=root/"repo"; reports=root/"reports"; repo.mkdir()
