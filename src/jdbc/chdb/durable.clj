@@ -328,6 +328,34 @@
 (def ^:private wal-read-buffer-bytes (* 64 1024))
 (def ^:private utf8-charset (Charset/forName "UTF-8"))
 
+(defn- strict-utf8-decoder-capable? []
+  (try
+    (let [strict-decoder
+          (fn []
+            (doto (.newDecoder utf8-charset)
+              (.onMalformedInput CodingErrorAction/REPORT)
+              (.onUnmappableCharacter CodingErrorAction/REPORT)))]
+      (and (= "β"
+              (str (.decode (strict-decoder)
+                            (ByteBuffer/wrap (.getBytes "β" "UTF-8")))))
+           (try
+             (.decode (strict-decoder)
+                      (ByteBuffer/wrap
+                       (byte-array [(unchecked-byte 0xc0)
+                                    (unchecked-byte 0xaf)])))
+             false
+             (catch CharacterCodingException _ true))))
+    (catch Throwable _ false)))
+
+(def ^:private strict-utf8-decoder-capable-result
+  (delay (strict-utf8-decoder-capable?)))
+
+(defn- require-strict-utf8-decoder-capability! []
+  (when-not @strict-utf8-decoder-capable-result
+    (fail! ::strict-utf8-decoder-unavailable
+           "The running Jolt lacks strict UTF-8 decoder support"))
+  true)
+
 (defn- decode-wal-text! [bytes]
   (try
     (let [decoder (.newDecoder utf8-charset)]
@@ -561,6 +589,7 @@
   [{:keys [scratch-parent operations]
     :or {scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
+  (require-strict-utf8-decoder-capability!)
   (let [store (resolve-store! options)
         operations (merge (default-open-operations) operations)]
     (doseq [key (concat [:durable-capability :classification-sql!
@@ -610,6 +639,7 @@
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
   (writer/require-wal-byte-writer-capability!)
+  (require-strict-utf8-decoder-capability!)
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
   (let [configured-operations operations
         configured-preparation?

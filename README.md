@@ -37,9 +37,11 @@ positional parameter API:
 Jolt 0.8.6 or newer is the base driver floor. Durable mode currently requires
 the pinned `casselc/jolt` `integration/aspects` compiler at commit `120643d6`,
 or a later release that contains upstream Jolt PR #957. That compiler supplies
-the strict `CharsetDecoder` interop used by recovery. Durable WAL streaming also
-probes for its `OutputStreamWriter.append(CharSequence, start, end)` correction;
-writer construction fails before acquisition or native work when that
+the strict `CharsetDecoder` interop used by recovery. Reader and writer opens
+functionally probe strict decoding and fail before storage or native effects if
+it is unavailable. Durable WAL streaming separately probes for the compiler's
+`OutputStreamWriter.append(CharSequence, start, end)` correction; writer
+construction likewise fails before acquisition or native work when that
 capability is absent. The repository declares only the base release floor with
 `:jolt/min-version`; there is no older-Jolt compatibility lane.
 

@@ -75,12 +75,31 @@
   (reset! failures 0)
   (println "Durable bounded WAL validation and replay")
 
-  (let [decode-var (ns-resolve 'jdbc.chdb.durable 'decode-wal-text!)
+  (let [decoder-capability-var
+        (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
+        require-decoder-var
+        (ns-resolve 'jdbc.chdb.durable
+                    'require-strict-utf8-decoder-capability!)
+        require-decoder! @require-decoder-var
+        decode-var (ns-resolve 'jdbc.chdb.durable 'decode-wal-text!)
         decode! @decode-var
         source (slurp "src/jdbc/chdb/durable.clj")
         start (str/index-of source "(defn- decode-wal-text!")
         end (str/index-of source "(defn- exact-statement-bytes-exceed?" start)
         decode-source (subs source start end)]
+    (check "running Jolt passes the strict decoder capability probe"
+           true (require-decoder!))
+    (with-redefs-fn
+      {decoder-capability-var (delay false)}
+      (fn []
+        ;; Public opens must fail at this guard before resolving storage,
+        ;; validating writer options, acquiring a lease, or touching native code.
+        (check "reader fails closed before effects without strict decoding"
+               ::durable/strict-utf8-decoder-unavailable
+               (error-type #(durable/open-reader! {})))
+        (check "writer fails closed before effects without strict decoding"
+               ::durable/strict-utf8-decoder-unavailable
+               (error-type #(durable/open-writer! {})))))
     (check "strict decoder preserves control, multibyte, and astral text"
            "control:\u0000\t\r latin:\u00f5 greek:\u03b2 astral:\ud83d\ude00"
            (decode! (.getBytes

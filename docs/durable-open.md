@@ -121,9 +121,11 @@ from the lease generation, not UUID sorting.
 Durable runtime and recovery currently require `casselc/jolt`
 `integration/aspects` commit `120643d6`, or a later Jolt release containing
 upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
-base driver's Jolt 0.8.6 floor. Run the focused gate with that pinned compiler
-and Chez 10.4.1 (the shared maintainer workspace supplies its pinned wrapper
-through the parent `AGENTS.md`):
+base driver's Jolt 0.8.6 floor. Reader and writer opens functionally verify both
+valid multibyte decoding and malformed-input rejection before storage or native
+effects. Run the focused gate with that pinned compiler and Chez 10.4.1 (the
+shared maintainer workspace supplies its pinned wrapper through the parent
+`AGENTS.md`):
 
 ```sh
 jolt -M:durable-open-test
