@@ -18,9 +18,11 @@
             [jdbc.chdb.native :as native]
             [jdbc.proto :as proto])
   (:import [java.io ByteArrayOutputStream File]
+           [java.nio ByteBuffer]
+           [java.nio.charset CharacterCodingException Charset CodingErrorAction]
            [java.nio.file CopyOption Files OpenOption Path Paths StandardCopyOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
-           [java.util Arrays UUID]))
+           [java.util UUID]))
 
 (def reader-backup-format 1)
 (def default-lease-ttl-ms 30000)
@@ -324,12 +326,16 @@
           (throw error))))))
 
 (def ^:private wal-read-buffer-bytes (* 64 1024))
+(def ^:private utf8-charset (Charset/forName "UTF-8"))
 
 (defn- decode-wal-text! [bytes]
-  (let [text (String. bytes "UTF-8")]
-    (when-not (Arrays/equals bytes (.getBytes text "UTF-8"))
-      (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))
-    text))
+  (try
+    (let [decoder (.newDecoder utf8-charset)]
+      (.onMalformedInput decoder CodingErrorAction/REPORT)
+      (.onUnmappableCharacter decoder CodingErrorAction/REPORT)
+      (str (.decode decoder (ByteBuffer/wrap bytes))))
+    (catch CharacterCodingException _
+      (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))))
 
 (defn- exact-statement-bytes-exceed? [sql limit]
   (> (alength (.getBytes sql "UTF-8")) limit))

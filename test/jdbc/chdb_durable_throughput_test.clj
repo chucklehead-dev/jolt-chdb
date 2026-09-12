@@ -40,9 +40,9 @@
         maximum-serialized-row-payload-bytes
         #'throughput/maximum-serialized-row-payload-bytes
         successful-flush? #'throughput/successful-flush?
-        clean-runtime {:jolt-version "jolt v0.8.6-8-gcf0b6928"
+        clean-runtime {:jolt-version "jolt v0.8.6-97-g120643d6"
                        :jolt-source-sha
-                       "cf0b69284b17d390449517c29fd418ef317d34cb"
+                       "120643d6bc322800a700e870de5c8087ad6085fa"
                        :jolt-executable {:bytes 1 :sha256 "jolt-digest"}
                        :started-at "2026-09-11T00:00:00Z"
                        :native-library {:bytes 1 :sha256 "digest"}

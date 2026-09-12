@@ -322,11 +322,11 @@
                                "test \"$raw_log_bytes\" -le 8388608")))
     (check "all hosted compiler provenance removes the superseded pin"
            false (str/includes? hosted-text stale-pin))
-    (check "shared action asserts the exact merged compiler version"
+    (check "shared action asserts the exact strict-decoder compiler version"
            true
            (and (str/includes?
-                 action "cf0b69284b17d390449517c29fd418ef317d34cb")
-                (str/includes? action "jolt v0.8.6-8-gcf0b6928")))
+                 action "120643d6bc322800a700e870de5c8087ad6085fa")
+                (str/includes? action "jolt v0.8.6-97-g120643d6")))
     (check "throughput provenance consumes shared action outputs"
            true
            (and (str/includes?

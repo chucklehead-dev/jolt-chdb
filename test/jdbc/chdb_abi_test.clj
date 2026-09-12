@@ -361,8 +361,8 @@
            [] (discover-hosted-jolt-workflows rejected-consumers))
     (check "active hosted pins contain no obsolete compiler revision"
            false (str/includes? active-jolt-pin-text (str "fd216" "943")))
-    (check "active hosted pins require the merged compiler banner"
-           true (every? #(str/includes? % "jolt v0.8.6-8-gcf0b6928")
+    (check "active hosted pins require the strict-decoder compiler banner"
+           true (every? #(str/includes? % "jolt v0.8.6-97-g120643d6")
                         (cons jolt-action jolt-workflows)))
     (check "one workflow source-revision drift turns the guard red"
            false
@@ -378,7 +378,7 @@
             pins jolt-action
             (update jolt-workflows 1
                     str/replace
-                    "v0.8.6-aspects-cf0b6928"
+                    "v0.8.6-aspects-120643d6"
                     "v0.8.6-aspects-stale")))
     (check "a newly discovered unguarded consumer turns the path-set guard red"
            false

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Pin hosted Jolt lanes to `casselc/jolt` `120643d6`, whose strict
+  `CharsetDecoder` support lets Durable WAL recovery reject malformed UTF-8
+  directly from each buffered record. Recovery no longer re-encodes every
+  decoded record solely to compare its bytes, while retaining complete
+  validation before replay and existing termination, corruption, shape, and
+  statement-limit precedence.
+
 - Avoid a duplicate statement-sized UTF-8 allocation during Durable WAL
   recovery when the already-buffered JSON record proves the 64 MiB statement
   bound. Oversized records retain the exact encoded-size fallback and existing

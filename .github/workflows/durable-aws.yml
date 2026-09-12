@@ -19,10 +19,10 @@ jobs:
     timeout-minutes: 30
     environment: aws-durable-ci
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-cf0b6928
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-cf0b6928
-      PINNED_JOLT_SOURCE_SHA: cf0b69284b17d390449517c29fd418ef317d34cb
-      PINNED_JOLT_VERSION: jolt v0.8.6-8-gcf0b6928
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-120643d6
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-120643d6
+      PINNED_JOLT_SOURCE_SHA: 120643d6bc322800a700e870de5c8087ad6085fa
+      PINNED_JOLT_VERSION: jolt v0.8.6-97-g120643d6
     steps:
       - uses: actions/checkout@v4
       - name: Validate AWS qualification configuration
