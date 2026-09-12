@@ -397,6 +397,40 @@ not establish the 80% Rust throughput target and leaves issue #83 open. A future
 compiler-level portable `String.indexOf` fast path may reduce the remaining
 managed/native boundary cost, but is not required for this dependency update.
 
+## Bounded parse-once recovery plan
+
+Recovery retains decoded statements from one WAL segment when cumulative
+record bytes are at most 48 MiB and the segment contains at most 16,384
+records. A segment crossing either cap discards the partial plan and takes the
+existing complete second parse; the cap is an optimization decision, never a
+new recovery failure. The representative 52,224-row fixture's largest segment
+is 38,575,220 bytes (36.788 MiB), 100 records, with 34,529,220 decoded ASCII
+characters. It therefore takes the parse-once path.
+
+At the cap, retained character payload is bounded by 192 MiB using conservative
+four-byte-per-codepoint accounting for Jolt's codepoint-indexed strings, and by
+96 MiB under JVM UTF-16 semantics, plus at most 16,384 bounded string headers
+and vector entries. On the representative segment the corresponding payloads
+are 131.719 MiB and 65.859 MiB. These values are additional managed payload,
+not total RSS ceilings; one record's existing streaming decode temporaries and
+native chDB memory remain outside them.
+
+The latest five-process 52,224-row baseline observed 441.2--476.7 MiB maximum
+RSS, but it predates the current `data.json` dependency pin. A single local
+directional baseline/candidate pair on the same immutable 52,224-row fixture
+measured 73.285/36.299 s inside `open-reader!`, 206/103 WAL JSON parses,
+9.463/4.850 GB of runtime-accounted allocation, and 486.6/694.6 MiB process
+maximum RSS. Both sides reconciled the exact row and aggregate oracle and made
+103 analyze plus 103 native-execute calls. This is causal direction evidence,
+not a percentile or matched-Rust qualification: retaining the 38.6 MB segment
+raised observed peak RSS by 208.0 MiB, within the conservative additional
+payload ceiling but above the simple decoded-ASCII estimate.
+
+Eliminating the second JSON parse therefore is not evidence by itself that Jolt
+has reached the 80% Rust throughput / 1.25x elapsed target. The matched oracle
+must retain identical fixture, native, process, cache, reconciliation, and
+inventory controls when measuring that target.
+
 ## AWS S3 qualification design
 
 S3 is a separate qualification slice. The local selectors and memory
