@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid an unconditional statement-sized UTF-8 allocation when Durable checks
+  the 64 MiB mutation limit. Conservative character-count bounds now settle
+  ordinary far-from-limit statements, while the narrow uncertain band retains
+  the exact UTF-8 byte count and the same rejection-before-engine ordering.
+
 - Pin hosted Jolt lanes to `casselc/jolt` `120643d6`, whose strict
   `CharsetDecoder` support lets Durable WAL recovery reject malformed UTF-8
   directly from each buffered record. Recovery no longer re-encodes every

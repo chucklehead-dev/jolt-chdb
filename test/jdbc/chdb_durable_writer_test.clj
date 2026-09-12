@@ -205,6 +205,94 @@
            [(:calls open-result) (:head open-result)])
     supported?))
 
+(defn- run-statement-size-fastpath-checks! []
+  (let [predicate-var
+        (ns-resolve 'jdbc.chdb.durable.writer 'statement-bytes-exceed?)
+        exact-var
+        (ns-resolve 'jdbc.chdb.durable.writer
+                    'exact-statement-bytes-exceed?)
+        exceeds? @predicate-var
+        exact-exceeds? @exact-var
+        exact-calls (atom [])
+        astral "😀"
+        scalar-or-utf16-length (.length astral)
+        source (slurp "src/jdbc/chdb/durable/writer.clj")
+        validation-start (str/index-of source "(defn- validate-statement-size!")
+        validation-end (str/index-of source "(defn- prepare-wal-line!"
+                                     validation-start)
+        validation-source (subs source validation-start validation-end)]
+    (check "astral strings use scalar or UTF-16 indexing on supported hosts"
+           true (contains? #{1 2} scalar-or-utf16-length))
+    (check "astral text has the same four-byte UTF-8 representation on every host"
+           4 (alength (.getBytes astral "UTF-8")))
+    (with-redefs-fn
+      {exact-var
+       (fn [sql limit]
+         (swap! exact-calls conj [sql limit])
+         (exact-exceeds? sql limit))}
+      (fn []
+        ;; These cases are decided only from the conservative lower or upper
+        ;; bound. Restoring the old unconditional exact encoding turns this
+        ;; call-count oracle red without relying on elapsed time.
+        (check "empty SQL exactly fits a zero-byte limit" false (exceeds? "" 0))
+        (check "ASCII far below the limit skips exact UTF-8 encoding"
+               false (exceeds? "abcd" 16))
+        (check "a one-byte control below the upper bound skips exact encoding"
+               false (exceeds? "\u0000" 4))
+        (check "astral text below the four-byte upper bound is accepted"
+               false (exceeds? astral 8))
+        (check "division-based bounds remain safe at the largest limit"
+               false (exceeds? astral Long/MAX_VALUE))
+        (check "character count above the byte limit rejects without encoding"
+               true (exceeds? "abcde" 4))
+        (check "one-byte control text cannot fit a zero-byte limit"
+               true (exceeds? "\u0000" 0))
+        (check "proved size decisions do not call the exact fallback"
+               [] @exact-calls)
+
+        ;; The uncertain band keeps the old UTF-8 byte count as authority.
+        (check "ASCII may exactly fill the uncertain band"
+               false (exceeds? "abcd" 4))
+        (check "one-byte control text may exactly fill the uncertain band"
+               false (exceeds? "\u0000" 1))
+        (check "two-byte text may exactly fill the uncertain band"
+               false (exceeds? "β" 2))
+        (check "two-byte text crossing the uncertain band is rejected"
+               true (exceeds? "β" 1))
+        (check "three-byte text may exactly fill the uncertain band"
+               false (exceeds? "€" 3))
+        (check "three-byte text crossing the uncertain band is rejected"
+               true (exceeds? "€" 2))
+        (check "four-byte astral text may exactly fill the limit"
+               false (exceeds? astral 4))
+        (check "four-byte astral text crossing the limit is rejected"
+               true (exceeds? astral 3))
+        (check "only uncertain decisions call the exact fallback"
+               (+ 7 (if (= 2 scalar-or-utf16-length) 1 0))
+               (count @exact-calls))
+
+        (let [before (count @exact-calls)]
+          (@exact-var "abc" 64)
+          (check "legacy unconditional exact-encoding mutant is detected"
+                 (inc before) (count @exact-calls)))))
+
+    (check "production validation delegates to the bounded predicate"
+           true (str/includes? validation-source
+                               "(statement-bytes-exceed? sql"))
+    (check "production validation no longer performs an unconditional encoding"
+           false (str/includes? validation-source ".getBytes"))
+
+    ;; A JVM can split a surrogate pair even though Jolt's scalar-indexed string
+    ;; cannot represent that intermediate value. The exact fallback remains the
+    ;; authority for this JVM-only malformed UTF-16 case.
+    (when (= 2 scalar-or-utf16-length)
+      (let [isolated-surrogate (subs astral 0 1)
+            encoded-bytes (alength (.getBytes isolated-surrogate "UTF-8"))]
+        (check "JVM isolated-surrogate replacement may exactly fill its limit"
+               false (exceeds? isolated-surrogate encoded-bytes))
+        (check "JVM isolated-surrogate replacement crossing its limit rejects"
+               true (exceeds? isolated-surrogate (dec encoded-bytes)))))))
+
 (defn- run-deterministic-checks! []
   (println "Durable V1 serialized writer operations")
   (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
@@ -1184,6 +1272,7 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (run-statement-size-fastpath-checks!)
   (let [supported? (run-capability-checks!)]
     (if supported?
       (do
