@@ -34,6 +34,9 @@
         wal-size-observation #'throughput/wal-size-observation
         recovery-memory-observation #'throughput/recovery-memory-observation
         clean-runtime {:jolt-version "jolt v0.8.6"
+                       :jolt-source-sha
+                       "fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+                       :jolt-executable {:bytes 1 :sha256 "jolt-digest"}
                        :started-at "2026-09-11T00:00:00Z"
                        :native-library {:bytes 1 :sha256 "digest"}
                        :git {:head "head" :parent "parent" :tree "tree"
@@ -138,6 +141,20 @@
            (rejected-type
             #(provenance! :scale
                           (assoc-in clean-runtime [:native-library :bytes] 0))))
+    (check "missing Jolt source provenance fails closed"
+           :jdbc.chdb-durable-throughput/missing-provenance
+           (rejected-type
+            #(provenance! :scale (assoc clean-runtime :jolt-source-sha nil))))
+    (check "abbreviated Jolt source provenance fails closed"
+           :jdbc.chdb-durable-throughput/invalid-provenance
+           (rejected-type
+            #(provenance! :scale (assoc clean-runtime
+                                        :jolt-source-sha "fd216943"))))
+    (check "empty Jolt executable provenance fails closed"
+           :jdbc.chdb-durable-throughput/missing-provenance
+           (rejected-type
+            #(provenance! :scale
+                          (assoc-in clean-runtime [:jolt-executable :bytes] 0))))
     (check "dirty qualification provenance fails closed"
            :jdbc.chdb-durable-throughput/dirty-provenance
            (rejected-type
@@ -151,6 +168,8 @@
            (rejected-type #(parse-profile! "scale-1024")))
     (check "report contract retains provenance and both recovery memory endpoints"
            [[[:runtime :jolt-version]
+             [:runtime :jolt-source-sha]
+             [:runtime :jolt-executable :sha256]
              [:runtime :native-library :sha256]
              [:runtime :git :head]
              [:runtime :git :parent]

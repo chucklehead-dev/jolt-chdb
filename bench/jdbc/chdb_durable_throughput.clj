@@ -145,6 +145,8 @@
 (def ^:private report-contract
   {:relative-trial-paths-to :configuration-result
    :provenance-paths [[:runtime :jolt-version]
+                      [:runtime :jolt-source-sha]
+                      [:runtime :jolt-executable :sha256]
                       [:runtime :native-library :sha256]
                       [:runtime :git :head]
                       [:runtime :git :parent]
@@ -743,9 +745,17 @@
     (catch Throwable _ nil)))
 
 (defn- runtime-metadata []
-  (let [library (System/getenv "JOLT_CHDB_LIB")
+  (let [jolt-executable (System/getenv "BENCH_JOLT_BIN")
+        jolt-file (when jolt-executable (File. jolt-executable))
+        library (System/getenv "JOLT_CHDB_LIB")
         library-file (when library (File. library))]
   {:name :jolt :jolt-version (System/getenv "BENCH_JOLT_VERSION")
+   :jolt-source-sha (System/getenv "BENCH_JOLT_SOURCE_SHA")
+   :jolt-executable
+   {:file-name (when jolt-file (.getName jolt-file))
+    :bytes (when (and jolt-file (.isFile jolt-file)) (.length jolt-file))
+    :sha256 (when (and jolt-file (.isFile jolt-file))
+              (digest/sha256-file (.toPath jolt-file)))}
    :scheme-version (host/scheme-version)
    :machine-type (host/machine-type)
    :native-chdb (native/durable-capability)
@@ -880,6 +890,9 @@
   (when (or (contains? #{:scale :qualification} profile)
             (isolated-selector-profile? profile))
     (let [required {:jolt-version (:jolt-version runtime)
+                    :jolt-source-sha (:jolt-source-sha runtime)
+                    :jolt-executable-sha256
+                    (get-in runtime [:jolt-executable :sha256])
                     :started-at (:started-at runtime)
                     :native-library-sha256
                     (get-in runtime [:native-library :sha256])
@@ -894,10 +907,18 @@
       (when (seq missing)
         (throw (ex-info "scale and qualification profiles require complete provenance"
                         {:type ::missing-provenance :missing missing})))
+      (when-not (re-matches #"[0-9a-f]{40}" (:jolt-source-sha runtime))
+        (throw (ex-info "scale and qualification profiles require a full Jolt source SHA"
+                        {:type ::invalid-provenance
+                         :field :jolt-source-sha})))
       (when-not (pos? (get-in runtime [:native-library :bytes] 0))
         (throw (ex-info "scale and qualification profiles require a nonempty native library"
                         {:type ::missing-provenance
                          :missing [:native-library-bytes]})))
+      (when-not (pos? (get-in runtime [:jolt-executable :bytes] 0))
+        (throw (ex-info "scale and qualification profiles require a nonempty Jolt executable"
+                        {:type ::missing-provenance
+                         :missing [:jolt-executable-bytes]})))
       (when-not (= "clean" (:git-status required))
         (throw (ex-info "scale and qualification profiles require a clean worktree"
                         {:type ::dirty-provenance

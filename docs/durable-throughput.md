@@ -71,7 +71,10 @@ variables make the resulting EDN self-describing:
 
 ```sh
 BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit
 
+BENCH_JOLT_BIN="$BENCH_JOLT_BIN" \
+BENCH_JOLT_SOURCE_SHA="$BENCH_JOLT_SOURCE_SHA" \
 BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
 BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
 BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
@@ -86,16 +89,19 @@ JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
 Accepted profiles are `smoke`, `probe`, `diagnostic`, `scale`, and
 `qualification`, plus the four `scale-*` and three `recovery-512-*` selectors
 listed above. Unknown names fail before any database work. `scale`,
-`qualification`, and every isolated selector additionally reject missing Jolt,
-Git, timestamp, or native-library digest/size provenance, and reject a dirty
-worktree; their reports are intended to be comparable evidence rather than
-anonymous or locally modified samples.
+`qualification`, and every isolated selector additionally reject missing Jolt
+version/source/executable-digest, Git, timestamp, or native-library digest/size
+provenance, and reject a dirty worktree; their reports are intended to be
+comparable evidence rather than anonymous or locally modified samples.
 
 Use `scale` for the checked-in batch sweep:
 
 ```sh
 BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit
 
+BENCH_JOLT_BIN="$BENCH_JOLT_BIN" \
+BENCH_JOLT_SOURCE_SHA="$BENCH_JOLT_SOURCE_SHA" \
 BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
 BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
 BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
@@ -113,9 +119,12 @@ its stderr beside the EDN report. For example:
 
 ```sh
 BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit
 
 /usr/bin/time -v -o target/profiles/recovery-512-10.time \
-  env BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
+  env BENCH_JOLT_BIN="$BENCH_JOLT_BIN" \
+      BENCH_JOLT_SOURCE_SHA="$BENCH_JOLT_SOURCE_SHA" \
+      BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
       BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
       BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
       BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
@@ -139,8 +148,9 @@ evidence after each uninstrumented trial, then isolated stages, then one
 instrumented causal control. If a later phase times out, completed evidence is
 still readable. The `diagnostic` profile is a one-batch, pre-encoded trace with
 timestamps around open, DDL, warmup, admission, flush, close, and recovery.
-Runtime metadata records only the native library's file name, size, and digest;
-it does not expose its host filesystem path.
+Runtime metadata records only the Jolt executable and native library file names,
+sizes, and digests; it does not expose either host filesystem path. The full
+Jolt source commit is recorded separately.
 
 Every Durable run asserts the pending statement count, commits exactly one
 measured flush, opens a fresh immutable reader, and reconciles count, trace-flag
