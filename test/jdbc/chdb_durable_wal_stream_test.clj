@@ -72,6 +72,40 @@
   (reset! failures 0)
   (println "Durable bounded WAL validation and replay")
 
+  ;; Recovery compares the complete byte[] produced by toByteArray with the
+  ;; complete byte[] produced by String.getBytes. Exercise that exact carrier
+  ;; pair, including the offset write used while splitting an input chunk.
+  (let [text "control:\u0000\t\r astral:\ud83d\ude00"
+        expected (.getBytes text "UTF-8")
+        framed (byte-array (+ 3 (alength expected)))
+        output (java.io.ByteArrayOutputStream.)]
+    (System/arraycopy expected 0 framed 2 (alength expected))
+    (.write output framed 2 (alength expected))
+    (let [actual (.toByteArray output)
+          changed (aclone actual)]
+      (aset changed (dec (alength changed))
+            (unchecked-byte (bit-xor 1 (aget changed (dec (alength changed))))))
+      (check "Arrays equality accepts offset-assembled canonical UTF-8 bytes"
+             true (java.util.Arrays/equals expected actual))
+      (check "Arrays equality rejects a same-length byte difference"
+             false (java.util.Arrays/equals expected changed))
+      (check "Arrays equality rejects a byte-length difference"
+             false (java.util.Arrays/equals expected
+                                            (byte-array (dec (alength expected)))))))
+
+  (let [sql-values ["SELECT '\ud83d\ude00'"
+                    "SELECT 'control \u0000\t\r'"]]
+    (attempt-open
+     (wal-bytes sql-values)
+     (fn [open! calls _ _]
+       (let [opened (open!)]
+         (try
+           (check "canonical astral and control UTF-8 replays exactly"
+                  sql-values
+                  (mapv second (filter #(= :execute (first %)) @calls)))
+           (finally
+             (reader/close! opened)))))))
+
   (let [long-sql (str "SELECT '" (apply str (repeat 70000 "x")) "'")
         sql-values ["INSERT INTO t VALUES (1)" long-sql "SELECT 'β'"]
         payload (wal-bytes sql-values)
@@ -100,8 +134,12 @@
 
   (doseq [[label suffix]
           [["malformed JSON tail" (.getBytes "{not-json}\n" "UTF-8")]
-           ["noncanonical UTF-8 tail"
-            (byte-array [(unchecked-byte 0xc3) 0x28 0x0a])]]]
+           ["noncanonical UTF-8 valid-JSON tail"
+            (concat-bytes
+             (.getBytes "{\"sql\":\"SELECT '" "UTF-8")
+             (concat-bytes
+              (byte-array [(unchecked-byte 0xc3) 0x28])
+              (.getBytes "'\"}\n" "UTF-8")))]]]
     (attempt-open
      (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"]) suffix)
      (fn [open! calls close-count cleanup-count]
