@@ -139,19 +139,57 @@
            {:type :jdbc.chdb-durable-throughput-metrics/invalid-flush-latency}
            (ex-data
             (rejected #(metrics/aggregation-requirements 50000.0 value)))))
-  (check "successful flush control requires the production logical shape"
+  (check "committed flush requires the exact production logical shape"
          nil
          (metrics/assert-uncontended-flush-control!
           {:logical {:flush {:put-bytes-if-absent {:calls 1}
                              :get {:calls 1}
                              :get-with-etag {:calls 3}
-                             :replace-if-match {:calls 1}}}}))
+                             :replace-if-match
+                             {:calls 1 :results {:replaced 1}}}}}
+          :committed))
+  (doseq [head-reads [4 6]]
+    (check (str "reconciled flush accepts bounded proof reads: " head-reads)
+           nil
+           (metrics/assert-uncontended-flush-control!
+            {:logical {:flush {:put-bytes-if-absent {:calls 1}
+                               :get {:calls 1}
+                               :get-with-etag {:calls head-reads}
+                               :replace-if-match
+                               {:calls 1 :results {:ambiguous 1}}}}}
+            :reconciled)))
+  (doseq [head-reads [3 7]]
+    (check (str "reconciled flush rejects malformed proof reads: " head-reads)
+           :jdbc.chdb-durable-throughput-metrics/flush-control-mismatch
+           (:type
+            (ex-data
+             (rejected
+              #(metrics/assert-uncontended-flush-control!
+                {:logical {:flush {:put-bytes-if-absent {:calls 1}
+                                   :get {:calls 1}
+                                   :get-with-etag {:calls head-reads}
+                                   :replace-if-match
+                                   {:calls 1 :results {:ambiguous 1}}}}}
+                :reconciled))))))
+  (check "reconciled flush rejects a non-ambiguous CAS result"
+         :jdbc.chdb-durable-throughput-metrics/flush-control-mismatch
+         (:type
+          (ex-data
+           (rejected
+            #(metrics/assert-uncontended-flush-control!
+              {:logical {:flush {:put-bytes-if-absent {:calls 1}
+                                 :get {:calls 1}
+                                 :get-with-etag {:calls 4}
+                                 :replace-if-match
+                                 {:calls 1 :results {:replaced 1}}}}}
+              :reconciled)))))
   (check "flush request amplification mismatch fails generically"
          :jdbc.chdb-durable-throughput-metrics/flush-control-mismatch
          (:type (ex-data
                  (rejected
                   #(metrics/assert-uncontended-flush-control!
-                    {:logical {:flush {:put-bytes-if-absent {:calls 2}}}})))))
+                    {:logical {:flush {:put-bytes-if-absent {:calls 2}}}}
+                    :committed)))))
   (check "flush control rejects otherwise-correct calls plus any extra op"
          :jdbc.chdb-durable-throughput-metrics/flush-control-mismatch
          (:type
@@ -162,8 +200,10 @@
                {:flush {:put-bytes-if-absent {:calls 1}
                         :get {:calls 1}
                         :get-with-etag {:calls 3}
-                        :replace-if-match {:calls 1}
-                        :download-to-file {:calls 1}}}})))))
+                        :replace-if-match
+                        {:calls 1 :results {:replaced 1}}
+                        :download-to-file {:calls 1}}}}
+              :committed)))))
   (check "transport coverage accepts retries beyond logical calls"
          nil
          (metrics/assert-transport-coverage!
@@ -222,7 +262,7 @@
     (let [report (metrics/report recorder)
           rendered (pr-str report)]
       (check "composed S3 fake satisfies exact six-call flush control"
-             nil (metrics/assert-uncontended-flush-control! report))
+             nil (metrics/assert-uncontended-flush-control! report :committed))
       (check "composed S3 fake preserves retry-loop transport attempts"
              {:logical-calls 3 :transport-attempts 4 :extra-attempts 1}
              (get-in report

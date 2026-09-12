@@ -282,18 +282,40 @@
   "Require the logical-call shape of one successful production WAL flush.
 
   The fixed operation labels distinguish the three ETag-bearing head reads
-  from the immutable WAL verification GET without inspecting object keys."
-  [bounded-report]
+  from the immutable WAL verification GET without inspecting object keys.
+  A committed head CAS has the exact base shape. An ambiguity-reconciled CAS
+  has one to three additional head rereads: the first proves the outcome and
+  the remaining two are the only retries allowed by the benchmark's fixed
+  four-attempt control budget. Transport retries do not increase logical calls."
+  [bounded-report flush-outcome]
   (let [actual
         (into {}
               (map (fn [[operation observation]]
                      [operation (:calls observation)]))
               (get-in bounded-report [:logical :flush] {}))
-        expected {:get-with-etag 3
-                  :put-bytes-if-absent 1
-                  :get 1
-                  :replace-if-match 1}]
-    (when-not (= expected actual)
+        base {:get-with-etag 3
+              :put-bytes-if-absent 1
+              :get 1
+              :replace-if-match 1}
+        replace-results
+        (get-in bounded-report
+                [:logical :flush :replace-if-match :results])
+        valid?
+        (case flush-outcome
+          :committed
+          (and (= base actual)
+               (= {:replaced 1} replace-results))
+
+          :reconciled
+          (let [head-reads (:get-with-etag actual)]
+            (and (= (dissoc base :get-with-etag)
+                    (dissoc actual :get-with-etag))
+                 (integer? head-reads)
+                 (<= 4 head-reads 6)
+                 (= {:ambiguous 1} replace-results)))
+
+          false)]
+    (when-not valid?
       (throw (ex-info "uncontended flush request shape mismatch"
                       {:type ::flush-control-mismatch}))))
   nil)

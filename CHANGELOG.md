@@ -17,6 +17,8 @@
   only bounded scanned artifacts with 14-day retention. A live curve remains
   gated on the exact merged `cf0b6928` runtime baseline and manual review.
   Aggregation estimates reject NaN and infinite admission or flush inputs.
+  Flush controls now validate exact committed or bounded ambiguity-reconciled
+  logical call shapes instead of rejecting valid reconciliation proof reads.
 
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while

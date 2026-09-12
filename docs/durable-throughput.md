@@ -290,6 +290,15 @@ amplification is reported as logical calls, transport attempts, and extra
 attempts for the same fixed phase/operation pair. Opaque ETags and all
 request/response objects are dropped.
 
+The uncontended flush assertion is outcome-specific. A normally committed head
+CAS must have the exact production base shape: three head reads, one immutable
+WAL create, one WAL verification read, and one head CAS. A reconciled ambiguous
+head CAS must retain that shape plus one to three head proof reads, bounded by
+the writer's fixed four-attempt control budget, and its sole head CAS must be
+classified `ambiguous`. Missing or additional logical operations fail the run.
+S3 transport retries remain visible separately but cannot inflate logical-call
+allowances.
+
 The focused fake-transport contract uses canaries in credentials, URL,
 headers, ETag, SQL-shaped request bytes, payload-shaped response bytes, bucket,
 prefix, and object key. It quietly scans bounded EDN and captured stdout/stderr;

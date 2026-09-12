@@ -444,7 +444,8 @@
      :provider-region region
      :provider-metrics metrics
      :writer-options {:lease-ttl-ms 21600000
-                      :heartbeat-interval-ms 7200000}
+                      :heartbeat-interval-ms 7200000
+                      :max-attempts 4}
      ;; V1 and its CI role deliberately have no delete permission. Lifecycle
      ;; expiration owns eventual cleanup of this unique workflow prefix.
      :cleanup! (fn [] nil)}))
@@ -508,6 +509,7 @@
         store namespace-backend
         expected (atom empty-expected-aggregates)
         trial-result (atom nil)
+        flush-outcome (atom nil)
         configuration
         (merge {:namespace-backend store :object-id object-id
                 :owner "durable-throughput-benchmark"
@@ -590,6 +592,7 @@
           (when-not (successful-flush? flush-result)
             (throw (ex-info "Durable measured flush did not persist"
                             {:type ::flush-failed})))
+          (reset! flush-outcome (:status flush-result))
           (reset! trial-result
                   (merge
                    {:trial trial
@@ -654,7 +657,8 @@
                                          (:memory-after recovered))})]
           (if provider-metrics
             (let [report (provider-metrics/report provider-metrics)]
-              (provider-metrics/assert-uncontended-flush-control! report)
+              (provider-metrics/assert-uncontended-flush-control!
+               report @flush-outcome)
               (provider-metrics/assert-transport-coverage! report)
               (assoc result :provider-metrics report))
             result)))
