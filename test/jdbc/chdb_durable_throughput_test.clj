@@ -26,8 +26,13 @@
         empty-expected @#'throughput/empty-expected-aggregates
         accumulate-expected-batch #'throughput/accumulate-expected-batch
         parse-profile! #'throughput/parse-profile!
+        validate-profile-configs! #'throughput/validate-profile-configs!
         provenance! #'throughput/require-qualification-provenance!
         latency-summary #'throughput/latency-summary
+        memory-limitations @#'throughput/recovery-memory-limitations
+        report-contract @#'throughput/report-contract
+        wal-size-observation #'throughput/wal-size-observation
+        recovery-memory-observation #'throughput/recovery-memory-observation
         clean-runtime {:jolt-version "jolt v0.8.6"
                        :started-at "2026-09-11T00:00:00Z"
                        :native-library {:bytes 1 :sha256 "digest"}
@@ -41,6 +46,33 @@
            [51200 50000 50000 50000]
            (mapv #(* (:batch-size %) (:batches %))
                  (profile-configs :scale)))
+    (check "each scale selector resolves to one exact process configuration"
+           [[:scale-512 512 100]
+            [:scale-1000 1000 50]
+            [:scale-5000 5000 10]
+            [:scale-10000 10000 5]]
+           (mapv (fn [selector]
+                   (let [configs (validate-profile-configs!
+                                  selector (profile-configs selector))
+                         config (first configs)]
+                     [(:selector config) (:batch-size config)
+                      (:batches config)]))
+                 [:scale-512 :scale-1000 :scale-5000 :scale-10000]))
+    (check "staged recovery selectors are bounded 512-row fresh-process workloads"
+           [[:recovery-512-10 512 10 0 1 [:durable-preencoded]]
+            [:recovery-512-25 512 25 0 1 [:durable-preencoded]]
+            [:recovery-512-50 512 50 0 1 [:durable-preencoded]]]
+           (mapv (fn [selector]
+                   (let [config (first (profile-configs selector))]
+                     [(:selector config) (:batch-size config) (:batches config)
+                      (:warmup-batches config) (:trials config) (:modes config)]))
+                 [:recovery-512-10 :recovery-512-25 :recovery-512-50]))
+    (check "selector-resolution red control rejects a drifted selector"
+           :jdbc.chdb-durable-throughput/invalid-selector-resolution
+           (rejected-type
+            #(validate-profile-configs!
+              :scale-512 [(assoc (first (profile-configs :scale-512))
+                                 :selector :scale-1000)])))
     (let [constructed (atom 0)
           observations
           (reduce-row-batches
@@ -91,6 +123,9 @@
     (check "clean complete qualification provenance is accepted"
            nil
            (provenance! :qualification clean-runtime))
+    (check "isolated recovery evidence also requires complete provenance"
+           nil
+           (provenance! :recovery-512-10 clean-runtime))
     (check "diagnostic profiles do not claim qualification provenance"
            [nil nil nil]
            (mapv #(provenance! % {}) [:smoke :probe :diagnostic]))
@@ -111,6 +146,49 @@
     (check "unknown profile fails before benchmark work"
            :jdbc.chdb-durable-throughput/unknown-profile
            (rejected-type #(parse-profile! "unknown")))
+    (check "near-miss selector fails instead of widening to a sweep"
+           :jdbc.chdb-durable-throughput/unknown-profile
+           (rejected-type #(parse-profile! "scale-1024")))
+    (check "report contract retains provenance and both recovery memory endpoints"
+           [[[:runtime :jolt-version]
+             [:runtime :native-library :sha256]
+             [:runtime :git :head]
+             [:runtime :git :parent]
+             [:runtime :git :tree]
+             [:runtime :git :status]
+             [:runtime :started-at]]
+            [[:recovery :memory :immediately-before-reader-open]
+             [:recovery :memory :after-open-and-reconciliation]]]
+           [(:provenance-paths report-contract)
+            (:recovery-memory-paths report-contract)])
+    (check "report contract locates trial-relative paths"
+           :configuration-result
+           (:relative-trial-paths-to report-contract))
+    (check "WAL total and maximum input batch are distinct report fields"
+           {:wal-growth-total [:wal-growth :total-bytes]
+            :maximum-input-batch [:maximum-batch-statement-bytes]}
+           (:wal-size-semantics report-contract))
+    (check "WAL output builder does not conflate total growth with batch maxima"
+           {:wal-growth {:total-bytes 900 :records 3}
+            :maximum-batch-payload-bytes 250
+            :maximum-batch-statement-bytes 300}
+           (wal-size-observation
+            {:pending-wal-bytes 900 :pending-statements 3}
+            {:maximum-batch-payload-bytes 250
+             :maximum-batch-statement-bytes 300}))
+    (check "recovery output builder preserves both absolute endpoint samples"
+           {:immediately-before-reader-open {:reserved-from-os-bytes 10}
+            :after-open-and-reconciliation {:reserved-from-os-bytes 20}
+            :limitations memory-limitations}
+           (recovery-memory-observation
+            {:reserved-from-os-bytes 10} {:reserved-from-os-bytes 20}))
+    (check "memory report refuses an unsupported endpoint-only growth oracle"
+           [:not-supported
+            :two-endpoint-jolt-allocator-samples-do-not-establish-process-rss-plateau
+            true]
+           [(:plateau-or-growth-oracle memory-limitations)
+            (:reason memory-limitations)
+            (string? (:external-peak-rss-required memory-limitations))])
     (check "direct trial-runner misuse also fails before benchmark work"
            :jdbc.chdb-durable-throughput/unsupported-run-profile
            (rejected-type #(profile-configs :diagnostic)))))

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add fresh-process Durable scale selectors for 512, 1,000, 5,000, and 10,000
+  rows per batch plus staged 512-row recovery diagnostics at 10, 25, and 50 WAL
+  records. Reports now retain exact recovery endpoint allocator observations,
+  distinguish cumulative WAL growth from maximum input-batch size, and require
+  external GNU `time -v` maximum RSS rather than claiming an unsupported
+  two-sample plateau oracle. S3 remains a separate qualification slice.
+
 - Validate and replay Durable WAL segments with two bounded streaming passes
   over the private, already size-and-digest-verified scratch file. Recovery now
   retains at most one JSONL record instead of materializing the complete WAL as

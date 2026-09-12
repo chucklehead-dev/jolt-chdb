@@ -24,6 +24,23 @@ until a later run supplies at least 100 observations. Under the nearest-rank
 calculation used here, a p99 over fewer than 100 samples degenerates to the
 observed maximum; do not quote that number as a qualified tail percentile.
 
+For process-attributable runs, use one of the validated selectors
+`scale-512`, `scale-1000`, `scale-5000`, or `scale-10000`. Each selector
+resolves to exactly one checked-in scale configuration and suppresses the
+isolated-stage and instrumented supplementary controls, so an external peak-RSS
+reading belongs to that configuration rather than to the complete sweep.
+Near-miss or unsupported selectors fail before database work; they never fall
+back to the full sweep.
+
+Staged recovery diagnostics use `recovery-512-10`, `recovery-512-25`, and
+`recovery-512-50`. These run one pre-encoded trial of exactly 10, 25, or 50
+512-row WAL records with no warmup rows, then close the writer, open a fresh
+snapshot reader, and reconcile the full aggregate oracle. Run the three stages
+as separate processes in increasing order. Each process includes preparation,
+writer admission/publication, and recovery; its peak RSS is not a
+recovery-only measurement. These are bounded diagnostics, not a plateau
+qualification.
+
 Trial workload construction is bounded by the configured batch size. Warmup
 and measured row maps are generated one batch at a time, pre-encoded modes keep
 only the next statement outside the admission timer, and expected recovery
@@ -47,11 +64,15 @@ per-batch flushes are separate ceilings and cannot qualify the primary target.
 
 ## Running a local probe
 
-Use the workspace's pinned Chez wrapper and a Durable-capable native library.
-Metadata environment variables make the resulting EDN self-describing:
+Use the workspace's pinned Chez wrapper, the repository-pinned standalone Jolt
+executable, and a Durable-capable native library. Set the executable explicitly;
+an unqualified `jolt` may select a different release. Metadata environment
+variables make the resulting EDN self-describing:
 
 ```sh
-BENCH_JOLT_VERSION="$(jolt --version)" \
+BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+
+BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
 BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
 BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
 BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
@@ -59,20 +80,23 @@ BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || print
 BENCH_STARTED_AT="$(date -Iseconds)" \
 JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
 /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-throughput probe target/profiles/probe.edn
+  "$BENCH_JOLT_BIN" -M:durable-throughput probe target/profiles/probe.edn
 ```
 
 Accepted profiles are `smoke`, `probe`, `diagnostic`, `scale`, and
-`qualification`. Unknown names fail before any database work. `scale` and
-`qualification` additionally reject missing Jolt, Git, timestamp, or native
-library digest/size provenance, and reject a dirty worktree; their reports are
-intended to be comparable evidence rather than anonymous or locally modified
-samples.
+`qualification`, plus the four `scale-*` and three `recovery-512-*` selectors
+listed above. Unknown names fail before any database work. `scale`,
+`qualification`, and every isolated selector additionally reject missing Jolt,
+Git, timestamp, or native-library digest/size provenance, and reject a dirty
+worktree; their reports are intended to be comparable evidence rather than
+anonymous or locally modified samples.
 
 Use `scale` for the checked-in batch sweep:
 
 ```sh
-BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt --version)" \
+BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+
+BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
 BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
 BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
 BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
@@ -80,8 +104,35 @@ BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || print
 BENCH_STARTED_AT="$(date -Iseconds)" \
 JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
 /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
-  jolt -M:durable-throughput scale target/profiles/scale.edn
+  "$BENCH_JOLT_BIN" -M:durable-throughput scale target/profiles/scale.edn
 ```
+
+For an attributable local maximum-RSS observation, substitute one exact
+selector and run it in a fresh process. GNU `time` is external to Jolt, so save
+its stderr beside the EDN report. For example:
+
+```sh
+BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
+
+/usr/bin/time -v -o target/profiles/recovery-512-10.time \
+  env BENCH_JOLT_VERSION="$(/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 "$BENCH_JOLT_BIN" --version)" \
+      BENCH_GIT_HEAD="$(git rev-parse HEAD)" \
+      BENCH_GIT_PARENT="$(git rev-parse HEAD^)" \
+      BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})" \
+      BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || printf dirty)" \
+      BENCH_STARTED_AT="$(date -Iseconds)" \
+      JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
+      /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+      "$BENCH_JOLT_BIN" -M:durable-throughput recovery-512-10 \
+      target/profiles/recovery-512-10.edn
+```
+
+Repeat with `recovery-512-25` and `recovery-512-50`, or with one of the four
+`scale-*` selectors. Retain GNU `time`'s `Maximum resident set size (kbytes)`
+line, complete command/provenance, and the matching EDN as one evidence unit.
+The GNU-time peak covers the entire fresh process, including writer setup and
+publication. Compare the staged runs conservatively; do not subtract endpoint
+allocator samples or call the result recovery-only auxiliary memory.
 
 Reports under `target/profiles/` are ignored. The harness writes bounded phase
 evidence after each uninstrumented trial, then isolated stages, then one
@@ -97,6 +148,25 @@ and severity sums, total body bytes, question-mark bodies, and min/max trace and
 span IDs. The instrumented control additionally asserts one classification,
 native execution, immutable WAL PUT, and head CAS per expected operation. It
 records only operation labels, counts, byte counts, and timings.
+
+Each recovery result includes absolute Jolt allocator observations immediately
+before fresh-reader open and immediately after successful open plus aggregate
+reconciliation: live Scheme heap, bytes currently reserved from the OS, and
+the allocator's process-lifetime peak reserved bytes. These are not RSS. Two
+endpoints cannot establish a plateau or bound transient growth, and the report
+therefore records `:plateau-or-growth-oracle :not-supported` rather than
+manufacturing a pass/fail threshold. A checked plateau/growth oracle requires a
+later repeated-stage design with justified noise and slope bounds; current
+qualification requires external GNU `time -v` maximum RSS.
+
+The result also names cumulative pending WAL growth separately from the largest
+input batch: `:wal-growth {:total-bytes ... :records ...}` is the complete
+measured WAL segment before flush, while `:maximum-batch-statement-bytes` and
+`:maximum-batch-payload-bytes` are maxima over one admitted batch. Do not quote
+the cumulative WAL bytes as a record-size or batch-size measurement.
+The paths under `:output-contract` that describe those values and recovery
+memory are relative to each entry under `:configurations[*] :results[*]`, as
+recorded by `:relative-trial-paths-to :configuration-result`.
 
 The instrumented benchmark deliberately does not replace the production
 `publish-wal!` operation. That closure owns the complete operation retry budget,
@@ -181,6 +251,9 @@ throughput. The remaining gap is still dominated by managed encoding and
 placeholder handling.
 
 ## AWS S3 qualification design
+
+S3 is a separate qualification slice. The local selectors and memory
+observations above neither exercise S3 nor change its design.
 
 Remote qualification should reuse the environment-protected manual OIDC lane
 and unique run prefix from `durable-aws.yml`; it must not assume local AWS

@@ -127,6 +127,48 @@
    :current-memory-bytes (host/current-memory-bytes)
    :maximum-memory-bytes (host/maximum-memory-bytes)})
 
+(defn- runtime-memory-observation []
+  ;; These are absolute Chez/Jolt allocator readings, not process RSS. Keep
+  ;; them absolute so recovery runs from separate processes remain attributable
+  ;; without pretending that an endpoint delta is a peak or plateau oracle.
+  {:sample-nano-time (System/nanoTime)
+   :live-scheme-heap-bytes (host/bytes-allocated)
+   :reserved-from-os-bytes (host/current-memory-bytes)
+   :peak-reserved-from-os-bytes (host/maximum-memory-bytes)})
+
+(def ^:private recovery-memory-limitations
+  {:plateau-or-growth-oracle :not-supported
+   :reason :two-endpoint-jolt-allocator-samples-do-not-establish-process-rss-plateau
+   :external-peak-rss-required
+   "Run each selector in a fresh process under GNU /usr/bin/time -v and retain Maximum resident set size (kbytes)."})
+
+(def ^:private report-contract
+  {:relative-trial-paths-to :configuration-result
+   :provenance-paths [[:runtime :jolt-version]
+                      [:runtime :native-library :sha256]
+                      [:runtime :git :head]
+                      [:runtime :git :parent]
+                      [:runtime :git :tree]
+                      [:runtime :git :status]
+                      [:runtime :started-at]]
+   :recovery-memory-paths
+   [[:recovery :memory :immediately-before-reader-open]
+    [:recovery :memory :after-open-and-reconciliation]]
+   :wal-size-semantics
+   {:wal-growth-total [:wal-growth :total-bytes]
+    :maximum-input-batch [:maximum-batch-statement-bytes]}})
+
+(defn- wal-size-observation [pending measured]
+  {:wal-growth {:total-bytes (:pending-wal-bytes pending)
+                :records (:pending-statements pending)}
+   :maximum-batch-payload-bytes (:maximum-batch-payload-bytes measured)
+   :maximum-batch-statement-bytes (:maximum-batch-statement-bytes measured)})
+
+(defn- recovery-memory-observation [before after]
+  {:immediately-before-reader-open before
+   :after-open-and-reconciliation after
+   :limitations recovery-memory-limitations})
+
 (def ^:private counter-keys
   [:sample-nano-time :calling-thread-cpu-nanos :real-nanos :gc-count
    :gc-cpu-nanos :gc-real-nanos :gc-bytes :live-scheme-heap-bytes
@@ -319,6 +361,8 @@
                log-row batch-size batches question-mark?
                (* batch-size warmup-batches)
                {:samples [] :payload-bytes 0 :statement-bytes 0
+                :maximum-batch-payload-bytes 0
+                :maximum-batch-statement-bytes 0
                 :counter-deltas {}}
                (fn [acc _ rows]
                  (swap! expected accumulate-expected-batch rows question-mark?)
@@ -336,6 +380,10 @@
                        (update :samples conj elapsed)
                        (update :payload-bytes + (:payload-bytes encoded))
                        (update :statement-bytes + (:statement-bytes encoded))
+                       (update :maximum-batch-payload-bytes max
+                               (:payload-bytes encoded))
+                       (update :maximum-batch-statement-bytes max
+                               (:statement-bytes encoded))
                        (update :counter-deltas add-counter-delta
                                (counter-delta before after))))))
               samples (:samples measured)
@@ -353,7 +401,8 @@
             (throw (ex-info "Durable measured flush did not commit"
                             {:result flush-result})))
           (reset! trial-result
-                  {:trial trial
+                  (merge
+                   {:trial trial
                    :mode (if encode-included?
                            :durable-encode-included
                            :durable-preencoded)
@@ -379,17 +428,23 @@
                    :flush-counters (counter-delta flush-before flush-after)
                    :pending-before-flush pending
                    :payload-bytes (:payload-bytes measured)
-                   :statement-bytes (:statement-bytes measured)})))
-      (let [recovery-start (System/nanoTime)
-            actual
+                   :statement-bytes (:statement-bytes measured)}
+                   (wal-size-observation pending measured)))))
+      (let [memory-before (runtime-memory-observation)
+            recovery-start (System/nanoTime)
+            recovered
             (with-open [reader (jdbc/connection
                                 (durable/snapshot-dbspec
                                  {:namespace-backend store :object-id object-id}))]
-              (verify-counts! reader @expected :durable-recovery))]
+              (let [actual (verify-counts! reader @expected :durable-recovery)]
+                {:actual actual
+                 :memory-after (runtime-memory-observation)}))]
         (assoc @trial-result
-               :recovery {:result actual
+               :recovery {:result (:actual recovered)
                           :ms (ms (- (System/nanoTime) recovery-start))
-                          :expected @expected}))
+                          :expected @expected
+                          :memory (recovery-memory-observation
+                                   memory-before (:memory-after recovered))}))
       (finally
         (delete-tree! root-file)))))
 
@@ -427,6 +482,8 @@
                log-row batch-size batches question-mark?
                (* batch-size warmup-batches)
                {:samples [] :payload-bytes 0 :statement-bytes 0
+                :maximum-batch-payload-bytes 0
+                :maximum-batch-statement-bytes 0
                 :counter-deltas {}}
                (fn [acc _ rows]
                  (swap! expected accumulate-expected-batch rows question-mark?)
@@ -452,6 +509,10 @@
                        (update :samples conj elapsed)
                        (update :payload-bytes + (:payload-bytes encoded))
                        (update :statement-bytes + (:statement-bytes encoded))
+                       (update :maximum-batch-payload-bytes max
+                               (:payload-bytes encoded))
+                       (update :maximum-batch-statement-bytes max
+                               (:statement-bytes encoded))
                        (update :counter-deltas add-counter-delta
                                (counter-delta before after))))))
               samples-nanos (:samples measured)
@@ -490,7 +551,8 @@
                   (throw (ex-info "published WAL byte count mismatch"
                                   {:pending pending :stages stage-values})))]
             (reset! trial-result
-                    {:trial trial
+                    (merge
+                     {:trial trial
                      :mode (if encode-included?
                              :durable-encode-included
                              :durable-preencoded)
@@ -511,20 +573,26 @@
                      :pending-before-flush pending
                      :stages (stage-report metrics)
                      :payload-bytes (:payload-bytes measured)
-                     :statement-bytes (:statement-bytes measured)})))
+                     :statement-bytes (:statement-bytes measured)}
+                     (wal-size-observation pending measured)))))
       ;; Closing above releases the writer. This open must recover solely from
       ;; the persisted checkpoint/WAL objects and exact manifest order.
-      (let [recovery-start (System/nanoTime)
-            actual
+      (let [memory-before (runtime-memory-observation)
+            recovery-start (System/nanoTime)
+            recovered
             (with-open [reader (jdbc/connection
                                 (durable/snapshot-dbspec
                                  {:namespace-backend store :object-id object-id
                                   :operations (timed-operations metrics)}))]
-              (verify-counts! reader @expected :durable-recovery))
+              (let [actual (verify-counts! reader @expected :durable-recovery)]
+                {:actual actual
+                 :memory-after (runtime-memory-observation)}))
             recovery-nanos (- (System/nanoTime) recovery-start)]
         (assoc @trial-result
-               :recovery {:result actual :ms (ms recovery-nanos)
-                          :expected @expected}
+               :recovery {:result (:actual recovered) :ms (ms recovery-nanos)
+                          :expected @expected
+                          :memory (recovery-memory-observation
+                                   memory-before (:memory-after recovered))}
                :stages-through-recovery (stage-report metrics)))
       (finally
         (delete-tree! root-file)))))
@@ -545,6 +613,8 @@
              log-row batch-size batches question-mark?
              (* batch-size warmup-batches)
              {:samples [] :payload-bytes 0 :statement-bytes 0
+              :maximum-batch-payload-bytes 0
+              :maximum-batch-statement-bytes 0
               :counter-deltas {}}
              (fn [acc _ rows]
                (swap! expected accumulate-expected-batch rows question-mark?)
@@ -558,6 +628,10 @@
                      (update :samples conj elapsed)
                      (update :payload-bytes + (:payload-bytes encoded))
                      (update :statement-bytes + (:statement-bytes encoded))
+                     (update :maximum-batch-payload-bytes max
+                             (:payload-bytes encoded))
+                     (update :maximum-batch-statement-bytes max
+                             (:statement-bytes encoded))
                      (update :counter-deltas add-counter-delta
                              (counter-delta before after))))))
             samples (:samples measured)
@@ -575,6 +649,10 @@
          :counters (:counter-deltas measured)
          :payload-bytes (:payload-bytes measured)
          :statement-bytes (:statement-bytes measured)
+         :maximum-batch-payload-bytes
+         (:maximum-batch-payload-bytes measured)
+         :maximum-batch-statement-bytes
+         (:maximum-batch-statement-bytes measured)
          :reconciliation {:result actual :expected @expected}}))))
 
 (defn- isolated-stage-profile [batch-size question-mark? repetitions]
@@ -698,7 +776,52 @@
 (def ^:dynamic *progress!* (fn [_ _] nil))
 
 (def ^:private supported-profiles
-  #{:smoke :probe :scale :qualification :diagnostic})
+  #{:smoke :probe :scale :qualification :diagnostic
+    :scale-512 :scale-1000 :scale-5000 :scale-10000
+    :recovery-512-10 :recovery-512-25 :recovery-512-50})
+
+(def ^:private scale-configurations
+  {512 [100 2]
+   1000 [50 2]
+   5000 [10 1]
+   10000 [5 1]})
+
+(def ^:private scale-profile-batch-size
+  {:scale-512 512 :scale-1000 1000 :scale-5000 5000 :scale-10000 10000})
+
+(def ^:private recovery-profile-batches
+  {:recovery-512-10 10 :recovery-512-25 25 :recovery-512-50 50})
+
+(defn- scale-configuration [batch-size]
+  (let [[batches warmup-batches] (get scale-configurations batch-size)]
+    {:label (keyword (str "scale-batched-" batch-size))
+     :selector (keyword (str "scale-" batch-size))
+     :batch-size batch-size :batches batches
+     :warmup-batches warmup-batches :trials 5
+     :question-mark? false
+     :modes [:durable-encode-included :durable-preencoded
+             :ordinary-native-preencoded]}))
+
+(defn- recovery-configuration [batches]
+  (let [selector (keyword (str "recovery-512-" batches))]
+    {:label selector
+     :selector selector
+   :batch-size 512 :batches batches :warmup-batches 0 :trials 1
+     :question-mark? false :modes [:durable-preencoded]}))
+
+(defn- isolated-selector-profile? [profile]
+  (or (contains? scale-profile-batch-size profile)
+      (contains? recovery-profile-batches profile)))
+
+(defn- validate-profile-configs! [profile configurations]
+  (when (isolated-selector-profile? profile)
+    (when-not (and (= 1 (count configurations))
+                   (= profile (:selector (first configurations))))
+      (throw (ex-info "selector must resolve to exactly its requested configuration"
+                      {:type ::invalid-selector-resolution
+                       :profile profile
+                       :resolved-selectors (mapv :selector configurations)}))))
+  configurations)
 
 (defn- parse-profile! [profile-text]
   (let [profile (keyword (or profile-text "smoke"))]
@@ -724,14 +847,7 @@
               :ordinary-native-preencoded]}]
 
     :scale
-    (mapv (fn [[batch-size batches warmup-batches]]
-            {:label (keyword (str "scale-batched-" batch-size))
-             :batch-size batch-size :batches batches
-             :warmup-batches warmup-batches :trials 5
-             :question-mark? false
-             :modes [:durable-encode-included :durable-preencoded
-                     :ordinary-native-preencoded]})
-          [[512 100 2] [1000 50 2] [5000 10 1] [10000 5 1]])
+    (mapv scale-configuration [512 1000 5000 10000])
 
     :qualification
     [{:label :batched-512 :batch-size 512 :batches 100
@@ -746,13 +862,23 @@
       :modes [:durable-encode-included :durable-preencoded
               :ordinary-native-preencoded]}]
 
-    (throw (ex-info "profile does not use the Durable trial runner"
-                    {:type ::unsupported-run-profile
-                     :profile profile
-                     :supported [:probe :qualification :scale :smoke]}))))
+    (cond
+      (contains? scale-profile-batch-size profile)
+      [(scale-configuration (get scale-profile-batch-size profile))]
+
+      (contains? recovery-profile-batches profile)
+      [(recovery-configuration (get recovery-profile-batches profile))]
+
+      :else
+      (throw (ex-info "profile does not use the Durable trial runner"
+                      {:type ::unsupported-run-profile
+                       :profile profile
+                       :supported (vec (sort (disj supported-profiles
+                                                   :diagnostic)))})))))
 
 (defn- require-qualification-provenance! [profile runtime]
-  (when (contains? #{:scale :qualification} profile)
+  (when (or (contains? #{:scale :qualification} profile)
+            (isolated-selector-profile? profile))
     (let [required {:jolt-version (:jolt-version runtime)
                     :started-at (:started-at runtime)
                     :native-library-sha256
@@ -806,7 +932,10 @@
                                  :question-mark-every-row? :batch-latency
                                  :ingest-ms :ingest-rows-per-second :flush-ms
                                  :persisted-ms :persisted-rows-per-second
-                                 :payload-bytes :statement-bytes :recovery]))
+                                 :payload-bytes :statement-bytes
+                                 :maximum-batch-payload-bytes
+                                 :maximum-batch-statement-bytes
+                                 :wal-growth :recovery]))
                   (conj acc result)))
               acc ordered-modes)))
          [] (range 1 (inc trials)))
@@ -836,10 +965,11 @@
            modes)}))
 
 (defn run! [profile]
-  (let [configs (profile-configs profile)
+  (let [configs (validate-profile-configs! profile (profile-configs profile))
         instrumentation-contract (instrumentation-contract!)
         smoke? (= profile :smoke)
-        probe? (= profile :probe)]
+        probe? (= profile :probe)
+        isolated-selector? (isolated-selector-profile? profile)]
     (let [runtime (runtime-metadata)
           _ (require-qualification-provenance! profile runtime)
           _ (*progress!* :started {:runtime runtime :profile profile})
@@ -848,18 +978,26 @@
                          {:configurations
                           (mapv #(select-keys % [:configuration :summaries])
                                 configuration-results)})
-          isolated (isolated-stage-profile (if smoke? 32 512) false
-                                           (cond smoke? 8 probe? 2 :else 20))
-          _ (*progress!* :isolated-stages-complete isolated)
+          isolated (when-not isolated-selector?
+                     (isolated-stage-profile (if smoke? 32 512) false
+                                             (cond smoke? 8 probe? 2 :else 20)))
+          _ (when isolated
+              (*progress!* :isolated-stages-complete isolated))
           instrumented
-          (durable-trial {:batch-size (if smoke? 32 512)
-                          :batches (if smoke? 2 1)
-                          :warmup-batches 1 :trials 1 :trial 1
-                          :question-mark? false :encode-included? false})
-          _ (*progress!* :instrumented-complete instrumented)]
-    {:schema-version 1
+          (when-not isolated-selector?
+            (durable-trial {:batch-size (if smoke? 32 512)
+                            :batches (if smoke? 2 1)
+                            :warmup-batches 1 :trials 1 :trial 1
+                            :question-mark? false :encode-included? false}))
+          _ (when instrumented
+              (*progress!* :instrumented-complete instrumented))]
+    {:schema-version 2
      :profile profile
+     :process-scope (if isolated-selector?
+                      :one-selected-configuration
+                      :multi-configuration-with-controls)
      :runtime runtime
+     :output-contract report-contract
      :instrumentation-contract instrumentation-contract
      :workload {:shape :clickstack-otel-log-jsoneachrow
                 :invariants [:exact-recovered-count :exact-trace-flags-sum
@@ -869,6 +1007,12 @@
                 :ordering "prepare and size-check WAL, then native execute, then append; flush afterward"
                 :checkpoint {:status :not-applicable
                              :reason :materialized-sql-uses-v1-statement-wal}}
+     :memory-measurement recovery-memory-limitations
+     :supplementary-controls
+     (if isolated-selector?
+       {:status :not-run
+        :reason :preserve-selector-process-attribution-for-peak-rss}
+       {:status :included})
      :isolated-stages isolated
      :instrumented-control instrumented
      :configurations configuration-results})))
@@ -886,7 +1030,7 @@
         expected (-> empty-expected-aggregates
                      (accumulate-expected-batch warmup-rows false)
                      (accumulate-expected-batch measured-rows false))
-        progress (atom {:schema-version 1 :profile :diagnostic
+        progress (atom {:schema-version 2 :profile :diagnostic
                         :runtime (runtime-metadata)
                         :configuration {:batch-size 512 :measured-batches 1
                                         :warmup-batches 1
@@ -894,7 +1038,12 @@
                                         :backend :local-posix}
                         :payload {:rows 512
                                   :payload-bytes (:payload-bytes measured)
-                                  :statement-bytes (:statement-bytes measured)}
+                                  :statement-bytes (:statement-bytes measured)
+                                  :maximum-batch-payload-bytes
+                                  (:payload-bytes measured)
+                                  :maximum-batch-statement-bytes
+                                  (:statement-bytes measured)}
+                        :memory-measurement recovery-memory-limitations
                         :phases []})
         emit! (fn [phase data]
                 (let [event {:phase phase :epoch-ms (System/currentTimeMillis)
@@ -931,10 +1080,16 @@
                 (throw (ex-info "diagnostic pending WAL mismatch"
                                 {:status status})))
               (emit! :measured-execute
-                     {:elapsed-ms (ms elapsed)
-                      :rows-per-second (/ 512000000000.0 elapsed)
-                      :counters (counter-delta before after)
-                      :pending status})))
+                     (merge
+                      {:elapsed-ms (ms elapsed)
+                       :rows-per-second (/ 512000000000.0 elapsed)
+                       :counters (counter-delta before after)
+                       :pending status}
+                      (wal-size-observation
+                       status
+                       {:maximum-batch-payload-bytes (:payload-bytes measured)
+                        :maximum-batch-statement-bytes
+                        (:statement-bytes measured)})))))
           (let [before (counter-sample)
                 start (System/nanoTime)
                 result (durable/flush! connection)
@@ -947,16 +1102,22 @@
           (finally
             (.close connection)
             (emit! :writer-closed {}))))
-      (let [start (System/nanoTime)
-            actual
+      (let [memory-before (runtime-memory-observation)
+            start (System/nanoTime)
+            recovered
             (with-open [reader (jdbc/connection
                                 (durable/snapshot-dbspec
                                  {:namespace-backend store
                                   :object-id object-id}))]
-              (verify-counts! reader expected :diagnostic-recovery))]
+              (let [actual (verify-counts! reader expected
+                                           :diagnostic-recovery)]
+                {:actual actual
+                 :memory-after (runtime-memory-observation)}))]
         (emit! :reopened-and-reconciled
                {:elapsed-ms (ms (- (System/nanoTime) start))
-                :expected expected :actual actual}))
+                :expected expected :actual (:actual recovered)
+                :memory (recovery-memory-observation
+                         memory-before (:memory-after recovered))}))
       (emit! :complete {:status :ok})
       @progress
       (catch Throwable error
@@ -975,7 +1136,7 @@
     (if (= profile :diagnostic)
       (do (diagnostic! output)
           (println (pr-str {:status :ok :profile profile :output output})))
-      (let [progress (atom {:schema-version 1 :profile profile :phases []})
+      (let [progress (atom {:schema-version 2 :profile profile :phases []})
             emit! (fn [phase data]
                     (let [event {:phase phase :epoch-ms (System/currentTimeMillis)
                                  :data data}]
