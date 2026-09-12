@@ -423,8 +423,12 @@ measured 73.285/36.299 s inside `open-reader!`, 206/103 WAL JSON parses,
 maximum RSS. Both sides reconciled the exact row and aggregate oracle and made
 103 analyze plus 103 native-execute calls. This is causal direction evidence,
 not a percentile or matched-Rust qualification: retaining the 38.6 MB segment
-raised observed peak RSS by 208.0 MiB, within the conservative additional
-payload ceiling but above the simple decoded-ASCII estimate.
+raised observed peak RSS by 208.0 MiB. That exceeds both the segment's
+131.719 MiB character-payload estimate and the full-cap 192 MiB
+character-payload ceiling. The arithmetic bounds retained string characters,
+not allocator overhead, transient parser objects, native chDB state, or their
+overlap at the process RSS peak; this one pair therefore supplies no total-RSS
+bound or plateau claim.
 
 Eliminating the second JSON parse therefore is not evidence by itself that Jolt
 has reached the 80% Rust throughput / 1.25x elapsed target. The matched oracle
