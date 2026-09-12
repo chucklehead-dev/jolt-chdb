@@ -30,8 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-fd216943
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-fd216943
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-cf0b6928
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-cf0b6928
+      PINNED_JOLT_SOURCE_SHA: cf0b69284b17d390449517c29fd418ef317d34cb
+      PINNED_JOLT_VERSION: jolt v0.8.6-8-gcf0b6928
       JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER: '1'
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +73,13 @@ jobs:
         with:
           cli: latest
       - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
         uses: ./.github/actions/install-jolt-aspects
+      - name: Verify pinned Jolt provenance
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
       - name: Verify pinned Durable conformance inventory
         run: jolt -Srepro -M:durable-conformance-inventory-test
       - name: Qualify the Durable JSON nesting bound on JVM Clojure

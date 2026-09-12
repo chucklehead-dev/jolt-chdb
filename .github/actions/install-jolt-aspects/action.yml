@@ -1,6 +1,14 @@
 name: Install pinned Jolt aspect compiler
 description: Build and cache the exact aspect-capable Jolt compiler required by jolt-chdb
 
+outputs:
+  source-sha:
+    description: Exact casselc/jolt source revision selected by this action
+    value: ${{ steps.select-jolt.outputs.source-sha }}
+  version:
+    description: Exact version banner selected by this action
+    value: ${{ steps.select-jolt.outputs.version }}
+
 runs:
   using: composite
   steps:
@@ -8,8 +16,8 @@ runs:
       id: cache-jolt
       uses: actions/cache@v4
       with:
-        path: ${{ runner.tool_cache }}/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
-        key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
+        path: ${{ runner.tool_cache }}/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb
+        key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-cf0b69284b17d390449517c29fd418ef317d34cb
 
     - name: Install compiler build dependencies
       if: steps.cache-jolt.outputs.cache-hit != 'true'
@@ -51,26 +59,29 @@ runs:
         source_dir="$RUNNER_TEMP/jolt-aspects-source"
         git init "$source_dir"
         git -C "$source_dir" remote add origin https://github.com/casselc/jolt.git
-        git -C "$source_dir" fetch --depth 1 origin fd21694382ef9b4a2a9e8c021ccef6b45c3007f4
+        git -C "$source_dir" fetch --depth 1 origin cf0b69284b17d390449517c29fd418ef317d34cb
         git -C "$source_dir" checkout --detach FETCH_HEAD
-        test "$(git -C "$source_dir" rev-parse HEAD)" = "fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        test "$(git -C "$source_dir" rev-parse HEAD)" = "cf0b69284b17d390449517c29fd418ef317d34cb"
         git -C "$source_dir" submodule update --init --recursive --depth 1
 
         PATH="/opt/chez/bin:$PATH" \
-          JOLT_VERSION="v0.8.6-219-gfd216943" \
+          JOLT_VERSION="v0.8.6-8-gcf0b6928" \
           make -C "$source_dir" -j1 jolt-release
 
-        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb"
         mkdir -p "$install_dir"
         cp "$source_dir/target/release/jolt" "$install_dir/jolt"
         chmod +x "$install_dir/jolt"
 
     - name: Select and verify the pinned Jolt compiler
+      id: select-jolt
       shell: bash
       run: |
         set -euo pipefail
-        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb"
         actual_version="$("$install_dir/jolt" --version)"
-        echo "Built $actual_version from casselc/jolt@fd21694382ef9b4a2a9e8c021ccef6b45c3007f4"
-        test "$actual_version" = "jolt v0.8.6-219-gfd216943"
+        echo "Built $actual_version from casselc/jolt@cf0b69284b17d390449517c29fd418ef317d34cb"
+        test "$actual_version" = "jolt v0.8.6-8-gcf0b6928"
+        echo "source-sha=cf0b69284b17d390449517c29fd418ef317d34cb" >> "$GITHUB_OUTPUT"
+        echo "version=$actual_version" >> "$GITHUB_OUTPUT"
         echo "$install_dir" >> "$GITHUB_PATH"

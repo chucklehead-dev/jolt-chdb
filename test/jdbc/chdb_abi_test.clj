@@ -107,10 +107,71 @@
          (not (str/includes? workflow "-linux-amd64-static.tar.gz"))
          (not (re-find #"(?m)^\s+bb:" workflow)))))
 
+(def ^:private hosted-jolt-action-use-pattern
+  #"^[ \t]*(?:-[ \t]+)?uses[ \t]*:[ \t]*(?:\./\.github/actions/install-jolt-aspects|'\./\.github/actions/install-jolt-aspects'|\"\./\.github/actions/install-jolt-aspects\")(?:[ \t]+#.*)?[ \t]*$")
+
+(def ^:private yaml-run-block-header-pattern
+  #"^[ ]*(?:-[ \t]+)?run[ \t]*:[ \t]*[|>][1-9+-]{0,2}(?:[ \t]+#.*)?[ \t]*$")
+
+(def ^:private expected-hosted-jolt-workflow-paths
+  #{".github/workflows/tests.yml"
+    ".github/workflows/durable-native.yml"
+    ".github/workflows/durable-s3.yml"
+    ".github/workflows/durable-aws.yml"
+    ".github/workflows/durable-head-quint.yml"})
+
+(defn- workflow-documents []
+  (->> (.listFiles (io/file ".github/workflows"))
+       (filter #(.isFile %))
+       (filter #(re-find #"\.ya?ml$" (.getName %)))
+       (mapv (fn [file] [(.getPath file) (slurp file)]))))
+
+(defn- yaml-space-indent [line]
+  (count (take-while #(= \space %) line)))
+
+(defn- workflow-uses-hosted-jolt-action? [workflow]
+  ;; This deliberately recognizes only the scalar forms accepted for a
+  ;; GitHub Actions step. Block scalar bodies are opaque YAML text, not steps.
+  (loop [lines (str/split-lines workflow)
+         run-block-indent nil]
+    (if-let [line (first lines)]
+      (let [indent (yaml-space-indent line)]
+        (cond
+          (and run-block-indent
+               (or (str/blank? line) (> indent run-block-indent)))
+          (recur (rest lines) run-block-indent)
+
+          run-block-indent
+          (recur lines nil)
+
+          (re-matches yaml-run-block-header-pattern line)
+          (recur (rest lines) indent)
+
+          (re-matches hosted-jolt-action-use-pattern line)
+          true
+
+          :else
+          (recur (rest lines) nil)))
+      false)))
+
+(defn- discover-hosted-jolt-workflows [documents]
+  (->> documents
+       (filter #(workflow-uses-hosted-jolt-action? (second %)))
+       (sort-by first)
+       vec))
+
 (defn- hosted-jolt-pin-matches?
   [pins action workflows]
   (let [{:keys [line commit version]} (get-in pins [:jolt :compiler])
-        action-ref "uses: ./.github/actions/install-jolt-aspects"]
+        cache-namespace (str "v0.8.6-aspects-" (subs commit 0 8))
+        workflow-guards
+        ["id: pinned-jolt"
+         (str "PINNED_JOLT_SOURCE_SHA: " commit)
+         (str "PINNED_JOLT_VERSION: jolt v" version)
+         "steps.pinned-jolt.outputs.source-sha"
+         "steps.pinned-jolt.outputs.version"
+         "$(jolt --version)"
+         cache-namespace]]
     (and (= "integration/aspects" line)
          (every? string? [commit version])
          (str/includes? action commit)
@@ -118,7 +179,10 @@
          (str/includes? action
                         (str "test \"$actual_version\" = \"jolt v"
                              version "\""))
-         (every? #(str/includes? % action-ref) workflows))))
+         (every? (fn [workflow]
+                   (and (workflow-uses-hosted-jolt-action? workflow)
+                        (every? #(str/includes? workflow %) workflow-guards)))
+                 workflows))))
 
 (defn- allocated-bytes! [allocated value]
   (let [bytes (.getBytes (str value) "UTF-8")
@@ -223,12 +287,32 @@
         deps (read-edn "deps.edn")
         workflow (slurp ".github/workflows/tests.yml")
         jolt-action (slurp ".github/actions/install-jolt-aspects/action.yml")
-        jolt-workflows (mapv slurp
-                             [".github/workflows/tests.yml"
-                              ".github/workflows/durable-native.yml"
-                              ".github/workflows/durable-s3.yml"
-                              ".github/workflows/durable-aws.yml"
-                              ".github/workflows/durable-head-quint.yml"])
+        all-workflow-documents (workflow-documents)
+        jolt-workflow-documents
+        (discover-hosted-jolt-workflows all-workflow-documents)
+        jolt-workflow-paths (mapv first jolt-workflow-documents)
+        jolt-workflows (mapv second jolt-workflow-documents)
+        alternate-consumers
+        [[".github/workflows/synthetic-unquoted.yml"
+          "steps:\n  - uses :   ./.github/actions/install-jolt-aspects\n"]
+         [".github/workflows/synthetic-single.yaml"
+          "steps:\n  -   uses: './.github/actions/install-jolt-aspects' # pin\n"]
+         [".github/workflows/synthetic-double.yml"
+          "steps:\n    - uses:\t\"./.github/actions/install-jolt-aspects\"\n"]]
+        rejected-consumers
+        [[".github/workflows/synthetic-glued-dash.yml"
+          "steps:\n  -uses: ./.github/actions/install-jolt-aspects\n"]
+         [".github/workflows/synthetic-glued-comment.yml"
+          "steps:\n  - uses: ./.github/actions/install-jolt-aspects#not-a-comment\n"]
+         [".github/workflows/synthetic-run-literal.yml"
+          "steps:\n  - run: |\n      uses: ./.github/actions/install-jolt-aspects\n"]
+         [".github/workflows/synthetic-run-folded.yaml"
+          "steps:\n  - run: >\n      uses: './.github/actions/install-jolt-aspects'\n"]]
+        active-jolt-pin-text
+        (str/join "\n" (concat [jolt-action
+                                  (slurp "resources/jdbc/chdb/ffi-compatibility.edn")
+                                  (slurp "test/jdbc/chdb_durable_throughput_test.clj")]
+                                 jolt-workflows))
         ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
         platform (select-keys (native/platform) [:os :arch])]
     (check "descriptor validates as schema 1" descriptor
@@ -267,6 +351,42 @@
            (:jolt/min-version deps) (get-in pins [:jolt :version]))
     (check "hosted Jolt compiler agrees with the compatibility manifest"
            true (hosted-jolt-pin-matches? pins jolt-action jolt-workflows))
+    (check "discovered hosted compiler consumers are exactly the guarded set"
+           expected-hosted-jolt-workflow-paths (set jolt-workflow-paths))
+    (check "discovery accepts valid quoted and spaced YAML uses scalars"
+           (set (map first alternate-consumers))
+           (set (map first
+                     (discover-hosted-jolt-workflows alternate-consumers))))
+    (check "discovery rejects glued tokens and run-block scalar text"
+           [] (discover-hosted-jolt-workflows rejected-consumers))
+    (check "active hosted pins contain no obsolete compiler revision"
+           false (str/includes? active-jolt-pin-text (str "fd216" "943")))
+    (check "active hosted pins require the merged compiler banner"
+           true (every? #(str/includes? % "jolt v0.8.6-8-gcf0b6928")
+                        (cons jolt-action jolt-workflows)))
+    (check "one workflow source-revision drift turns the guard red"
+           false
+           (hosted-jolt-pin-matches?
+            pins jolt-action
+            (update jolt-workflows 3
+                    str/replace
+                    (get-in pins [:jolt :compiler :commit])
+                    (apply str (repeat 40 "0")))))
+    (check "one workflow cache-namespace drift turns the guard red"
+           false
+           (hosted-jolt-pin-matches?
+            pins jolt-action
+            (update jolt-workflows 1
+                    str/replace
+                    "v0.8.6-aspects-cf0b6928"
+                    "v0.8.6-aspects-stale")))
+    (check "a newly discovered unguarded consumer turns the path-set guard red"
+           false
+           (= expected-hosted-jolt-workflow-paths
+              (set (map first
+                        (discover-hosted-jolt-workflows
+                         (conj all-workflow-documents
+                               (first alternate-consumers)))))))
     (check "hosted Jolt commit drift turns the guard red"
            false
            (hosted-jolt-pin-matches?
