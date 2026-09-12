@@ -21,11 +21,30 @@ manifest and line order through the internal engine path, never through the
 public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
-Recovery validates the complete WAL before applying its prefix, then replays it
-with the same bounded record visitor. Each buffered record is decoded with a
-strict UTF-8 `CharsetDecoder`, so malformed, overlong, surrogate, out-of-range,
-and truncated byte sequences fail without re-encoding the decoded string for a
-byte comparison. The visitor already knows each JSON record's wire-byte length.
+Recovery validates each complete WAL segment before applying its prefix. While
+the segment contains at most 48 MiB of cumulative record bytes and 16,384
+records, validation retains the exact decoded SQL as a per-segment replay plan.
+Only after final-newline, whole-segment UTF-8, record-shape, and statement-limit
+validation succeeds does recovery analyze and execute that plan in order. If
+either retention cap is crossed, the partial plan is discarded and recovery
+uses the prior bounded second pass. Plans are consumed one segment at a time;
+they never accumulate across the manifest. A malformed tail therefore cannot
+execute a retained prefix, and changing the private WAL after validation cannot
+substitute different SQL for a retained plan.
+
+The 48 MiB byte cap bounds retained string character payload to 192 MiB using
+conservative four-byte-per-codepoint accounting for Jolt's codepoint-indexed
+strings, and to 96 MiB under JVM UTF-16 semantics; the independent record cap
+bounds string headers and vector slots. These are
+additional payload ceilings, not a total-process RSS promise. One record being
+validated can still use the existing protocol-sized streaming buffers. The
+fallback preserves support for every legal 128 MiB WAL without retaining the
+whole segment as managed strings.
+
+Each buffered record is decoded with a strict UTF-8 `CharsetDecoder`, so
+malformed, overlong, surrogate, out-of-range, and truncated byte sequences fail
+without re-encoding the decoded string for a byte comparison. The visitor
+already knows each JSON record's wire-byte length.
 Because a decoded JSON string cannot have more UTF-8 bytes than its complete
 encoded record, records at or below the 64 MiB statement limit also avoid
 creating a second statement-sized byte array solely to count it. Records above

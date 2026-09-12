@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Parse each ordinary Durable recovery WAL record once. Validation now retains
+  an exact per-segment replay plan while cumulative record bytes stay within
+  48 MiB and the segment stays within 16,384 records, then analyzes and executes
+  that plan only after complete validation. Crossing either cap discards the
+  partial plan and retains the prior bounded second-pass behavior. This covers
+  the 36.788 MiB, 100-record representative WAL without making the protocol's
+  128 MiB ceiling an unbounded managed-memory commitment. A one-pair local
+  directional check reduced open time from 73.285 s to 36.299 s with identical
+  52,224-row reconciliation; the matched multi-trial Rust qualification and its
+  80% target remain open.
+
 - Pin `casselc/data.json` to merge `36b19024`, whose direct long-string reader
   scan removes the dominant per-character recovery allocation while retaining
   its existing escape, surrogate, control, and EOF semantics. A source-candidate

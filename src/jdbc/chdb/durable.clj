@@ -326,6 +326,8 @@
           (throw error))))))
 
 (def ^:private wal-read-buffer-bytes (* 64 1024))
+(def ^:private replay-plan-wire-byte-limit (* 48 1024 1024))
+(def ^:private replay-plan-record-limit 16384)
 (def ^:private utf8-charset (Charset/forName "UTF-8"))
 
 (defn- strict-utf8-decoder-capable? []
@@ -448,7 +450,8 @@
                               (when-not @first-failure
                                 (try
                                   (visit! (decode-wal-record!
-                                           text record-wire-bytes))
+                                           text record-wire-bytes)
+                                          record-wire-bytes)
                                   (catch Throwable error
                                     (if delay-failure-until-termination?
                                       (reset! first-failure error)
@@ -463,20 +466,50 @@
                         (recur (inc index) start count))))]
               (recur next-record-count))))))))
 
+(defn- extend-replay-plan [plan sql record-wire-bytes]
+  (when plan
+    (let [next-wire-bytes (+ (:wire-bytes plan) record-wire-bytes)
+          next-record-count (inc (:record-count plan))]
+      (when (and (<= next-wire-bytes replay-plan-wire-byte-limit)
+                 (<= next-record-count replay-plan-record-limit))
+        {:wire-bytes next-wire-bytes
+         :record-count next-record-count
+         :statements (conj (:statements plan) sql)}))))
+
 (defn- validate-wal! [path]
   ;; The old whole-file decoder classified an unterminated segment first and
   ;; whole-segment UTF-8 corruption second, before record parsing and limits.
   ;; Retain that ordering while scanning once by remembering failures until the
   ;; final raw byte is known to be LF.
-  (visit-wal! path (fn [_] nil) true))
+  (let [plan (atom {:wire-bytes 0 :record-count 0 :statements []})
+        record-count
+        (visit-wal!
+         path
+         (fn [sql record-wire-bytes]
+           ;; `nil` is an irreversible bounded fallback for this segment. Do
+           ;; not start retaining again after a later small record.
+           (when @plan
+             (swap! plan extend-replay-plan sql record-wire-bytes)))
+         true)]
+    {:record-count record-count
+     :statements (some-> @plan :statements)}))
 
-(defn- replay-wal! [path operations handle logical-database]
-  (visit-wal!
-   path
-   (fn [sql]
-     ((:analyze-execute! operations) handle sql logical-database)
-     ((:execute-native! operations) handle sql []))
-   false))
+(defn- replay-statement! [sql operations handle logical-database]
+  ((:analyze-execute! operations) handle sql logical-database)
+  ((:execute-native! operations) handle sql []))
+
+(defn- replay-statements! [statements operations handle logical-database]
+  (doseq [sql statements]
+    (replay-statement! sql operations handle logical-database)))
+
+(defn- replay-wal! [path replay-plan operations handle logical-database]
+  (if-some [statements (:statements replay-plan)]
+    (replay-statements! statements operations handle logical-database)
+    (visit-wal!
+     path
+     (fn [sql _]
+       (replay-statement! sql operations handle logical-database))
+     false)))
 
 (defn- required-operation! [operations key]
   (when-not (fn? (get operations key))
@@ -577,11 +610,13 @@
       (let [path (download-reference!
                   store scratch (str "wal-" index ".jsonl") reference
                   writer/max-wal-segment-bytes)]
-        ;; A corrupt tail must not leave a prefix applied. The first bounded
-        ;; pass validates the complete immutable scratch copy without engine
-        ;; effects; the second pass revalidates each record before replay.
-        (validate-wal! path)
-        (replay-wal! path operations handle logical-database)))
+        ;; A corrupt tail must not leave a prefix applied. Validation retains a
+        ;; per-segment replay plan only within strict byte and record caps. A
+        ;; larger segment discards the partial plan and uses the original
+        ;; bounded second pass. Either path starts engine effects only after the
+        ;; complete segment and its established error precedence are valid.
+        (let [replay-plan (validate-wal! path)]
+          (replay-wal! path replay-plan operations handle logical-database))))
     logical-database))
 
 (defn open-reader!
