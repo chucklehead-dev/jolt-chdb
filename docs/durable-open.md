@@ -118,9 +118,12 @@ driver applies the same validation to handwritten maps for fail-closed
 compatibility. A generated writer instance is UUIDv4; protocol ordering comes
 from the lease generation, not UUID sorting.
 
-Run the focused gate with the pinned Jolt v0.8.6 aspect compiler and Chez
-10.4.1 (the shared maintainer
-workspace supplies its pinned wrapper through the parent `AGENTS.md`):
+Durable runtime and recovery currently require `casselc/jolt`
+`integration/aspects` commit `120643d6`, or a later Jolt release containing
+upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
+base driver's Jolt 0.8.6 floor. Run the focused gate with that pinned compiler
+and Chez 10.4.1 (the shared maintainer workspace supplies its pinned wrapper
+through the parent `AGENTS.md`):
 
 ```sh
 jolt -M:durable-open-test
