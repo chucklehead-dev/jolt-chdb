@@ -21,6 +21,15 @@ manifest and line order through the internal engine path, never through the
 public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
+Recovery validates the complete WAL before applying its prefix, then replays it
+with the same bounded record visitor. The visitor already knows each JSON
+record's wire-byte length. Because a decoded JSON string cannot have more UTF-8
+bytes than its complete encoded record, records at or below the 64 MiB statement
+limit avoid creating a second statement-sized byte array solely to count it.
+Records above that wire bound still use the exact UTF-8 size check, preserving
+the statement limit and the established termination, UTF-8, record-shape, and
+limit failure precedence.
+
 The focused public-open conformance corpus exercises missing, wrong-size, and
 wrong-digest checkpoint and WAL references through both reader and writer open.
 Valid controls reach restore or replay; malformed references return `corrupt`

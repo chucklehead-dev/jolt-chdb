@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid a duplicate statement-sized UTF-8 allocation during Durable WAL
+  recovery when the already-buffered JSON record proves the 64 MiB statement
+  bound. Oversized records retain the exact encoded-size fallback and existing
+  validation-before-replay failure ordering.
+
 - Pin all hosted Jolt lanes and performance provenance fixtures to the merged
   `casselc/jolt` `OutputStreamWriter` fast path. Each consuming workflow now
   checks the shared install action's exact source revision and version output,

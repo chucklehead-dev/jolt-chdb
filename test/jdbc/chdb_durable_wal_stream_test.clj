@@ -132,6 +132,37 @@
     (check "every valid record is decoded once per bounded pass"
            (* 2 (count sql-values)) @wal-decodes))
 
+  (let [exact-size-checks (atom 0)
+        exact-size-var (ns-resolve 'jdbc.chdb.durable
+                                   'exact-statement-bytes-exceed?)
+        bounded-size-var (ns-resolve 'jdbc.chdb.durable
+                                     'statement-bytes-exceed?)]
+    (with-redefs [writer/max-statement-bytes 64]
+      (with-redefs-fn
+        {exact-size-var
+         (fn [_ _]
+           (swap! exact-size-checks inc)
+           false)}
+        #(attempt-open
+          (wal-bytes ["SELECT 1"])
+          (fn [open! _ _ _]
+            (reader/close! (open!))))))
+    ;; This catches an unconditional call through the exact-size seam. The
+    ;; forced decision below also binds the visitor to the bounded seam, so a
+    ;; mutant that restores the old direct encoding cannot bypass this check.
+    (check "a wire-bounded record avoids duplicate statement materialization"
+           0 @exact-size-checks)
+    (with-redefs [writer/max-statement-bytes 64]
+      (with-redefs-fn
+        {bounded-size-var (fn [_ _ _] true)}
+        #(attempt-open
+          (wal-bytes ["SELECT 1"])
+          (fn [open! calls _ _]
+            (check "record decoding uses the bounded-size decision seam"
+                   ::durable/limit-exceeded (error-type open!))
+            (check "a forced size rejection has no engine effect"
+                   [] (engine-effects @calls)))))))
+
   (doseq [[label suffix]
           [["malformed JSON tail" (.getBytes "{not-json}\n" "UTF-8")]
            ["noncanonical UTF-8 valid-JSON tail"
@@ -181,6 +212,18 @@
               ::durable/limit-exceeded (error-type open!))
        (check "an oversized tail executes no preceding statement" []
               (engine-effects @calls)))))
+
+  (with-redefs [writer/max-statement-bytes 1]
+    (attempt-open
+     (wal-bytes ["\n"])
+     (fn [open! calls _ _]
+       (let [opened (open!)]
+         (try
+           (check "a large escaped record retains its exact decoded bound"
+                  ["\n"]
+                  (mapv second (filter #(= :execute (first %)) @calls)))
+           (finally
+             (reader/close! opened)))))))
 
   (with-redefs [writer/max-statement-bytes 3]
     (attempt-open
