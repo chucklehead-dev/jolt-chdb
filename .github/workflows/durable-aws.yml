@@ -2,6 +2,12 @@ name: durable-aws-qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      run_throughput:
+        description: Run the gated S3 throughput curve after local qualification
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +42,8 @@ jobs:
           test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
           test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
           test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
+      - name: Validate throughput evidence redaction contracts
+        run: jolt -M:durable-throughput-metrics-test
       - name: Assume the jolt-chdb Durable CI role
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
@@ -45,7 +53,7 @@ jobs:
       - name: Qualify Durable semantics against AWS S3
         env:
           JOLT_CHDB_S3_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
-          JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}
+          JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/conformance
         run: |
           set -euo pipefail
           test -n "$AWS_ACCESS_KEY_ID"
@@ -57,3 +65,101 @@ jobs:
           export JOLT_CHDB_S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
           export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
           jolt -M:durable-s3-provider-test
+
+  s3-throughput:
+    needs: s3-provider
+    if: ${{ inputs.run_throughput && needs.s3-provider.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: aws-durable-ci
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt/throughput-cache
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt/throughput-gitlibs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate gated throughput configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          REGION: ${{ vars.AWS_DURABLE_REGION }}
+          QUALIFIED_JOLT_SHA: ${{ vars.AWS_DURABLE_THROUGHPUT_JOLT_SHA }}
+        run: |
+          set -euo pipefail
+          test -n "$ROLE_ARN"
+          test -n "$BUCKET"
+          test -n "$REGION"
+          test -n "$QUALIFIED_JOLT_SHA"
+      - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
+        uses: ./.github/actions/install-jolt-aspects
+      - name: Verify pinned Jolt provenance
+        env:
+          QUALIFIED_JOLT_SHA: ${{ vars.AWS_DURABLE_THROUGHPUT_JOLT_SHA }}
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$QUALIFIED_JOLT_SHA"
+          test "$(jolt --version)" = "${{ steps.pinned-jolt.outputs.version }}"
+      - name: Install and qualify checksum-pinned Durable chDB
+        run: |
+          set -euo pipefail
+          qualification_root="$RUNNER_TEMP/chdb-durable-throughput"
+          JOLT_BIN=jolt bash scripts/qualify-durable-native.sh "$qualification_root"
+          test -f "$qualification_root/native/libchdb.so"
+          echo "JOLT_CHDB_LIB=$qualification_root/native/libchdb.so" >> "$GITHUB_ENV"
+      - name: Assume the jolt-chdb Durable CI role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          role-session-name: jolt-chdb-throughput-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ vars.AWS_DURABLE_REGION }}
+      - name: Run bounded Durable S3 throughput curve
+        env:
+          JOLT_CHDB_S3_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/throughput
+          BENCH_RUN_ID: ${{ github.run_id }}
+          BENCH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          BENCH_RUNNER_OS: ${{ runner.os }}
+          BENCH_RUNNER_ARCH: ${{ runner.arch }}
+          BENCH_EVENT: ${{ github.event_name }}
+          BENCH_WORKFLOW_ID: durable-aws-qualification
+          BENCH_PROVIDER_KIND: aws-s3
+          BENCH_JOLT_SOURCE_SHA: ${{ steps.pinned-jolt.outputs.source-sha }}
+          BENCH_JOLT_VERSION: ${{ steps.pinned-jolt.outputs.version }}
+          BENCH_SQL_CANARY: otel_logs
+          BENCH_PAYLOAD_CANARY: request completed route=
+        run: |
+          set -euo pipefail
+          artifact_dir="target/aws-throughput"
+          report="$artifact_dir/report.edn"
+          log="$artifact_dir/run.log"
+          raw_log="$RUNNER_TEMP/durable-s3-throughput.log"
+          mkdir -p "$artifact_dir"
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$AWS_SESSION_TOKEN"
+          export JOLT_CHDB_S3_ENDPOINT="https://s3.${AWS_REGION}.amazonaws.com"
+          export JOLT_CHDB_S3_REGION="$AWS_REGION"
+          export JOLT_CHDB_S3_ACCESS_KEY="$AWS_ACCESS_KEY_ID"
+          export JOLT_CHDB_S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
+          export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
+          export BENCH_JOLT_BIN="$(command -v jolt)"
+          export BENCH_GIT_HEAD="$(git rev-parse HEAD)"
+          export BENCH_GIT_PARENT="$(git rev-parse HEAD^)"
+          export BENCH_GIT_TREE="$(git rev-parse HEAD^{tree})"
+          export BENCH_GIT_STATUS="$(test -z "$(git status --porcelain)" && printf clean || printf dirty)"
+          export BENCH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          set +e
+          jolt -M:durable-throughput s3-curve "$report" > "$raw_log" 2>&1
+          run_status=$?
+          set -e
+          raw_log_bytes=$(wc -c < "$raw_log")
+          head -c 8388608 "$raw_log" > "$log"
+          scripts/check-durable-throughput-artifacts.sh "$report" "$log"
+          test "$raw_log_bytes" -le 8388608
+          test "$run_status" -eq 0
+      - name: Publish bounded sanitized throughput evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable-s3-throughput-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/aws-throughput/
+          if-no-files-found: error
+          retention-days: 14

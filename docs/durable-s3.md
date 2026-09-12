@@ -166,6 +166,7 @@ checks against a pre-provisioned AWS bucket. Configure the GitHub environment
 - `AWS_DURABLE_ROLE_ARN`
 - `AWS_DURABLE_BUCKET`
 - `AWS_DURABLE_REGION`
+- `AWS_DURABLE_THROUGHPUT_JOLT_SHA` (only for the opt-in throughput job)
 
 The workflow assumes the role with GitHub OIDC and maps the resulting access
 key, secret key, and mandatory session token into the transport. It neither
@@ -183,3 +184,14 @@ Only `s3:GetObject` and `s3:PutObject` are required. `s3:ListBucket`,
 `s3:DeleteObject`, and `s3:CreateBucket` are not required by the conformance
 run. Configure a bucket lifecycle rule for the shared `ci/` subtree rather
 than granting test jobs destructive cleanup permission.
+
+Before assuming the role, the same manual workflow runs the fake-transport
+throughput metrics contract. That contract proves the bounded metrics shape and
+quiet canary scanning without contacting AWS. Selecting `run_throughput` adds a
+separate job under the same protected OIDC environment and writes only below
+`ci/jolt-chdb/<run-id>-<run-attempt>/throughput/`. It fails closed unless the
+protected compiler-baseline variable matches the exact checked-in compiler
+pin, publishes only size-bounded canary-scanned EDN/log files, and retains them
+for 14 days. See [Durable throughput](durable-throughput.md). A checked-in job
+is not performance evidence; only a reviewed successful manual dispatch can
+establish the remote curve.

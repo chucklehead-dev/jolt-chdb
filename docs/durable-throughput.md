@@ -359,29 +359,114 @@ placeholder handling.
 S3 is a separate qualification slice. The local selectors and memory
 observations above neither exercise S3 nor change its design.
 
+The checked-in foundation keeps provider selection out of the workload. Each
+Durable trial accepts an execution-only backend-context factory yielding a
+namespace backend, opaque object id, fixed provider-kind label, and cleanup
+callback. The factory is removed from configuration and progress reports; its
+closed-over endpoint, bucket, prefix, credentials, and object id therefore
+cannot enter benchmark EDN. The default factory remains `local-posix`.
+
+`jdbc.chdb-durable-throughput-metrics` supplies two independent wrappers for
+the remote runner:
+
+- the logical wrapper records each fixed `ObjectBackend` operation; and
+- the transport wrapper records every actual S3 transport attempt, so retries
+  cannot disappear inside one logical call.
+
+Both retain only fixed phase/operation labels, call counts, request-body and
+response-body byte counts, and p50/p95/max/total latency. Logical results use a
+closed set of keyword categories; transport results preserve numeric HTTP
+statuses from 100 through 599 and collapse any other status to
+`invalid-response`. These byte fields exclude HTTP framing, headers, and TLS
+overhead; they are not wire-byte measurements. Sample-support flags prevent
+one or a few requests from being presented as supported percentiles. Retry
+amplification is reported as logical calls, transport attempts, and extra
+attempts for the same fixed phase/operation pair. Opaque ETags and all
+request/response objects are dropped.
+
+The uncontended flush assertion is outcome-specific. A normally committed head
+CAS must have the exact production base shape: three head reads, one immutable
+WAL create, one WAL verification read, and one head CAS. A reconciled ambiguous
+head CAS must retain that shape plus one to three head proof reads, bounded by
+the writer's fixed four-attempt control budget, and its sole head CAS must be
+classified `ambiguous`. Missing or additional logical operations fail the run.
+S3 transport retries remain visible separately but cannot inflate logical-call
+allowances.
+
+The focused fake-transport contract uses canaries in credentials, URL,
+headers, ETag, SQL-shaped request bytes, payload-shaped response bytes, bucket,
+prefix, and object key. It quietly scans bounded EDN and captured stdout/stderr;
+failure reports only a generic type and never the match. Run it without AWS or
+native chDB:
+
+```sh
+jolt -M:durable-throughput-metrics-test
+```
+
+The manual OIDC workflow runs this redaction gate before assuming its AWS role.
+Its opt-in `run_throughput` job then runs `s3-curve`: each target and admission
+mode receives a fresh object, ordinary writer admissions continue until the
+post-admission `writer/status` reports the requested `:pending-wal-bytes`, and
+the unchanged production publisher performs exactly one measured flush. The
+logical and transport wrappers bind setup, admission, flush, writer-close, and
+fresh-reader recovery as separate phases. No benchmark publisher or alternate
+retry path exists. The encoder retains its single UTF-8 payload byte array only
+until that admission is recorded; the post-timing maximum-row scan walks LF
+offsets in the same array without decoding, splitting, substring allocation, or
+secondary encoding, and the array never enters reports or progress output.
+
 Remote qualification should reuse the environment-protected manual OIDC lane
 and unique run prefix from `durable-aws.yml`; it must not assume local AWS
 credentials. The first curve uses the current single conditional PUT only. No
 multipart implementation belongs in this benchmark slice.
 
 Use the same 512-row statements and recovery aggregates as local POSIX, varying
-the explicit number of admitted batches per flush. Record WAL object bytes,
+the measured pending-WAL target for one explicit flush. Record WAL object bytes,
 immutable PUT, head GET/verification, and head-CAS counts plus p50/p95/max/total
 latencies. Reports must not contain credentials, signed URLs, headers, SQL,
 payload bodies, bucket names, or object prefixes.
 
-Include flush points around approximately 0.4, 3, 12, 48, 96, and no more than
-128 MiB of WAL. Stop below the frozen 128 MiB segment limit using the measured
-WAL bytes rather than an estimated batch count. For each point, calculate
-required aggregation from fixed S3 latency `L`:
+Include independent flush points at 419,430 bytes and 3, 12, 48, 64, 96, and
+127 MiB of measured pending WAL. Stop below the frozen 128 MiB segment limit
+using `:pending-wal-bytes`, rather than an estimated batch count. The fixed
+targets are exposed as `wal-target-bytes` for the runner and contract tests.
+For each point, calculate required aggregation from measured admission capacity
+`A`, desired persisted rate `R`, and fixed S3 latency `L`:
 
 ```text
-rows needed at 20k rows/s = ceil(20000 * L_seconds)
-rows needed at 25k rows/s = ceil(25000 * L_seconds)
-batches needed             = ceil(rows needed / 512)
+N >= R * L / (1 - R/A), when A > R
+batches needed = ceil(N / 512)
 ```
+
+If `A <= R`, no finite aggregation can reach that persisted target; the report
+marks it explicitly impossible. `R*L` alone ignores admission time and must not
+be presented as sufficient. Admission capacity and flush latency must both be
+finite; NaN and either infinity fail with the same closed validation errors as
+other invalid inputs.
 
 Only recommend multipart upload if measured 64-128 MiB WAL or checkpoint
 evidence shows single-PUT behavior is the limiting factor. Run this remote
 curve after local admission meets its target; before that, local managed
 serialization dominates and would make the S3 curve needlessly expensive.
+
+The workflow artifact contains only a bounded EDN report and a canary-scanned
+bounded log, retained for 14 days. The workload has no process-wide file-size
+limit, so 127 MiB WAL and native temporary files can complete. Its raw log lives
+only in runner temporary storage; at most 8 MiB is copied into the artifact
+directory, and an oversized raw log fails the job. Both artifact files are
+checked for type, symlink status, size, and every configured identity/content
+canary before upload. A failed run or failed scan uploads nothing. The report
+records a
+sanitized GitHub-hosted runner/workflow identity, provider kind, and region,
+but not the bucket, prefix, endpoint, namespace, or object keys. Setup,
+writer-close/release, and recovery remain outside the persisted-rate numerator;
+recovery gets its own phase and request counts.
+
+The opt-in job requires `AWS_DURABLE_THROUGHPUT_JOLT_SHA` in the protected
+environment to equal the workflow's exact compiler source pin. Leave the
+variable unset until the local 512-row qualification has selected that same
+pin. The job also runs the checksum-pinned chDB 26.7.2-rc.2 native gate before
+assuming the AWS role. It also depends on the complete provider/redaction job,
+so its own OIDC role assumption cannot begin after a failed provider contract.
+A live dispatch remains prohibited until the execution gate is satisfied and
+reviewed.

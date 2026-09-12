@@ -17,6 +17,19 @@
   captured `-Sdescribe`, and fail if repository state changes between any prime
   or measured process.
 
+- Add the non-live manual AWS S3 throughput qualification harness with reusable
+  execution-only backend parameterization and separate redacted logical-backend
+  and transport-attempt metrics. Fake-transport canaries cover credentials,
+  transport metadata, object identity, SQL-shaped bytes, payload-shaped bytes,
+  bounded EDN, and captured output. The opt-in OIDC job stops each 512-row
+  curve at measured pending WAL targets, separates admission/flush/close/
+  recovery provider phases, records sanitized hosted provenance, and uploads
+  only bounded scanned artifacts with 14-day retention. A live curve remains
+  gated on the exact merged `cf0b6928` runtime baseline and manual review.
+   Aggregation estimates reject NaN and infinite admission or flush inputs.
+   Flush controls now validate exact committed or bounded ambiguity-reconciled
+   logical call shapes instead of rejecting valid reconciliation proof reads.
+
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
   preserving complete validation before recovery effects and failure ordering.

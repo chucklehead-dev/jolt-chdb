@@ -167,6 +167,9 @@
            :durable-cross-binding-recovery
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
+           :durable-throughput-metrics-test
+           {:extra-paths ["test" "bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}
            ;; JVM-only, dev-time Typed Clojure pilot. Neither this path nor the
            ;; checker dependency is visible to ordinary/Jolt consumers.
            :typed-check {:extra-paths ["script" "typed"]
@@ -212,6 +215,7 @@
          durable-s3-provider-test "jolt -M:durable-s3-provider-test"
          durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
          durable-throughput-contract-test "jolt -M:durable-throughput-contract-test"
+         durable-throughput-metrics-test "jolt -M:durable-throughput-metrics-test"
          typed-check "clojure -M:typed-check"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}
