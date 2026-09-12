@@ -16,8 +16,8 @@ runs:
       id: cache-jolt
       uses: actions/cache@v4
       with:
-        path: ${{ runner.tool_cache }}/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb
-        key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-cf0b69284b17d390449517c29fd418ef317d34cb
+        path: ${{ runner.tool_cache }}/jolt-aspects/120643d6bc322800a700e870de5c8087ad6085fa
+        key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-120643d6bc322800a700e870de5c8087ad6085fa
 
     - name: Install compiler build dependencies
       if: steps.cache-jolt.outputs.cache-hit != 'true'
@@ -59,16 +59,16 @@ runs:
         source_dir="$RUNNER_TEMP/jolt-aspects-source"
         git init "$source_dir"
         git -C "$source_dir" remote add origin https://github.com/casselc/jolt.git
-        git -C "$source_dir" fetch --depth 1 origin cf0b69284b17d390449517c29fd418ef317d34cb
+        git -C "$source_dir" fetch --depth 1 origin 120643d6bc322800a700e870de5c8087ad6085fa
         git -C "$source_dir" checkout --detach FETCH_HEAD
-        test "$(git -C "$source_dir" rev-parse HEAD)" = "cf0b69284b17d390449517c29fd418ef317d34cb"
+        test "$(git -C "$source_dir" rev-parse HEAD)" = "120643d6bc322800a700e870de5c8087ad6085fa"
         git -C "$source_dir" submodule update --init --recursive --depth 1
 
         PATH="/opt/chez/bin:$PATH" \
-          JOLT_VERSION="v0.8.6-8-gcf0b6928" \
+          JOLT_VERSION="v0.8.6-97-g120643d6" \
           make -C "$source_dir" -j1 jolt-release
 
-        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb"
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/120643d6bc322800a700e870de5c8087ad6085fa"
         mkdir -p "$install_dir"
         cp "$source_dir/target/release/jolt" "$install_dir/jolt"
         chmod +x "$install_dir/jolt"
@@ -78,10 +78,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/cf0b69284b17d390449517c29fd418ef317d34cb"
+        install_dir="$RUNNER_TOOL_CACHE/jolt-aspects/120643d6bc322800a700e870de5c8087ad6085fa"
         actual_version="$("$install_dir/jolt" --version)"
-        echo "Built $actual_version from casselc/jolt@cf0b69284b17d390449517c29fd418ef317d34cb"
-        test "$actual_version" = "jolt v0.8.6-8-gcf0b6928"
-        echo "source-sha=cf0b69284b17d390449517c29fd418ef317d34cb" >> "$GITHUB_OUTPUT"
+        echo "Built $actual_version from casselc/jolt@120643d6bc322800a700e870de5c8087ad6085fa"
+        test "$actual_version" = "jolt v0.8.6-97-g120643d6"
+        echo "source-sha=120643d6bc322800a700e870de5c8087ad6085fa" >> "$GITHUB_OUTPUT"
         echo "version=$actual_version" >> "$GITHUB_OUTPUT"
         echo "$install_dir" >> "$GITHUB_PATH"

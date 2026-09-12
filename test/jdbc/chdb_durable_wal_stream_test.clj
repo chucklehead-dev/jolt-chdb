@@ -45,6 +45,9 @@
     (System/arraycopy right 0 combined (alength left) (alength right))
     combined))
 
+(defn- raw-bytes [values]
+  (byte-array (map unchecked-byte values)))
+
 (defn- prepared-wal-store [payload]
   (let [store (backend/memory-backend)
         token (:token (control/acquire! store initial-options))
@@ -72,26 +75,57 @@
   (reset! failures 0)
   (println "Durable bounded WAL validation and replay")
 
-  ;; Recovery compares the complete byte[] produced by toByteArray with the
-  ;; complete byte[] produced by String.getBytes. Exercise that exact carrier
-  ;; pair, including the offset write used while splitting an input chunk.
-  (let [text "control:\u0000\t\r astral:\ud83d\ude00"
-        expected (.getBytes text "UTF-8")
-        framed (byte-array (+ 3 (alength expected)))
-        output (java.io.ByteArrayOutputStream.)]
-    (System/arraycopy expected 0 framed 2 (alength expected))
-    (.write output framed 2 (alength expected))
-    (let [actual (.toByteArray output)
-          changed (aclone actual)]
-      (aset changed (dec (alength changed))
-            (unchecked-byte (bit-xor 1 (aget changed (dec (alength changed))))))
-      (check "Arrays equality accepts offset-assembled canonical UTF-8 bytes"
-             true (java.util.Arrays/equals expected actual))
-      (check "Arrays equality rejects a same-length byte difference"
-             false (java.util.Arrays/equals expected changed))
-      (check "Arrays equality rejects a byte-length difference"
-             false (java.util.Arrays/equals expected
-                                            (byte-array (dec (alength expected)))))))
+  (let [decoder-capability-var
+        (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
+        require-decoder-var
+        (ns-resolve 'jdbc.chdb.durable
+                    'require-strict-utf8-decoder-capability!)
+        require-decoder! @require-decoder-var
+        decode-var (ns-resolve 'jdbc.chdb.durable 'decode-wal-text!)
+        decode! @decode-var
+        source (slurp "src/jdbc/chdb/durable.clj")
+        start (str/index-of source "(defn- decode-wal-text!")
+        end (str/index-of source "(defn- exact-statement-bytes-exceed?" start)
+        decode-source (subs source start end)]
+    (check "running Jolt passes the strict decoder capability probe"
+           true (require-decoder!))
+    (with-redefs-fn
+      {decoder-capability-var (delay false)}
+      (fn []
+        ;; Public opens must fail at this guard before resolving storage,
+        ;; validating writer options, acquiring a lease, or touching native code.
+        (check "reader fails closed before effects without strict decoding"
+               ::durable/strict-utf8-decoder-unavailable
+               (error-type #(durable/open-reader! {})))
+        (check "writer fails closed before effects without strict decoding"
+               ::durable/strict-utf8-decoder-unavailable
+               (error-type #(durable/open-writer! {})))))
+    (check "strict decoder preserves control, multibyte, and astral text"
+           "control:\u0000\t\r latin:\u00f5 greek:\u03b2 astral:\ud83d\ude00"
+           (decode! (.getBytes
+                     "control:\u0000\t\r latin:\u00f5 greek:\u03b2 astral:\ud83d\ude00"
+                     "UTF-8")))
+    (doseq [[label bytes]
+            [["isolated continuation" [0x80]]
+             ["invalid continuation" [0xc3 0x28]]
+             ["overlong scalar" [0xc0 0xaf]]
+             ["encoded surrogate" [0xed 0xa0 0x80]]
+             ["scalar above Unicode maximum" [0xf4 0x90 0x80 0x80]]
+             ["truncated multibyte scalar" [0xe2 0x82]]]]
+      (check (str label " is rejected by strict UTF-8 decoding")
+             ::durable/corrupt
+             (error-type #(decode! (raw-bytes bytes)))))
+    ;; Causal source control for the allocation change: restoring the legacy
+    ;; String -> getBytes -> Arrays/equals round trip turns this check red even
+    ;; though valid and malformed behavior alone would still look equivalent.
+    (check "WAL decoding uses one strict decoder without a UTF-8 re-encode"
+           true
+           (and (str/includes? decode-source
+                               "(.decode decoder (ByteBuffer/wrap bytes))")
+                (str/includes? decode-source "CodingErrorAction/REPORT")
+                (not (str/includes? decode-source ".getBytes"))
+                (not (str/includes? decode-source "Arrays/equals"))
+                (not (str/includes? decode-source "(String.")))))
 
   (let [sql-values ["SELECT '\ud83d\ude00'"
                     "SELECT 'control \u0000\t\r'"]]
@@ -131,6 +165,32 @@
     ;; only three decodes and can partially apply a later-corrupt WAL.
     (check "every valid record is decoded once per bounded pass"
            (* 2 (count sql-values)) @wal-decodes))
+
+  ;; Put the first byte of a four-byte scalar at the final position in the
+  ;; 64 KiB read block. The remaining bytes arrive in the next read, while the
+  ;; record buffer and strict decoder must still reproduce the exact SQL twice
+  ;; (validation, then replay).
+  (let [json-prefix "{\"sql\":\""
+        json-prefix-bytes (alength (.getBytes json-prefix "UTF-8"))
+        ascii-count (- 65535 json-prefix-bytes)
+        sql (str (apply str (repeat ascii-count "x")) "\ud83d\ude00")
+        ;; Write this fixture as literal UTF-8 because data.json deliberately
+        ;; escapes the astral scalar as a surrogate pair.
+        payload (.getBytes (str json-prefix sql "\"}\n") "UTF-8")]
+    (check "astral scalar begins on the 64 KiB read boundary"
+           [0xf0 0x9f 0x98 0x80]
+           (mapv #(bit-and 255 (aget payload %))
+                 [65535 65536 65537 65538]))
+    (attempt-open
+     payload
+     (fn [open! calls _ _]
+       (let [opened (open!)]
+         (try
+           (check "split-boundary astral SQL replays exactly"
+                  [sql]
+                  (mapv second (filter #(= :execute (first %)) @calls)))
+           (finally
+             (reader/close! opened)))))))
 
   (let [exact-size-checks (atom 0)
         exact-size-var (ns-resolve 'jdbc.chdb.durable

@@ -22,13 +22,16 @@ public writer queue. A final lease renewal must succeed before the writer is
 returned.
 
 Recovery validates the complete WAL before applying its prefix, then replays it
-with the same bounded record visitor. The visitor already knows each JSON
-record's wire-byte length. Because a decoded JSON string cannot have more UTF-8
-bytes than its complete encoded record, records at or below the 64 MiB statement
-limit avoid creating a second statement-sized byte array solely to count it.
-Records above that wire bound still use the exact UTF-8 size check, preserving
-the statement limit and the established termination, UTF-8, record-shape, and
-limit failure precedence.
+with the same bounded record visitor. Each buffered record is decoded with a
+strict UTF-8 `CharsetDecoder`, so malformed, overlong, surrogate, out-of-range,
+and truncated byte sequences fail without re-encoding the decoded string for a
+byte comparison. The visitor already knows each JSON record's wire-byte length.
+Because a decoded JSON string cannot have more UTF-8 bytes than its complete
+encoded record, records at or below the 64 MiB statement limit also avoid
+creating a second statement-sized byte array solely to count it. Records above
+that wire bound still use the exact UTF-8 size check, preserving the statement
+limit and the established termination, UTF-8, record-shape, and limit failure
+precedence.
 
 The focused public-open conformance corpus exercises missing, wrong-size, and
 wrong-digest checkpoint and WAL references through both reader and writer open.
@@ -115,9 +118,14 @@ driver applies the same validation to handwritten maps for fail-closed
 compatibility. A generated writer instance is UUIDv4; protocol ordering comes
 from the lease generation, not UUID sorting.
 
-Run the focused gate with the pinned Jolt v0.8.6 aspect compiler and Chez
-10.4.1 (the shared maintainer
-workspace supplies its pinned wrapper through the parent `AGENTS.md`):
+Durable runtime and recovery currently require `casselc/jolt`
+`integration/aspects` commit `120643d6`, or a later Jolt release containing
+upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
+base driver's Jolt 0.8.6 floor. Reader and writer opens functionally verify both
+valid multibyte decoding and malformed-input rejection before storage or native
+effects. Run the focused gate with that pinned compiler and Chez 10.4.1 (the
+shared maintainer workspace supplies its pinned wrapper through the parent
+`AGENTS.md`):
 
 ```sh
 jolt -M:durable-open-test
