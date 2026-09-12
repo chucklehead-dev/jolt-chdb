@@ -38,13 +38,11 @@ def positive(name, raw):
     return value
 
 
-def harness_state(repo, report_dir):
+def current_harness_state(repo):
     head = git(repo, "rev-parse", "HEAD").strip()
     parent = git(repo, "rev-parse", "HEAD^").strip()
     tree = git(repo, "rev-parse", "HEAD^{tree}").strip()
     tracked_patch = git(repo, "diff", "--binary", "--no-ext-diff", "HEAD", "--", text=False)
-    patch_path = report_dir / "harness-tracked.patch"
-    patch_path.write_bytes(tracked_patch)
     untracked = []
     for relative in sorted(
         line for line in git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
@@ -70,14 +68,31 @@ def harness_state(repo, report_dir):
         "tree": tree,
         "status": status,
         "tracked_patch": {
-            "file_name": patch_path.name,
+            "file_name": "harness-tracked.patch",
             "bytes": len(tracked_patch),
             "sha256": sha256(tracked_patch),
         },
         "untracked_files": untracked,
     }
     state["state_sha256"] = sha256(canonical(state))
+    return state, tracked_patch
+
+
+def write_harness_state(repo, report_dir):
+    state, tracked_patch = current_harness_state(repo)
+    (report_dir / "harness-tracked.patch").write_bytes(tracked_patch)
     return state
+
+
+def verify_harness_state(repo, report_dir):
+    try:
+        expected = json.loads((report_dir / "harness-state.json").read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read prepared harness state: {error}")
+    actual, _ = current_harness_state(repo)
+    if actual != expected:
+        fail("current harness state differs from prepared state")
+    print(json.dumps({"status": "ok", "harness": actual["state_sha256"]}))
 
 
 def schedule(trials):
@@ -106,6 +121,10 @@ def schedule(trials):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--verify-state":
+        verify_harness_state(pathlib.Path(sys.argv[2]).resolve(),
+                             pathlib.Path(sys.argv[3]).resolve())
+        return
     if len(sys.argv) != 8:
         fail(
             "usage: prepare-durable-cross-binding-run.py REPO REPORT_DIR "
@@ -123,7 +142,7 @@ def main():
     warmup = positive("warmup batches", sys.argv[6])
     measured = positive("measured batches", sys.argv[7])
     report_dir.mkdir(parents=True, exist_ok=True)
-    state = harness_state(repo, report_dir)
+    state = write_harness_state(repo, report_dir)
     state_path = report_dir / "harness-state.json"
     state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     plan = {

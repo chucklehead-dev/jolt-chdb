@@ -31,6 +31,38 @@ def file_identity(label, value):
     sha(f"{label} digest", value["sha256"])
     return value
 
+def actual_file_identity(path):
+    try: data = path.read_bytes()
+    except OSError as error: fail(f"cannot read {path.name}: {error}")
+    return {"file_name": path.name, "bytes": len(data), "sha256": digest(data)}
+
+def validate_jolt_source_binding(version, source_sha):
+    nonempty("Jolt version", version); git_sha("Jolt source SHA", source_sha)
+    if not version.startswith("jolt v"):
+        fail("Jolt banner is not an actual jolt --version banner")
+    match = re.search(r"-g([0-9a-f]{8,40})$", version)
+    if not match or not source_sha.startswith(match.group(1)):
+        fail("Jolt banner does not identify its full source SHA")
+
+def validate_jolt_describe_content(path, version, source_sha, repo=None, gitlibs=None):
+    validate_jolt_source_binding(version, source_sha)
+    try: text = path.read_text(encoding="utf-8")
+    except OSError as error: fail(f"cannot read Jolt Sdescribe: {error}")
+    described_version = version.removeprefix("jolt ")
+    required = [f':version "{described_version}"', ':project-dir "."',
+                ':config-files ["./deps.edn"]', ':config-user nil',
+                ':config-project "./deps.edn"', ':repro true', ':aliases []']
+    if any(token not in text for token in required):
+        fail("Jolt Sdescribe is not the exact repro project configuration")
+    match = re.search(r':gitlibs-dir "([^"]+)"', text)
+    if not match or not pathlib.Path(match.group(1)).is_absolute():
+        fail("Jolt Sdescribe has no absolute isolated gitlibs directory")
+    if gitlibs is not None and pathlib.Path(match.group(1)).resolve() != gitlibs.resolve():
+        fail("Jolt Sdescribe gitlibs directory differs from the run scope")
+    if repo is not None and pathlib.Path.cwd().resolve() != repo.resolve():
+        fail("Jolt Sdescribe was not captured from the repository root")
+    return actual_file_identity(path)
+
 def validate_harness(report_dir, state):
     exact("harness state", state, {"schema_version", "head", "parent", "tree", "status",
           "tracked_patch", "untracked_files", "state_sha256"})
@@ -115,13 +147,18 @@ def validate_provenance(label, value, runtime, harness):
         git_sha(f"{label} chdb-rust SHA", value.get("chdb_rust_git_sha"))
         for field in ("chdb_rust_crate_version", "oracle_crate_version", "rustc_version", "cargo_version", "engine_source"): nonempty(f"{label} {field}", value.get(field))
     else:
-        keys = common | {"jolt_version", "jolt_source_sha", "scheme_version", "machine_type"}
+        keys = common | {"jolt_version", "jolt_source_sha", "scheme_version", "machine_type",
+                         "jolt_sdescribe", "jolt_config_mode", "jolt_cache_scope"}
         git_sha(f"{label} Jolt SHA", value.get("jolt_source_sha"))
         for field in ("jolt_version", "scheme_version", "machine_type"): nonempty(f"{label} {field}", value.get(field))
     exact(f"{label} provenance", value, keys)
     if value["runtime"] != runtime or value["harness_state"] != harness: fail(f"{label} runtime/harness differs")
     nonempty(f"{label} native version", value["native_version"])
     for field in ("native_library", "native_header", "executable"): file_identity(f"{label} {field}", value[field])
+    if runtime == "jolt":
+        file_identity(f"{label} Jolt Sdescribe", value["jolt_sdescribe"])
+        if value["jolt_config_mode"] != "Srepro-project-only" or value["jolt_cache_scope"] != "run-scoped-isolated-after-prime": fail(f"{label} Jolt resolution mode differs")
+        validate_jolt_source_binding(value["jolt_version"], value["jolt_source_sha"])
     return value
 
 def gnu_time(path):
@@ -144,6 +181,12 @@ def runtime_summary(reports, timings):
             "maximum_rss_kib": {"p50": rank([t["maximum_rss_kib"] for t in timings], .5), "max": max(t["maximum_rss_kib"] for t in timings)}}
 
 def main():
+    if len(sys.argv) == 7 and sys.argv[1] == "--validate-jolt-describe":
+        identity = validate_jolt_describe_content(
+            pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4],
+            pathlib.Path(sys.argv[5]), pathlib.Path(sys.argv[6]))
+        print(json.dumps({"status": "ok", "jolt_sdescribe": identity}, sort_keys=True))
+        return
     if len(sys.argv) != 3: fail("usage: summarizer REPORT_DIR OUTPUT_JSON")
     report_dir, output = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     run = load(report_dir / "run-manifest.json"); config = validate_manifest(report_dir, run)
@@ -177,7 +220,10 @@ def main():
     rust_keys = ("chdb_rust_git_sha", "chdb_rust_crate_version", "oracle_crate_version", "rustc_version", "cargo_version", "engine_source", "executable")
     if any(any(r["runtime"][k] != producer[k] for k in rust_keys) for e, r in reports if e["runtime"] == "rust"): fail("Rust provenance differs")
     jolts = [r["runtime"] for e, r in reports if e["runtime"] == "jolt"]
-    if any(any(item[k] != jolts[0][k] for k in ("jolt_source_sha", "jolt_version", "scheme_version", "machine_type", "executable")) for item in jolts[1:]): fail("Jolt provenance differs")
+    if any(any(item[k] != jolts[0][k] for k in ("jolt_source_sha", "jolt_version", "scheme_version", "machine_type", "executable", "jolt_sdescribe", "jolt_config_mode", "jolt_cache_scope")) for item in jolts[1:]): fail("Jolt provenance differs")
+    describe_path = report_dir / "jolt-sdescribe.edn"
+    described = validate_jolt_describe_content(describe_path, jolts[0]["jolt_version"], jolts[0]["jolt_source_sha"])
+    if described != jolts[0]["jolt_sdescribe"]: fail("Jolt Sdescribe file identity differs")
     summaries = {runtime: runtime_summary([r for e, r in reports if e["phase"] == "measured" and e["runtime"] == runtime], [t for e, t in timings if e["phase"] == "measured" and e["runtime"] == runtime]) for runtime in ("jolt", "rust")}
     def ratios(region, elapsed):
         j, r = summaries["jolt"][region], summaries["rust"][region]

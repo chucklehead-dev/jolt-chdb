@@ -211,6 +211,22 @@ machinery and are deliberately not inferred from directory copies. With five
 trials, p50 is descriptive; p95 and p99 are explicitly exploratory rather than
 tail-qualification statistics.
 
+Every Jolt prime and measured process uses `-Srepro`, the repository's
+`deps.edn`, and cache/gitlibs directories owned by that one output directory.
+The runner captures `jolt-sdescribe.edn`, requires project-only configuration
+with no user config, and binds its real version suffix to the supplied full
+Jolt source SHA. The report retains the description's file identity and fixed
+resolution/cache-mode labels rather than trusting the source argument alone.
+The Jolt prime warms this isolated cache before measured processes; compilation
+and dependency resolution remain outside the in-region acceptance timer.
+
+The runner also recomputes the repository head, parent, tree, tracked binary
+patch, and untracked-file identities immediately before the Rust build,
+fixture preparation, every prime, every measured process, and final summary.
+Any change from the prepared content-addressed state stops the run. This is
+especially important in a shared worktree: a report cannot continue to claim
+its initial source state after another process edits the harness.
+
 Run from a clean checkout with the exact Jolt executable and the same native
 library used to compile the Rust helper:
 
@@ -235,8 +251,13 @@ elapsed`; the target is at least `0.80` and at most `1.25`, respectively. A
 separate whole-process diagnostic uses GNU time wall duration and includes
 executable/runtime initialization, dependency loading, provenance/inventory
 work, recovery, and report emission. It is not labeled or used as startup.
+Both runtimes compare all nine expected and actual aggregate fields before
+closing the reader/object and stopping the in-region timer.
 
 The output directory must be absent or empty and is never silently replaced.
+When it is inside the repository, it must also be git-ignored so the generated
+evidence cannot change the harness state that later trials are required to
+reproduce.
 It contains the immutable fixture, content-addressed harness state and patch,
 run manifest, prime/per-trial JSON, GNU-time wall/RSS files, and
 `reports/summary.json`. By default it also contains the exact Cargo target;

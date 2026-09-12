@@ -6,10 +6,10 @@ if [[ $# -lt 4 || $# -gt 8 ]]; then
   exit 2
 fi
 
-output_dir=$1
-jolt_bin=$2
+output_dir=$(realpath -m "$1")
+jolt_bin_input=$2
 jolt_source_sha=$3
-libchdb=$4
+libchdb_input=$4
 trials=${5:-5}
 batch_size=${6:-512}
 warmup_batches=${7:-2}
@@ -24,6 +24,9 @@ report_dir="$output_dir/reports"
 descriptor="$report_dir/fixture.json"
 run_manifest="$report_dir/run-manifest.json"
 harness_state="$report_dir/harness-state.json"
+jolt_describe="$report_dir/jolt-sdescribe.edn"
+jolt_cache="$output_dir/jolt-cache"
+jolt_gitlibs="$output_dir/jolt-gitlibs"
 
 case "$trials:$batch_size:$warmup_batches:$measured_batches" in
   *[!0-9:]*|0:*|*:0:*|*:*:0:*|*:*:*:0)
@@ -35,23 +38,56 @@ if ((trials < 5)); then
   echo "at least five measured trials are required" >&2
   exit 2
 fi
-if [[ ! -x "$jolt_bin" || ! -f "$libchdb" ]]; then
+if [[ ! -x "$jolt_bin_input" || ! -f "$libchdb_input" ]]; then
   echo "Jolt executable and libchdb file must exist" >&2
+  exit 2
+fi
+jolt_bin=$(realpath "$jolt_bin_input")
+libchdb=$(realpath "$libchdb_input")
+if [[ ! "$jolt_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Jolt source SHA must be one full lowercase Git SHA" >&2
   exit 2
 fi
 if [[ -e "$output_dir" ]] && find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
   echo "output directory must be absent or empty" >&2
   exit 2
 fi
+case "$output_dir/" in
+  "$repo_root/"*)
+    output_relative=${output_dir#"$repo_root/"}
+    if [[ -z "$output_relative" ]] || ! git -C "$repo_root" check-ignore -q -- "$output_relative"; then
+      echo "an output directory inside the repository must be git-ignored" >&2
+      exit 2
+    fi
+    ;;
+esac
 mkdir -p "$output_dir" "$report_dir"
+cd "$repo_root"
 
 python3 "$repo_root/scripts/prepare-durable-cross-binding-run.py" \
   "$repo_root" "$report_dir" "$object_id" "$trials" "$batch_size" \
   "$warmup_batches" "$measured_batches"
 
+verify_harness_state() {
+  python3 "$repo_root/scripts/prepare-durable-cross-binding-run.py" \
+    --verify-state "$repo_root" "$report_dir"
+}
+
 rustc_version=$(rustc --version)
 cargo_version=$(cargo --version)
-jolt_version=$("$wrapper" "$jolt_bin" --version)
+jolt_version=$(env JOLT_CACHE_DIR="$jolt_cache" \
+                   JOLT_GITLIBS_DIR="$jolt_gitlibs" \
+                   "$wrapper" "$jolt_bin" --version)
+if [[ "$jolt_version" != *"-g${jolt_source_sha:0:8}" ]]; then
+  echo "Jolt banner does not identify the supplied source SHA" >&2
+  exit 2
+fi
+env JOLT_CACHE_DIR="$jolt_cache" \
+    JOLT_GITLIBS_DIR="$jolt_gitlibs" \
+    "$wrapper" "$jolt_bin" -Srepro -Sdescribe > "$jolt_describe"
+python3 "$repo_root/scripts/summarize-durable-cross-binding-recovery.py" \
+  --validate-jolt-describe "$jolt_describe" "$jolt_version" \
+  "$jolt_source_sha" "$repo_root" "$jolt_gitlibs"
 native_dir=$(dirname "$libchdb")
 native_name=$(basename "$libchdb")
 native_header="$native_dir/chdb.h"
@@ -64,6 +100,7 @@ if [[ ! -f "$native_header" ]]; then
   exit 2
 fi
 
+verify_harness_state
 CHDB_LIB_DIR="$native_dir" \
 CHDB_INCLUDE_DIR="$native_dir" \
 CARGO_TARGET_DIR="$rust_target" \
@@ -75,6 +112,7 @@ BENCH_HARNESS_STATE_FILE="$harness_state" \
   cargo build --locked --release --manifest-path "$manifest"
 rust_bin="$rust_target/release/jolt-chdb-rust-recovery-oracle"
 
+verify_harness_state
 LD_LIBRARY_PATH="$native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 BENCH_NATIVE_LIBRARY="$libchdb" \
 BENCH_NATIVE_HEADER="$native_header" \
@@ -87,6 +125,7 @@ run_rust() {
   local label=$1
   local output=$2
   local ordinal=$3
+  verify_harness_state
   /usr/bin/time -v -o "$report_dir/rust-$label.time" \
     env LD_LIBRARY_PATH="$native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         BENCH_NATIVE_LIBRARY="$libchdb" \
@@ -102,15 +141,19 @@ run_jolt() {
   local label=$1
   local output=$2
   local ordinal=$3
+  verify_harness_state
   /usr/bin/time -v -o "$report_dir/jolt-$label.time" \
-    env BENCH_JOLT_BIN="$jolt_bin" \
+    env JOLT_CACHE_DIR="$jolt_cache" \
+        JOLT_GITLIBS_DIR="$jolt_gitlibs" \
+        BENCH_JOLT_BIN="$jolt_bin" \
         BENCH_JOLT_SOURCE_SHA="$jolt_source_sha" \
         BENCH_JOLT_VERSION="$jolt_version" \
+        BENCH_JOLT_DESCRIBE="$jolt_describe" \
         BENCH_NATIVE_LIBRARY="$libchdb" \
         BENCH_NATIVE_HEADER="$native_header" \
         BENCH_HARNESS_STATE_FILE="$harness_state" \
         JOLT_CHDB_LIB="$libchdb" \
-        "$wrapper" "$jolt_bin" -M:durable-cross-binding-recovery \
+        "$wrapper" "$jolt_bin" -Srepro -M:durable-cross-binding-recovery \
         "$fixture_root" "$object_id" "$descriptor" "$run_manifest" "$ordinal" "$output"
 }
 
@@ -136,5 +179,6 @@ for ((trial = 1; trial <= trials; trial++)); do
   fi
 done
 
+verify_harness_state
 python3 "$repo_root/scripts/summarize-durable-cross-binding-recovery.py" \
   "$report_dir" "$report_dir/summary.json"

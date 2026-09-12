@@ -11,7 +11,10 @@
   pinned `chdb-rust` revision recover one byte-identical immutable local
   fixture with the same native library, aggregate reconciliation, cache
   condition, per-trial provenance, peak RSS, and explicit 80% throughput / 1.25x
-  elapsed acceptance ratios.
+  elapsed acceptance ratios. Jolt trials use project-only `-Srepro` resolution
+  and run-scoped caches, bind the actual compiler banner to its full source SHA
+  and captured `-Sdescribe`, and fail if repository state changes between any
+  prime or measured process.
 
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while

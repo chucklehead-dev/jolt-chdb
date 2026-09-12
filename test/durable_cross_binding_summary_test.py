@@ -30,7 +30,10 @@ class SummaryTest(unittest.TestCase):
         native={"file_name":"libchdb.so","bytes":10,"sha256":"a"*64}; header={"file_name":"chdb.h","bytes":10,"sha256":"b"*64}
         rust={"runtime":"rust","chdb_rust_git_sha":"c"*64,"chdb_rust_crate_version":"1.4.0","oracle_crate_version":"0.1.0","rustc_version":"rustc 1","cargo_version":"cargo 1","engine_source":"bundled","native_version":"26.7.2","harness_state":state,"native_library":native,"native_header":header,"executable":{"file_name":"oracle","bytes":10,"sha256":"d"*64}}
         fixture={"schema_version":1,"run_id":run["run_id"],"producer":rust,"config":{k:config[k] for k in ("object_id","database","batch_size","warmup_batches","measured_batches","total_rows")},"expected":expected,"manifest":{"db":"benchmark","base":None,"wal":wal,"seq":3},"inventory":inventory,"inventory_sha256":sha(json.dumps(inventory,separators=(",", ":")).encode())}; self.write(reports/"fixture.json",fixture)
-        jolt={"runtime":"jolt","jolt_version":"0.8.6","jolt_source_sha":"e"*64,"scheme_version":"10.4.1","machine_type":"ta6le","native_version":"26.7.2","harness_state":state,"native_library":native,"native_header":header,"executable":{"file_name":"joltc","bytes":20,"sha256":"f"*64}}
+        describe='{:version "v0.8.6-1-geeeeeeee"\n :project-dir "."\n :config-files ["./deps.edn"]\n :config-user nil\n :config-project "./deps.edn"\n :gitlibs-dir "/tmp/oracle/jolt-gitlibs"\n :mvn-local-repo "/tmp/m2"\n :repro true\n :aliases []}\n'
+        (reports/"jolt-sdescribe.edn").write_text(describe)
+        describe_identity={"file_name":"jolt-sdescribe.edn","bytes":len(describe.encode()),"sha256":sha(describe.encode())}
+        jolt={"runtime":"jolt","jolt_version":"jolt v0.8.6-1-geeeeeeee","jolt_source_sha":"e"*40,"jolt_sdescribe":describe_identity,"jolt_config_mode":"Srepro-project-only","jolt_cache_scope":"run-scoped-isolated-after-prime","scheme_version":"10.4.1","machine_type":"ta6le","native_version":"26.7.2","harness_state":state,"native_library":native,"native_header":header,"executable":{"file_name":"jolt","bytes":20,"sha256":"f"*64}}
         for entry in run["schedule"]:
             provenance=rust if entry["runtime"]=="rust" else jolt; elapsed=1_000_000_000 if entry["runtime"]=="rust" else 1_200_000_000; ordinal=entry["ordinal"]
             report={"schema_version":1,"run_id":run["run_id"],"schedule_ordinal":ordinal,"phase":entry["phase"],"runtime":provenance,"trial":entry["trial"],"process_id":1000+ordinal,"process_started_epoch_ms":2000+2*ordinal,"process_finished_epoch_ms":2001+2*ordinal,"cache_condition":"warm-provider-cache-fresh-process-engine-and-scratch","fixture":{"inventory_sha256":fixture["inventory_sha256"],"batch_size":512,"warmup_batches":2,"measured_batches":8,"wal_segments":3,"recovered_rows":5120},"recovery":{"elapsed_ns":elapsed,"rows_per_second":5120e9/elapsed,"expected":expected,"actual":expected,"inventory_unchanged":True}}
@@ -81,6 +84,47 @@ class SummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reports=self.corpus(pathlib.Path(tmp)); self.mutate_json(reports,"run-manifest.json",lambda x:x["schedule"].reverse()); result,_=self.run_summary(reports); self.assertIn("schedule is not exact",result.stderr)
 
+    def test_rejects_unbound_source_and_changed_sdescribe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports=self.corpus(pathlib.Path(tmp))
+            for path in reports.glob("jolt-*.json"):
+                self.mutate_json(reports,path.name,lambda x:x["runtime"].update(jolt_source_sha="a"*40))
+            result,_=self.run_summary(reports)
+            self.assertNotEqual(0,result.returncode)
+            self.assertIn("banner does not identify",result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            reports=self.corpus(pathlib.Path(tmp))
+            (reports/"jolt-sdescribe.edn").write_text("changed")
+            result,_=self.run_summary(reports)
+            self.assertNotEqual(0,result.returncode)
+            self.assertIn("exact repro project configuration",result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            reports=self.corpus(pathlib.Path(tmp))
+            for path in reports.glob("jolt-*.json"):
+                self.mutate_json(reports,path.name,lambda x:x["runtime"].update(jolt_version="v0.8.6-1-geeeeeeee"))
+            result,_=self.run_summary(reports)
+            self.assertNotEqual(0,result.returncode)
+            self.assertIn("actual jolt --version banner",result.stderr)
+
+    def test_acceptance_region_reconciles_before_elapsed_capture(self):
+        jolt=(ROOT/"bench/jdbc/chdb_durable_cross_binding_recovery.clj").read_text()
+        rust=(ROOT/"bench/rust-durable-recovery-oracle/src/main.rs").read_text()
+        self.assertLess(jolt.index("(when-not (= expected actual)"),
+                        jolt.index("elapsed (- (System/nanoTime) start)"))
+        self.assertLess(rust.index("if actual != descriptor.expected"),
+                        rust.index("let elapsed_ns = start.elapsed()"))
+
+    def test_profile_isolates_jolt_and_rechecks_harness_before_each_runtime(self):
+        profile=PROFILE.read_text()
+        self.assertIn('JOLT_CACHE_DIR="$jolt_cache"',profile)
+        self.assertIn('JOLT_GITLIBS_DIR="$jolt_gitlibs"',profile)
+        self.assertIn('"$wrapper" "$jolt_bin" -Srepro -M:durable-cross-binding-recovery',profile)
+        self.assertIn('git -C "$repo_root" check-ignore -q',profile)
+        rust_body=profile[profile.index("run_rust() {"):profile.index("run_jolt() {")]
+        jolt_body=profile[profile.index("run_jolt() {"):profile.index("# Prime both")]
+        self.assertIn("verify_harness_state",rust_body)
+        self.assertIn("verify_harness_state",jolt_body)
+
     def test_preparer_content_addresses_dirty_tracked_and_untracked_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp); repo=root/"repo"; reports=root/"reports"; repo.mkdir()
@@ -94,5 +138,25 @@ class SummaryTest(unittest.TestCase):
             self.assertEqual(0,result.returncode,result.stderr)
             state=json.loads((reports/"harness-state.json").read_text()); self.assertEqual("dirty",state["status"]); self.assertGreater(state["tracked_patch"]["bytes"],0); self.assertEqual(["new.txt"],[x["path"] for x in state["untracked_files"]])
             unsigned=dict(state); claimed=unsigned.pop("state_sha256"); self.assertEqual(claimed,sha(canonical(unsigned)))
+
+    def test_preparer_rejects_a_between_trial_source_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp); repo=root/"repo"; reports=root/"reports"; repo.mkdir()
+            subprocess.run(["git","init","-q",str(repo)],check=True)
+            subprocess.run(["git","-C",str(repo),"config","user.email","oracle@example.invalid"],check=True)
+            subprocess.run(["git","-C",str(repo),"config","user.name","Oracle Test"],check=True)
+            (repo/"tracked.txt").write_text("initial\n")
+            subprocess.run(["git","-C",str(repo),"add","tracked.txt"],check=True)
+            subprocess.run(["git","-C",str(repo),"commit","-qm","initial"],check=True)
+            (repo/"tracked.txt").write_text("prepared\n")
+            subprocess.run(["git","-C",str(repo),"commit","-qam","prepared"],check=True)
+            prepared=subprocess.run(["python3",str(PREPARE),str(repo),str(reports),"object","5","512","2","8"],text=True,capture_output=True)
+            self.assertEqual(0,prepared.returncode,prepared.stderr)
+            verified=subprocess.run(["python3",str(PREPARE),"--verify-state",str(repo),str(reports)],text=True,capture_output=True)
+            self.assertEqual(0,verified.returncode,verified.stderr)
+            (repo/"tracked.txt").write_text("changed between trials\n")
+            rejected=subprocess.run(["python3",str(PREPARE),"--verify-state",str(repo),str(reports)],text=True,capture_output=True)
+            self.assertNotEqual(0,rejected.returncode)
+            self.assertIn("current harness state differs",rejected.stderr)
 
 if __name__ == "__main__": unittest.main()

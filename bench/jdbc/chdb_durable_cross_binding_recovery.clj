@@ -205,6 +205,9 @@
     {:runtime "jolt"
      :jolt_version (required-env "BENCH_JOLT_VERSION")
      :jolt_source_sha (required-env "BENCH_JOLT_SOURCE_SHA")
+     :jolt_sdescribe (file-metadata "BENCH_JOLT_DESCRIBE")
+     :jolt_config_mode "Srepro-project-only"
+     :jolt_cache_scope "run-scoped-isolated-after-prime"
      :scheme_version (host/scheme-version)
      :machine_type (host/machine-type)
      :native_version (native/chdb-version)
@@ -237,15 +240,19 @@
         (with-open [reader (jdbc/connection
                             (durable/snapshot-dbspec
                              {:namespace-backend store :object-id object-id}))]
-          (into {} (map (fn [[key value]] [key (str value)]))
-                (jdbc/fetch-one reader aggregate-sql)))
+          (let [actual
+                (into {} (map (fn [[key value]] [key (str value)]))
+                      (jdbc/fetch-one reader aggregate-sql))]
+            ;; Keep the nine-field reconciliation inside the same measured
+            ;; open/query/close region as the Rust oracle.
+            (when-not (= expected actual)
+              (throw (ex-info "cross-binding recovery aggregate mismatch"
+                              {:type ::reconciliation-failed
+                               :expected expected :actual actual})))
+            actual))
         elapsed (- (System/nanoTime) start)
         after (validate-fixture! root object-id fixture)
         process-finished (System/currentTimeMillis)]
-    (when-not (= expected actual)
-      (throw (ex-info "cross-binding recovery aggregate mismatch"
-                      {:type ::reconciliation-failed
-                       :expected expected :actual actual})))
     (when-not (= before after)
       (fail! "read-only recovery changed fixture bytes or links"))
     (let [rows (get-in fixture [:config :total_rows])
