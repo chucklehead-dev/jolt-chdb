@@ -280,9 +280,11 @@ the remote runner:
   cannot disappear inside one logical call.
 
 Both retain only fixed phase/operation labels, call counts, request-body and
-response-body byte counts, fixed result categories or numeric HTTP status, and
-p50/p95/max/total latency. These byte fields exclude HTTP framing, headers, and
-TLS overhead; they are not wire-byte measurements. Sample-support flags prevent
+response-body byte counts, and p50/p95/max/total latency. Logical results use a
+closed set of keyword categories; transport results preserve numeric HTTP
+statuses from 100 through 599 and collapse any other status to
+`invalid-response`. These byte fields exclude HTTP framing, headers, and TLS
+overhead; they are not wire-byte measurements. Sample-support flags prevent
 one or a few requests from being presented as supported percentiles. Retry
 amplification is reported as logical calls, transport attempts, and extra
 attempts for the same fixed phase/operation pair. Opaque ETags and all
@@ -335,7 +337,9 @@ batches needed = ceil(N / 512)
 
 If `A <= R`, no finite aggregation can reach that persisted target; the report
 marks it explicitly impossible. `R*L` alone ignores admission time and must not
-be presented as sufficient.
+be presented as sufficient. Admission capacity and flush latency must both be
+finite; NaN and either infinity fail with the same closed validation errors as
+other invalid inputs.
 
 Only recommend multipart upload if measured 64-128 MiB WAL or checkpoint
 evidence shows single-PUT behavior is the limiting factor. Run this remote

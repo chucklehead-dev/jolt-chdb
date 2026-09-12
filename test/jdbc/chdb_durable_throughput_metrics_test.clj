@@ -46,7 +46,7 @@
       (request! request))
     (let [report (metrics/report recorder)
           rendered (pr-str report)]
-      (check "transport report retains only scalar attempt evidence"
+      (check "transport report retains bounded numeric HTTP status evidence"
              {:calls 1 :request-body-bytes 10 :response-body-bytes 14
               :results {200 1}}
              (select-keys (get-in report [:transport :flush :get-with-etag])
@@ -80,14 +80,17 @@
       (backend/get-with-etag store key)
       (let [report (metrics/report recorder)
             rendered (pr-str report)]
-        (check "logical report retains operation counts and byte totals"
-               [1 14 1 14]
+        (check "logical report retains closed keyword results and byte totals"
+               [1 14 {:created 1} 1 14 {:ok 1}]
                [(get-in report [:logical :recovery :put-bytes-if-absent :calls])
                 (get-in report [:logical :recovery :put-bytes-if-absent
                                 :request-body-bytes])
+                (get-in report [:logical :recovery :put-bytes-if-absent
+                                :results])
                 (get-in report [:logical :recovery :get-with-etag :calls])
                 (get-in report [:logical :recovery :get-with-etag
-                                :response-body-bytes])])
+                                :response-body-bytes])
+                (get-in report [:logical :recovery :get-with-etag :results])])
         (check "logical backend wrapper retains neither key nor ETag nor body"
                false
                (boolean
@@ -125,6 +128,17 @@
          :jdbc.chdb-durable-throughput-metrics/invalid-admission-rate
          (:type (ex-data
                  (rejected #(metrics/aggregation-requirements 0 1)))))
+  (doseq [[label value] [["NaN" ##NaN]
+                         ["positive infinity" ##Inf]
+                         ["negative infinity" ##-Inf]]]
+    (check (str "non-finite admission rate fails generically: " label)
+           {:type :jdbc.chdb-durable-throughput-metrics/invalid-admission-rate}
+           (ex-data
+            (rejected #(metrics/aggregation-requirements value 1))))
+    (check (str "non-finite flush latency fails generically: " label)
+           {:type :jdbc.chdb-durable-throughput-metrics/invalid-flush-latency}
+           (ex-data
+            (rejected #(metrics/aggregation-requirements 50000.0 value)))))
   (check "successful flush control requires the production logical shape"
          nil
          (metrics/assert-uncontended-flush-control!

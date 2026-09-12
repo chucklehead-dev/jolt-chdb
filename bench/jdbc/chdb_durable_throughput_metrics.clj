@@ -3,9 +3,12 @@
 
   This namespace deliberately retains only fixed operation/phase labels,
   scalar counts, request/response body byte counts, status categories, and
-  monotonic durations. Body byte counts exclude transport framing, headers,
-  and TLS overhead. This namespace must never retain a request, response,
-  exception, URL, header, ETag, object key, SQL string, or payload body."
+  monotonic durations. Logical `:results` use the closed keyword categories
+  below; transport `:results` preserve only numeric HTTP statuses from 100
+  through 599, collapsing any other response status to `:invalid-response`.
+  Body byte counts exclude transport framing, headers, and TLS overhead. This
+  namespace must never retain a request, response, exception, URL, header,
+  ETag, object key, SQL string, or payload body."
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.backend :as backend])
   (:import [java.nio.file Files Paths]))
@@ -69,6 +72,12 @@
 
 (defn- checked-count [value]
   (if (and (integer? value) (not (neg? value))) value 0))
+
+(defn- finite-number? [value]
+  (and (number? value)
+       (= value value)
+       (not= value ##Inf)
+       (not= value ##-Inf)))
 
 (defn- request-body-bytes [request]
   (checked-count (get-in request [:request-body :byte-count])))
@@ -246,11 +255,11 @@
   target R requires N >= R*L/(1-R/A). When A is not greater than R, no finite
   aggregation can reach the persisted target."
   [admission-rows-per-second flush-ms]
-  (when-not (and (number? admission-rows-per-second)
+  (when-not (and (finite-number? admission-rows-per-second)
                  (pos? admission-rows-per-second))
     (throw (ex-info "admission rate must be a positive number"
                     {:type ::invalid-admission-rate})))
-  (when-not (and (number? flush-ms) (not (neg? flush-ms)))
+  (when-not (and (finite-number? flush-ms) (not (neg? flush-ms)))
     (throw (ex-info "flush latency must be a nonnegative number"
                     {:type ::invalid-flush-latency})))
   (into {}

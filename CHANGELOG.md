@@ -16,6 +16,7 @@
   recovery provider phases, records sanitized hosted provenance, and uploads
   only bounded scanned artifacts with 14-day retention. A live curve remains
   gated on the exact merged `cf0b6928` runtime baseline and manual review.
+  Aggregation estimates reject NaN and infinite admission or flush inputs.
 
 - Use the supported primitive byte-array equality operation for canonical
   Durable WAL UTF-8 validation, avoiding byte-at-a-time Clojure traversal while
