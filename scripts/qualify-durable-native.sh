@@ -2,9 +2,22 @@
 set -euo pipefail
 
 qualification_root=${1:?usage: scripts/qualify-durable-native.sh DIRECTORY}
+jolt_bin=${JOLT_BIN:-jolt}
 release=26.7.2-rc.2
 commit=30488a59b2700188ee36ecbced7713081a909f56
 oracle_digest=56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99
+
+if [[ "$jolt_bin" == */* ]]; then
+  if [[ ! -f "$jolt_bin" || ! -x "$jolt_bin" ]]; then
+    echo "JOLT_BIN must name an executable file" >&2
+    exit 69
+  fi
+else
+  if ! command -v "$jolt_bin" >/dev/null; then
+    echo "JOLT_BIN command was not found" >&2
+    exit 69
+  fi
+fi
 
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
@@ -68,4 +81,4 @@ cc -std=c11 -Wall -Wextra \
   ./chdbDurableAbiTest
 )
 
-JOLT_CHDB_LIB="$library_path" jolt -M:durable-native-test
+JOLT_CHDB_LIB="$library_path" "$jolt_bin" -M:durable-native-test

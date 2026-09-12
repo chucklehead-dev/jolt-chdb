@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require performance qualification to record the exact Jolt source revision
+  and executable digest, and let the Durable native qualification script select
+  an explicit `JOLT_BIN` instead of silently depending on ambient `PATH`.
+
 - Add fresh-process Durable scale selectors for 512, 1,000, 5,000, and 10,000
   rows per batch plus staged 512-row recovery diagnostics at 10, 25, and 50 WAL
   records. Reports now retain exact recovery endpoint allocator observations,

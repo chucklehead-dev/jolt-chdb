@@ -31,6 +31,8 @@ backup/restore suite against that same library. The hosted qualification gate
 currently exercises Linux x86-64. The other asset mappings are pinned so the
 same gate can run unchanged when those runners are added; they are not yet a
 cross-platform conformance claim.
+Set `JOLT_BIN=/absolute/path/to/jolt` to select an exact local Jolt executable;
+otherwise the script resolves `jolt` from `PATH`.
 
 ## Release boundary
 
