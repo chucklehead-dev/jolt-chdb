@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
+  decodes the eight ordinary JSON escapes from a local cursor without one
+  pushback-reader call and one single-character String allocation per escape.
+  Unicode, malformed escapes, EOF, generic readers, and observable positions
+  retain the prior decoder. On one immutable 6,144-row, 13-record recovery
+  pair, open time fell from 4.254 s to 1.464 s and runtime-accounted allocation
+  from 569.8 MB to 185.5 MB. On the immutable 52,224-row fixture, a single
+  same-fixture direction pass reduced open time from 35.377 s to 12.952 s and
+  the JSON parse phase from 26.005 s to 2.374 s; the open-window GC-byte delta
+  fell from 4.843 GB to 1.541 GB while maximum RSS rose from 721,204 KiB to
+  801,668 KiB. Operation counts, byte inventory, and recovered aggregates
+  reconciled exactly. These are bounded direction results; representative
+  Rust/Jolt qualification and the 80% target remain open.
+
 - Parse each ordinary Durable recovery WAL record once. Validation now retains
   an exact per-segment replay plan while cumulative record bytes stay within
   48 MiB and the segment stays within 16,384 records, then analyzes and executes

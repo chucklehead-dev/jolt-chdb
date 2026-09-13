@@ -393,9 +393,50 @@ These diagnostics therefore confirm dependency selection, semantics, and the
 allocation reduction, but do not qualify a stable latency gain.
 
 Neither run is a representative percentile qualification; the evidence does
-not establish the 80% Rust throughput target and leaves issue #83 open. A future
-compiler-level portable `String.indexOf` fast path may reduce the remaining
-managed/native boundary cost, but is not required for this dependency update.
+not establish the 80% Rust throughput target and leaves issue #83 open. The
+portable one-character-String `String.indexOf` specialization in
+`casselc/jolt#77` does not directly accelerate this reader: data.json calls the
+integer-character overload, which already uses Jolt's checked Scheme scanner.
+The remaining `String.replace` and scan follow-up tracked in
+`jolt-aspect-packs#125` is separate from this dependency update.
+
+The current dependency advances to `casselc/data.json`
+`3174868a7baa06e118fb8d1201edd98c5769b335`. In addition to the run scanner
+above, that merge decodes the eight ordinary JSON escapes directly from the
+immutable String with a local cursor and constant result strings. It
+synchronizes the observable reader position before return, error, or fallback;
+Unicode, invalid escapes, escape EOF, raw astral input, and generic readers keep
+the shared decoder. Durable's validation-before-replay ordering, strict UTF-8,
+wire bytes, record order, checksums, and engine-effect vocabulary do not change,
+so the correctness models and trace schema require no transition update.
+
+A frozen one-record diagnostic over a 385,750-character WAL record containing
+40,449 simple escapes reduced full `read-str` p50 from 111.78 ms to 18.62 ms
+(6.00x) and cumulative measured GC bytes from 328.4 MB to 23.1 MB. One
+immutable 6,144-row, 13-record recovery pair reduced open time from 4.254 s to
+1.464 s (2.91x), runtime-accounted allocation from 569.8 MB to 185.5 MB, and
+GC count from 35 to 11. Both sides made the same 13 analyze and native execute
+calls and reconciled all nine aggregate fields. These are bounded directional
+measurements, not representative or tail qualification; the 80% Rust target
+and issue #83 remain open.
+
+A single larger same-fixture direction pass used the immutable 52,224-row,
+103-record recovery fixture from the prior parse-once profile. The object
+inventory remained unchanged at nine entries with SHA-256
+`e9f9292e2cb52165c5344c69dbc553625c8f1a17ddfcee6d49554f188c68d200`.
+Compared with the exact `6bbfc8b` baseline, measured open time fell from
+35.377 s to 12.952 s (2.73x) and the 103 JSON parses fell from 26.005 s to
+2.374 s (10.95x). The open-window runtime `gc-bytes` delta fell from 4.843 GB
+to 1.541 GB, while process maximum RSS rose from 721,204 KiB to 801,668 KiB
+(11.2%). Both runs decoded the same 39,347,104 record bytes, performed exactly
+103 JSON parses, 103 analyses, and 103 native executions, and returned the same
+nine aggregate fields. The candidate report is
+`d64d65ea0c8162b0ebcc1571ca9f5c35cf0e5d6c2ca439a98633312672935baf`;
+its `/usr/bin/time` record is
+`ff351f4290ebfcedffd0eda82b8217adcbc79e278fcafd590f85cc3ee8b2154c`.
+This one candidate against an earlier exact baseline establishes direction and
+the RSS tradeoff, but it is not the matched multi-trial Rust qualification and
+does not close the 80% target or issue #83.
 
 ## Bounded parse-once recovery plan
 
