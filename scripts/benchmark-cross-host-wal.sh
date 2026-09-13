@@ -144,6 +144,32 @@ jolt_executable_sha=$(sha256sum "$jolt_bin" | cut -d' ' -f1)
 native_library_sha=$(sha256sum "$stable_lib" | cut -d' ' -f1)
 bb_bin=$(realpath "$(command -v bb)")
 java_bin=$(realpath "$(command -v java)")
+wal_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)
+report_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)
+runner_sha=$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)
+
+discard_reports() {
+  rm -f "$output_dir/jolt.edn" \
+        "$output_dir/babashka.edn" \
+        "$output_dir/jvm-casselc-data-json.edn" \
+        "$output_dir/jvm-upstream-data-json.edn" \
+        "$output_dir/jvm-cheshire.edn"
+}
+
+verify_checkout_provenance() {
+  if [[ -n "$(git status --porcelain=v1)" ]] ||
+     [[ "$(git rev-parse HEAD)" != "$repo_head" ]] ||
+     [[ "$(git rev-parse HEAD^)" != "$repo_parent" ]] ||
+     [[ "$(git rev-parse HEAD^{tree})" != "$repo_tree" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)" != "$wal_source_sha" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)" != "$report_source_sha" ]] ||
+     [[ "$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)" != "$runner_sha" ]]; then
+    discard_reports
+    echo "benchmark checkout provenance changed during the matrix; reports discarded" >&2
+    exit 2
+  fi
+}
+
 jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_JOLT_EXECUTABLE_SHA256="$jolt_executable_sha"
              BENCH_NATIVE_VERSION="$native_version"
@@ -151,9 +177,9 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_REPO_HEAD="$repo_head"
              BENCH_REPO_PARENT="$repo_parent"
              BENCH_REPO_TREE="$repo_tree"
-             BENCH_WAL_SOURCE_SHA256="$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)"
-             BENCH_REPORT_SOURCE_SHA256="$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)"
-             BENCH_RUNNER_SHA256="$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)")
+             BENCH_WAL_SOURCE_SHA256="$wal_source_sha"
+             BENCH_REPORT_SOURCE_SHA256="$report_source_sha"
+             BENCH_RUNNER_SHA256="$runner_sha")
 
 common=("$wal" "$wal_sha" "$record_ordinal" "$warmups" "$samples")
 
@@ -198,6 +224,7 @@ run_jvm() {
 position=0
 for row in "${matrix_rows[@]}"; do
   position=$((position + 1))
+  verify_checkout_provenance
   case "$row" in
     jolt) run_jolt "$output_dir/jolt.edn" "$position" ;;
     babashka) run_bb "$output_dir/babashka.edn" "$position" ;;
@@ -212,7 +239,10 @@ for row in "${matrix_rows[@]}"; do
       run_jvm jvm-cheshire cross-host-wal-cheshire "$cheshire_version" \
         "$cheshire_sha" 0 "$output_dir/jvm-cheshire.edn" "$position" ;;
   esac
+  verify_checkout_provenance
 done
+
+verify_checkout_provenance
 
 bb -e '(require (quote [clojure.edn :as edn]))
         (let [reports (mapv (comp edn/read-string slurp)
