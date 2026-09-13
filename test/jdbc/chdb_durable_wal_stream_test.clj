@@ -1,9 +1,13 @@
 (ns jdbc.chdb-durable-wal-stream-test
   (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.digest :as digest]
+            [jdbc.chdb.durable.head :as head]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-open-test-support :as support])
@@ -64,18 +68,84 @@
 (defn- prepared-wal-store [payload]
   (prepared-wal-store-many [payload]))
 
-(defn- attempt-open [payload f]
-  (let [calls (atom [])
-        close-count (atom 0)
-        cleanup-count (atom 0)
-        operations (support/fake-open-operations
-                    calls (atom [0M]) close-count cleanup-count)]
-    (f #(durable/open-reader!
-         {:store (prepared-wal-store payload) :operations operations})
-       calls close-count cleanup-count)))
+(defn- attempt-open
+  ([payload f]
+   (attempt-open payload (fn [_] nil) f))
+  ([payload observer f]
+   (let [calls (atom [])
+         close-count (atom 0)
+         cleanup-count (atom 0)
+         operations
+         (assoc (support/fake-open-operations
+                 calls (atom [0M]) close-count cleanup-count)
+                :recovery-event! observer)]
+     (f #(durable/open-reader!
+          {:store (prepared-wal-store payload) :operations operations})
+        calls close-count cleanup-count))))
 
 (defn- engine-effects [calls]
   (filterv #(contains? #{:analyze-execute :execute} (first %)) calls))
+
+(def ^:private empty-wal-fixture-root
+  "test/fixtures/durable/empty-referenced-wal")
+
+(defn- fixture-bytes [relative]
+  (Files/readAllBytes (.toPath (io/file empty-wal-fixture-root relative))))
+
+(defn- empty-wal-fixture-store [fault]
+  (let [store (backend/memory-backend)
+        head-bytes (fixture-bytes "object/head.json")
+        document (json/read-str (String. head-bytes "UTF-8"))
+        key (get-in document ["manifest" "wal" 0 "key"])
+        payload (fixture-bytes (str "object/" key))
+        document
+        (case fault
+          :size (update-in document ["manifest" "wal" 0 "size"] inc)
+          :digest (assoc-in document ["manifest" "wal" 0 "sha256"]
+                            (apply str (repeat 64 "0")))
+          document)
+        head-bytes (if fault (head/encode document) head-bytes)]
+    (backend/put-bytes-if-absent! store key payload)
+    (backend/put-bytes-if-absent! store control/head-key head-bytes)
+    {:store store :head-bytes (vec head-bytes) :payload payload}))
+
+(defn- open-empty-wal-fixture
+  ([fault] (open-empty-wal-fixture fault nil))
+  ([fault observer]
+   (let [{:keys [store head-bytes payload]} (empty-wal-fixture-store fault)
+         calls (atom [])
+         events (atom [])
+         close-count (atom 0)
+         cleanup-count (atom 0)
+         operations
+         (assoc (support/fake-open-operations
+                 calls (atom [0M]) close-count cleanup-count)
+                :recovery-event! (or observer #(swap! events conj %)))]
+     {:result
+      (try
+        (let [opened (durable/open-reader! {:store store :operations operations})]
+          (reader/close! opened)
+          :opened)
+        (catch Throwable error
+          (loop [current error]
+            (if current
+              (or (:type (ex-data current)) (recur (.getCause current)))
+              :unknown))))
+      :calls @calls
+      :events @events
+      :close-count @close-count
+      :cleanup-count @cleanup-count
+      :head-before head-bytes
+      :head-after (vec (backend/get-bytes store control/head-key))
+      :payload-size (alength payload)})))
+
+(def ^:private expected-empty-wal-recovery-events
+  [{:event :durable/wal-integrity-verified :wal-index 0}
+   {:event :durable/wal-validation-complete
+    :wal-index 0 :record-count 0}])
+
+(defn- valid-empty-wal-recovery-events? [events]
+  (= expected-empty-wal-recovery-events events))
 
 (defn run-checks! []
   (reset! failures 0)
@@ -335,15 +405,21 @@
              (concat-bytes
               (byte-array [(unchecked-byte 0xc3) 0x28])
               (.getBytes "'\"}\n" "UTF-8")))]]]
-    (attempt-open
-     (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"]) suffix)
-     (fn [open! calls close-count cleanup-count]
-       (check (str label " is corrupt") ::durable/corrupt
-              (error-type open!))
-       (check (str label " executes no validated prefix") []
-              (engine-effects @calls))
-       (check (str label " still closes and cleans") [1 1]
-              [@close-count @cleanup-count]))))
+    (let [events (atom [])]
+      (attempt-open
+       (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"]) suffix)
+       #(swap! events conj %)
+       (fn [open! calls close-count cleanup-count]
+         (check (str label " is corrupt") ::durable/corrupt
+                (error-type open!))
+         (check (str label " executes no validated prefix") []
+                (engine-effects @calls))
+         (check (str label " still closes and cleans") [1 1]
+                [@close-count @cleanup-count])))
+      (check (str label " trace stops at validation failure")
+             [{:event :durable/wal-integrity-verified :wal-index 0}
+              {:event :durable/wal-validation-failed :wal-index 0}]
+             @events)))
 
   (let [canary "replay-plan-secret-canary-must-not-escape"
         payload (concat-bytes
@@ -361,16 +437,66 @@
          (check "a discarded replay plan leaks no SQL canary through diagnostics"
                 false (str/includes? public-error canary))))))
 
-  (doseq [[label payload]
-          [["empty WAL" (byte-array 0)]
-           ["unterminated WAL" (.getBytes "{\"sql\":\"SELECT 1\"}" "UTF-8")]]]
-    (attempt-open
-     payload
-     (fn [open! calls _ _]
-       (check (str label " is corrupt") ::durable/corrupt
-              (error-type open!))
-       (check (str label " has no engine effect") []
-              (engine-effects @calls)))))
+  (let [provenance
+        (edn/read-string
+         (slurp (io/file empty-wal-fixture-root "provenance.edn")))
+        result (open-empty-wal-fixture nil)]
+    (check "empty-WAL fixture records tolerated noncanonical semantics"
+           [:tolerated-noncanonical :zero-records :omit-reference :pending]
+           [(:status provenance) (:reader-outcome provenance)
+            (:writer-outcome provenance)
+            (get-in provenance [:sources :protocol :clarification])])
+    (check "empty-WAL fixture bytes match their pinned provenance"
+           (mapv #(get-in provenance [:fixture % :sha256]) [:head :wal])
+           (mapv #(digest/sha256-file
+                   (.toPath
+                    (io/file empty-wal-fixture-root
+                             (get-in provenance [:fixture % :path]))))
+                 [:head :wal]))
+    (check "verified zero-byte referenced WAL opens as zero records"
+           [:opened 0 []]
+           [(:result result) (:payload-size result)
+            (engine-effects (:calls result))])
+    (check "zero-record validation trace stops before replay"
+           expected-empty-wal-recovery-events
+           (:events result))
+    (check "trace validation rejects omission and replay-before-validation mutants"
+           [false false]
+           [(valid-empty-wal-recovery-events? (pop (:events result)))
+            (valid-empty-wal-recovery-events?
+             (into [{:event :durable/wal-replay-started
+                     :wal-index 0 :record-count 0}]
+                   (:events result)))])
+    (check "read-only empty-WAL recovery preserves head and cleans once"
+           [true 1 1]
+           [(= (:head-before result) (:head-after result))
+            (:close-count result) (:cleanup-count result)]))
+
+  (let [observer-failure (ex-info "observer secret canary" {:secret "canary"})
+        result (open-empty-wal-fixture
+                nil (fn [_] (throw observer-failure)))]
+    (check "recovery observation failure cannot replace successful recovery"
+           [:opened [] 1 1]
+           [(:result result) (engine-effects (:calls result))
+            (:close-count result) (:cleanup-count result)]))
+
+  (doseq [fault [:size :digest]]
+    (let [result (open-empty-wal-fixture fault)]
+      (check (str "empty-WAL " (name fault) " control is corrupt")
+             ::durable/corrupt (:result result))
+      (check (str "empty-WAL " (name fault)
+                  " control reaches neither validation nor replay")
+             [[] [] 1 1]
+             [(:events result) (engine-effects (:calls result))
+              (:close-count result) (:cleanup-count result)])))
+
+  (attempt-open
+   (.getBytes "{\"sql\":\"SELECT 1\"}" "UTF-8")
+   (fn [open! calls _ _]
+     (check "unterminated WAL is corrupt" ::durable/corrupt
+            (error-type open!))
+     (check "unterminated WAL has no engine effect" []
+            (engine-effects @calls))))
 
   (doseq [[label text]
           [["missing sql" "{}\n"]

@@ -414,7 +414,10 @@
           (cond
             (= -1 read-count)
             (do
-              (when (or (zero? record-count) (pos? (.size line)))
+              ;; Zero bytes are the empty JSONL sequence. Readers tolerate that
+              ;; noncanonical shape after the reference's size and digest have
+              ;; verified, while writers continue to omit empty segments.
+              (when (pos? (.size line))
                 (fail! ::corrupt "A Durable WAL is not newline terminated"))
               (when-let [failure @utf8-failure]
                 (throw failure))
@@ -567,7 +570,8 @@
    :query-bytes-native! chdb/execute-query-bytes-handle
    :execute-native! (fn [handle sql params]
                       (chdb/execute-any handle sql params))
-   :execute-prepared-native! chdb/execute-prepared-any})
+   :execute-prepared-native! chdb/execute-prepared-any
+   :recovery-event! (fn [_] nil)})
 
 (defn- epoch-ms->seconds
   "Convert the runtime wall-clock representation to the frozen V1 wire unit."
@@ -588,7 +592,14 @@
 (def ^:private recovery-operation-keys
   [:create-scratch! :cleanup-scratch! :open-native! :close-native!
    :restore-database! :create-database! :use-database! :analyze-execute!
-   :execute-native!])
+   :execute-native! :recovery-event!])
+
+(defn- observe-recovery! [operations event]
+  ;; Recovery evidence is observation-only. A broken observer must not replace
+  ;; a storage, validation, engine, or cleanup result.
+  (try
+    ((:recovery-event! operations) event)
+    (catch Throwable _ nil)))
 
 (defn- recover-snapshot!
   "Restore exactly `document`'s manifest into an already opened private handle."
@@ -610,12 +621,30 @@
       (let [path (download-reference!
                   store scratch (str "wal-" index ".jsonl") reference
                   writer/max-wal-segment-bytes)]
+        (observe-recovery!
+         operations {:event :durable/wal-integrity-verified :wal-index index})
         ;; A corrupt tail must not leave a prefix applied. Validation retains a
         ;; per-segment replay plan only within strict byte and record caps. A
         ;; larger segment discards the partial plan and uses the original
         ;; bounded second pass. Either path starts engine effects only after the
         ;; complete segment and its established error precedence are valid.
-        (let [replay-plan (validate-wal! path)]
+        (let [replay-plan
+              (try
+                (validate-wal! path)
+                (catch Throwable error
+                  (observe-recovery!
+                   operations
+                   {:event :durable/wal-validation-failed :wal-index index})
+                  (throw error)))]
+          (observe-recovery!
+           operations
+           {:event :durable/wal-validation-complete
+            :wal-index index :record-count (:record-count replay-plan)})
+          (when (pos? (:record-count replay-plan))
+            (observe-recovery!
+             operations
+             {:event :durable/wal-replay-started
+              :wal-index index :record-count (:record-count replay-plan)}))
           (replay-wal! path replay-plan operations handle logical-database))))
     logical-database))
 

@@ -56,4 +56,12 @@
   {:id :upstream/cold-open-lands-in-the-objects-database :name "test_cold_open_lands_in_the_objects_database"}
   {:id :upstream/wal-replay-uses-the-objects-database :name "test_wal_replay_uses_the_objects_database"}
   {:id :upstream/wal-keys-are-unique :name "test_wal_keys_are_unique"}
-  {:id :upstream/constructor-validation :name "test_constructor_validation"}]}
+  {:id :upstream/constructor-validation :name "test_constructor_validation"}]
+ :local-gaps
+ [{:id :local/empty-referenced-wal
+   :issue 98
+   :status :implemented-awaiting-upstream-clarification
+   :fixture "test/fixtures/durable/empty-referenced-wal"
+   :interpretation :tolerated-noncanonical
+   :reader-outcome :zero-records
+   :writer-outcome :omit-reference}]}

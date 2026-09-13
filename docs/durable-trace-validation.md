@@ -18,6 +18,22 @@ selects the option-bearing terminal arity: convenience calls delegate there,
 and writers enter it directly, so either public call shape produces exactly
 one logical event.
 
+WAL recovery has a separate, privacy-shaped observer seam in the injected open
+operations. It records only fixed event names, the manifest index, and a bounded
+record count—never an object key, path, SQL string, or payload. A valid segment
+emits `:durable/wal-integrity-verified` only after size and SHA-256 succeed,
+followed by `:durable/wal-validation-complete`; positive record counts then emit
+`:durable/wal-replay-started` before analysis and execution. Content rejection
+after integrity emits `:durable/wal-validation-failed`. Size or digest failure
+emits none of those success events. The zero-byte compatibility fixture checks
+the exact two-event, zero-record sequence and rejects event-omission and
+replay-before-validation mutants. Observer failures are swallowed so diagnostic
+instrumentation cannot replace a recovery or cleanup result.
+
+This observer is runtime trace evidence, not a new head-CAS command or a claim
+of model checking. JSONL payload shape remains an explicit adapter precondition
+outside the Quint state projection.
+
 The literate Quint specification produces ADR-015 ITF traces with
 `mbt::actionTaken` and `mbt::nondetPicks`. The checked fixture under
 `formal/quint/traces/` is replayed by
