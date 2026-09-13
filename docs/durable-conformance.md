@@ -141,7 +141,7 @@ Run the focused, offline gate with the mandatory compiler selector:
 The gate fails on changes to the pinned repository SHA, protocol/suite paths,
 source digests, case count or ordered names; duplicate or unmapped entries;
 invalid dispositions; and mapped paths or assertion anchors that no longer
-exist. It also proves five deliberate drift mutants fail. For an externally
+exist. It also proves seven deliberate drift mutants fail. For an externally
 visible red control, set `JOLT_CHDB_CONFORMANCE_MUTANT=name-drift`; success from
 that invocation is a gate defect.
 
