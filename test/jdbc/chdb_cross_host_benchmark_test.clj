@@ -72,7 +72,10 @@
         (check "selected parser preserves string keys and SQL"
                "β" (get ((:read-str parser) "{\"sql\":\"β\"}") "sql")))))
   (let [deps (edn/read-string (slurp "deps.edn"))
-        pin (get-in deps [:deps 'org.clojure/data.json :git/sha])]
+        pin (get-in deps [:deps 'org.clojure/data.json :git/sha])
+        benchmark-pins
+        (edn/read-string
+         (slurp "resources/jdbc/chdb/cross-host-benchmark.edn"))]
     (check "project keeps one full data.json git pin" true
            (boolean (and (string? pin)
                          (re-matches #"[0-9a-f]{40}" pin))))
@@ -84,7 +87,18 @@
              (:git-sha
               (assoc ((private-fn 'pinned-resource-identity)
                       "clojure/data/json.clj" pin)
-                     :git-sha pin)))))
+                     :git-sha pin))))
+    (check "benchmark pins one exact Jolt source commit" true
+           (boolean (re-matches #"[0-9a-f]{40}"
+                                (get-in benchmark-pins [:jolt :source-sha]))))
+    (check "upstream data.json alias matches the benchmark pin"
+           (get-in benchmark-pins [:parsers :upstream-data-json :version])
+           (get-in deps [:aliases :cross-host-wal-upstream-data-json
+                         :override-deps 'org.clojure/data.json :mvn/version]))
+    (check "JVM Cheshire alias matches the benchmark pin"
+           (get-in benchmark-pins [:parsers :jvm-cheshire :version])
+           (get-in deps [:aliases :cross-host-wal-cheshire
+                         :extra-deps 'cheshire/cheshire :mvn/version])))
   (when (pos? @failures)
     (throw (ex-info "cross-host benchmark contract failed"
                     {:failures @failures})))

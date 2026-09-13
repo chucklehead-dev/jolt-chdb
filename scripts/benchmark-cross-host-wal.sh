@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_matrix_order() {
+  local order=$1 row
+  read -r -a matrix_rows <<< "$order"
+  [[ ${#matrix_rows[@]} -eq 5 ]] || return 1
+  declare -A seen_rows=()
+  for row in "${matrix_rows[@]}"; do
+    case "$row" in
+      jolt|babashka|jvm-casselc|jvm-upstream|jvm-cheshire) ;;
+      *) return 1 ;;
+    esac
+    [[ -z "${seen_rows[$row]:-}" ]] || return 1
+    seen_rows[$row]=1
+  done
+  for row in jolt babashka jvm-casselc jvm-upstream jvm-cheshire; do
+    [[ -n "${seen_rows[$row]:-}" ]] || return 1
+  done
+}
+
+matrix_order=${BENCH_MATRIX_ORDER:-"jolt babashka jvm-casselc jvm-upstream jvm-cheshire"}
+if ! validate_matrix_order "$matrix_order"; then
+  echo "BENCH_MATRIX_ORDER must contain all five known rows exactly once" >&2
+  exit 2
+fi
+if [[ "${BENCH_VALIDATE_ORDER_ONLY:-0}" = 1 ]]; then
+  printf 'valid matrix order: %s\n' "$matrix_order"
+  exit 0
+fi
+
 if [[ $# -ne 8 ]]; then
   echo "usage: $0 OUTPUT_DIR WAL_JSONL WAL_SHA256 RECORD_ORDINAL WARMUPS SAMPLES JOLT_BIN JOLT_SOURCE_SHA" >&2
   exit 2
@@ -17,9 +45,19 @@ jolt_source_sha=$8
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
 wrapper=/home/chuck/ai-src/tools/jolt-with-chez-10.4.1
 compat="$repo_root/resources/jdbc/chdb/ffi-compatibility.edn"
+benchmark_pins="$repo_root/resources/jdbc/chdb/cross-host-benchmark.edn"
 stable_lib=/home/chuck/.cache/jolt-chdb/26.7.0/linux-amd64/libchdb.so
 stable_marker="$stable_lib.archive-sha256"
 cd "$repo_root"
+
+case "$output_dir/" in
+  "$repo_root/"*) echo "output directory must be outside the checkout" >&2; exit 2 ;;
+esac
+[[ -z "$(git status --porcelain=v1)" ]] || {
+  echo "benchmark checkout must be clean" >&2; exit 2; }
+repo_head=$(git rev-parse HEAD)
+repo_parent=$(git rev-parse HEAD^)
+repo_tree=$(git rev-parse HEAD^{tree})
 
 if [[ -e "$output_dir" ]] && find "$output_dir" -mindepth 1 -print -quit | grep -q .; then
   echo "output directory must be absent or empty" >&2
@@ -34,6 +72,13 @@ read_pin() {
      -- "$compat" "$@"
 }
 
+read_benchmark_pin() {
+  bb -e '(require (quote [clojure.edn :as edn]))
+         (print (get-in (edn/read-string (slurp (first *command-line-args*)))
+                        (mapv keyword (rest *command-line-args*))))' \
+     -- "$benchmark_pins" "$@"
+}
+
 expected_jolt=$(read_pin jolt version)
 expected_bb=$(read_pin babashka tag)
 expected_bb_commit=$(read_pin babashka tag-commit)
@@ -44,16 +89,23 @@ expected_archive=$(bb -e '(require (quote [clojure.edn :as edn]))
                                    (edn/read-string (slurp (first *command-line-args*)))
                                    [:native :archive-sha256 [:linux "amd64"]]))' \
                          -- "$compat")
+expected_jolt_source=$(read_benchmark_pin jolt source-sha)
+upstream_data_json_version=$(read_benchmark_pin parsers upstream-data-json version)
+expected_upstream_sha=$(read_benchmark_pin parsers upstream-data-json artifact-sha256)
+cheshire_version=$(read_benchmark_pin parsers jvm-cheshire version)
+expected_cheshire_sha=$(read_benchmark_pin parsers jvm-cheshire artifact-sha256)
 data_json_sha=$(bb -e '(require (quote [clojure.edn :as edn]))
                        (print (get-in (edn/read-string (slurp "deps.edn"))
                                       [:deps (quote org.clojure/data.json) :git/sha]))')
 upstream_data_json_jar=$(clojure -Srepro -Spath -M:cross-host-wal-upstream-data-json | \
-  tr ':' '\n' | grep '/org/clojure/data.json/2.5.2/data.json-2.5.2.jar$')
+  tr ':' '\n' | grep "/org/clojure/data.json/$upstream_data_json_version/data.json-$upstream_data_json_version.jar$")
 cheshire_jar=$(clojure -Srepro -Spath -M:cross-host-wal-cheshire | \
-  tr ':' '\n' | grep '/cheshire/cheshire/6.2.0/cheshire-6.2.0.jar$')
+  tr ':' '\n' | grep "/cheshire/cheshire/$cheshire_version/cheshire-$cheshire_version.jar$")
 [[ -f "$upstream_data_json_jar" && -f "$cheshire_jar" ]]
 upstream_data_json_sha=$(sha256sum "$upstream_data_json_jar" | cut -d' ' -f1)
 cheshire_sha=$(sha256sum "$cheshire_jar" | cut -d' ' -f1)
+[[ "$upstream_data_json_sha" = "$expected_upstream_sha" ]]
+[[ "$cheshire_sha" = "$expected_cheshire_sha" ]]
 
 jolt_version=$($wrapper "$jolt_bin" --version)
 case "$jolt_version" in
@@ -65,6 +117,8 @@ jolt_revision=${jolt_version##*-g}
   echo "benchmark requires a revision-bearing Jolt compiler" >&2; exit 2; }
 [[ "$jolt_source_sha" =~ ^[0-9a-f]{40}$ && "$jolt_source_sha" = "$jolt_revision"* ]] || {
   echo "Jolt banner revision differs from caller-asserted source SHA" >&2; exit 2; }
+[[ "$jolt_source_sha" = "$expected_jolt_source" ]] || {
+  echo "Jolt source differs from the benchmark's canonical pin" >&2; exit 2; }
 [[ "$(bb --version)" = "babashka $expected_bb" ]]
 [[ "$(bb describe | bb -i -e '(print (:git/sha (read-string (slurp *in*))))')" = "$expected_bb_commit" ]]
 [[ "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java.runtime.version = //p')" = "$expected_jdk" ]]
@@ -93,33 +147,44 @@ java_bin=$(realpath "$(command -v java)")
 jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_JOLT_EXECUTABLE_SHA256="$jolt_executable_sha"
              BENCH_NATIVE_VERSION="$native_version"
-             BENCH_NATIVE_LIBRARY_SHA256="$native_library_sha")
+             BENCH_NATIVE_LIBRARY_SHA256="$native_library_sha"
+             BENCH_REPO_HEAD="$repo_head"
+             BENCH_REPO_PARENT="$repo_parent"
+             BENCH_REPO_TREE="$repo_tree"
+             BENCH_WAL_SOURCE_SHA256="$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)"
+             BENCH_REPORT_SOURCE_SHA256="$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)"
+             BENCH_RUNNER_SHA256="$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)")
 
 common=("$wal" "$wal_sha" "$record_ordinal" "$warmups" "$samples")
 
 run_jolt() {
+  local output=$1 position=$2
   env "${jolt_common[@]}" BENCH_RUNTIME=jolt BENCH_JSON_PARSER=casselc-data-json \
+      BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_RUNTIME_VERSION="$jolt_version" \
       BENCH_RUNTIME_REVISION="$jolt_revision" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
       BENCH_RUNTIME_EXECUTABLE_SHA256="$jolt_executable_sha" \
     "$wrapper" "$jolt_bin" -Srepro -M:cross-host-wal-benchmark \
-    "${common[@]}" "$output_dir/jolt.edn"
+    "${common[@]}" "$output"
 }
 
 run_bb() {
+  local output=$1 position=$2
   env "${jolt_common[@]}" BENCH_RUNTIME=babashka \
+      BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_JSON_PARSER=babashka-bundled-cheshire BENCH_RUNTIME_VERSION="$(bb --version)" \
       BENCH_RUNTIME_REVISION="$expected_bb_commit" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
       BENCH_RUNTIME_EXECUTABLE_SHA256="$(sha256sum "$bb_bin" | cut -d' ' -f1)" \
     bb --config "$repo_root/deps.edn" --deps-root "$repo_root" \
        -Sdeps '{:paths ["src" "resources" "bench"]}' \
        -m jdbc.chdb-cross-host-wal \
-       "${common[@]}" "$output_dir/babashka.edn"
+       "${common[@]}" "$output"
 }
 
 run_jvm() {
-  local profile=$1 alias=$2 version=$3 artifact_sha=$4 raw=$5 output=$6
+  local profile=$1 alias=$2 version=$3 artifact_sha=$4 raw=$5 output=$6 position=$7
   env "${jolt_common[@]}" BENCH_RUNTIME=jvm BENCH_JSON_PARSER="$profile" \
+      BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_JSON_PARSER_VERSION="$version" BENCH_MEASURE_RAW="$raw" \
       BENCH_JSON_PARSER_ARTIFACT_SHA256="$artifact_sha" \
       BENCH_RUNTIME_VERSION="$expected_jdk" \
@@ -128,17 +193,26 @@ run_jvm() {
     clojure -Srepro -M:"$alias" "${common[@]}" "$output"
 }
 
-# One fresh process per matrix row. The order is counterbalanced by the caller
-# across repeated invocations; this bounded script itself never merges samples.
-run_jolt
-run_bb
-run_jvm casselc-data-json cross-host-wal-benchmark "$data_json_sha" not-applicable 1 \
-  "$output_dir/jvm-casselc-data-json.edn"
-run_jvm upstream-data-json cross-host-wal-upstream-data-json 2.5.2 \
-  "$upstream_data_json_sha" 0 \
-  "$output_dir/jvm-upstream-data-json.edn"
-run_jvm jvm-cheshire cross-host-wal-cheshire 6.2.0 "$cheshire_sha" 0 \
-  "$output_dir/jvm-cheshire.edn"
+# One fresh process per matrix row. BENCH_MATRIX_ORDER is recorded and lets
+# repeated invocations use counterbalanced orders; one invocation is one order.
+position=0
+for row in "${matrix_rows[@]}"; do
+  position=$((position + 1))
+  case "$row" in
+    jolt) run_jolt "$output_dir/jolt.edn" "$position" ;;
+    babashka) run_bb "$output_dir/babashka.edn" "$position" ;;
+    jvm-casselc)
+      run_jvm casselc-data-json cross-host-wal-benchmark "$data_json_sha" \
+        not-applicable 1 "$output_dir/jvm-casselc-data-json.edn" "$position" ;;
+    jvm-upstream)
+      run_jvm upstream-data-json cross-host-wal-upstream-data-json \
+        "$upstream_data_json_version" "$upstream_data_json_sha" 0 \
+        "$output_dir/jvm-upstream-data-json.edn" "$position" ;;
+    jvm-cheshire)
+      run_jvm jvm-cheshire cross-host-wal-cheshire "$cheshire_version" \
+        "$cheshire_sha" 0 "$output_dir/jvm-cheshire.edn" "$position" ;;
+  esac
+done
 
 bb -e '(require (quote [clojure.edn :as edn]))
         (let [reports (mapv (comp edn/read-string slurp)

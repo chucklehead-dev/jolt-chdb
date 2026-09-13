@@ -271,7 +271,20 @@
             (required-env "BENCH_RUNTIME_EXECUTABLE_SHA256")
             :os (System/getProperty "os.name")
             :arch (System/getProperty "os.arch")
-            :java (System/getProperty "java.runtime.version")}
+            :java (System/getProperty "java.runtime.version")
+            :matrix-order (required-env "BENCH_MATRIX_ORDER")
+            :matrix-position
+            (parse-positive "matrix position"
+                            (required-env "BENCH_MATRIX_POSITION") 5)}
+     :harness
+     {:repo-head (required-env "BENCH_REPO_HEAD")
+      :repo-parent (required-env "BENCH_REPO_PARENT")
+      :repo-tree (required-env "BENCH_REPO_TREE")
+      :wal-source-sha256 (required-env "BENCH_WAL_SOURCE_SHA256")
+      :report-source-sha256 (required-env "BENCH_REPORT_SOURCE_SHA256")
+      :runner-sha256 (required-env "BENCH_RUNNER_SHA256")
+      :scan-scope :one-wal-segment
+      :parse-scope :one-selected-record}
      :libraries
      {:json-parser (:identity parser)
       :abi (resource-identity "jdbc/chdb/abi.edn")

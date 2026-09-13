@@ -7,9 +7,10 @@
   isolates Jolt/JVM runtime cost with the exact production `casselc/data.json`
   pin; and records natural-host JSON rows for Babashka's bundled Cheshire plus
   pinned upstream `data.json` and Cheshire on the JVM. Reports fail closed on
-  runtime, compiler, native-library, parser, and fixture provenance and require
-  every parser to produce the same SQL length and digest. This does not claim
-  Durable open/recovery or production Babashka/JVM support.
+  runtime, canonical compiler, clean harness source, native-library, parser,
+  and fixture provenance; allow caller-selected recorded matrix order; and
+  require every parser to produce the same SQL length and digest. This does not
+  claim Durable open/recovery or production Babashka/JVM support.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

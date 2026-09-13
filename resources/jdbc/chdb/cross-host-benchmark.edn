@@ -1,0 +1,11 @@
+{:schema 1
+ :jolt {:source-sha "f00bc93bdd8274b14087b74272aadeffb60e0447"}
+ :parsers
+ {:upstream-data-json
+  {:coordinate org.clojure/data.json
+   :version "2.5.2"
+   :artifact-sha256 "0938c730961d32b331ea7e5cd7c6a822c0a889def79d1c3f2af4dd201fdddeb3"}
+  :jvm-cheshire
+  {:coordinate cheshire/cheshire
+   :version "6.2.0"
+   :artifact-sha256 "6e86771499723471f71ec9684824aacd67cd323d5f453f3ce40bbec115e98a7b"}}}
