@@ -167,6 +167,28 @@
            :durable-cross-binding-recovery
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
+           :cross-host-wal-benchmark
+           {:extra-paths ["bench"]
+            :main-opts ["-m" "jdbc.chdb-cross-host-wal"]}
+           :cross-host-wal-upstream-data-json
+           {:extra-paths ["bench"]
+            :override-deps {org.clojure/data.json {:mvn/version "2.5.2"}}
+            :main-opts ["-m" "jdbc.chdb-cross-host-wal"]}
+           :cross-host-wal-cheshire
+           {:extra-paths ["bench"]
+            :extra-deps {cheshire/cheshire {:mvn/version "6.2.0"}}
+            :main-opts ["-m" "jdbc.chdb-cross-host-wal"]}
+           :cross-host-benchmark-test
+           {:extra-paths ["bench" "test"]
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
+           :cross-host-benchmark-test-upstream-data-json
+           {:extra-paths ["bench" "test"]
+            :override-deps {org.clojure/data.json {:mvn/version "2.5.2"}}
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
+           :cross-host-benchmark-test-cheshire
+           {:extra-paths ["bench" "test"]
+            :extra-deps {cheshire/cheshire {:mvn/version "6.2.0"}}
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}
@@ -216,6 +238,7 @@
          durable-local-posix-test "bash test/durable-local-posix.sh /usr/bin/env"
          durable-throughput-contract-test "jolt -M:durable-throughput-contract-test"
          durable-throughput-metrics-test "jolt -M:durable-throughput-metrics-test"
+         cross-host-benchmark-test "jolt -M:cross-host-benchmark-test"
          typed-check "clojure -M:typed-check"
          test "jolt -M:test"
          test-threadstatus "bash test/encoded-threadstatus.sh"}}

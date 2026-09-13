@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a bounded Phase 0 cross-host WAL characterization harness. It compares
+  byte scanning and strict UTF-8 decoding across Jolt, Babashka, and the JVM;
+  isolates Jolt/JVM runtime cost with the exact production `casselc/data.json`
+  pin; and records natural-host JSON rows for Babashka's bundled Cheshire plus
+  pinned upstream `data.json` and Cheshire on the JVM. Reports fail closed on
+  runtime, compiler, native-library, parser, and fixture provenance and require
+  every parser to produce the same SQL length and digest. This does not claim
+  Durable open/recovery or production Babashka/JVM support.
+
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
   pushback-reader call and one single-character String allocation per escape.
