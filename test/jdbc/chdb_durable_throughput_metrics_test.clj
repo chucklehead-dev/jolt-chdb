@@ -20,7 +20,7 @@
 
 (def ^:private expected-data-json-coordinate
   '{:git/url "https://github.com/casselc/data.json.git"
-    :git/sha "36b1902459b39487cd518c90e82d1848db3c043b"})
+    :git/sha "3174868a7baa06e118fb8d1201edd98c5769b335"})
 
 (defn- exact-data-json-pin? [deps]
   (= expected-data-json-coordinate
@@ -322,7 +322,7 @@
            (exact-data-json-pin?
             (assoc-in deps
                       [:deps 'org.clojure/data.json :git/sha]
-                      "95b1e6430b48ce4fb4e649656b79f7cabc4702a7")))
+                      "36b1902459b39487cd518c90e82d1848db3c043b")))
     (check "exact-pin contract rejects a different data.json source"
            false
            (exact-data-json-pin?
@@ -333,7 +333,7 @@
            true
            (str/includes?
             durable-doc
-            "36b1902459b39487cd518c90e82d1848db3c043b"))
+            "3174868a7baa06e118fb8d1201edd98c5769b335"))
     (check "throughput waits for successful provider qualification"
            true
            (and (str/includes? workflow "needs: s3-provider")
