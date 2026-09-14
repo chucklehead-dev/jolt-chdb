@@ -48,7 +48,9 @@ from replacement introduced by malformed, overlong, surrogate, out-of-range,
 or truncated input. This keeps strict rejection without re-encoding every
 ordinary record for a byte comparison. Public reader and writer construction
 fail before storage or native effects unless the runtime proves both the strict
-decoder and the String decoder's U+FFFD replacement sentinel. The visitor
+decoder and the String decoder's U+FFFD replacement sentinel across stray,
+truncated, invalid-lead, overlong, surrogate, and out-of-range malformed
+classes, while preserving a canonical encoded U+FFFD. The visitor
 already knows each JSON record's wire-byte length.
 Because a decoded JSON string cannot have more UTF-8 bytes than its complete
 encoded record, records at or below the 64 MiB statement limit also avoid

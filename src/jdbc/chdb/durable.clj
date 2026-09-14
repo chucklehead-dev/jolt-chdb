@@ -330,6 +330,28 @@
 (def ^:private replay-plan-record-limit 16384)
 (def ^:private utf8-charset (Charset/forName "UTF-8"))
 
+(def ^:private strict-utf8-malformed-probes
+  [[:stray-continuation (byte-array [(unchecked-byte 0x80)])]
+   [:truncated-continuation (byte-array [(unchecked-byte 0xe2)
+                                         (unchecked-byte 0x82)])]
+   [:invalid-lead (byte-array [(unchecked-byte 0xff)])]
+   [:two-byte-overlong (byte-array [(unchecked-byte 0xc0)
+                                    (unchecked-byte 0xaf)])]
+   [:three-byte-overlong (byte-array [(unchecked-byte 0xe0)
+                                      (unchecked-byte 0x80)
+                                      (unchecked-byte 0x80)])]
+   [:four-byte-overlong (byte-array [(unchecked-byte 0xf0)
+                                     (unchecked-byte 0x80)
+                                     (unchecked-byte 0x80)
+                                     (unchecked-byte 0x80)])]
+   [:encoded-surrogate (byte-array [(unchecked-byte 0xed)
+                                    (unchecked-byte 0xa0)
+                                    (unchecked-byte 0x80)])]
+   [:above-unicode-maximum (byte-array [(unchecked-byte 0xf4)
+                                        (unchecked-byte 0x90)
+                                        (unchecked-byte 0x80)
+                                        (unchecked-byte 0x80)])]])
+
 (defn- strict-utf8-decoder-capable? []
   (try
     (let [strict-decoder
@@ -337,18 +359,23 @@
             (doto (.newDecoder utf8-charset)
               (.onMalformedInput CodingErrorAction/REPORT)
               (.onUnmappableCharacter CodingErrorAction/REPORT)))
-          malformed (byte-array [(unchecked-byte 0xc0)
-                                 (unchecked-byte 0xaf)])]
+          strict-rejects?
+          (fn [bytes]
+            (try
+              (.decode (strict-decoder) (ByteBuffer/wrap bytes))
+              false
+              (catch CharacterCodingException _ true)))
+          replacement-visible?
+          (fn [bytes]
+            (not= -1 (.indexOf (String. bytes "UTF-8") (int 0xfffd))))]
       (and (= "β"
               (str (.decode (strict-decoder)
                             (ByteBuffer/wrap (.getBytes "β" "UTF-8")))))
            (= "�" (String. (.getBytes "�" "UTF-8") "UTF-8"))
-           (not= -1 (.indexOf (String. malformed "UTF-8") (int 0xfffd)))
-           (try
-             (.decode (strict-decoder)
-                      (ByteBuffer/wrap malformed))
-             false
-             (catch CharacterCodingException _ true))))
+           (every? (fn [[_ bytes]]
+                     (and (replacement-visible? bytes)
+                          (strict-rejects? bytes)))
+                   strict-utf8-malformed-probes)))
     (catch Throwable _ false)))
 
 (def ^:private strict-utf8-decoder-capable-result

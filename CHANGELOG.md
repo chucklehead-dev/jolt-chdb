@@ -11,8 +11,10 @@
   malformed and scalar-boundary cases match the prior decoder exactly. On one
   immutable 52,224-row A/B/B/A recovery qualification, mean open time fell from
   6.131 s to 3.536 s (42.3%) with identical inventory and aggregate results.
-  This bounded comparison is not a percentile, allocation, RSS-plateau, or
-  matched Rust qualification.
+  The candidate source base was jolt-chdb `bafd44b`; its mandatory Jolt
+  executable was built separately from compiler source `120643d6` and is not
+  part of this candidate diff. This bounded comparison is not a percentile,
+  allocation, RSS-plateau, or matched Rust qualification.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
