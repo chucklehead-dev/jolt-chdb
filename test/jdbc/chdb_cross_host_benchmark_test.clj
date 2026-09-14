@@ -148,6 +148,25 @@
          {:status :failed :stage :start}
          ((private-fn 'stop-jvm-profile)
           {:status :failed :stage :start}))
+  (when (and (= :jvm (keyword (or (System/getenv "BENCH_RUNTIME") "jvm")))
+             (System/getProperty "java.vm.name"))
+    (let [start! (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/start!)
+          stop! (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/stop!)
+          file (java.io.File/createTempFile "cross-host-profile-" ".jfr")
+          recording (start! (.getPath file))]
+      (try
+        (check "JFR disables ambient environment and process payload events"
+               {"jdk.InitialEnvironmentVariable#enabled" "false"
+                "jdk.InitialSystemProperty#enabled" "false"
+                "jdk.SystemProcess#enabled" "false"}
+               (select-keys
+                (.getSettings recording)
+                ["jdk.InitialEnvironmentVariable#enabled"
+                 "jdk.InitialSystemProperty#enabled"
+                 "jdk.SystemProcess#enabled"]))
+        (finally
+          (stop! recording)
+          (.delete file)))))
   (let [runtime (keyword (or (System/getenv "BENCH_RUNTIME") "jvm"))
         profile (keyword (or (System/getenv "BENCH_JSON_PARSER")
                              (if (= runtime :babashka)
