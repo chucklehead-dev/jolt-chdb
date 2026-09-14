@@ -269,6 +269,8 @@ native_version=$(JOLT_CHDB_LIB="$stable_lib" bb -cp "$repo_root/src:$repo_root/r
      (print (f)))')
 [[ "$native_version" = "$expected_native" ]]
 [[ "$wal_segment_sha" =~ ^[0-9a-f]{64}$ && "$selected_record_sha" =~ ^[0-9a-f]{64}$ ]]
+[[ "$record_ordinal" =~ ^[1-9][0-9]*$ ]] || {
+  echo "record ordinal must be a positive integer" >&2; exit 2; }
 [[ "$wal_segment_sha" != "$selected_record_sha" ]] || {
   echo "segment and selected-record digests must identify distinct byte scopes" >&2; exit 2; }
 actual_wal_segment_sha=$(sha256sum "$wal" | cut -d' ' -f1)
@@ -276,6 +278,16 @@ actual_wal_segment_sha=$(sha256sum "$wal" | cut -d' ' -f1)
   echo "full WAL segment digest does not match" >&2; exit 2; }
 expected_record_count=$(wc -l < "$wal")
 [[ "$expected_record_count" =~ ^[1-9][0-9]*$ ]]
+(( record_ordinal <= expected_record_count )) || {
+  echo "record ordinal exceeds the WAL fixture" >&2; exit 2; }
+expected_sql_sha=$(
+  LC_ALL=C sed -n "${record_ordinal}{p;q;}" "$wal" |
+    jq -j 'if (type == "object" and (.sql | type) == "string")
+           then .sql else halt_error(4) end' |
+    sha256sum | cut -d' ' -f1
+)
+[[ "$expected_sql_sha" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "could not derive the selected record SQL oracle" >&2; exit 2; }
 
 [[ -f "$fixture_manifest" ]]
 fixture_manifest_sha=$(sha256sum "$fixture_manifest" | cut -d' ' -f1)
@@ -317,6 +329,10 @@ jolt_executable_sha=$(sha256sum "$jolt_bin" | cut -d' ' -f1)
 native_library_sha=$(sha256sum "$stable_lib" | cut -d' ' -f1)
 bb_bin=$(realpath "$(command -v bb)")
 java_bin=$(realpath "$(command -v java)")
+jq_bin=$(realpath "$(command -v jq)")
+jq_version=$(jq --version)
+jq_executable_sha=$(sha256sum "$jq_bin" | cut -d' ' -f1)
+[[ -n "$jq_version" && "$jq_executable_sha" =~ ^[0-9a-f]{64}$ ]]
 wal_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)
 report_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)
 jolt_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jolt_metrics.clj | cut -d' ' -f1)
@@ -367,7 +383,10 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_FIXTURE_PRODUCER_NATIVE_VERSION="$fixture_producer_native_version"
              BENCH_FIXTURE_PRODUCER_NATIVE_SHA256="$fixture_producer_native_sha"
              BENCH_FIXTURE_PRODUCER_HARNESS_HEAD="$fixture_producer_harness_head"
-             BENCH_EXPECTED_RECORD_COUNT="$expected_record_count")
+             BENCH_EXPECTED_RECORD_COUNT="$expected_record_count"
+             BENCH_EXPECTED_SQL_SHA256="$expected_sql_sha"
+             BENCH_SQL_ORACLE_VERSION="$jq_version"
+             BENCH_SQL_ORACLE_EXECUTABLE_SHA256="$jq_executable_sha")
 
 common=("$wal" "$wal_segment_sha" "$selected_record_sha" "$record_ordinal" "$warmups" "$samples")
 

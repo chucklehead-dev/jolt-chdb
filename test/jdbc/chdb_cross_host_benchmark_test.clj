@@ -290,6 +290,34 @@
                profile (get-in parser [:identity :implementation]))
         (check "selected parser preserves string keys and SQL"
                "β" (get ((:read-str parser) "{\"sql\":\"β\"}") "sql")))))
+  (let [read-json
+        (:read-str
+         ((private-fn 'json-parser)
+          (keyword (test-option :runtime "BENCH_RUNTIME" "jvm"))
+          (get-in (edn/read-string (slurp "deps.edn"))
+                  [:deps 'org.clojure/data.json :git/sha])
+          {:profile (keyword
+                     (or (test-option :profile "BENCH_JSON_PARSER" nil)
+                         "casselc-data-json"))
+           :parser-version (:parser-version @test-options)
+           :parser-artifact-sha (:parser-artifact-sha @test-options)
+           :runtime-version "test-runtime"
+           :runtime-revision "test-revision"}))
+        sha256-bytes (private-fn 'sha256-bytes)
+        require-digest! (private-fn 'require-digest!)
+        sql (get (read-json (slurp "test/fixtures/cross-host-wal-smoke.jsonl"))
+                 "sql")
+        actual-sql-sha (sha256-bytes (.getBytes sql "UTF-8"))]
+    (check "selected parser matches the independent fixture SQL digest"
+           "668b2ce8a9b2e29af2b16ecb97a4614ca370f27be6e12e60a9bd3536f82ecb3e"
+           actual-sql-sha)
+    (check "wrong external SQL digest makes parser agreement red"
+           :jdbc.chdb-cross-host-wal/invalid-benchmark
+           (error-type
+            #(require-digest!
+              "selected record SQL"
+              "768b2ce8a9b2e29af2b16ecb97a4614ca370f27be6e12e60a9bd3536f82ecb3e"
+              actual-sql-sha))))
   (let [deps (edn/read-string (slurp "deps.edn"))
         pin (get-in deps [:deps 'org.clojure/data.json :git/sha])
         benchmark-pins

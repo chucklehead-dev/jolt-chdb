@@ -23,6 +23,9 @@
   and producer provenance. JVM managed-allocation metrics are enabled only
   when the runtime reports that capability, and reused boundary reports must
   match the exact report schema.
+  The selected SQL digest is derived once through external `jq` before any
+  runtime row starts, so cross-host parser agreement cannot certify a shared
+  misparse; reports retain the oracle's version and executable digest.
   Babashka rows use its native classpath directly and do not invoke JVM
   tools.deps or require a writable user-level classpath cache.
   The ordinary JVM whole-segment boundary phase uses its type-hinted primitive

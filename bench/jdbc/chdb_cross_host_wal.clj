@@ -400,6 +400,7 @@
         expected-record-count
         (parse-positive "expected record count"
                         (required-env "BENCH_EXPECTED_RECORD_COUNT") Long/MAX_VALUE)
+        expected-sql-sha (required-env "BENCH_EXPECTED_SQL_SHA256")
         host {:runtime runtime
             :runtime-version (required-env "BENCH_RUNTIME_VERSION")
             :runtime-revision (required-env "BENCH_RUNTIME_REVISION")
@@ -604,8 +605,13 @@
              (fn [value]
                (when-not (string? value)
                  (fail! "selected JSON record has no string sql value" {}))
-               {:sql-chars (count value)
-                :sql-sha256 (sha256-bytes (.getBytes value "UTF-8"))}))
+               (let [actual-sql-sha
+                     (sha256-bytes (.getBytes value "UTF-8"))]
+                 (require-digest! "selected record SQL"
+                                  expected-sql-sha actual-sql-sha)
+                 {:sql-chars (count value)
+                  :sql-sha256 actual-sql-sha
+                  :oracle :external-jq})))
             json-phases
             [[:json-read-str {:input-chars (count record-text)} (count sql)
               #(get (read-json record-text) "sql")]
@@ -620,6 +626,11 @@
          completed
          {:libraries
           {:json-parser (:identity parser)
+           :sql-oracle
+           {:implementation :external-jq
+            :version (required-env "BENCH_SQL_ORACLE_VERSION")
+            :executable-sha256
+            (required-env "BENCH_SQL_ORACLE_EXECUTABLE_SHA256")}
            :abi (resource-identity "jdbc/chdb/abi.edn")
            :compatibility (resource-identity "jdbc/chdb/ffi-compatibility.edn")
            :jolt-compiler
@@ -639,6 +650,7 @@
                   :selected-record-includes-lf? false
                   :decoded-chars (count record-text)
                   :json {:status :verified
+                         :oracle :external-jq
                          :sql-chars (count sql)
                          :sql-sha256
                          (sha256-bytes (.getBytes sql "UTF-8"))}})}))
