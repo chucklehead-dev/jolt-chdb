@@ -126,10 +126,14 @@
     :else (hash value)))
 
 (defn- measured-phase [measurement inputs expected-result]
-  (merge {:status :measured
+  (merge {:status :complete
           :expected-result expected-result}
          inputs
          measurement))
+
+(defn- not-run-phase [reason]
+  {:status :not-run :reason reason
+   :warmups 0 :samples 0})
 
 (defn- json-parser [runtime data-json-sha]
   (let [profile (keyword
@@ -188,8 +192,10 @@
 
       (fail! "unknown JSON parser profile" {:profile profile}))))
 
-(defn- measure [warmups samples {:keys [snapshot]} f]
-  (dotimes [_ warmups] (consume-result (f)))
+(defn- warm! [warmups f]
+  (dotimes [_ warmups] (consume-result (f))))
+
+(defn- measure-samples [samples {:keys [snapshot]} f]
   (let [sink (volatile! 0)
         before (when snapshot (snapshot))
         elapsed
@@ -206,13 +212,83 @@
      :resource-delta (counter-delta before after)
      :sink @sink}))
 
+(defn- measure-once [{:keys [snapshot]} f]
+  (let [before (when snapshot (snapshot))
+        start (System/nanoTime)
+        value (f)
+        nanos (- (System/nanoTime) start)
+        after (when snapshot (snapshot))]
+    {:value value
+     :latency {:count 1
+               :total-ns nanos
+               :max-ns nanos
+               :p50-supported? false
+               :p95-supported? false
+               :p99-supported? false
+               :samples-ns [nanos]}
+     :resource-delta (counter-delta before after)
+     :sink (consume-result value)}))
+
+(defn- measure-raw-phase
+  [bytes expected-record-count metrics scanner]
+  (let [{:keys [value] :as measurement}
+        (measure-once metrics #(scanner bytes))]
+    (when-not (= expected-record-count value)
+      (fail! "raw LF count differs from the caller-verified fixture count" {}))
+    (measured-phase
+     (assoc (dissoc measurement :value) :warmups 0 :samples 1)
+     {:input-bytes (alength bytes)} expected-record-count)))
+
+(defn- artifact-path [output suffix]
+  (str/replace output #"\.edn$" suffix))
+
+(defn- append-checkpoint! [path value]
+  ;; One bounded EDN event per closed write. A killed later phase therefore
+  ;; cannot erase the already completed work; at worst its own final line is
+  ;; absent or partial and every previous newline remains parseable.
+  (spit path (report/render value) :append true))
+
+(defn- append-csv! [path host phase phase-result]
+  (let [latency (:latency phase-result)
+        row (str (name host) "," (name phase) "," (name (:status phase-result)) ","
+                 (or (:warmups phase-result) 0) "," (or (:samples phase-result) 0) ","
+                 (or (:count latency) 0) "," (or (:total-ns latency) "") ","
+                 (or (:max-ns latency) "") "\n")]
+    (spit path row :append true)))
+
+(defn- error-summary [throwable]
+  {:class (str (type throwable))
+   :type (:type (ex-data throwable))})
+
+(defn- start-jvm-profile []
+  (when-let [path (System/getenv "BENCH_JFR_PATH")]
+    (try
+      (let [start (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/start!)]
+        {:path path :status :recording :recording (start path)})
+      (catch Throwable throwable
+        {:path path :status :failed :stage :start
+         :error (error-summary throwable)}))))
+
+(defn- stop-jvm-profile [profile]
+  (if-not (= :recording (:status profile))
+    profile
+    (try
+      (let [stop (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/stop!)]
+        (stop (:recording profile))
+        (-> profile (dissoc :recording) (assoc :status :complete)))
+      (catch Throwable throwable
+        (-> profile
+            (dissoc :recording)
+            (assoc :status :failed :stage :stop
+                   :error (error-summary throwable)))))))
+
 (defn- runtime-id []
   (let [runtime (keyword (required-env "BENCH_RUNTIME"))]
     (when-not (contains? runtimes runtime)
       (fail! "BENCH_RUNTIME is not a supported host" {:runtime runtime}))
     runtime))
 
-(defn run-report [fixture expected-sha ordinal warmups samples]
+(defn run-report [fixture expected-sha ordinal warmups samples output]
   (let [fixture-path (Paths/get fixture no-path-parts)
         _ (when-not (Files/isRegularFile fixture-path (make-array java.nio.file.LinkOption 0))
             (fail! "WAL fixture is not a regular file" {}))
@@ -231,40 +307,10 @@
             (fail! "selected JSON record has no string sql value" {}))
         metrics (metrics-provider runtime)
         measure-raw? (not= "0" (System/getenv "BENCH_MEASURE_RAW"))
-        json-input {:input-chars (count record-text)}
-        composed-input {:input-bytes (alength record-bytes)}
-        json-phases
-        [[:json-read-str
-          (measured-phase
-           (measure warmups samples metrics #(get (read-json record-text) "sql"))
-           json-input (count sql))]
-         [:decode-and-json-read-str
-          (measured-phase
-           (measure warmups samples metrics
-                    #(get (read-json (strict-decode record-bytes)) "sql"))
-           composed-input (count sql))]]
-        phases
-        (into
-         (sorted-map)
-         (concat
-          (if measure-raw?
-            [[:raw-lf-scan
-              (measured-phase
-               (measure warmups samples metrics #(count-newlines bytes))
-               {:input-bytes (alength bytes)} (count-newlines bytes))]
-             [:strict-utf8-decode
-              (measured-phase
-               (measure warmups samples metrics #(strict-decode record-bytes))
-               {:input-bytes (alength record-bytes)} (count record-text))]]
-            [[:raw-lf-scan
-              {:status :not-run :reason :measured-once-per-host}]
-             [:strict-utf8-decode
-              {:status :not-run :reason :measured-once-per-host}]])
-          json-phases))]
-    {:schema-version report/schema-version
-     :scope :phase-0-characterization
-     :claim :pure-wal-byte-and-json-costs-only
-     :host {:runtime runtime
+        expected-record-count
+        (parse-positive "expected record count"
+                        (required-env "BENCH_EXPECTED_RECORD_COUNT") Long/MAX_VALUE)
+        host {:runtime runtime
             :runtime-version (required-env "BENCH_RUNTIME_VERSION")
             :runtime-revision (required-env "BENCH_RUNTIME_REVISION")
             :executable-sha256
@@ -276,17 +322,19 @@
             :matrix-position
             (parse-positive "matrix position"
                             (required-env "BENCH_MATRIX_POSITION") 5)}
-     :harness
-     {:repo-head (required-env "BENCH_REPO_HEAD")
+        harness {:repo-head (required-env "BENCH_REPO_HEAD")
       :repo-parent (required-env "BENCH_REPO_PARENT")
       :repo-tree (required-env "BENCH_REPO_TREE")
       :wal-source-sha256 (required-env "BENCH_WAL_SOURCE_SHA256")
       :report-source-sha256 (required-env "BENCH_REPORT_SOURCE_SHA256")
+      :jvm-metrics-source-sha256
+      (required-env "BENCH_JVM_METRICS_SOURCE_SHA256")
+      :jvm-profile-source-sha256
+      (required-env "BENCH_JVM_PROFILE_SOURCE_SHA256")
       :runner-sha256 (required-env "BENCH_RUNNER_SHA256")
       :scan-scope :one-wal-segment
       :parse-scope :one-selected-record}
-     :libraries
-     {:json-parser (:identity parser)
+        libraries {:json-parser (:identity parser)
       :abi (resource-identity "jdbc/chdb/abi.edn")
       :compatibility (resource-identity "jdbc/chdb/ffi-compatibility.edn")
       :jolt-compiler
@@ -295,35 +343,140 @@
       :native
       {:version (required-env "BENCH_NATIVE_VERSION")
        :library-sha256 (required-env "BENCH_NATIVE_LIBRARY_SHA256")}}
-     :fixture {:file-name (.getName (.toFile ^Path fixture-path))
+        fixture-map {:file-name (.getName (.toFile ^Path fixture-path))
                :bytes (alength bytes)
                :sha256 actual-sha
                :record-ordinal ordinal
-               :record-count (count-newlines bytes)
+               :record-count expected-record-count
                :record-bytes (alength record-bytes)
                :record-sha256 (sha256-bytes record-bytes)
                :decoded-chars (count record-text)
                :json {:status :verified
                       :sql-chars (count sql)
                       :sql-sha256 (sha256-bytes (.getBytes sql "UTF-8"))}}
-     :measurement {:clock :monotonic-nanoseconds
-                   :warmups warmups :samples samples
-                   :resource-support (:support metrics)
-                   :phases phases}
-     :limitations
-     [:no-durable-open-or-replay
+        journal-path (artifact-path output ".journal.edn")
+        csv-path (artifact-path output ".csv")
+        checkpoint-base {:schema-version report/schema-version
+                         :event :phase
+                         :host host
+                         :harness harness
+                         :fixture (select-keys fixture-map
+                                               [:file-name :bytes :sha256
+                                                :record-ordinal :record-count])}
+        phases (atom (sorted-map))
+        checkpoint!
+        (fn [phase result]
+          (swap! phases assoc phase result)
+          (append-checkpoint! journal-path
+                              (assoc checkpoint-base :phase phase :result result))
+          (append-csv! csv-path runtime phase result)
+          result)
+        fail-phase!
+        (fn [phase throwable]
+          (let [result {:status :failed
+                        :warmups 0 :samples 0
+                        :error {:class (str (type throwable))
+                                :type (:type (ex-data throwable))}}]
+            (checkpoint! phase result)
+            (throw throwable)))
+        run-sampled!
+        (fn [phase inputs expected-result f]
+          (try
+            (checkpoint!
+             phase
+             (measured-phase
+              (assoc (measure-samples samples metrics f)
+                     :warmups warmups :samples samples)
+              inputs expected-result))
+            (catch Throwable throwable (fail-phase! phase throwable))))
+        _journal-init (spit journal-path "")
+        _csv-init (spit csv-path
+                        "runtime,phase,status,warmups,samples,count,total_ns,max_ns\n")
+        _raw-result
+        (if measure-raw?
+          (try
+            (checkpoint! :raw-lf-scan
+                         (measure-raw-phase bytes expected-record-count
+                                            metrics count-newlines))
+            (catch Throwable throwable (fail-phase! :raw-lf-scan throwable)))
+          (checkpoint! :raw-lf-scan (not-run-phase :measured-once-per-host)))
+        _strict-not-run
+        (when-not measure-raw?
+          (checkpoint! :strict-utf8-decode
+                       (not-run-phase :measured-once-per-host)))
+        json-phases
+        [[:json-read-str {:input-chars (count record-text)} (count sql)
+          #(get (read-json record-text) "sql")]
+         [:decode-and-json-read-str {:input-bytes (alength record-bytes)} (count sql)
+          #(get (read-json (strict-decode record-bytes)) "sql")]]
+        selected-phases
+        (if measure-raw?
+          (into [[:strict-utf8-decode {:input-bytes (alength record-bytes)}
+                  (count record-text) #(strict-decode record-bytes)]]
+                json-phases)
+          json-phases)
+        profile (atom (if (= runtime :jvm)
+                        {:path (System/getenv "BENCH_JFR_PATH")
+                         :status :not-run :reason :not-started}
+                        {:status :not-run :reason :not-a-jvm-runtime}))]
+    (try
+      ;; Startup and every phase's warmup finish before JFR starts.
+      (doseq [[phase _ _ f] selected-phases]
+        (try (warm! warmups f)
+             (catch Throwable throwable (fail-phase! phase throwable))))
+      (when (= runtime :jvm)
+        ;; JFR enriches JVM diagnosis, but unsupported tooling must not erase
+        ;; otherwise valid phase timings or make the matrix fail.
+        (reset! profile
+                (or (start-jvm-profile)
+                    {:status :not-run :reason :no-jfr-path})))
+      (doseq [[phase inputs expected-result f] selected-phases]
+        (run-sampled! phase inputs expected-result f))
+      (catch Throwable throwable
+        (append-checkpoint! journal-path
+                            {:schema-version report/schema-version
+                             :event :host :status :failed
+                             :host host :harness harness :fixture fixture-map
+                             :error {:class (str (type throwable))
+                                     :type (:type (ex-data throwable))}})
+        (throw throwable))
+      (finally
+        (when (= runtime :jvm)
+          (reset! profile (stop-jvm-profile @profile)))))
+    (let [value
+          {:schema-version report/schema-version
+           :status :complete
+           :scope :phase-0-characterization
+           :claim :pure-wal-byte-and-json-costs-only
+           :host host
+           :harness harness
+           :libraries libraries
+           :fixture fixture-map
+           :measurement {:clock :monotonic-nanoseconds
+                         :warmups warmups :samples samples
+                         :resource-support (:support metrics)
+                         :resource-metadata (:metadata metrics)
+                         :phases @phases}
+           :profile {:jfr @profile}
+           :limitations
+           [:no-durable-open-or-replay
       :no-production-record-validation-on-babashka-or-jvm
       :babashka-json-parser-is-bundled-cheshire-not-pinned-data-json
       :allocation-counters-are-host-specific
       :jvm-gc-counters-are-process-global]
-     :comparison-axes
-     {:runtime-controlled [:jolt :jvm]
+           :comparison-axes
+           {:runtime-controlled [:jolt :jvm]
       :runtime-controlled-json-parser :casselc-data-json
       :natural-host
       {:jolt :casselc-data-json
        :babashka :babashka-bundled-cheshire
        :jvm [:casselc-data-json :upstream-data-json :jvm-cheshire]}
-      :raw-scan-and-decode-controlled [:jolt :babashka :jvm]}}))
+      :raw-scan-and-decode-controlled [:jolt :babashka :jvm]}}]
+      (append-checkpoint! journal-path
+                          {:schema-version report/schema-version
+                           :event :host :status :complete
+                           :host host :harness harness :fixture fixture-map})
+      value)))
 
 (defn -main [& args]
   (when-not (= 6 (count args))
@@ -332,7 +485,7 @@
         ordinal (parse-positive "record ordinal" ordinal Long/MAX_VALUE)
         warmups (parse-positive "warmups" warmups report/max-samples)
         samples (parse-positive "samples" samples report/max-samples)
-        value (run-report fixture digest ordinal warmups samples)]
+        value (run-report fixture digest ordinal warmups samples output)]
     (spit output (report/render value))
     (println (pr-str {:status :ok :runtime (get-in value [:host :runtime])
                       :output output}))))

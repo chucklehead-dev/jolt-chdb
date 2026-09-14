@@ -133,6 +133,8 @@ native_version=$(JOLT_CHDB_LIB="$stable_lib" bb -cp "$repo_root/src:$repo_root/r
      (print (f)))')
 [[ "$native_version" = "$expected_native" ]]
 [[ "$(sha256sum "$wal" | cut -d' ' -f1)" = "$wal_sha" ]]
+expected_record_count=$(wc -l < "$wal")
+[[ "$expected_record_count" =~ ^[1-9][0-9]*$ ]]
 
 if [[ "${BENCH_PREFLIGHT_ONLY:-0}" = 1 ]]; then
   printf 'cross-host WAL preflight complete: jolt=%s babashka=%s jvm=%s native=%s\n' \
@@ -146,15 +148,11 @@ bb_bin=$(realpath "$(command -v bb)")
 java_bin=$(realpath "$(command -v java)")
 wal_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)
 report_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)
+jvm_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)
+jvm_profile_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)
 runner_sha=$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)
-
-discard_reports() {
-  rm -f "$output_dir/jolt.edn" \
-        "$output_dir/babashka.edn" \
-        "$output_dir/jvm-casselc-data-json.edn" \
-        "$output_dir/jvm-upstream-data-json.edn" \
-        "$output_dir/jvm-cheshire.edn"
-}
+matrix_journal="$output_dir/matrix.journal.edn"
+: > "$matrix_journal"
 
 verify_checkout_provenance() {
   if [[ -n "$(git status --porcelain=v1)" ]] ||
@@ -163,9 +161,11 @@ verify_checkout_provenance() {
      [[ "$(git rev-parse HEAD^{tree})" != "$repo_tree" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)" != "$wal_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)" != "$report_source_sha" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)" != "$jvm_metrics_source_sha" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)" != "$jvm_profile_source_sha" ]] ||
      [[ "$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)" != "$runner_sha" ]]; then
-    discard_reports
-    echo "benchmark checkout provenance changed during the matrix; reports discarded" >&2
+    printf '{:event :matrix :status :failed :reason :checkout-provenance-drift}\n' >> "$matrix_journal"
+    echo "benchmark checkout provenance changed during the matrix; completed reports preserved" >&2
     exit 2
   fi
 }
@@ -179,7 +179,10 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_REPO_TREE="$repo_tree"
              BENCH_WAL_SOURCE_SHA256="$wal_source_sha"
              BENCH_REPORT_SOURCE_SHA256="$report_source_sha"
-             BENCH_RUNNER_SHA256="$runner_sha")
+             BENCH_JVM_METRICS_SOURCE_SHA256="$jvm_metrics_source_sha"
+             BENCH_JVM_PROFILE_SOURCE_SHA256="$jvm_profile_source_sha"
+             BENCH_RUNNER_SHA256="$runner_sha"
+             BENCH_EXPECTED_RECORD_COUNT="$expected_record_count")
 
 common=("$wal" "$wal_sha" "$record_ordinal" "$warmups" "$samples")
 
@@ -209,6 +212,7 @@ run_bb() {
 
 run_jvm() {
   local profile=$1 alias=$2 version=$3 artifact_sha=$4 raw=$5 output=$6 position=$7
+  local basename=${output%.edn}
   env "${jolt_common[@]}" BENCH_RUNTIME=jvm BENCH_JSON_PARSER="$profile" \
       BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_JSON_PARSER_VERSION="$version" BENCH_MEASURE_RAW="$raw" \
@@ -216,7 +220,20 @@ run_jvm() {
       BENCH_RUNTIME_VERSION="$expected_jdk" \
       BENCH_RUNTIME_REVISION="$expected_jdk" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
       BENCH_RUNTIME_EXECUTABLE_SHA256="$(sha256sum "$java_bin" | cut -d' ' -f1)" \
+      BENCH_JFR_PATH="$basename.jfr" \
     clojure -Srepro -M:"$alias" "${common[@]}" "$output"
+  if [[ -s "$basename.jfr" ]] && command -v jfr >/dev/null 2>&1; then
+    if jfr summary "$basename.jfr" > "$basename.jfr-summary.txt"; then
+      printf '{:event :profile-summary :runtime-row :%s :status :complete}\n' \
+        "$profile" >> "$matrix_journal"
+    else
+      printf '{:event :profile-summary :runtime-row :%s :status :failed}\n' \
+        "$profile" >> "$matrix_journal"
+    fi
+  else
+    printf '{:event :profile-summary :runtime-row :%s :status :not-run}\n' \
+      "$profile" >> "$matrix_journal"
+  fi
 }
 
 # One fresh process per matrix row. BENCH_MATRIX_ORDER is recorded and lets
@@ -225,25 +242,44 @@ position=0
 for row in "${matrix_rows[@]}"; do
   position=$((position + 1))
   verify_checkout_provenance
+  printf '{:event :host :runtime-row :%s :status :started :matrix-position %s}\n' \
+    "$row" "$position" >> "$matrix_journal"
+  row_status=0
   case "$row" in
-    jolt) run_jolt "$output_dir/jolt.edn" "$position" ;;
-    babashka) run_bb "$output_dir/babashka.edn" "$position" ;;
+    jolt) run_jolt "$output_dir/jolt.edn" "$position" || row_status=$? ;;
+    babashka) run_bb "$output_dir/babashka.edn" "$position" || row_status=$? ;;
     jvm-casselc)
       run_jvm casselc-data-json cross-host-wal-benchmark "$data_json_sha" \
-        not-applicable 1 "$output_dir/jvm-casselc-data-json.edn" "$position" ;;
+        not-applicable 1 "$output_dir/jvm-casselc-data-json.edn" "$position" || row_status=$? ;;
     jvm-upstream)
       run_jvm upstream-data-json cross-host-wal-upstream-data-json \
         "$upstream_data_json_version" "$upstream_data_json_sha" 0 \
-        "$output_dir/jvm-upstream-data-json.edn" "$position" ;;
+        "$output_dir/jvm-upstream-data-json.edn" "$position" || row_status=$? ;;
     jvm-cheshire)
       run_jvm jvm-cheshire cross-host-wal-cheshire "$cheshire_version" \
-        "$cheshire_sha" 0 "$output_dir/jvm-cheshire.edn" "$position" ;;
+        "$cheshire_sha" 0 "$output_dir/jvm-cheshire.edn" "$position" || row_status=$? ;;
   esac
+  if (( row_status != 0 )); then
+    printf '{:event :host :runtime-row :%s :status :failed :exit %s :matrix-position %s}\n' \
+      "$row" "$row_status" "$position" >> "$matrix_journal"
+    exit "$row_status"
+  fi
+  printf '{:event :host :runtime-row :%s :status :complete :matrix-position %s}\n' \
+    "$row" "$position" >> "$matrix_journal"
+  if [[ "${BENCH_INJECT_FAILURE_AFTER_ROW:-}" = "$row" ]]; then
+    printf '{:event :matrix :status :failed :reason :injected-late-failure :after-row :%s}\n' \
+      "$row" >> "$matrix_journal"
+    exit 86
+  fi
   verify_checkout_provenance
 done
 
 verify_checkout_provenance
 
+reports=("$output_dir/jolt.edn" "$output_dir/babashka.edn"
+         "$output_dir/jvm-casselc-data-json.edn"
+         "$output_dir/jvm-upstream-data-json.edn"
+         "$output_dir/jvm-cheshire.edn")
 bb -e '(require (quote [clojure.edn :as edn]))
         (let [reports (mapv (comp edn/read-string slurp)
                             *command-line-args*)
@@ -254,6 +290,8 @@ bb -e '(require (quote [clojure.edn :as edn]))
                          (apply = oracle))
             (throw (ex-info "cross-host JSON semantic oracle differs"
                             {:oracles oracle}))))' \
-   -- "$output_dir"/*.edn
+   -- "${reports[@]}"
+
+printf '{:event :matrix :status :complete :hosts 5}\n' >> "$matrix_journal"
 
 printf 'cross-host WAL characterization complete: %s\n' "$output_dir"

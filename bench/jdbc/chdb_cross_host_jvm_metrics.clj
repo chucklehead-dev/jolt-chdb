@@ -2,6 +2,11 @@
   (:import [java.lang.management ManagementFactory]
            [com.sun.management ThreadMXBean]))
 
+(defn- heap-snapshot []
+  (let [usage (.getHeapMemoryUsage (ManagementFactory/getMemoryMXBean))]
+    {:heap-used-bytes (.getUsed usage)
+     :heap-committed-bytes (.getCommitted usage)}))
+
 (defn- gc-snapshot []
   (reduce
    (fn [result bean]
@@ -24,10 +29,16 @@
                :managed-allocation (if allocation?
                                      :jvm-thread-allocated-bytes
                                      :unsupported)
+               :heap :jvm-process-heap
                :gc :process-global-jvm-counters}
+     :metadata
+     {:vm-name (System/getProperty "java.vm.name")
+      :vm-vendor (System/getProperty "java.vm.vendor")
+      :vm-version (System/getProperty "java.vm.version")
+      :gc-beans (mapv #(.getName %) (ManagementFactory/getGarbageCollectorMXBeans))}
      :snapshot
      (fn []
-       (cond-> (gc-snapshot)
+       (cond-> (merge (gc-snapshot) (heap-snapshot))
          cpu? (assoc :calling-thread-cpu-ns
                      (.getCurrentThreadCpuTime thread-bean))
          allocation? (assoc :managed-allocation-bytes

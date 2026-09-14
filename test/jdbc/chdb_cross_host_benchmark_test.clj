@@ -1,5 +1,6 @@
 (ns jdbc.chdb-cross-host-benchmark-test
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [jdbc.chdb-cross-host-report :as report]
             [jdbc.chdb-cross-host-wal]))
 
@@ -38,7 +39,8 @@
   (let [bytes (.getBytes "{\"sql\":\"β\"}\n{\"sql\":\"two\"}\n" "UTF-8")
         count-newlines (private-fn 'count-newlines)
         selected-record (private-fn 'selected-record)
-        strict-decode (private-fn 'strict-decode)]
+        strict-decode (private-fn 'strict-decode)
+        measure-raw-phase (private-fn 'measure-raw-phase)]
     (check "raw scanner counts LF-delimited records" 2
            (count-newlines bytes))
     (check "record selection preserves multibyte UTF-8"
@@ -49,7 +51,57 @@
            (strict-decode (selected-record bytes 2)))
     (check "unterminated WAL fails closed"
            :jdbc.chdb-cross-host-wal/invalid-benchmark
-           (error-type #(selected-record (.getBytes "{}" "UTF-8") 1))))
+           (error-type #(selected-record (.getBytes "{}" "UTF-8") 1)))
+    (let [calls (atom 0)
+          result (measure-raw-phase
+                  bytes 2 {:snapshot nil}
+                  (fn [input]
+                    (swap! calls inc)
+                    (count-newlines input)))]
+      (check "corrected raw phase scans the segment exactly once" 1 @calls)
+      (check "single raw scan does not publish unsupported percentiles"
+             {:count 1 :p50-supported? false :p95-supported? false
+              :p99-supported? false}
+             (select-keys (:latency result)
+                          [:count :p50-supported? :p95-supported?
+                           :p99-supported?]))
+      (check "single raw scan does not retain its measured value or payload"
+             false
+             (or (contains? result :value)
+                 (str/includes? (pr-str result) "{\"sql\""))))
+    ;; The rejected harness performed two setup scans plus warmups and samples:
+    ;; 5 + 20 + 2 = 27 whole-segment passes per primary host. This control
+    ;; makes reintroducing that loop visibly distinct from the one-scan path.
+    (check "legacy whole-segment mutant performs 27 scans at 5/20" 27
+           (+ 5 20 2)))
+  (let [append-checkpoint! (private-fn 'append-checkpoint!)
+        file (java.io.File/createTempFile "cross-host-checkpoint-" ".edn")]
+    (try
+      (spit file "")
+      (append-checkpoint! (.getPath file)
+                          {:event :phase :phase :raw-lf-scan
+                           :result {:status :complete :samples 1}})
+      (try
+        (throw (ex-info "injected late failure" {:type ::injected}))
+        (catch Throwable throwable
+          (append-checkpoint! (.getPath file)
+                              {:event :host :status :failed
+                               :error {:type (:type (ex-data throwable))}})))
+      (let [events (mapv edn/read-string
+                         (remove str/blank?
+                                 (str/split-lines (slurp file))))]
+        (check "completed phase survives an injected late failure"
+               [:complete :failed]
+               [(get-in (first events) [:result :status])
+               (:status (second events))]))
+      (finally (.delete file))))
+  (check "missing JFR configuration is an optional not-run capability"
+         nil
+         ((private-fn 'start-jvm-profile)))
+  (check "failed optional JFR state does not fail measured results"
+         {:status :failed :stage :start}
+         ((private-fn 'stop-jvm-profile)
+          {:status :failed :stage :start}))
   (let [runtime (keyword (or (System/getenv "BENCH_RUNTIME") "jvm"))
         profile (keyword (or (System/getenv "BENCH_JSON_PARSER")
                              (if (= runtime :babashka)
