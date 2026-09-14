@@ -33,6 +33,43 @@
 (def default-retry-initial-backoff-ms 10)
 (def default-retry-max-backoff-ms 250)
 
+(def ^:private recovery-phase-labels
+  #{:base-download :base-hash :wal-download :wal-hash
+    :wal-lf-scan :wal-record-buffer :wal-record-copy
+    :wal-strict-decode :wal-json-parse :wal-plan-retention
+    :wal-replay-classification :wal-replay-native})
+
+(def ^:private recovery-nano-time #(System/nanoTime))
+
+(defn- notify-recovery-phase!
+  [observe! phase status started bytes]
+  ;; Instrumentation is diagnostic and must never replace a recovery result or
+  ;; throwable. Events have a closed label/status vocabulary and scalar values;
+  ;; paths, object keys, SQL, payloads, and exception data never cross the seam.
+  (when (contains? recovery-phase-labels phase)
+    (try
+      (observe! {:phase phase
+                 :status status
+                 :calls 1
+                 :nanos (max 0 (- (recovery-nano-time) started))
+                 :bytes (max 0 (or bytes 0))})
+      (catch Throwable _)))
+  nil)
+
+(defn- observed-recovery-phase
+  [observe! phase bytes f]
+  (if observe!
+    (let [started (recovery-nano-time)]
+      (try
+        (let [value (f)]
+          (notify-recovery-phase! observe! phase :complete started bytes)
+          value)
+        (catch Throwable primary
+          (notify-recovery-phase! observe! phase :failed started bytes)
+          (throw primary))))
+    ;; Keep the default production path free of clock/counter reads.
+    (f)))
+
 (def ^:private common-dbspec-keys
   #{:vendor :backend :namespace-backend :object-id :scratch-parent
     :operations :read-only?})
@@ -56,6 +93,12 @@
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
+
+(defn- validate-recovery-phase-observer! [operations]
+  (when-let [observe! (:recovery-phase! operations)]
+    (when-not (fn? observe!)
+      (fail! ::invalid-options "recovery-phase! must be a function")))
+  operations)
 
 (defn- nonblank-string! [value label]
   (when-not (and (string? value) (not (str/blank? value)))
@@ -303,7 +346,8 @@
                            :cause-class (some-> error class str)}))))))
   nil)
 
-(defn- download-reference! [store scratch label reference max-bytes]
+(defn- download-reference!
+  [store scratch label reference max-bytes reference-kind observe!]
   (let [size (get reference "size")]
     (when (and max-bytes (> size max-bytes))
       (fail! ::limit-exceeded "A Durable recovery object exceeds its limit"))
@@ -311,14 +355,28 @@
                             (str "." label "-" (UUID/randomUUID) ".part"))
           final (.resolve ^Path scratch label)]
       (try
-        (let [result (backend/download-to-file! store (get reference "key") attempt)]
-          (when-not (= :downloaded (:status result))
-            (fail! ::corrupt "A referenced Durable object is missing"))
-          (when-not (and (= size (:byte-count result))
-                         (= size (Files/size attempt)))
-            (fail! ::corrupt "A Durable recovery object has the wrong size"))
-          (when-not (= (get reference "sha256") (digest/sha256-file attempt))
-            (fail! ::corrupt "A Durable recovery object has the wrong digest"))
+        (let [download-phase (if (= :base reference-kind)
+                               :base-download :wal-download)
+              hash-phase (if (= :base reference-kind) :base-hash :wal-hash)
+              result
+              (observed-recovery-phase
+               observe! download-phase size
+               #(let [downloaded
+                      (backend/download-to-file!
+                       store (get reference "key") attempt)]
+                  (when-not (= :downloaded (:status downloaded))
+                    (fail! ::corrupt "A referenced Durable object is missing"))
+                  (when-not (and (= size (:byte-count downloaded))
+                                 (= size (Files/size attempt)))
+                    (fail! ::corrupt
+                           "A Durable recovery object has the wrong size"))
+                  downloaded))]
+          (observed-recovery-phase
+           observe! hash-phase size
+           #(when-not (= (get reference "sha256")
+                         (digest/sha256-file attempt))
+              (fail! ::corrupt
+                     "A Durable recovery object has the wrong digest")))
           (Files/move attempt final atomic-move-options)
           final)
         (catch Throwable error
@@ -374,26 +432,54 @@
   (and (> record-wire-bytes limit)
        (exact-statement-bytes-exceed? sql limit)))
 
-(defn- decode-wal-record! [text record-wire-bytes]
-  (let [record (try
-                 (json/read-str text)
-                 (catch Throwable _
-                   (fail! ::corrupt
-                          "A Durable WAL record cannot be decoded")))
-        sql (get record "sql")]
-    (when-not (and (map? record) (= #{"sql"} (set (keys record)))
-                   (string? sql))
-      (fail! ::corrupt "A Durable WAL record is invalid"))
-    ;; A decoded JSON string cannot contain more UTF-8 bytes than its complete
-    ;; JSON record: quotes, the key, and syntax add bytes, while every escape is
-    ;; at least as long as the decoded scalar. Most records therefore prove the
-    ;; 64 MiB statement bound from the streaming buffer's size without creating
-    ;; and discarding another statement-sized byte array. Only a record already
-    ;; above that bound needs the exact fallback.
-    (when (statement-bytes-exceed?
-           sql record-wire-bytes writer/max-statement-bytes)
-      (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
-    sql))
+(defn- decode-wal-record!
+  ([text record-wire-bytes]
+   (decode-wal-record! text record-wire-bytes nil))
+  ([text record-wire-bytes observe!]
+   (let [record
+         (try
+           (observed-recovery-phase
+            observe! :wal-json-parse record-wire-bytes
+            #(json/read-str text))
+           (catch Throwable _
+             (fail! ::corrupt "A Durable WAL record cannot be decoded")))
+         sql (get record "sql")]
+     (when-not (and (map? record) (= #{"sql"} (set (keys record)))
+                    (string? sql))
+       (fail! ::corrupt "A Durable WAL record is invalid"))
+     ;; A decoded JSON string cannot contain more UTF-8 bytes than its complete
+     ;; JSON record: quotes, the key, and syntax add bytes, while every escape is
+     ;; at least as long as the decoded scalar. Most records therefore prove the
+     ;; 64 MiB statement bound from the streaming buffer's size without creating
+     ;; and discarding another statement-sized byte array. Only a record already
+     ;; above that bound needs the exact fallback.
+     (when (statement-bytes-exceed?
+            sql record-wire-bytes writer/max-statement-bytes)
+       (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
+     sql)))
+
+(defn- next-lf-index [chunk start end]
+  (loop [index start]
+    (if (or (= index end)
+            (= 10 (bit-and 255 (aget chunk index))))
+      index
+      (recur (inc index)))))
+
+(defn- observed-next-lf-index [observe! chunk start end]
+  (if observe!
+    (let [started (recovery-nano-time)]
+      (try
+        (let [index (next-lf-index chunk start end)
+              visited (if (= index end)
+                        (- end start)
+                        (inc (- index start)))]
+          (notify-recovery-phase!
+           observe! :wal-lf-scan :complete started visited)
+          index)
+        (catch Throwable primary
+          (notify-recovery-phase! observe! :wal-lf-scan :failed started 0)
+          (throw primary))))
+    (next-lf-index chunk start end)))
 
 (defn- visit-wal!
   "Stream, validate, and visit each record without retaining another record.
@@ -402,69 +488,86 @@
   A raw LF cannot occur inside a valid JSON string, so byte scanning preserves
   the same JSONL record boundary as the wire format while allowing strict UTF-8
   validation before decoding."
-  [path visit! delay-failure-until-termination?]
-  (with-open [input (Files/newInputStream
-                     ^Path path (make-array OpenOption 0))]
-    (let [chunk (byte-array wal-read-buffer-bytes)
-          line (ByteArrayOutputStream.)
-          utf8-failure (atom nil)
-          first-failure (atom nil)]
-      (loop [record-count 0]
-        (let [read-count (.read input chunk)]
-          (cond
-            (= -1 read-count)
-            (do
-              (when (or (zero? record-count) (pos? (.size line)))
-                (fail! ::corrupt "A Durable WAL is not newline terminated"))
-              (when-let [failure @utf8-failure]
-                (throw failure))
-              (when-let [failure @first-failure]
-                (throw failure))
-              record-count)
+  ([path visit! delay-failure-until-termination?]
+   (visit-wal! path visit! delay-failure-until-termination? nil))
+  ([path visit! delay-failure-until-termination? observe!]
+   (with-open [input (Files/newInputStream
+                      ^Path path (make-array OpenOption 0))]
+     (let [chunk (byte-array wal-read-buffer-bytes)
+           line (ByteArrayOutputStream.)
+           utf8-failure (atom nil)
+           first-failure (atom nil)]
+       (loop [record-count 0]
+         (let [read-count (.read input chunk)]
+           (cond
+             (= -1 read-count)
+             (do
+               (when (or (zero? record-count) (pos? (.size line)))
+                 (fail! ::corrupt "A Durable WAL is not newline terminated"))
+               (when-let [failure @utf8-failure]
+                 (throw failure))
+               (when-let [failure @first-failure]
+                 (throw failure))
+               record-count)
 
-            (zero? read-count)
-            ;; A regular-file stream with a non-empty destination should make
-            ;; progress or report EOF. Fail closed if a provider violates that
-            ;; contract instead of allowing recovery to spin indefinitely.
-            (fail! ::corrupt "A Durable WAL could not be read")
+             (zero? read-count)
+             ;; A regular-file stream with a non-empty destination should make
+             ;; progress or report EOF. Fail closed if a provider violates that
+             ;; contract instead of allowing recovery to spin indefinitely.
+             (fail! ::corrupt "A Durable WAL could not be read")
 
-            :else
-            (let [next-record-count
-                  (loop [index 0 start 0 count record-count]
-                    (if (= index read-count)
-                      (do
-                        (when (< start read-count)
-                          (.write line chunk start (- read-count start)))
-                        count)
-                      (if (= 10 (bit-and 255 (aget chunk index)))
-                        (do
-                          (when (< start index)
-                            (.write line chunk start (- index start)))
-                          (try
-                            ;; UTF-8 has whole-segment precedence over record
-                            ;; parsing and limits in the legacy decoder. Even
-                            ;; after remembering a record failure, validate the
-                            ;; encoding of every later record before EOF.
-                            (let [record-wire-bytes (.size line)
-                                  text (decode-wal-text! (.toByteArray line))]
-                              (when-not @first-failure
-                                (try
-                                  (visit! (decode-wal-record!
-                                           text record-wire-bytes)
-                                          record-wire-bytes)
-                                  (catch Throwable error
-                                    (if delay-failure-until-termination?
-                                      (reset! first-failure error)
-                                      (throw error))))))
-                            (catch Throwable error
-                              (if delay-failure-until-termination?
-                                (when-not @utf8-failure
-                                  (reset! utf8-failure error))
-                                (throw error))))
-                          (.reset line)
-                          (recur (inc index) (inc index) (inc count)))
-                        (recur (inc index) start count))))]
-              (recur next-record-count))))))))
+             :else
+             (let [next-record-count
+                   (loop [start 0 count record-count]
+                     (if (= start read-count)
+                       count
+                       (let [index
+                             (observed-next-lf-index
+                              observe! chunk start read-count)]
+                         (if (= index read-count)
+                           (do
+                             (observed-recovery-phase
+                              observe! :wal-record-buffer (- read-count start)
+                              #(.write line chunk start (- read-count start)))
+                             count)
+                           (do
+                             (when (< start index)
+                               (observed-recovery-phase
+                                observe! :wal-record-buffer (- index start)
+                                #(.write line chunk start (- index start))))
+                             (try
+                               ;; UTF-8 has whole-segment precedence over record
+                               ;; parsing and limits in the legacy decoder. Even
+                               ;; after remembering a record failure, validate
+                               ;; every later record's encoding before EOF.
+                               (let [record-wire-bytes (.size line)
+                                     record-bytes
+                                     (observed-recovery-phase
+                                      observe! :wal-record-copy
+                                      record-wire-bytes
+                                      #(.toByteArray line))
+                                     text
+                                     (observed-recovery-phase
+                                      observe! :wal-strict-decode
+                                      record-wire-bytes
+                                      #(decode-wal-text! record-bytes))]
+                                 (when-not @first-failure
+                                   (try
+                                     (visit! (decode-wal-record!
+                                              text record-wire-bytes observe!)
+                                             record-wire-bytes)
+                                     (catch Throwable error
+                                       (if delay-failure-until-termination?
+                                         (reset! first-failure error)
+                                         (throw error))))))
+                               (catch Throwable error
+                                 (if delay-failure-until-termination?
+                                   (when-not @utf8-failure
+                                     (reset! utf8-failure error))
+                                   (throw error))))
+                             (.reset line)
+                             (recur (inc index) (inc count)))))))]
+               (recur next-record-count)))))))))
 
 (defn- extend-replay-plan [plan sql record-wire-bytes]
   (when plan
@@ -476,40 +579,58 @@
          :record-count next-record-count
          :statements (conj (:statements plan) sql)}))))
 
-(defn- validate-wal! [path]
+(defn- validate-wal!
   ;; The old whole-file decoder classified an unterminated segment first and
   ;; whole-segment UTF-8 corruption second, before record parsing and limits.
   ;; Retain that ordering while scanning once by remembering failures until the
   ;; final raw byte is known to be LF.
-  (let [plan (atom {:wire-bytes 0 :record-count 0 :statements []})
-        record-count
-        (visit-wal!
-         path
-         (fn [sql record-wire-bytes]
-           ;; `nil` is an irreversible bounded fallback for this segment. Do
-           ;; not start retaining again after a later small record.
-           (when @plan
-             (swap! plan extend-replay-plan sql record-wire-bytes)))
-         true)]
-    {:record-count record-count
-     :statements (some-> @plan :statements)}))
+  ([path]
+   (validate-wal! path nil))
+  ([path observe!]
+   (let [plan (atom {:wire-bytes 0 :record-count 0 :statements []})
+         record-count
+         (visit-wal!
+          path
+          (fn [sql record-wire-bytes]
+            (observed-recovery-phase
+             observe! :wal-plan-retention record-wire-bytes
+             #(when @plan
+                ;; `nil` is an irreversible bounded fallback for this segment.
+                ;; Do not start retaining again after a later small record.
+                (swap! plan extend-replay-plan sql record-wire-bytes))))
+          true observe!)]
+     {:record-count record-count
+      :statements (some-> @plan :statements)})))
 
-(defn- replay-statement! [sql operations handle logical-database]
-  ((:analyze-execute! operations) handle sql logical-database)
-  ((:execute-native! operations) handle sql []))
+(defn- replay-statement!
+  [sql operations handle logical-database record-wire-bytes observe!]
+  (observed-recovery-phase
+   observe! :wal-replay-classification record-wire-bytes
+   #((:analyze-execute! operations) handle sql logical-database))
+  (observed-recovery-phase
+   observe! :wal-replay-native record-wire-bytes
+   #((:execute-native! operations) handle sql [])))
 
-(defn- replay-statements! [statements operations handle logical-database]
+(defn- replay-statements!
+  [statements operations handle logical-database observe!]
   (doseq [sql statements]
-    (replay-statement! sql operations handle logical-database)))
+    ;; The retained plan deliberately stores only SQL strings. Its bounded
+    ;; retention accounting was already observed while validating the wire.
+    (replay-statement! sql operations handle logical-database 0 observe!)))
 
-(defn- replay-wal! [path replay-plan operations handle logical-database]
-  (if-some [statements (:statements replay-plan)]
-    (replay-statements! statements operations handle logical-database)
-    (visit-wal!
-     path
-     (fn [sql _]
-       (replay-statement! sql operations handle logical-database))
-     false)))
+(defn- replay-wal!
+  ([path replay-plan operations handle logical-database]
+   (replay-wal! path replay-plan operations handle logical-database nil))
+  ([path replay-plan operations handle logical-database observe!]
+   (if-some [statements (:statements replay-plan)]
+     (replay-statements!
+      statements operations handle logical-database observe!)
+     (visit-wal!
+      path
+      (fn [sql record-wire-bytes]
+        (replay-statement!
+         sql operations handle logical-database record-wire-bytes observe!))
+      false observe!))))
 
 (defn- required-operation! [operations key]
   (when-not (fn? (get operations key))
@@ -597,7 +718,8 @@
         logical-database (get manifest "db")]
     (if-let [base (get manifest "base")]
       (let [archive (download-reference!
-                     store scratch "base.tar.gz" base nil)]
+                     store scratch "base.tar.gz" base nil :base
+                     (:recovery-phase! operations))]
         (try
           ((:restore-database! operations)
            handle logical-database (str archive))
@@ -609,14 +731,17 @@
     (doseq [[index reference] (map-indexed vector (get manifest "wal"))]
       (let [path (download-reference!
                   store scratch (str "wal-" index ".jsonl") reference
-                  writer/max-wal-segment-bytes)]
+                  writer/max-wal-segment-bytes :wal
+                  (:recovery-phase! operations))]
         ;; A corrupt tail must not leave a prefix applied. Validation retains a
         ;; per-segment replay plan only within strict byte and record caps. A
         ;; larger segment discards the partial plan and uses the original
         ;; bounded second pass. Either path starts engine effects only after the
         ;; complete segment and its established error precedence are valid.
-        (let [replay-plan (validate-wal! path)]
-          (replay-wal! path replay-plan operations handle logical-database))))
+        (let [observe! (:recovery-phase! operations)
+              replay-plan (validate-wal! path observe!)]
+          (replay-wal!
+           path replay-plan operations handle logical-database observe!))))
     logical-database))
 
 (defn open-reader!
@@ -626,7 +751,8 @@
     :as options}]
   (require-strict-utf8-decoder-capability!)
   (let [store (resolve-store! options)
-        operations (merge (default-open-operations) operations)]
+        operations (validate-recovery-phase-observer!
+                    (merge (default-open-operations) operations))]
     (doseq [key (concat [:durable-capability :classification-sql!
                          :query-native!
                          :query-bytes-native!]
@@ -685,7 +811,8 @@
                        configured-prepared-execution?)
             (fail! ::invalid-options
                    "prepared-query operation overrides must be supplied together"))
-        operations (merge (default-open-operations) configured-operations)
+        operations (validate-recovery-phase-observer!
+                    (merge (default-open-operations) configured-operations))
         ;; A test or embedding that replaces either legacy preparation or
         ;; execution operation must retain its old seam unless it explicitly
         ;; supplies the matching prepared pair as well.

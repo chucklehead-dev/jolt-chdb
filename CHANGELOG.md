@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add opt-in, scalar-only Durable recovery phase observations through the
+  existing open-operation seam. Fixed labels now separate base/WAL download
+  and hashing, LF scanning, record buffering and copying, strict UTF-8 decode,
+  JSON parsing, bounded replay-plan retention, classification, and native
+  replay. The default path performs no instrumentation clock reads; observer
+  failures cannot replace a recovery result or throwable, and events retain no
+  path, object key, SQL, payload, or exception data. The throughput harness
+  aggregates these events with its existing bounded stage report.
+
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
   pushback-reader call and one single-character String allocation per escape.

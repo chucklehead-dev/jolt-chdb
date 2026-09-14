@@ -40,6 +40,8 @@
         maximum-serialized-row-payload-bytes
         #'throughput/maximum-serialized-row-payload-bytes
         successful-flush? #'throughput/successful-flush?
+        timed-operations #'throughput/timed-operations
+        stage-report #'throughput/stage-report
         clean-runtime {:jolt-version "jolt v0.8.6-97-g120643d6"
                        :jolt-source-sha
                        "120643d6bc322800a700e870de5c8087ad6085fa"
@@ -296,6 +298,16 @@
     (check "report contract locates trial-relative paths"
            :configuration-result
            (:relative-trial-paths-to report-contract))
+    (let [metrics (atom {})
+          observe! (:recovery-phase! (timed-operations metrics))]
+      (observe! {:phase :wal-json-parse :status :complete
+                 :calls 1 :nanos 10 :bytes 20})
+      (observe! {:phase :wal-json-parse :status :failed
+                 :calls 1 :nanos 30 :bytes 40})
+      (check "throughput reports aggregate bounded recovery phase events"
+             {:calls 2 :total-ms 0.00004 :bytes 60 :mean-ms 0.00002
+              :statuses {:complete 1 :failed 1}}
+             (:wal-json-parse (stage-report metrics))))
     (check "WAL total and maximum input batch are distinct report fields"
            {:wal-growth-total [:wal-growth :total-bytes]
             :maximum-row-payload [:maximum-row-payload-bytes]
