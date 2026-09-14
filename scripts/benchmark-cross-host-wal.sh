@@ -46,6 +46,7 @@ finish_jvm_run() {
 run_with_first_checkpoint() {
   local journal=$1 timeout_seconds=$2
   shift 2
+  checkpoint_guard_reason=
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] && (( timeout_seconds <= 300 )) || {
     echo "first-checkpoint timeout must be between 1 and 300 seconds" >&2
     return 2
@@ -55,11 +56,15 @@ run_with_first_checkpoint() {
   while kill -0 "$pid" 2>/dev/null; do
     if [[ -s "$journal" ]]; then
       wait "$pid" || status=$?
+      if (( status != 0 )); then
+        checkpoint_guard_reason=child-exit-after-first-checkpoint
+      fi
       return "$status"
     fi
     if (( SECONDS - started >= timeout_seconds )); then
       kill -TERM -- "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      checkpoint_guard_reason=first-checkpoint-timeout
       echo "benchmark host produced no first checkpoint within ${timeout_seconds}s" >&2
       return 124
     fi
@@ -67,8 +72,12 @@ run_with_first_checkpoint() {
   done
   wait "$pid" || status=$?
   if (( status == 0 )) && [[ ! -s "$journal" ]]; then
+    checkpoint_guard_reason=missing-first-checkpoint
     echo "benchmark host exited successfully without a first checkpoint" >&2
     return 125
+  fi
+  if (( status != 0 )) && [[ ! -s "$journal" ]]; then
+    checkpoint_guard_reason=child-exit-before-first-checkpoint
   fi
   return "$status"
 }
@@ -78,13 +87,18 @@ if [[ "${BENCH_VALIDATE_CHECKPOINT_GUARD_ONLY:-0}" = 1 ]]; then
   trap 'rm -rf "$guard_tmp"' EXIT
   run_with_first_checkpoint "$guard_tmp/ok.journal" 1 \
     bash -c 'printf "checkpoint\n" > "$1"' _ "$guard_tmp/ok.journal"
+  [[ -z "$checkpoint_guard_reason" ]]
   status=0
   run_with_first_checkpoint "$guard_tmp/missing.journal" 1 true || status=$?
-  [[ "$status" = 125 ]] || exit 1
+  [[ "$status" = 125 && "$checkpoint_guard_reason" = missing-first-checkpoint ]] || exit 1
+  status=0
+  run_with_first_checkpoint "$guard_tmp/failed.journal" 1 \
+    bash -c 'exit 17' || status=$?
+  [[ "$status" = 17 && "$checkpoint_guard_reason" = child-exit-before-first-checkpoint ]] || exit 1
   status=0
   run_with_first_checkpoint "$guard_tmp/late.journal" 1 \
     bash -c 'sleep 5' || status=$?
-  [[ "$status" = 124 ]] || exit 1
+  [[ "$status" = 124 && "$checkpoint_guard_reason" = first-checkpoint-timeout ]] || exit 1
   echo "first-checkpoint liveness guard passed"
   exit 0
 fi
@@ -327,6 +341,7 @@ run_jvm() {
 position=0
 for row in "${matrix_rows[@]}"; do
   position=$((position + 1))
+  checkpoint_guard_reason=
   verify_checkout_provenance
   printf '{:event :host :runtime-row :%s :status :started :matrix-position %s}\n' \
     "$row" "$position" >> "$matrix_journal"
@@ -348,8 +363,9 @@ for row in "${matrix_rows[@]}"; do
         "$output_dir/jvm-casselc-data-json.edn" || row_status=$? ;;
   esac
   if (( row_status != 0 )); then
-    printf '{:event :host :runtime-row :%s :status :failed :exit %s :matrix-position %s}\n' \
-      "$row" "$row_status" "$position" >> "$matrix_journal"
+    failure_reason=${checkpoint_guard_reason:-child-nonzero}
+    printf '{:event :host :runtime-row :%s :status :failed :exit %s :reason :%s :matrix-position %s}\n' \
+      "$row" "$row_status" "$failure_reason" "$position" >> "$matrix_journal"
     exit "$row_status"
   fi
   printf '{:event :host :runtime-row :%s :status :complete :matrix-position %s}\n' \
