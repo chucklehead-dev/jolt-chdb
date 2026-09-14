@@ -208,7 +208,7 @@
         start (str/index-of source "(defn- decode-wal-text!")
         end (str/index-of source "(defn- exact-statement-bytes-exceed?" start)
         decode-source (subs source start end)]
-    (check "running Jolt passes the strict decoder capability probe"
+    (check "running Jolt passes strict and replacement-sentinel capability probes"
            true (require-decoder!))
     (with-redefs-fn
       {decoder-capability-var (delay false)}
