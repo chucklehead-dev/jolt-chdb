@@ -19,6 +19,40 @@ validate_matrix_order() {
   done
 }
 
+summarize_optional_jfr() {
+  local profile=$1 basename=$2
+  if [[ -s "$basename.jfr" ]] && command -v jfr >/dev/null 2>&1; then
+    if jfr summary "$basename.jfr" > "$basename.jfr-summary.txt"; then
+      printf '{:event :profile-summary :runtime-row :%s :status :complete}\n' \
+        "$profile" >> "$matrix_journal"
+    else
+      printf '{:event :profile-summary :runtime-row :%s :status :failed}\n' \
+        "$profile" >> "$matrix_journal"
+    fi
+  else
+    printf '{:event :profile-summary :runtime-row :%s :status :not-run}\n' \
+      "$profile" >> "$matrix_journal"
+  fi
+}
+
+finish_jvm_run() {
+  local benchmark_status=$1 profile=$2 basename=$3
+  # Profiling is diagnostic and fail-soft, but it must never replace the
+  # authoritative benchmark process status.
+  summarize_optional_jfr "$profile" "$basename" || true
+  return "$benchmark_status"
+}
+
+if [[ "${BENCH_VALIDATE_JVM_STATUS_ONLY:-0}" = 1 ]]; then
+  matrix_journal=/dev/null
+  summarize_optional_jfr() { return 0; }
+  status=0
+  finish_jvm_run 17 test-profile /tmp/not-used || status=$?
+  [[ "$status" = 17 ]] || exit 1
+  echo "failed JVM benchmark status survives a successful profile summary"
+  exit 0
+fi
+
 matrix_order=${BENCH_MATRIX_ORDER:-"jolt babashka jvm-casselc jvm-upstream jvm-cheshire"}
 if ! validate_matrix_order "$matrix_order"; then
   echo "BENCH_MATRIX_ORDER must contain all five known rows exactly once" >&2
@@ -215,7 +249,7 @@ run_bb() {
 
 run_jvm() {
   local profile=$1 alias=$2 version=$3 artifact_sha=$4 raw=$5 output=$6 position=$7
-  local basename=${output%.edn}
+  local basename=${output%.edn} benchmark_status=0
   env "${jolt_common[@]}" BENCH_RUNTIME=jvm BENCH_JSON_PARSER="$profile" \
       BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_JSON_PARSER_VERSION="$version" BENCH_MEASURE_RAW="$raw" \
@@ -224,19 +258,8 @@ run_jvm() {
       BENCH_RUNTIME_REVISION="$expected_jdk" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
       BENCH_RUNTIME_EXECUTABLE_SHA256="$(sha256sum "$java_bin" | cut -d' ' -f1)" \
       BENCH_JFR_PATH="$basename.jfr" \
-    clojure -Srepro -M:"$alias" "${common[@]}" "$output"
-  if [[ -s "$basename.jfr" ]] && command -v jfr >/dev/null 2>&1; then
-    if jfr summary "$basename.jfr" > "$basename.jfr-summary.txt"; then
-      printf '{:event :profile-summary :runtime-row :%s :status :complete}\n' \
-        "$profile" >> "$matrix_journal"
-    else
-      printf '{:event :profile-summary :runtime-row :%s :status :failed}\n' \
-        "$profile" >> "$matrix_journal"
-    fi
-  else
-    printf '{:event :profile-summary :runtime-row :%s :status :not-run}\n' \
-      "$profile" >> "$matrix_journal"
-  fi
+    clojure -Srepro -M:"$alias" "${common[@]}" "$output" || benchmark_status=$?
+  finish_jvm_run "$benchmark_status" "$profile" "$basename"
 }
 
 # One fresh process per matrix row. BENCH_MATRIX_ORDER is recorded and lets
@@ -269,6 +292,8 @@ for row in "${matrix_rows[@]}"; do
   fi
   printf '{:event :host :runtime-row :%s :status :complete :matrix-position %s}\n' \
     "$row" "$position" >> "$matrix_journal"
+  # Test-only fault injection: preserve completed row artifacts, then make the
+  # matrix fail before the next row begins.
   if [[ "${BENCH_INJECT_FAILURE_AFTER_ROW:-}" = "$row" ]]; then
     printf '{:event :matrix :status :failed :reason :injected-late-failure :after-row :%s}\n' \
       "$row" >> "$matrix_journal"
