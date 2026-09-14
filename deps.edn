@@ -180,15 +180,24 @@
             :main-opts ["-m" "jdbc.chdb-cross-host-wal"]}
            :cross-host-benchmark-test
            {:extra-paths ["bench" "test"]
-            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"
+                        "jolt" "casselc-data-json"]}
+           :cross-host-benchmark-test-jvm
+           {:extra-paths ["bench" "test"]
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"
+                        "jvm" "casselc-data-json"]}
            :cross-host-benchmark-test-upstream-data-json
            {:extra-paths ["bench" "test"]
             :override-deps {org.clojure/data.json {:mvn/version "2.5.2"}}
-            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"
+                        "jvm" "upstream-data-json" "2.5.2"
+                        "0938c730961d32b331ea7e5cd7c6a822c0a889def79d1c3f2af4dd201fdddeb3"]}
            :cross-host-benchmark-test-cheshire
            {:extra-paths ["bench" "test"]
             :extra-deps {cheshire/cheshire {:mvn/version "6.2.0"}}
-            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"]}
+            :main-opts ["-m" "jdbc.chdb-cross-host-benchmark-test"
+                        "jvm" "jvm-cheshire" "6.2.0"
+                        "6e86771499723471f71ec9684824aacd67cd323d5f453f3ce40bbec115e98a7b"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}

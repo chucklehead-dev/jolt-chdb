@@ -5,6 +5,10 @@
             [jdbc.chdb-cross-host-wal]))
 
 (def failures (atom 0))
+(def test-options (atom {}))
+
+(defn- test-option [key env-name default]
+  (or (get @test-options key) (System/getenv env-name) default))
 
 (defn- check [label expected actual]
   (if (= expected actual)
@@ -19,7 +23,12 @@
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
 
-(defn -main [& _]
+(defn -main [& [runtime-arg profile-arg parser-version-arg artifact-sha-arg]]
+  (reset! test-options
+          {:runtime runtime-arg
+           :profile profile-arg
+           :parser-version parser-version-arg
+           :parser-artifact-sha artifact-sha-arg})
   (println "cross-host benchmark report contract")
   (check "nearest-rank p50" 2 (report/percentile [4 1 3 2] 0.5))
   (check "nearest-rank p95" 4 (report/percentile [4 1 3 2] 0.95))
@@ -116,7 +125,7 @@
        legacy-measurer)
       (check "legacy whole-segment mutant performs 27 scans at 5/20"
              27 @calls))
-    (when (= :jvm (keyword (or (System/getenv "BENCH_RUNTIME") "jvm")))
+    (when (= :jvm (keyword (test-option :runtime "BENCH_RUNTIME" "jvm")))
       (let [primitive
             (requiring-resolve
              'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)
@@ -189,7 +198,7 @@
          {:status :failed :stage :start}
          ((private-fn 'stop-jvm-profile)
           {:status :failed :stage :start}))
-  (when (and (= :jvm (keyword (or (System/getenv "BENCH_RUNTIME") "jvm")))
+  (when (and (= :jvm (keyword (test-option :runtime "BENCH_RUNTIME" "jvm")))
              (System/getProperty "java.vm.name"))
     (let [start! (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/start!)
           stop! (requiring-resolve 'jdbc.chdb-cross-host-jvm-profile/stop!)
@@ -208,15 +217,20 @@
         (finally
           (stop! recording)
           (.delete file)))))
-  (let [runtime (keyword (or (System/getenv "BENCH_RUNTIME") "jvm"))
-        profile (keyword (or (System/getenv "BENCH_JSON_PARSER")
+  (let [runtime (keyword (test-option :runtime "BENCH_RUNTIME" "jvm"))
+        profile (keyword (or (test-option :profile "BENCH_JSON_PARSER" nil)
                              (if (= runtime :babashka)
                                "babashka-bundled-cheshire"
                                "casselc-data-json")))
         parser ((private-fn 'json-parser)
                 runtime
                 (get-in (edn/read-string (slurp "deps.edn"))
-                        [:deps 'org.clojure/data.json :git/sha]))]
+                        [:deps 'org.clojure/data.json :git/sha])
+                {:profile profile
+                 :parser-version (:parser-version @test-options)
+                 :parser-artifact-sha (:parser-artifact-sha @test-options)
+                 :runtime-version "test-runtime"
+                 :runtime-revision "test-revision"})]
     (if (= profile :babashka-bundled-cheshire)
       (do
         (check "Babashka uses its bundled Cheshire parser"
@@ -238,7 +252,7 @@
            (boolean (and (string? pin)
                          (re-matches #"[0-9a-f]{40}" pin))))
     (when (= :casselc-data-json
-             (keyword (or (System/getenv "BENCH_JSON_PARSER")
+             (keyword (or (test-option :profile "BENCH_JSON_PARSER" nil)
                           "casselc-data-json")))
       (check "loaded data.json resource is the exact project git pin"
              pin
@@ -253,10 +267,25 @@
            (get-in benchmark-pins [:parsers :upstream-data-json :version])
            (get-in deps [:aliases :cross-host-wal-upstream-data-json
                          :override-deps 'org.clojure/data.json :mvn/version]))
+    (check "upstream data.json test alias carries exact parser identity"
+           ["jvm" "upstream-data-json"
+            (get-in benchmark-pins [:parsers :upstream-data-json :version])
+            (get-in benchmark-pins
+                    [:parsers :upstream-data-json :artifact-sha256])]
+           (subvec (get-in deps [:aliases
+                                 :cross-host-benchmark-test-upstream-data-json
+                                 :main-opts]) 2))
     (check "JVM Cheshire alias matches the benchmark pin"
            (get-in benchmark-pins [:parsers :jvm-cheshire :version])
            (get-in deps [:aliases :cross-host-wal-cheshire
-                         :extra-deps 'cheshire/cheshire :mvn/version])))
+                         :extra-deps 'cheshire/cheshire :mvn/version]))
+    (check "JVM Cheshire test alias carries exact parser identity"
+           ["jvm" "jvm-cheshire"
+            (get-in benchmark-pins [:parsers :jvm-cheshire :version])
+            (get-in benchmark-pins
+                    [:parsers :jvm-cheshire :artifact-sha256])]
+           (subvec (get-in deps [:aliases :cross-host-benchmark-test-cheshire
+                                 :main-opts]) 2)))
   (when (pos? @failures)
     (throw (ex-info "cross-host benchmark contract failed"
                     {:failures @failures})))

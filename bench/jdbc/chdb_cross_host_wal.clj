@@ -141,12 +141,18 @@
   {:status :not-run :reason reason
    :warmups 0 :samples 0})
 
-(defn- json-parser [runtime data-json-sha]
-  (let [profile (keyword
-                 (or (System/getenv "BENCH_JSON_PARSER")
-                     (if (= runtime :babashka)
-                       "babashka-bundled-cheshire"
-                       "casselc-data-json")))]
+(defn- json-parser
+  ([runtime data-json-sha]
+   (json-parser runtime data-json-sha {}))
+  ([runtime data-json-sha
+    {:keys [profile parser-version parser-artifact-sha
+            runtime-version runtime-revision]}]
+   (let [profile (keyword
+                  (or profile
+                      (System/getenv "BENCH_JSON_PARSER")
+                      (if (= runtime :babashka)
+                        "babashka-bundled-cheshire"
+                        "casselc-data-json")))]
     (case profile
       :babashka-bundled-cheshire
       (do
@@ -157,9 +163,12 @@
          {:implementation profile
           :coordinate :babashka/bundled-cheshire
           :version :bundled-with-runtime
-          :provenance {:runtime :babashka
-                       :runtime-version (required-env "BENCH_RUNTIME_VERSION")
-                       :runtime-revision (required-env "BENCH_RUNTIME_REVISION")}}})
+          :provenance
+          {:runtime :babashka
+           :runtime-version (or runtime-version
+                                (required-env "BENCH_RUNTIME_VERSION"))
+           :runtime-revision (or runtime-revision
+                                 (required-env "BENCH_RUNTIME_REVISION"))}}})
 
       :casselc-data-json
       (let [read-str (requiring-resolve 'clojure.data.json/read-str)]
@@ -173,7 +182,8 @@
                     :version data-json-sha)})
 
       :upstream-data-json
-      (let [version (required-env "BENCH_JSON_PARSER_VERSION")]
+      (let [version (or parser-version
+                        (required-env "BENCH_JSON_PARSER_VERSION"))]
         {:read-str (requiring-resolve 'clojure.data.json/read-str)
          :identity (assoc
                     (versioned-resource-identity
@@ -182,10 +192,12 @@
                     :coordinate 'org.clojure/data.json
                     :version version
                     :artifact-sha256
-                    (required-env "BENCH_JSON_PARSER_ARTIFACT_SHA256"))})
+                    (or parser-artifact-sha
+                        (required-env "BENCH_JSON_PARSER_ARTIFACT_SHA256")))})
 
       :jvm-cheshire
-      (let [version (required-env "BENCH_JSON_PARSER_VERSION")]
+      (let [version (or parser-version
+                        (required-env "BENCH_JSON_PARSER_VERSION"))]
         {:read-str (requiring-resolve 'cheshire.core/parse-string)
          :identity (assoc
                     (versioned-resource-identity
@@ -194,9 +206,10 @@
                     :coordinate 'cheshire/cheshire
                     :version version
                     :artifact-sha256
-                    (required-env "BENCH_JSON_PARSER_ARTIFACT_SHA256"))})
+                    (or parser-artifact-sha
+                        (required-env "BENCH_JSON_PARSER_ARTIFACT_SHA256")))})
 
-      (fail! "unknown JSON parser profile" {:profile profile}))))
+      (fail! "unknown JSON parser profile" {:profile profile})))))
 
 (defn- warm! [warmups f]
   (dotimes [_ warmups] (consume-result (f))))
