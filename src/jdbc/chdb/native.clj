@@ -1,24 +1,25 @@
 (ns jdbc.chdb.native
-  "Owned libchdb v26.7.0 binding. Application code should use jdbc.chdb."
+  "Owned libchdb v26.7.3 binding. Application code should use jdbc.chdb."
   (:require [clojure.string :as str]
             [jdbc.chdb.abi :as abi]
+            [jdbc.chdb.durable.compatibility :as compatibility]
             [jolt.ffi :as ffi]))
 
-(def version "26.7.0")
+(def version "26.7.3")
 
 (def assets
   {[:linux "amd64"]
    {:name "linux-x86_64-libchdb.tar.gz"
-    :sha256 "4ba2b740f2b107be53157d8226cae1edb25b498d69511cdb3c340db3c95c2905"}
+    :sha256 "bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031"}
    [:linux "arm64"]
    {:name "linux-aarch64-libchdb.tar.gz"
-    :sha256 "d934104b492848d2500b48c0a67c580afc50bd968bebbe435c1b13970ef20384"}
+    :sha256 "d153adad1ff39b2e3caf0417f09d8bd9edd41939c7c67a3c4978a61e73fb9227"}
    [:darwin "arm64"]
    {:name "macos-arm64-libchdb.tar.gz"
-    :sha256 "297001823683e8189ba7ab5bb7b47f2e14a2ad2484da222a3da62708d2e7f1c4"}
+    :sha256 "5640e50dccf711bf3dd5551333d08e43f433edf7bd94b2289f36c2539e627762"}
    [:darwin "amd64"]
    {:name "macos-x86_64-libchdb.tar.gz"
-    :sha256 "5ea7705db21a63b4af7c5bff43e12fdbebe4e6cb459f7335221687493180fbeb"}})
+    :sha256 "af5ded3ed3e84c31af1cd198dcf459f11d2b6aad4f6ddeccc04b8a519b0300fc"}})
 
 (defn- nonblank-env [name]
   (let [value (System/getenv name)]
@@ -88,10 +89,9 @@
 (abi/defjoltfn chdb-stream-insert-error :stream-insert-error)
 (abi/defjoltfn chdb-destroy-insert-stream :destroy-insert-stream)
 
-;; These bindings remain lazy on the stable 26.7.0 production library. Public
-;; Durable wrappers must call durable-capability first and must never reach a
-;; missing symbol. Keeping them here makes the descriptor-to-Jolt signature
-;; path compile-checked before the native pin moves.
+;; Keep the versioned contract check at the public Durable boundary even though
+;; the packaged 26.7.3 library provides these symbols. JOLT_CHDB_LIB may select
+;; a different library, which must fail closed before an optional symbol call.
 (abi/defjoltfn ^:private chdb-backup-database-n :backup-database-n)
 (abi/defjoltfn ^:private chdb-restore-database-n :restore-database-n)
 (abi/defjoltfn ^:private chdb-classify-query-n :classify-query-n)
@@ -109,7 +109,13 @@
     ;; Validate the requested descriptor contract before native loading so an
     ;; invalid contract cannot be masked by an installation or loader error.
     (ensure-loaded!)
-    (let [symbols (into (sorted-map)
+    (let [native-version (chdb-version)
+          minimum-native-version (:minimum-native-version contract)
+          version-supported?
+          (and (compatibility/release-version? native-version)
+               (not (neg? (compatibility/compare-release-versions
+                            native-version minimum-native-version))))
+          symbols (into (sorted-map)
                         (map (fn [[function-id {:keys [symbol]}]]
                                [function-id
                                 {:symbol symbol
@@ -119,18 +125,31 @@
                         (keep (fn [[function-id {:keys [available?]}]]
                                 (when-not available? function-id)))
                         symbols)]
-      (cond-> {:status (if (empty? missing) :supported :unsupported)
+      (cond-> {:status (if (and version-supported? (empty? missing))
+                         :supported :unsupported)
                :contract contract-id
-               :native-version (chdb-version)
-               :minimum-native-version (:minimum-native-version contract)
+               :native-version native-version
+               :minimum-native-version minimum-native-version
                :symbols symbols
                :provenance (abi/source-provenance)}
-        (seq missing) (assoc :type ::unsupported-core :missing missing)))))
+        (not version-supported?)
+        (assoc :type ::unsupported-version)
+        (and version-supported? (seq missing))
+        (assoc :type ::unsupported-core :missing missing)))))
 
 (defn durable-capability
-  "Report Durable V1 availability without making it a production requirement."
+  "Report Durable V1 availability for the supported native release floor."
   []
   (contract-capability :durable-v1))
+
+(defonce ^:private driver-support (delay (contract-capability :driver)))
+
+(defn- require-driver! []
+  (let [capability @driver-support]
+    (when-not (= :supported (:status capability))
+      (throw (ex-info "loaded libchdb is below the supported driver contract"
+                      capability)))
+    capability))
 
 (defonce ^:private signals-disabled? (atom false))
 (defonce ^:private storage-state (atom {:path nil :references 0}))
@@ -175,7 +194,7 @@
      (throw (ex-info "backups.allowed_path requires a persistent chDB path"
                      {:type ::invalid-open-options
                       :path path :option :backups-allowed-path})))
-   (ensure-loaded!)
+   (require-driver!)
    (disable-signal-handlers!)
    (let [path (claim-path! (normalized-path path))]
     (try

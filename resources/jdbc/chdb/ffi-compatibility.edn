@@ -34,8 +34,8 @@
    :deps-path [:aliases :abi-babashka-jvm-test :extra-deps
                io.github.babashka/ffi :git/sha]}}
  :native
- {:version "26.7.0"
+ {:version "26.7.3"
   :qualified-platforms [{:os :linux :arch "amd64"}]
   :archive-sha256
   {[:linux "amd64"]
-   "4ba2b740f2b107be53157d8226cae1edb25b498d69511cdb3c340db3c95c2905"}}}
+   "bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031"}}}

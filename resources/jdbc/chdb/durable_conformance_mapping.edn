@@ -24,11 +24,9 @@
   {:case :upstream/future-protocol-version :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "future protocol fails closed"}]}
   {:case :upstream/producer-version-differs-but-compatible :disposition :mapped
-   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "a newer producer version is not an exact-match reader gate"}
-                 {:path "test/jdbc/chdb_durable_linux_compatibility_test.clj" :anchor "rc2-to-release"}]}
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "a newer producer version is not an exact-match reader gate"}]}
   {:case :upstream/engine-reader-too-old :disposition :mapped
-   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "an older running core fails the minimum-reader gate"}
-                 {:path "test/jdbc/chdb_durable_linux_compatibility_test.clj" :anchor "minimum-reader refusal downloaded the archive"}]}
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "an older running core fails the minimum-reader gate"}]}
   {:case :upstream/backup-format-too-new :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "future backup formats fail closed"}]}
   {:case :upstream/unknown-fields-round-trip :disposition :mapped

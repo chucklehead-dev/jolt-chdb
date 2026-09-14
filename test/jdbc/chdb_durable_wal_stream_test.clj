@@ -24,8 +24,8 @@
 (def ^:private initial-options
   {:owner "old-writer" :instance "old-instance"
    :expires-at 100M :now 0M :clock-skew 0M
-   :database "default" :engine-version "26.7.2-rc.2"
-   :backup-format 1 :min-reader "26.7.2-rc.2"})
+   :database "default" :engine-version "26.7.3"
+   :backup-format 1 :min-reader "26.7.3"})
 
 (defn- check [label expected actual]
   (if (= expected actual)

@@ -30,7 +30,7 @@
     (when-not (nonblank-string? (get-in descriptor [:source field]))
       (invalid! "chDB ABI descriptor has invalid source provenance"
                 {:field field :value (get-in descriptor [:source field])})))
-  (when-not (= {:version 1 :minimum-native-version "26.7.2"}
+  (when-not (= {:version 1 :minimum-native-version "26.7.3"}
                (get-in descriptor [:contracts :durable-v1]))
     (invalid! "chDB Durable contract identity does not match V1"
               {:durable-v1 (get-in descriptor [:contracts :durable-v1])}))

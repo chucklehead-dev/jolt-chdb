@@ -18,8 +18,8 @@
 
 (def ^:private valid-head
   {"protocol" {"version" 1 "reader_features" [] "writer_features" []}
-   "engine" {"name" "chdb" "version" "26.7.2-rc.2"
-             "backup_format" 1 "min_reader" "26.7.2-rc.2"}
+   "engine" {"name" "chdb" "version" "26.7.3"
+             "backup_format" 1 "min_reader" "26.7.3"}
    "lease" {"generation" 1 "owner" "writer" "instance" "attempt"
             "expires_at" 1788230400.1255M}
    "manifest" {"db" "default" "base" nil "wal" [] "seq" 0}})

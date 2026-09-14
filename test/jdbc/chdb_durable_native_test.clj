@@ -436,8 +436,8 @@
     (when-not (and library (.isFile (java.io.File. library)))
       (throw (ex-info "durable native qualification requires JOLT_CHDB_LIB"
                       {:library library})))
-    (check "qualification library has the exact prerelease version"
-           "26.7.2-rc.2" (:native-version (native/durable-capability)))
+    (check "qualification library has the exact stable version"
+           "26.7.3" (:native-version (native/durable-capability)))
     (check "all Durable V1 symbols resolve"
            :supported (:status (native/durable-capability))))
   (run-layout-mutants)

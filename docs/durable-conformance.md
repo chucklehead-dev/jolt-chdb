@@ -208,63 +208,11 @@ the CPython abi3 manylinux x86_64 wheel SHA-256 is
 `b10b96f9599fab42ba51d9be80333e1819782bdc8a91b2b26979149693ba431f`.
 `.github/workflows/durable-python-fixture.yml` reproduces acquisition and this
 focused gate when the lane or its Durable recovery dependencies change.
-This lane does not replace the separate archive/header/library cross-version
-matrices and makes no rc.2 refusal claim.
-
-## Linux x86-64 release compatibility matrix
-
-The focused release matrix complements the Python-writer fixture without
-claiming direct provider compatibility. It creates raw logical-object fixtures
-with checksum-pinned chDB 26.7.2-rc.2 and 26.7.3 libraries, then opens each
-fixture in a separate Jolt process so a library loaded for one cell cannot
-affect another. The declared archive outcomes are:
-
-| Producer | Reader | Outcome | Boundary |
-| --- | --- | --- | --- |
-| 26.7.2-rc.2 | 26.7.2-rc.2 | accept | Matching backup format and minimum reader. |
-| 26.7.2-rc.2 | 26.7.3 | accept | The newer reader satisfies the persisted rc.2 minimum. |
-| 26.7.3 | 26.7.3 | accept | Matching backup format and minimum reader. |
-| 26.7.3 | 26.7.2-rc.2 | refuse | The reader is older than the persisted 26.7.3 minimum. |
-
-The refusal cell must perform zero archive downloads and leave native storage
-unopened. Accepted cells reconcile the same row count, sum, UTF-8 byte count,
-minimum, and maximum. All cells inventory the raw `head.json` and referenced
-base archive before and after open. Causal controls replace the archive bytes
-without updating their digest and raise the minimum reader beyond the running
-engine; both use isolated in-memory copies and cannot change the authoritative
-fixture.
-
-The same manifest pins the release archive, extracted library, header, upstream
-tag, and commit identities. Matched header/library pairs compile and execute a
-small version probe. The qualification harness resolves each pair's actual
-artifact identities and its release-provenance gate refuses mixed pairs before
-compilation or native execution. This is not evidence that either mixed pair
-is ABI-incompatible; it prevents an unqualified combination from silently
-becoming a supported release surface. A causal mutant that merely records the
-expected refusal without invoked-gate evidence is rejected by the report
-validator.
-
-Separate wrong-header and wrong-library digest mutants prove that artifact
-identity drift also fails closed before compilation or native execution. Those
-mutants exercise the identity gate, not the mixed-release provenance gate.
-Every native cell also gets a distinct gateboot directory below the exact Jolt
-executable SHA, preventing a bridge built in one cell from carrying native
-selection state into another.
-
-With both release archives extracted exactly once, run:
-
-```sh
-scripts/verify-durable-linux-compatibility.sh \
-  /tmp/durable-linux-compatibility \
-  /absolute/path/to/repository-pinned/jolt \
-  /absolute/path/to/26.7.2-rc.2 \
-  /absolute/path/to/26.7.3
-```
-
-The lane currently qualifies Linux x86-64 only. Equivalent arm64 or macOS
-claims require platform-native CI cells with separately pinned archive,
-library, and header identities; cross-compiling or reusing this result would
-not supply that evidence.
+This lane is a same-release 26.7.3 interoperability check. The project no
+longer qualifies or supports a prerelease native-library path. Older engine
+versions remain useful only as compatibility-gate mutants: they must be refused
+before connection, archive download, or recovery effects when an object's
+minimum reader is 26.7.3.
 
 This integration preserves the reviewed changes from secret-conformance head
 `df40ae8`, Python fixture head `0e052348`, and Linux matrix lineage
@@ -295,6 +243,5 @@ that invocation is a gate defect.
 This inventory intentionally leaves the remaining issue-47 obligations open:
  current-source AWS OIDC qualification, release evidence across claimed
  platforms/providers/runtimes, protocol clarification and refinement-model work,
- and final review of the eventual full matrix.
-Stable chDB 26.7.0 still lacks the Durable ABI, so the pinned rc.2 ABI
-qualification is not an ordinary-install conformance claim.
+ and final review of the eventual full matrix. Stable chDB 26.7.3 is both the
+ ordinary installer pin and the minimum supported Durable native release.
