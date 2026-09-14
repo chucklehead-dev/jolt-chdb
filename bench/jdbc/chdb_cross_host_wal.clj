@@ -80,7 +80,7 @@
     (catch CharacterCodingException _
       (fail! "selected WAL record is not strict UTF-8" {}))))
 
-(defn- scan-record-boundaries [^bytes bytes ordinal]
+(defn- scan-record-boundaries [bytes ordinal]
   (when-not (and (pos? (alength bytes))
                  (= 10 (bit-and 255 (aget bytes (dec (alength bytes))))))
     (fail! "WAL fixture must be non-empty and LF terminated" {}))
