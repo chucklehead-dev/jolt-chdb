@@ -46,10 +46,23 @@
    :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real global mutation"}]}
   {:case :upstream/control-statements-refused :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_native_test.clj" :anchor "real control statement"}]}
-  {:case :upstream/secret-mutation-refused-without-leaking :disposition :blocked
-   :blocker {:issue 47 :rationale "Admission is covered, but the upstream-shaped secret-bearing exception redaction assertion is not."}}
-  {:case :upstream/secret-read-only-runs-and-is-not-logged :disposition :blocked
-   :blocker {:issue 47 :rationale "Read admission is covered, but an engine-error redaction and zero-WAL scenario is not."}}
+  {:case :upstream/secret-mutation-refused-without-leaking :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "secret-bearing mutation error quotes neither SQL nor secret"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "bound secret mutation classifier sees only its typed-placeholder shape"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "published head and WAL contain no rejected credential"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "redaction never rewrites persisted WAL or telemetry-shaped attribute values"}
+                 {:path "test/jdbc/chdb_durable_native_test.clj" :anchor "native AST marks bound s3 mutation shape secret-bearing"}
+                 {:path "test/jdbc/chdb_durable_native_test.clj" :anchor "native pinned secret mutation is refused with redacted diagnostics"}]}
+  {:case :upstream/secret-read-only-runs-and-is-not-logged :disposition :mapped
+   :local-tests [{:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "secret-bearing public writer reads reach the engine"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "bound secret read classifier sees only its typed-placeholder shape"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "bound secret read parameter data and nested cause are redacted"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "secret-bearing engine failures are redacted through their cause chains"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "secret-bearing success preserves telemetry-shaped values exactly"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "immutable reader success preserves telemetry-shaped values exactly"}
+                 {:path "test/jdbc/chdb_durable_secret_conformance_test.clj" :anchor "flush after a failed secret-bearing read publishes nothing"}
+                 {:path "test/jdbc/chdb_durable_native_test.clj" :anchor "native AST marks bound s3 read shape secret-bearing"}
+                 {:path "test/jdbc/chdb_durable_native_test.clj" :anchor "native pinned secret read reaches a redacted SQL failure"}]}
   {:case :upstream/unknown-statement-fails-closed :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_policy_test.clj" :anchor "unknown statement"}]}
   {:case :upstream/limits-report-limit-exceeded :disposition :mapped

@@ -91,9 +91,33 @@ stages. Writer failures release the acquired lease, and injected secondary
 native-close and scratch-cleanup errors prove cleanup cannot replace the primary
 verification error.
 
-Together with the merged live-force warning tests, the executable ledger is now
-45 mapped, 2 blocked, and 2 binding-level not applicable cases. The remaining
-behavior blockers are the two secret-bearing exception/WAL redaction scenarios.
+## Secret-bearing queries
+
+The two pinned secret cases run through the public serialized Durable boundary.
+A mutation that chdb-core classifies as secret-bearing is refused before native
+execution or WAL admission. A subsequent flush proves that neither the rejected
+SQL nor its credential enters the head or statement WAL. A secret-bearing read
+is admissible because reads do not enter recovery state. If its engine call
+throws, jolt-chdb replaces the message, exception data, and nested cause with one
+fixed `secret-query-failed` SQL category.
+
+Parameterized admission uses `classification-sql`, a value-free shape such as
+`s3({p1:String}, {p2:String}, {p3:String})`. The native AST classifier marks the
+sensitive placeholder positions as secret-bearing without inspecting or copying
+the bound values. Fake and exact-native controls cover those shapes, plus a
+false-secret-flag mutant that reaches the engine and fails the redaction oracle.
+
+This redaction is deliberately limited to failed read diagnostics. Successful
+query values and encoded bytes pass through unchanged. The tests also decode a
+successfully published statement WAL and require its telemetry-shaped attribute
+value and complete SQL to remain exact. The implementation does not scan or
+rewrite persisted WAL, result values, OpenTelemetry attributes, or provider
+payloads. External instrumentation that observes raw application/native call
+arguments still owns its own attribute redaction policy.
+
+The executable ledger is now 47 mapped, 0 blocked, and 2 binding-level not
+applicable cases. This closes the locally executable behavior blockers, not the
+broader release/provider/interoperability qualification tracked by issue 47.
 
 ## Empty referenced WAL compatibility
 
@@ -136,6 +160,9 @@ Run the focused, offline gate with the mandatory compiler selector:
 ```sh
 /home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
   jolt -M:durable-conformance-inventory-test
+
+/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 \
+  jolt -M:durable-secret-conformance-test
 ```
 
 The gate fails on changes to the pinned repository SHA, protocol/suite paths,
@@ -149,7 +176,7 @@ This inventory intentionally leaves the remaining issue-47 obligations open:
 full Python-writer fixture exchange, the earlier-archive/new-engine and
 header/library cross-version matrices, current-source AWS OIDC qualification,
 release evidence across claimed platforms/providers/runtimes, protocol
-clarification and refinement-model work, both secret-bearing scenarios, and
-final review of the eventual full matrix.
+clarification and refinement-model work, and final review of the eventual full
+matrix.
 Stable chDB 26.7.0 still lacks the Durable ABI, so the pinned rc.2 ABI
 qualification is not an ordinary-install conformance claim.

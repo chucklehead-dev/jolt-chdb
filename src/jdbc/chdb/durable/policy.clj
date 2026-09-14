@@ -35,6 +35,22 @@
     (reject! :query :query-class analysis))
   analysis)
 
+(defn call-with-query-error-redaction
+  "Run one already-authorized read. Successful return values are passed
+  through unchanged. When query analysis marks the SQL as secret-bearing,
+  replace only a thrown engine diagnostic with a fixed public SQL error that
+  retains neither the original message, data, nor cause. Non-secret failures
+  retain their exact throwable identity."
+  [analysis f]
+  (try
+    (f)
+    (catch Throwable error
+      (if (true? (:has-secrets analysis))
+        (throw (ex-info "Secret-bearing Durable query failed"
+                        {:type ::secret-query-failed
+                         :jdbc/sql-error true}))
+        (throw error)))))
+
 (defn authorize-execute!
   "Accept exactly one persistent mutation wholly contained in the managed
   database, with no database-lifecycle change and no secret-bearing text."

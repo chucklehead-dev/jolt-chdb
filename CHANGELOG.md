@@ -9,6 +9,15 @@
   validation and the absence of replay effects. The upstream V1 prose does not
   yet state this boundary explicitly, so the local conformance ledger keeps the
   clarification pending rather than claiming normative resolution.
+- Map the two remaining pinned secret-bearing conformance cases at public
+  Durable writer and immutable-reader boundaries. Secret-bearing mutations stop
+  before native execution and WAL admission. Failed secret-bearing reads replace
+  arbitrary engine messages, data, and nested causes with one fixed SQL category,
+  while successful results, encoded bytes, persisted WAL SQL, and
+  telemetry-shaped attribute values remain exact. Typed-placeholder, native AST,
+  wrong-secret-flag, storage, cleanup, and non-secret throwable-identity controls
+  move the 49-case ledger to 47 mapped, 0 blocked, and 2 binding-level not
+  applicable cases.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

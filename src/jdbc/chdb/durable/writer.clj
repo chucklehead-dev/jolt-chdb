@@ -149,20 +149,26 @@
 
 (defn- do-query! [writer sql params]
   (require-string! sql "sql")
-  ((:analyze-query! (:operations writer))
-   (:handle writer)
-   ((:classification-sql! (:operations writer)) sql params)
-   (:database writer))
-  ((:query-native! (:operations writer)) (:handle writer) sql params))
+  (let [analysis
+        ((:analyze-query! (:operations writer))
+         (:handle writer)
+         ((:classification-sql! (:operations writer)) sql params)
+         (:database writer))]
+    (policy/call-with-query-error-redaction
+     analysis
+     #((:query-native! (:operations writer)) (:handle writer) sql params))))
 
 (defn- do-query-bytes! [writer sql params options]
   (require-string! sql "sql")
-  ((:analyze-query! (:operations writer))
-   (:handle writer)
-   ((:classification-sql! (:operations writer)) sql params)
-   (:database writer))
-  ((:query-bytes-native! (:operations writer))
-   (:handle writer) sql params options))
+  (let [analysis
+        ((:analyze-query! (:operations writer))
+         (:handle writer)
+         ((:classification-sql! (:operations writer)) sql params)
+         (:database writer))]
+    (policy/call-with-query-error-redaction
+     analysis
+     #((:query-bytes-native! (:operations writer))
+       (:handle writer) sql params options))))
 
 (defn- exact-statement-bytes-exceed? [^String sql ^long limit]
   (> (alength (.getBytes sql "UTF-8")) limit))
@@ -243,7 +249,10 @@
       :read-only
       (do
         (policy/authorize-query! analysis)
-        ((:query-native! (:operations writer)) (:handle writer) sql params))
+        (policy/call-with-query-error-redaction
+         analysis
+         #((:query-native! (:operations writer))
+           (:handle writer) sql params)))
 
       :mutating
       (do
