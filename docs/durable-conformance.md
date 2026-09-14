@@ -1,9 +1,12 @@
 # Durable V1 conformance inventory
 
 This repository targets Durable V1 with bounded local evidence. It does not yet
-claim complete V1 conformance. The Phase 1 inventory pins upstream chDB commit
-`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`, the normative protocol at
-`docs/durable/protocol-v1.mdx`, and all 49 ordered cases from
+claim complete V1 conformance. The Phase 1 inventory pins the normative protocol
+at upstream chDB commit `66643e5030fb73c30ac5cdd31d4c7858ea040ed0`
+and its byte-identical `docs/durable/protocol-v1.mdx`. The test inventory is
+refreshed independently to current upstream main
+`c5ed925d3fd6140660db7f89685eddcfc29f24c5`, Git blob
+`4b72fa84f8179d469066330d7c81a95fd218be43`, and all 50 ordered cases from
 `tests/test_durable.py`.
 
 The machine-readable source inventory is
@@ -18,10 +21,11 @@ The ledger may also contain `:local-gaps` and matching `:local-mappings` for a
 cross-binding boundary that the pinned upstream suite does not yet name. These
 entries are kept separate from the ordered upstream case list, so local evidence
 cannot silently be presented as an upstream conformance case. The first such
-entry is issue 98's zero-byte referenced WAL fixture. Current upstream main at
-`b8f05d1e74c2e7e172ba7c3bcca279085c5dac61` retains byte-identical protocol
-text but has 50 Python Durable tests after adding an unrelated local/file URL
-case; neither its suite nor the pinned 49-case baseline includes this boundary.
+entry is issue 98's zero-byte referenced WAL fixture. Current upstream main
+retains byte-identical protocol text but its 50-case Python suite adds local/file
+namespace URL aliasing. That binding convenience is explicitly not applicable:
+jolt-chdb accepts an `ObjectBackend` value and exposes no namespace URL parser.
+The empty-WAL gap remains separate because the upstream suite does not name it.
 
 Engine-version ordering has an additional differential oracle. The corpus at
 `test/fixtures/durable/version-ordering.json` records parse and less-than results
@@ -115,9 +119,16 @@ rewrite persisted WAL, result values, OpenTelemetry attributes, or provider
 payloads. External instrumentation that observes raw application/native call
 arguments still owns its own attribute redaction policy.
 
-The executable ledger is now 47 mapped, 0 blocked, and 2 binding-level not
-applicable cases. This closes the locally executable behavior blockers, not the
-broader release/provider/interoperability qualification tracked by issue 47.
+The reviewed 49-case ledger reached 47 mapped, 0 blocked, and 2 binding-level
+not-applicable cases. Refreshing current upstream main adds one binding-only URL
+alias case, so the 50-case ledger is 47 mapped, 0 blocked, and 3 binding-level
+not applicable. This closes the locally executable behavior blockers, not the
+broader release/provider/interoperability qualification tracked by issue 47,
+and does not claim that Python tests execute directly on Jolt. For this binding,
+issue 2's literal `passes unchanged` wording is interpreted at protocol scope:
+each protocol-relevant case maps to an unchanged local assertion, while a test
+of a Python-only API surface receives an explicit not-applicable disposition.
+That interpretation still needs issue-level acceptance before issue 2 closes.
 
 ## Empty referenced WAL compatibility
 
@@ -255,13 +266,14 @@ claims require platform-native CI cells with separately pinned archive,
 library, and header identities; cross-compiling or reusing this result would
 not supply that evidence.
 
-This development commit is stacked on the Python-fixture head `0e052348`, which
-still reports 45 mapped, 2 blocked, and 2 not-applicable upstream cases because
-the independent secret-conformance head `df40ae8` is not its ancestor. Merge
-the secret cases first, rebase the Python fixture onto them, and then rebase
-this matrix. The integrated ledger must report 47 mapped, 0 blocked, and 2
-not-applicable before this matrix is opened or merged; 45/2/2 is intermediate
-stack evidence, not issue-closure evidence.
+ This integration preserves the reviewed secret-conformance head `df40ae8`,
+ Python fixture head `0e052348`, and Linux matrix lineage
+ `96c49f5`..`a9daccc` while restacking their changes on current `main`. Before
+ the current-main inventory refresh,
+ that reviewed 49-case integration reports 47 mapped, 0 blocked, and 2
+ binding-level not-applicable cases. The separately identified 50th binding-only
+ case produces the current 47/0/3 accounting above. Neither accounting is a
+ claim of full cross-platform conformance.
 
 Run the focused, offline gate with the mandatory compiler selector:
 
@@ -276,7 +288,8 @@ Run the focused, offline gate with the mandatory compiler selector:
 The gate fails on changes to the pinned repository SHA, protocol/suite paths,
 source digests, case count or ordered names; duplicate or unmapped entries;
 invalid dispositions; and mapped paths or assertion anchors that no longer
-exist. It also proves seven deliberate drift mutants fail. For an externally
+exist. It also proves nine deliberate drift mutants fail, including exact suite
+blob drift and removal of the current-main URL-alias case. For an externally
 visible red control, set `JOLT_CHDB_CONFORMANCE_MUTANT=name-drift`; success from
 that invocation is a gate defect.
 

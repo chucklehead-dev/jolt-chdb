@@ -124,6 +124,10 @@
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "namespace/object open recovers the selected object's WAL"}]}
   {:case :upstream/wal-keys-are-unique :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "every immutable publication attempt has a unique key"}]}
+  {:case :upstream/local-and-file-urls-name-the-same-directory
+   :disposition :not-applicable
+   :not-applicable
+   {:rationale "This is Python binding namespace-URL aliasing outside the Durable V1 wire/backend contract. jolt-chdb accepts an explicit ObjectBackend value and exposes no namespace URL parser."}}
   {:case :upstream/constructor-validation :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "fractional lease"}
                  {:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "overslow heartbeat"}]}]

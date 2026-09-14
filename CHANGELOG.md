@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Refresh the upstream Durable conformance inventory to chDB main `c5ed925d`,
+  exact test-suite Git blob `4b72fa84`, SHA-256 `b4294901`, and 50 ordered
+  cases. The reviewed 49-case ledger remains historical 47/0/2 evidence; the
+  newly added Python local/file namespace URL alias is explicitly outside
+  jolt-chdb's ObjectBackend-based API, yielding an honest current 47 mapped,
+  0 blocked, and 3 binding-level not-applicable ledger. Exact blob and missing-
+  current-case mutants fail closed without claiming full conformance.
+
 - Tolerate a manifest-referenced, size-and-SHA-verified zero-byte Durable WAL
   as an empty JSONL sequence while continuing to omit empty references from
   writer flushes. A provenance-pinned fixture, wrong-size and wrong-digest

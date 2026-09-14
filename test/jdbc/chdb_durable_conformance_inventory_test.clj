@@ -11,15 +11,17 @@
 
 (def ^:private expected-source
   {:repository "https://github.com/chdb-io/chdb.git"
-   :commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
-   :protocol {:path "docs/durable/protocol-v1.mdx"
+   :protocol {:commit "66643e5030fb73c30ac5cdd31d4c7858ea040ed0"
+              :path "docs/durable/protocol-v1.mdx"
               :sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"}
-   :suite {:path "tests/test_durable.py"
-           :sha256 "5b9a97a3bccc0c29b10aca6b6e9a72edceea6a79e19d9a54c900b10d24f5eee6"
-           :case-count 49}})
+   :suite {:commit "c5ed925d3fd6140660db7f89685eddcfc29f24c5"
+           :path "tests/test_durable.py"
+           :git-blob "4b72fa84f8179d469066330d7c81a95fd218be43"
+           :sha256 "b42949019ca5edb6981a8149879505a40a062f2b55b8a01ce741ad990b5da5ee"
+           :case-count 50}})
 
 (def ^:private expected-disposition-counts
-  {:total 49 :mapped 47 :blocked 0 :not-applicable 2})
+  {:total 50 :mapped 47 :blocked 0 :not-applicable 3})
 
 (def ^:private expected-local-gaps
   [{:id :local/empty-referenced-wal
@@ -79,6 +81,7 @@
    "test_cold_open_lands_in_the_objects_database"
    "test_wal_replay_uses_the_objects_database"
    "test_wal_keys_are_unique"
+   "test_local_and_file_urls_name_the_same_directory"
    "test_constructor_validation"])
 
 (defn- fail! [message data]
@@ -137,7 +140,7 @@
            {:case case-id :disposition disposition})))
 
 (defn validate-inventory! [inventory mapping]
-  (require-equal! "inventory schema drift" 1 (:schema inventory))
+  (require-equal! "inventory schema drift" 2 (:schema inventory))
   (require-equal! "mapping schema drift" 1 (:schema mapping))
   (require-equal! "mapping points at a stale inventory path"
                   inventory-path (:inventory mapping))
@@ -146,7 +149,7 @@
   (require-equal! "protocol source disagrees with the runtime head contract"
                   (select-keys head/protocol-source [:repository :commit :document])
                   {:repository (get-in inventory [:source :repository])
-                   :commit (get-in inventory [:source :commit])
+                   :commit (get-in inventory [:source :protocol :commit])
                    :document (get-in inventory [:source :protocol :path])})
   (let [cases (:cases inventory)
         names (mapv :name cases)
@@ -199,7 +202,15 @@
 (defn- apply-mutant [name inventory mapping]
   (case name
     "name-drift" [(assoc-in inventory [:cases 0 :name] "test_renamed") mapping]
-    "sha-drift" [(assoc-in inventory [:source :commit] (apply str (repeat 40 "0"))) mapping]
+    "sha-drift" [(assoc-in inventory [:source :suite :sha256] (apply str (repeat 64 "0"))) mapping]
+    "suite-blob-drift" [(assoc-in inventory [:source :suite :git-blob] (apply str (repeat 40 "0"))) mapping]
+    "missing-current-main-case"
+    [(update inventory :cases
+             (fn [cases]
+               (filterv #(not= :upstream/local-and-file-urls-name-the-same-directory
+                               (:id %))
+                        cases)))
+     mapping]
     "missing-mapping" [inventory (update mapping :mappings pop)]
     "duplicate-mapping" [inventory (update mapping :mappings conj (first (:mappings mapping)))]
     "missing-local-mapping" [inventory (update mapping :local-mappings pop)]
@@ -225,6 +236,8 @@
         (doseq [[name mutant]
                 [["name drift" "name-drift"]
                  ["SHA drift" "sha-drift"]
+                 ["suite blob drift" "suite-blob-drift"]
+                 ["missing current-main case" "missing-current-main-case"]
                  ["missing mapping" "missing-mapping"]
                  ["duplicate mapping" "duplicate-mapping"]
                  ["missing local mapping" "missing-local-mapping"]
@@ -239,4 +252,4 @@
             (fail! "deliberate drift control unexpectedly passed" {:control name})))
         (println "Durable upstream conformance inventory" summary)
         (println "  ok   provenance, case drift, mapping coverage, and local anchors")
-        (println "  ok   seven deliberate drift controls rejected")))))
+        (println "  ok   nine deliberate drift controls rejected")))))
