@@ -160,6 +160,41 @@
              false (.contains (pr-str status) secret)))
     (close-ignoring-error! writer))
 
+  (let [attempt (atom 0)
+        ambiguous (ex-info "private first failure"
+                           {:type ::control/commit-ambiguous})
+        later (ex-info "private later failure" {:type ::later-failure})
+        {:keys [writer]}
+        (new-writer
+         {:commit-reference!
+          (fn [& _]
+            (if (= 1 (swap! attempt inc))
+              (throw ambiguous)
+              (throw later)))})]
+    (writer/execute! writer "INSERT INTO t VALUES (22)")
+    (check "first failure establishes an unconfirmed boundary"
+           true (identical? ambiguous (caught #(writer/flush! writer))))
+    (check "later ordinary failure preserves exact Throwable identity"
+           true (identical? later (caught #(writer/flush! writer))))
+    (let [status (writer/public-status writer)]
+      (check "an unresolved ambiguous publication remains sticky"
+             [:unconfirmed :unavailable :commit-unconfirmed :failed]
+             [(:persistence-state status) (:view-current? status)
+              (:view-current-reason status)
+              (:last-persistence-error status)]))
+    (close-ignoring-error! writer))
+
+  (let [{:keys [writer]}
+        (new-writer {:commit-reference! (fn [& _] {:status :committed})})]
+    (writer/execute! writer "INSERT INTO t VALUES (23)")
+    (writer/flush! writer)
+    (let [status (writer/public-status writer)]
+      (check "confirmed result without an observed head never guesses sequence"
+             [0 :unavailable :boundary-unavailable]
+             [(:observed-manifest-sequence status)
+              (:view-current? status) (:view-current-reason status)]))
+    (writer/close! writer))
+
   (let [{:keys [writer]}
         (new-writer
          {:commit-reference!

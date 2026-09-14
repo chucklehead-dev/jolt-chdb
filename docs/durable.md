@@ -190,6 +190,10 @@ after an ambiguous commit, fencing, or close. This statement does not cover an
 operation still executing, work waiting in an application's queue, or another
 telemetry/export pipeline.
 
+If a custom persistence seam confirms an outcome without returning its head,
+the prior observed sequence remains visible but currentness and the successful
+boundary become unavailable; the library never guesses the next sequence.
+
 A reader always reports `:view-current? :unavailable`: its
 `:observed-manifest-sequence` identifies the immutable snapshot opened, but
 status deliberately does not reread `head.json` to guess whether a newer writer

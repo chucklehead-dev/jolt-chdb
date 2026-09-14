@@ -51,20 +51,24 @@
 
 (defn- observe-persistence-failure! [writer error]
   (swap! (:wal-state writer)
-         assoc
-         :last-persistence-error (persistence-error error)
-         :unconfirmed? (= :jdbc.chdb.durable.control/commit-ambiguous
-                          (:type (ex-data error)))))
+         (fn [state]
+           (assoc state
+                  :last-persistence-error (persistence-error error)
+                  ;; Once a publication outcome is unknown, a later failure
+                  ;; cannot resolve it. Only a confirmed success below does.
+                  :unconfirmed?
+                  (or (:unconfirmed? state)
+                      (= :jdbc.chdb.durable.control/commit-ambiguous
+                         (:type (ex-data error))))))))
 
 (defn- confirmed-sequence [state boundary result]
   (let [current (:observed-manifest-sequence state)]
     (cond
-      (= :empty boundary) current
+      (= :empty boundary) (if (:boundary-observed? state)
+                            current unavailable)
       (supported-manifest-sequence?
        (get-in result [:head "manifest" "seq"]))
       (get-in result [:head "manifest" "seq"])
-      (and (supported-manifest-sequence? current)
-           (< current 9007199254740991)) (inc current)
       :else unavailable)))
 
 (defn- observe-persistence-success
@@ -77,6 +81,7 @@
       (if (supported-manifest-sequence? sequence)
         (assoc state
                :observed-manifest-sequence sequence
+               :boundary-observed? true
                :last-successful-persistence
                {:operation operation
                 :boundary boundary
@@ -85,7 +90,9 @@
                :last-persistence-error :none
                :unconfirmed? false)
         (assoc state
-               :observed-manifest-sequence unavailable
+               ;; Keep the prior observation visible, but do not claim that it
+               ;; describes this newly confirmed boundary.
+               :boundary-observed? false
                :last-successful-persistence unavailable
                :last-persistence-error :none
                :unconfirmed? false)))))
@@ -640,6 +647,7 @@
                          :observed-manifest-sequence
                          (if (some? manifest-sequence)
                            manifest-sequence unavailable)
+                         :boundary-observed? (some? manifest-sequence)
                          :last-successful-persistence unavailable
                          :last-persistence-error :none
                          :unconfirmed? false})
@@ -714,13 +722,15 @@
   "Return a closed, read-only status projection without ownership or payloads."
   [writer]
   (let [{:keys [byte-count checkpoint-required? observed-manifest-sequence
+                boundary-observed?
                 last-successful-persistence last-persistence-error
                 unconfirmed?]}
         @(:wal-state writer)
         lifecycle @(:lifecycle writer)
         fenced? (true? (:fenced? (some-> (:lease-state writer) deref)))
-        boundary-known? (supported-manifest-sequence?
-                         observed-manifest-sequence)
+        boundary-known? (and boundary-observed?
+                             (supported-manifest-sequence?
+                              observed-manifest-sequence))
         persistence-state
         (cond
           (= :closed lifecycle) :unavailable
