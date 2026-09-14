@@ -19,11 +19,23 @@ jobs:
   python-writer-to-jolt-reader:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-120643d6
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-120643d6
+      PINNED_JOLT_SOURCE_SHA: 120643d6bc322800a700e870de5c8087ad6085fa
+      PINNED_JOLT_VERSION: jolt v0.8.6-97-g120643d6
     steps:
       - uses: actions/checkout@v4
 
       - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
         uses: ./.github/actions/install-jolt-aspects
+
+      - name: Verify pinned Jolt provenance
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
 
       - name: Acquire checksum-pinned Python source, wheel, and native library
         env:
@@ -68,8 +80,6 @@ jobs:
 
       - name: Run exact Python-writer logical fixture exchange
         env:
-          JOLT_CACHE_DIR: ${{ runner.temp }}/jolt-cache
-          JOLT_GITLIBS_DIR: ${{ runner.temp }}/jolt-gitlibs
           JOLT_GATEBOOT_BUILD_DIR: ${{ runner.temp }}/jolt-gateboot
         run: |
           set -euo pipefail
