@@ -1,0 +1,33 @@
+{:schema 1
+ :status :tolerated-noncanonical
+ :reader-outcome :zero-records
+ :writer-outcome :omit-reference
+ :empty-sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ :fixture
+ {:head {:path "object/head.json"
+         :sha256 "9bdeaca83d49c41dba06be7f0a8fde6a21fea563cc3d2aad95030061568e6cc6"}
+  :wal {:path "object/wal/1-1-00000000.jsonl"
+        :sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}
+ :sources
+ {:protocol
+  {:repository "https://github.com/chdb-io/chdb.git"
+   :commit "b8f05d1e74c2e7e172ba7c3bcca279085c5dac61"
+   :path "docs/durable/protocol-v1.mdx"
+   :blob "f1aba8697f3a2d2d47cf296b10b3a3022321ab0d"
+   :sha256 "82538d958d2f522bea6e4a6ccbc27c6bb6e230e19a1a386c605d43a0c02d11ba"
+   :clarification :pending}
+  :python-reader
+  {:repository "https://github.com/chdb-io/chdb.git"
+   :commit "b8f05d1e74c2e7e172ba7c3bcca279085c5dac61"
+   :path "chdb/durable/wal.py"
+   :blob "ac4337b50671b98c8dc62f71f695c9a35a2524a4"}
+  :rust-reader
+  {:repository "https://github.com/chdb-io/chdb-rust.git"
+   :commit "e685da930ecf02198c0b9e72a412cbc25842deb1"
+   :path "src/durable/wal.rs"
+   :blob "02f96bddc609e9738457c56c8fc07772ef4f5127"}
+  :jolt-reader
+  {:repository "https://github.com/chucklehead-dev/jolt-chdb.git"
+   :commit "bafd44bacff68308ce8faaabc7718a0927c35757"
+   :path "src/jdbc/chdb/durable.clj"
+   :blob "ba1901b053713f83005df9e357663f4ee15c3091"}}}

@@ -21,6 +21,15 @@
 (def ^:private expected-disposition-counts
   {:total 49 :mapped 45 :blocked 2 :not-applicable 2})
 
+(def ^:private expected-local-gaps
+  [{:id :local/empty-referenced-wal
+    :issue 98
+    :status :implemented-awaiting-upstream-clarification
+    :fixture "test/fixtures/durable/empty-referenced-wal"
+    :interpretation :tolerated-noncanonical
+    :reader-outcome :zero-records
+    :writer-outcome :omit-reference}])
+
 (def ^:private expected-case-names
   ["test_empty_object"
    "test_readonly_missing_object"
@@ -158,6 +167,23 @@
                     (set ids) (set mapped-ids))
     (doseq [entry mappings]
       (validate-mapping! entry))
+    (let [local-gaps (:local-gaps inventory)
+          local-mappings (:local-mappings mapping)
+          local-ids (mapv :id local-gaps)
+          mapped-local-ids (mapv :case local-mappings)]
+      (require-equal! "local conformance gap drift"
+                      expected-local-gaps local-gaps)
+      (when-not (= (count mapped-local-ids) (count (set mapped-local-ids)))
+        (fail! "duplicate local conformance mapping"
+               {:cases mapped-local-ids}))
+      (require-equal! "unmapped or unknown local conformance gap"
+                      (set local-ids) (set mapped-local-ids))
+      (doseq [{:keys [fixture]} local-gaps]
+        (when-not (.isDirectory (io/file fixture))
+          (fail! "local conformance fixture does not exist"
+                 {:fixture fixture})))
+      (doseq [entry local-mappings]
+        (validate-mapping! entry)))
     {:total (count cases)
      :mapped (count (filter #(= :mapped (:disposition %)) mappings))
      :blocked (count (filter #(= :blocked (:disposition %)) mappings))
@@ -176,6 +202,10 @@
     "sha-drift" [(assoc-in inventory [:source :commit] (apply str (repeat 40 "0"))) mapping]
     "missing-mapping" [inventory (update mapping :mappings pop)]
     "duplicate-mapping" [inventory (update mapping :mappings conj (first (:mappings mapping)))]
+    "missing-local-mapping" [inventory (update mapping :local-mappings pop)]
+    "duplicate-local-mapping"
+    [inventory
+     (update mapping :local-mappings conj (first (:local-mappings mapping)))]
     "missing-local-test"
     [inventory (assoc-in mapping [:mappings 0 :local-tests 0 :anchor]
                          "deliberately nonexistent local test")]
@@ -197,6 +227,8 @@
                  ["SHA drift" "sha-drift"]
                  ["missing mapping" "missing-mapping"]
                  ["duplicate mapping" "duplicate-mapping"]
+                 ["missing local mapping" "missing-local-mapping"]
+                 ["duplicate local mapping" "duplicate-local-mapping"]
                  ["missing local test" "missing-local-test"]]]
           (when-not
            (rejected?
@@ -207,4 +239,4 @@
             (fail! "deliberate drift control unexpectedly passed" {:control name})))
         (println "Durable upstream conformance inventory" summary)
         (println "  ok   provenance, case drift, mapping coverage, and local anchors")
-        (println "  ok   five deliberate drift controls rejected")))))
+        (println "  ok   seven deliberate drift controls rejected")))))

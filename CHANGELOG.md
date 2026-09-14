@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Tolerate a manifest-referenced, size-and-SHA-verified zero-byte Durable WAL
+  as an empty JSONL sequence while continuing to omit empty references from
+  writer flushes. A provenance-pinned fixture, wrong-size and wrong-digest
+  controls, and privacy-shaped recovery events cover integrity-before-
+  validation and the absence of replay effects. The upstream V1 prose does not
+  yet state this boundary explicitly, so the local conformance ledger keeps the
+  clarification pending rather than claiming normative resolution.
+
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
   pushback-reader call and one single-character String allocation per escape.

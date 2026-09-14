@@ -374,10 +374,14 @@
            [[{"sql" "INSERT INTO t VALUES (1)"}
              {"sql" "INSERT INTO t VALUES (2)"}]]
            (stored-wal-lines store))
-    (check "empty flush does not advance the manifest"
-           [:empty 1]
-           [(:status (writer/flush! writer))
-            (get-in (:head (control/read-head! store)) ["manifest" "seq"])])
+    (let [calls-before @calls
+          head-before (:head (control/read-head! store))]
+      (check "empty flush publishes no WAL and does not advance the manifest"
+             [:empty 1 true true]
+             [(:status (writer/flush! writer))
+              (get-in (:head (control/read-head! store)) ["manifest" "seq"])
+              (= calls-before @calls)
+              (= head-before (:head (control/read-head! store)))]))
     (writer/execute! writer "INSERT INTO t VALUES (3)")
     (writer/close! writer)
     (writer/close! writer)

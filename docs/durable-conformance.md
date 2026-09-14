@@ -14,6 +14,15 @@ explicit not-applicable rationale, or a blocker tracked by issue 47. A mapped
 anchor means the named local assertion exists; it is not a claim that every
 Python fixture, provider, or lifecycle detail has become language-neutral.
 
+The ledger may also contain `:local-gaps` and matching `:local-mappings` for a
+cross-binding boundary that the pinned upstream suite does not yet name. These
+entries are kept separate from the ordered upstream case list, so local evidence
+cannot silently be presented as an upstream conformance case. The first such
+entry is issue 98's zero-byte referenced WAL fixture. Current upstream main at
+`b8f05d1e74c2e7e172ba7c3bcca279085c5dac61` retains byte-identical protocol
+text but has 50 Python Durable tests after adding an unrelated local/file URL
+case; neither its suite nor the pinned 49-case baseline includes this boundary.
+
 Engine-version ordering has an additional differential oracle. The corpus at
 `test/fixtures/durable/version-ordering.json` records parse and less-than results
 from `chdb/durable/protocol.py` at the same upstream commit, plus the exact file
@@ -86,6 +95,28 @@ Together with the merged live-force warning tests, the executable ledger is now
 45 mapped, 2 blocked, and 2 binding-level not applicable cases. The remaining
 behavior blockers are the two secret-bearing exception/WAL redaction scenarios.
 
+## Empty referenced WAL compatibility
+
+`test/fixtures/durable/empty-referenced-wal/` is one immutable local-backend
+object tree whose head references a zero-byte WAL with declared size `0` and
+the standard empty SHA-256. Its adjacent provenance records the exact current
+protocol, Python reader, Rust reader, and pre-change Jolt reader revisions.
+Reader recovery must verify the reference, validate zero records, execute and
+classify no SQL, preserve the read-only head, and clean up normally. Mutating
+the same fixture's declared size or digest must fail as `corrupt` before a
+validation or replay event.
+
+This is intentionally reader tolerance, not writer freedom. The existing empty
+flush path still publishes nothing and leaves the manifest byte-for-byte
+unchanged. The interpretation remains marked as awaiting upstream clarification.
+
+The head-CAS Quint model abstracts WAL payload and JSONL shape, and the writer
+lifecycle model already assumes a nonempty buffered publication. Accepting zero
+records at the concrete reader boundary therefore changes neither ownership,
+manifest acknowledgement, nor writer transitions. Adding an `emptyWal` action
+would falsely suggest those models verify payload parsing. The fixture and its
+causal tests are the evidence at this documented adapter precondition.
+
 The public writer renewal-loss corpus starts with a successful heartbeat as a
 positive control, injects a real head-replacement failure before expiry, and
 proves that one transient failure does not fence prematurely or change the
@@ -110,7 +141,7 @@ Run the focused, offline gate with the mandatory compiler selector:
 The gate fails on changes to the pinned repository SHA, protocol/suite paths,
 source digests, case count or ordered names; duplicate or unmapped entries;
 invalid dispositions; and mapped paths or assertion anchors that no longer
-exist. It also proves five deliberate drift mutants fail. For an externally
+exist. It also proves seven deliberate drift mutants fail. For an externally
 visible red control, set `JOLT_CHDB_CONFORMANCE_MUTANT=name-drift`; success from
 that invocation is a gate defect.
 

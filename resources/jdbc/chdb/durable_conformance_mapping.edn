@@ -111,4 +111,11 @@
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "every immutable publication attempt has a unique key"}]}
   {:case :upstream/constructor-validation :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "fractional lease"}
-                 {:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "overslow heartbeat"}]}]}
+                 {:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "overslow heartbeat"}]}]
+ :local-mappings
+ [{:case :local/empty-referenced-wal :disposition :mapped
+   :local-tests
+   [{:path "test/jdbc/chdb_durable_wal_stream_test.clj"
+     :anchor "verified zero-byte referenced WAL opens as zero records"}
+    {:path "test/jdbc/chdb_durable_writer_test.clj"
+     :anchor "empty flush publishes no WAL and does not advance the manifest"}]}]}

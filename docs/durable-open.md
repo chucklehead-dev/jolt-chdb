@@ -32,6 +32,15 @@ they never accumulate across the manifest. A malformed tail therefore cannot
 execute a retained prefix, and changing the private WAL after validation cannot
 substitute different SQL for a retained plan.
 
+A referenced zero-byte WAL is tolerated as an empty JSONL sequence only after
+its declared zero size and the SHA-256 of the empty byte sequence have both
+verified. It produces zero analysis or replay calls. Writers do not create this
+shape: flushing an empty buffer remains a no-op and does not advance the
+manifest. This reader tolerance aligns with the pinned Python and Rust behavior,
+but the upstream V1 prose does not yet name the boundary explicitly; the
+fixture therefore records `:clarification :pending` rather than treating the
+interpretation as a normative upstream resolution.
+
 The 48 MiB byte cap bounds retained string character payload to 192 MiB using
 conservative four-byte-per-codepoint accounting for Jolt's codepoint-indexed
 strings, and to 96 MiB under JVM UTF-16 semantics; the independent record cap
