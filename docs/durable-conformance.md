@@ -1,9 +1,12 @@
 # Durable V1 conformance inventory
 
 This repository targets Durable V1 with bounded local evidence. It does not yet
-claim complete V1 conformance. The Phase 1 inventory pins upstream chDB commit
-`66643e5030fb73c30ac5cdd31d4c7858ea040ed0`, the normative protocol at
-`docs/durable/protocol-v1.mdx`, and all 49 ordered cases from
+claim complete V1 conformance. The Phase 1 inventory pins the normative protocol
+at upstream chDB commit `66643e5030fb73c30ac5cdd31d4c7858ea040ed0`
+and its byte-identical `docs/durable/protocol-v1.mdx`. The test inventory is
+refreshed independently to current upstream main
+`c5ed925d3fd6140660db7f89685eddcfc29f24c5`, Git blob
+`4b72fa84f8179d469066330d7c81a95fd218be43`, and all 50 ordered cases from
 `tests/test_durable.py`.
 
 The machine-readable source inventory is
@@ -18,10 +21,11 @@ The ledger may also contain `:local-gaps` and matching `:local-mappings` for a
 cross-binding boundary that the pinned upstream suite does not yet name. These
 entries are kept separate from the ordered upstream case list, so local evidence
 cannot silently be presented as an upstream conformance case. The first such
-entry is issue 98's zero-byte referenced WAL fixture. Current upstream main at
-`b8f05d1e74c2e7e172ba7c3bcca279085c5dac61` retains byte-identical protocol
-text but has 50 Python Durable tests after adding an unrelated local/file URL
-case; neither its suite nor the pinned 49-case baseline includes this boundary.
+entry is issue 98's zero-byte referenced WAL fixture. Current upstream main
+retains byte-identical protocol text but its 50-case Python suite adds local/file
+namespace URL aliasing. That binding convenience is explicitly not applicable:
+jolt-chdb accepts an `ObjectBackend` value and exposes no namespace URL parser.
+The empty-WAL gap remains separate because the upstream suite does not name it.
 
 Engine-version ordering has an additional differential oracle. The corpus at
 `test/fixtures/durable/version-ordering.json` records parse and less-than results
@@ -115,9 +119,16 @@ rewrite persisted WAL, result values, OpenTelemetry attributes, or provider
 payloads. External instrumentation that observes raw application/native call
 arguments still owns its own attribute redaction policy.
 
-The executable ledger is now 47 mapped, 0 blocked, and 2 binding-level not
-applicable cases. This closes the locally executable behavior blockers, not the
-broader release/provider/interoperability qualification tracked by issue 47.
+The reviewed 49-case ledger reached 47 mapped, 0 blocked, and 2 binding-level
+not-applicable cases. Refreshing current upstream main adds one binding-only URL
+alias case, so the 50-case ledger is 47 mapped, 0 blocked, and 3 binding-level
+not applicable. This closes the locally executable behavior blockers, not the
+broader release/provider/interoperability qualification tracked by issue 47,
+and does not claim that Python tests execute directly on Jolt. For this binding,
+issue 2's literal `passes unchanged` wording is interpreted at protocol scope:
+each protocol-relevant case maps to an unchanged local assertion, while a test
+of a Python-only API surface receives an explicit not-applicable disposition.
+That interpretation still needs issue-level acceptance before issue 2 closes.
 
 ## Empty referenced WAL compatibility
 
@@ -200,6 +211,69 @@ focused gate when the lane or its Durable recovery dependencies change.
 This lane does not replace the separate archive/header/library cross-version
 matrices and makes no rc.2 refusal claim.
 
+## Linux x86-64 release compatibility matrix
+
+The focused release matrix complements the Python-writer fixture without
+claiming direct provider compatibility. It creates raw logical-object fixtures
+with checksum-pinned chDB 26.7.2-rc.2 and 26.7.3 libraries, then opens each
+fixture in a separate Jolt process so a library loaded for one cell cannot
+affect another. The declared archive outcomes are:
+
+| Producer | Reader | Outcome | Boundary |
+| --- | --- | --- | --- |
+| 26.7.2-rc.2 | 26.7.2-rc.2 | accept | Matching backup format and minimum reader. |
+| 26.7.2-rc.2 | 26.7.3 | accept | The newer reader satisfies the persisted rc.2 minimum. |
+| 26.7.3 | 26.7.3 | accept | Matching backup format and minimum reader. |
+| 26.7.3 | 26.7.2-rc.2 | refuse | The reader is older than the persisted 26.7.3 minimum. |
+
+The refusal cell must perform zero archive downloads and leave native storage
+unopened. Accepted cells reconcile the same row count, sum, UTF-8 byte count,
+minimum, and maximum. All cells inventory the raw `head.json` and referenced
+base archive before and after open. Causal controls replace the archive bytes
+without updating their digest and raise the minimum reader beyond the running
+engine; both use isolated in-memory copies and cannot change the authoritative
+fixture.
+
+The same manifest pins the release archive, extracted library, header, upstream
+tag, and commit identities. Matched header/library pairs compile and execute a
+small version probe. The qualification harness resolves each pair's actual
+artifact identities and its release-provenance gate refuses mixed pairs before
+compilation or native execution. This is not evidence that either mixed pair
+is ABI-incompatible; it prevents an unqualified combination from silently
+becoming a supported release surface. A causal mutant that merely records the
+expected refusal without invoked-gate evidence is rejected by the report
+validator.
+
+Separate wrong-header and wrong-library digest mutants prove that artifact
+identity drift also fails closed before compilation or native execution. Those
+mutants exercise the identity gate, not the mixed-release provenance gate.
+Every native cell also gets a distinct gateboot directory below the exact Jolt
+executable SHA, preventing a bridge built in one cell from carrying native
+selection state into another.
+
+With both release archives extracted exactly once, run:
+
+```sh
+scripts/verify-durable-linux-compatibility.sh \
+  /tmp/durable-linux-compatibility \
+  /absolute/path/to/repository-pinned/jolt \
+  /absolute/path/to/26.7.2-rc.2 \
+  /absolute/path/to/26.7.3
+```
+
+The lane currently qualifies Linux x86-64 only. Equivalent arm64 or macOS
+claims require platform-native CI cells with separately pinned archive,
+library, and header identities; cross-compiling or reusing this result would
+not supply that evidence.
+
+This integration preserves the reviewed changes from secret-conformance head
+`df40ae8`, Python fixture head `0e052348`, and Linux matrix lineage
+`96c49f5`..`a9daccc` while restacking them on current `main`. Before the
+current-main inventory refresh, that reviewed 49-case integration reports 47
+mapped, 0 blocked, and 2 binding-level not-applicable cases. The separately
+identified 50th binding-only case produces the current 47/0/3 accounting above.
+Neither accounting is a claim of full cross-platform conformance.
+
 Run the focused, offline gate with the mandatory compiler selector:
 
 ```sh
@@ -213,12 +287,12 @@ Run the focused, offline gate with the mandatory compiler selector:
 The gate fails on changes to the pinned repository SHA, protocol/suite paths,
 source digests, case count or ordered names; duplicate or unmapped entries;
 invalid dispositions; and mapped paths or assertion anchors that no longer
-exist. It also proves seven deliberate drift mutants fail. For an externally
+exist. It also proves nine deliberate drift mutants fail, including exact suite
+blob drift and removal of the current-main URL-alias case. For an externally
 visible red control, set `JOLT_CHDB_CONFORMANCE_MUTANT=name-drift`; success from
 that invocation is a gate defect.
 
 This inventory intentionally leaves the remaining issue-47 obligations open:
- the earlier-archive/new-engine and header/library cross-version matrices,
  current-source AWS OIDC qualification, release evidence across claimed
  platforms/providers/runtimes, protocol clarification and refinement-model work,
  and final review of the eventual full matrix.

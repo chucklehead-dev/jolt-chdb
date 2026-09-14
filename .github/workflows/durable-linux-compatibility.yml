@@ -1,0 +1,67 @@
+name: Durable Linux compatibility matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/actions/install-jolt-aspects/**'
+      - '.github/workflows/durable-linux-compatibility.yml'
+      - 'deps.edn'
+      - 'resources/jdbc/chdb/durable_linux_compatibility.json'
+      - 'scripts/verify-durable-header-library-matrix.py'
+      - 'scripts/verify-durable-linux-compatibility.sh'
+      - 'src/jdbc/chdb/durable/**'
+      - 'src/jdbc/chdb/native.clj'
+      - 'test/jdbc/chdb_durable_linux_compatibility_test.clj'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86-64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-120643d6
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-120643d6
+      PINNED_JOLT_SOURCE_SHA: 120643d6bc322800a700e870de5c8087ad6085fa
+      PINNED_JOLT_VERSION: jolt v0.8.6-97-g120643d6
+      RC2_ARCHIVE_SHA256: 8b6f8b95278cc223f8cae0303006aecdaf72cf975fe29c1cb14277f2165e2b85
+      RELEASE_ARCHIVE_SHA256: bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
+        uses: ./.github/actions/install-jolt-aspects
+
+      - name: Verify pinned Jolt provenance
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
+
+      - name: Acquire each checksum-pinned native release once
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/durable-linux-compatibility-native"
+          mkdir -p "$root/rc2" "$root/release"
+          curl -fsSL --retry 2 --retry-all-errors \
+            -o "$root/rc2.tar.gz" \
+            https://github.com/chdb-io/chdb-core/releases/download/v26.7.2-rc.2/linux-x86_64-libchdb.tar.gz
+          test "$(sha256sum "$root/rc2.tar.gz" | awk '{print $1}')" = "$RC2_ARCHIVE_SHA256"
+          tar -xzf "$root/rc2.tar.gz" -C "$root/rc2"
+
+          curl -fsSL --retry 2 --retry-all-errors \
+            -o "$root/release.tar.gz" \
+            https://github.com/chdb-io/chdb-core/releases/download/v26.7.3/linux-x86_64-libchdb.tar.gz
+          test "$(sha256sum "$root/release.tar.gz" | awk '{print $1}')" = "$RELEASE_ARCHIVE_SHA256"
+          tar -xzf "$root/release.tar.gz" -C "$root/release"
+          echo "NATIVE_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Run separate-process archive and provenance cells
+        run: |
+          set -euo pipefail
+          scripts/verify-durable-linux-compatibility.sh \
+            "$RUNNER_TEMP/durable-linux-compatibility-output" \
+            "$(command -v jolt)" "$NATIVE_ROOT/rc2" "$NATIVE_ROOT/release"

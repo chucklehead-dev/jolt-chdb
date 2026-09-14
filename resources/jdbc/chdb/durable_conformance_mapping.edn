@@ -24,9 +24,11 @@
   {:case :upstream/future-protocol-version :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_head_test.clj" :anchor "future protocol fails closed"}]}
   {:case :upstream/producer-version-differs-but-compatible :disposition :mapped
-   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "a newer producer version is not an exact-match reader gate"}]}
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "a newer producer version is not an exact-match reader gate"}
+                 {:path "test/jdbc/chdb_durable_linux_compatibility_test.clj" :anchor "rc2-to-release"}]}
   {:case :upstream/engine-reader-too-old :disposition :mapped
-   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "an older running core fails the minimum-reader gate"}]}
+   :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "an older running core fails the minimum-reader gate"}
+                 {:path "test/jdbc/chdb_durable_linux_compatibility_test.clj" :anchor "minimum-reader refusal downloaded the archive"}]}
   {:case :upstream/backup-format-too-new :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "future backup formats fail closed"}]}
   {:case :upstream/unknown-fields-round-trip :disposition :mapped
@@ -122,6 +124,10 @@
    :local-tests [{:path "test/jdbc/chdb_durable_open_test.clj" :anchor "namespace/object open recovers the selected object's WAL"}]}
   {:case :upstream/wal-keys-are-unique :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "every immutable publication attempt has a unique key"}]}
+  {:case :upstream/local-and-file-urls-name-the-same-directory
+   :disposition :not-applicable
+   :not-applicable
+   {:rationale "This is Python binding namespace-URL aliasing outside the Durable V1 wire/backend contract. jolt-chdb accepts an explicit ObjectBackend value and exposes no namespace URL parser."}}
   {:case :upstream/constructor-validation :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "fractional lease"}
                  {:path "test/jdbc/chdb_durable_dbspec_test.clj" :anchor "overslow heartbeat"}]}]

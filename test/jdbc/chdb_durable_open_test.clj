@@ -387,7 +387,7 @@
 (defn- canonical-protocol-source []
   (let [source (:source (edn/read-string (slurp conformance-inventory)))]
     [(get source :repository)
-     (get source :commit)
+     (get-in source [:protocol :commit])
      (get-in source [:protocol :path])
      (get-in source [:protocol :sha256])]))
 

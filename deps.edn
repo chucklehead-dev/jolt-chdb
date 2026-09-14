@@ -173,6 +173,9 @@
            :durable-python-writer-fixture-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-python-writer-fixture-test"]}
+           :durable-linux-compatibility-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-linux-compatibility-test"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}
