@@ -433,7 +433,8 @@
         (fail! "WAL fixture is not a regular file" {}))
       (let [bytes
             (run-once! :file-read {:file-name (:file-name fixture-base)}
-                       #(Files/readAllBytes fixture-path) alength)
+                       #(Files/readAllBytes fixture-path)
+                       (fn [value] (alength value)))
             actual-sha
             (run-once!
              :sha256 {:input-bytes (alength bytes)}
