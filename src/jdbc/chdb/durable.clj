@@ -436,6 +436,15 @@
       (fail! ::limit-exceeded "A Durable WAL statement exceeds 64 MiB"))
     sql))
 
+(defn- next-lf-index [^bytes chunk ^long start ^long end]
+  ;; The explicit byte-array and primitive-index contract is material on Jolt:
+  ;; it lowers the hot read to jolt-vaget instead of generic collection lookup.
+  ;; END is returned when no raw LF occurs in the requested range.
+  (loop [index start]
+    (if (or (= index end) (= (byte 10) (aget chunk index)))
+      index
+      (recur (unchecked-inc index)))))
+
 (defn- visit-wal!
   "Stream, validate, and visit each record without retaining another record.
 
@@ -471,40 +480,40 @@
 
             :else
             (let [next-record-count
-                  (loop [index 0 start 0 count record-count]
-                    (if (= index read-count)
-                      (do
-                        (when (< start read-count)
-                          (.write line chunk start (- read-count start)))
-                        count)
-                      (if (= 10 (bit-and 255 (aget chunk index)))
-                        (do
-                          (when (< start index)
-                            (.write line chunk start (- index start)))
-                          (try
-                            ;; UTF-8 has whole-segment precedence over record
-                            ;; parsing and limits in the legacy decoder. Even
-                            ;; after remembering a record failure, validate the
-                            ;; encoding of every later record before EOF.
-                            (let [record-wire-bytes (.size line)
-                                  text (decode-wal-text! (.toByteArray line))]
-                              (when-not @first-failure
-                                (try
-                                  (visit! (decode-wal-record!
-                                           text record-wire-bytes)
-                                          record-wire-bytes)
-                                  (catch Throwable error
-                                    (if delay-failure-until-termination?
-                                      (reset! first-failure error)
-                                      (throw error))))))
-                            (catch Throwable error
-                              (if delay-failure-until-termination?
-                                (when-not @utf8-failure
-                                  (reset! utf8-failure error))
-                                (throw error))))
-                          (.reset line)
-                          (recur (inc index) (inc index) (inc count)))
-                        (recur (inc index) start count))))]
+                  (loop [start 0 count record-count]
+                    (if (= start read-count)
+                      count
+                      (let [index (next-lf-index chunk start read-count)]
+                        (if (= index read-count)
+                          (do
+                            (.write line chunk start (- read-count start))
+                            count)
+                          (do
+                            (when (< start index)
+                              (.write line chunk start (- index start)))
+                            (try
+                              ;; UTF-8 has whole-segment precedence over record
+                              ;; parsing and limits in the legacy decoder. Even
+                              ;; after remembering a record failure, validate
+                              ;; the encoding of every later record before EOF.
+                              (let [record-wire-bytes (.size line)
+                                    text (decode-wal-text! (.toByteArray line))]
+                                (when-not @first-failure
+                                  (try
+                                    (visit! (decode-wal-record!
+                                             text record-wire-bytes)
+                                            record-wire-bytes)
+                                    (catch Throwable error
+                                      (if delay-failure-until-termination?
+                                        (reset! first-failure error)
+                                        (throw error))))))
+                              (catch Throwable error
+                                (if delay-failure-until-termination?
+                                  (when-not @utf8-failure
+                                    (reset! utf8-failure error))
+                                  (throw error))))
+                            (.reset line)
+                            (recur (inc index) (inc count)))))))]
               (recur next-record-count))))))))
 
 (defn- extend-replay-plan [plan sql record-wire-bytes]
