@@ -309,7 +309,8 @@
         boundaries (select-keys fixture
                                 [:record-count :record-start
                                  :record-end-exclusive])]
-    (when-not (and (= :complete (:status source))
+    (when-not (and (= report/schema-version (:schema-version source))
+                   (= :complete (:status source))
                    (= :jvm (get-in source [:host :runtime]))
                    (= :casselc-data-json
                       (get-in source [:libraries :json-parser :implementation]))

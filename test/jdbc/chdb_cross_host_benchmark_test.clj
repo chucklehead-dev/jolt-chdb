@@ -158,7 +158,8 @@
       (finally (.delete file))))
   (let [load-reused-boundaries (private-fn 'load-reused-boundaries)
         file (java.io.File/createTempFile "cross-host-boundaries-" ".edn")
-        source {:status :complete
+        source {:schema-version report/schema-version
+                :status :complete
                 :host {:runtime :jvm}
                 :libraries {:json-parser {:implementation :casselc-data-json}}
                 :fixture {:segment-sha256 "fixture-sha" :bytes 12 :record-count 2
@@ -175,6 +176,11 @@
              :jdbc.chdb-cross-host-wal/invalid-benchmark
              (error-type #(load-reused-boundaries
                            (.getPath file) "wrong-sha" 12 2 1)))
+      (spit file (report/render (assoc source :schema-version 3)))
+      (check "secondary JVM row rejects an older report schema"
+             :jdbc.chdb-cross-host-wal/invalid-benchmark
+             (error-type #(load-reused-boundaries
+                           (.getPath file) "fixture-sha" 12 2 1)))
       (finally (.delete file))))
   (check "missing JFR configuration is an optional not-run capability"
          nil

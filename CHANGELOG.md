@@ -20,7 +20,9 @@
   available instead of hiding repeated whole-segment scans. Full-segment and
   selected-record (excluding LF) SHA-256 identities are distinct, checked at
   their respective phases, and tied to the authoritative Rust fixture manifest
-  and producer provenance.
+  and producer provenance. JVM managed-allocation metrics are enabled only
+  when the runtime reports that capability, and reused boundary reports must
+  match the exact report schema.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
