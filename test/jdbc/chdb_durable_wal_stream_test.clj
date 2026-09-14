@@ -70,21 +70,29 @@
 
 (defn- attempt-open
   ([payload f]
-   (attempt-open payload (fn [_] nil) f))
-  ([payload observer f]
+   (attempt-open payload {} f))
+  ([payload observer-or-overrides f]
    (let [calls (atom [])
          close-count (atom 0)
          cleanup-count (atom 0)
+         operation-overrides
+         (if (map? observer-or-overrides)
+           observer-or-overrides
+           {:recovery-event! observer-or-overrides})
          operations
-         (assoc (support/fake-open-operations
-                 calls (atom [0M]) close-count cleanup-count)
-                :recovery-event! observer)]
+         (merge
+          (support/fake-open-operations
+           calls (atom [0M]) close-count cleanup-count)
+          operation-overrides)]
      (f #(durable/open-reader!
           {:store (prepared-wal-store payload) :operations operations})
         calls close-count cleanup-count))))
 
 (defn- engine-effects [calls]
   (filterv #(contains? #{:analyze-execute :execute} (first %)) calls))
+
+(defn- phase-byte-total [events phase]
+  (reduce + 0 (map :bytes (filter #(= phase (:phase %)) events))))
 
 (def ^:private empty-wal-fixture-root
   "test/fixtures/durable/empty-referenced-wal")
@@ -216,6 +224,137 @@
            (finally
              (reader/close! opened)))))))
 
+  (let [payload (wal-bytes ["SELECT 'instrumentation-canary'"])
+        record-wire-bytes (dec (alength payload))
+        events (atom [])
+        expected-phases
+        [:wal-download :wal-hash :wal-lf-scan :wal-record-buffer
+         :wal-record-copy :wal-strict-decode :wal-json-parse
+         :wal-plan-retention :wal-replay-classification :wal-replay-native]]
+    (attempt-open
+     payload {:recovery-phase! #(swap! events conj %)}
+     (fn [open! calls _ _]
+       (let [opened (open!)]
+         (try
+           (check "instrumented recovery preserves the executed statement"
+                  ["SELECT 'instrumentation-canary'"]
+                  (mapv second (filter #(= :execute (first %)) @calls)))
+           (finally
+             (reader/close! opened))))))
+    (check "instrumentation records fixed recovery phases in operation order"
+           expected-phases (mapv :phase @events))
+    (check "instrumentation emits only bounded scalar event fields"
+           true
+           (every?
+            (fn [event]
+              (and (= #{:phase :status :calls :nanos :bytes}
+                      (set (keys event)))
+                   (contains? @#'durable/recovery-phase-labels (:phase event))
+                   (= :complete (:status event))
+                   (= 1 (:calls event))
+                   (integer? (:nanos event))
+                   (not (neg? (:nanos event)))
+                   (integer? (:bytes event))
+                   (not (neg? (:bytes event)))))
+            @events))
+    (check "instrumentation retains no path, key, SQL, payload, or error text"
+           false
+           (str/includes? (pr-str @events) "instrumentation-canary"))
+    (check "retained-plan replay reports exact JSON bytes without the LF"
+           [record-wire-bytes record-wire-bytes]
+           [(phase-byte-total @events :wal-replay-classification)
+            (phase-byte-total @events :wal-replay-native)]))
+
+  (let [payload (wal-bytes ["SELECT 'same-effects'"])
+        run
+        (fn [operation-overrides]
+          (let [result (atom nil)]
+            (attempt-open
+             payload operation-overrides
+             (fn [open! calls _ _]
+               (let [opened (open!)]
+                 (try
+                   (reset! result @calls)
+                   (finally
+                     (reader/close! opened))))))
+            @result))]
+    (check "disabled and enabled instrumentation preserve exact effects"
+           (run {})
+           (run {:recovery-phase! (fn [_])})))
+
+  (let [payload (wal-bytes ["SELECT 'clock-free-default'"])
+        nano-time-var (ns-resolve 'jdbc.chdb.durable 'recovery-nano-time)]
+    (with-redefs-fn
+      {nano-time-var
+       (fn []
+         (throw (ex-info "timer must remain disabled" {:type ::timer-read})))}
+      #(attempt-open
+        payload
+        (fn [open! _ _ _]
+          (reader/close! (open!)))))
+    (check "default recovery performs no instrumentation clock read" true true))
+
+  (let [payload (wal-bytes ["SELECT 'invalid-observer'"])]
+    (attempt-open
+     payload {:recovery-phase! false}
+     (fn [open! calls close-count cleanup-count]
+       (check "non-function instrumentation is rejected"
+              ::durable/invalid-options (error-type open!))
+       (check "invalid instrumentation fails before native recovery effects"
+              [[] 0 0] [(engine-effects @calls)
+                        @close-count @cleanup-count]))))
+
+  (let [payload (wal-bytes ["SELECT 'throwing-observer-success'"])]
+    (attempt-open
+     payload {:recovery-phase! (fn [_]
+                                 (throw (ex-info "observer failed" {})))}
+     (fn [open! calls _ _]
+       (let [opened (open!)]
+         (try
+           (check "throwing observer cannot mask successful recovery"
+                  ["SELECT 'throwing-observer-success'"]
+                  (mapv second (filter #(= :execute (first %)) @calls)))
+           (finally
+             (reader/close! opened)))))))
+
+  (let [payload (wal-bytes ["SELECT 'primary-failure'"])
+        primary (ex-info "primary classifier failure" {:type ::primary})]
+    (attempt-open
+     payload
+     {:recovery-phase! (fn [_]
+                         (throw (ex-info "observer failed" {})))
+      :analyze-execute! (fn [& _] (throw primary))}
+     (fn [open! calls _ _]
+       (let [actual (try (open!) nil (catch Throwable error error))]
+         (check "throwing observer preserves primary throwable identity"
+                true (identical? primary actual))
+         (check "failed classification reaches no native replay"
+                [] (filterv #(= :execute (first %)) @calls))))))
+
+  (let [payload
+        (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"])
+                      (.getBytes "{malformed-tail}\n" "UTF-8"))
+        events (atom [])]
+    (attempt-open
+     payload {:recovery-phase! #(swap! events conj %)}
+     (fn [open! calls _ _]
+       (check "instrumented malformed tail preserves corruption precedence"
+              ::durable/corrupt (error-type open!))
+       (check "instrumented malformed tail applies no validated prefix"
+              [] (engine-effects @calls))))
+    (check "failed JSON phase emits a terminal failure status"
+           true
+           (boolean
+            (some #(and (= :wal-json-parse (:phase %))
+                        (= :failed (:status %)))
+                  @events)))
+    (check "validation failure emits no replay phase"
+           false
+           (boolean
+            (some #(contains? #{:wal-replay-classification :wal-replay-native}
+                              (:phase %))
+                  @events))))
+
   (let [long-sql (str "SELECT '" (apply str (repeat 70000 "x")) "'")
         sql-values ["INSERT INTO t VALUES (1)" long-sql "SELECT 'β'"]
         payload (wal-bytes sql-values)
@@ -243,6 +382,8 @@
 
   (let [sql-values ["SELECT 1" "SELECT 2" "SELECT 3"]
         payload (wal-bytes sql-values)
+        expected-record-bytes
+        (reduce + 0 (map #(dec (alength (wal-bytes [%]))) sql-values))
         wire-limit-var (ns-resolve 'jdbc.chdb.durable
                                    'replay-plan-wire-byte-limit)
         record-limit-var (ns-resolve 'jdbc.chdb.durable
@@ -251,6 +392,7 @@
             [["wire-byte" wire-limit-var 1]
              ["record-count" record-limit-var 1]]]
       (let [wal-decodes (atom 0)
+            events (atom [])
             original-read-str json/read-str]
         (with-redefs-fn
           {limit-var limit
@@ -261,6 +403,7 @@
              (apply original-read-str text options))}
           #(attempt-open
             payload
+            {:recovery-phase! #(swap! events conj %)}
             (fn [open! calls _ _]
               (let [opened (open!)]
                 (try
@@ -272,7 +415,11 @@
                   (finally
                     (reader/close! opened)))))))
         (check (str label " cap causally retains the two-pass fallback")
-               (* 2 (count sql-values)) @wal-decodes))))
+               (* 2 (count sql-values)) @wal-decodes)
+        (check (str label " fallback reports the same exact replay byte unit")
+               [expected-record-bytes expected-record-bytes]
+               [(phase-byte-total @events :wal-replay-classification)
+                (phase-byte-total @events :wal-replay-native)]))))
 
   (let [validate-var (ns-resolve 'jdbc.chdb.durable 'validate-wal!)
         replay-var (ns-resolve 'jdbc.chdb.durable 'replay-wal!)
@@ -293,6 +440,8 @@
     (try
       (Files/write path (wal-bytes original-sql) (make-array OpenOption 0))
       (let [plan (validate! path)]
+        (check "unobserved retained plans allocate no phase byte vector"
+               false (contains? plan :statement-wire-bytes))
         (Files/write path (wal-bytes changed-sql) (make-array OpenOption 0))
         (replay! path plan operations :handle "default"))
       (check "a validated plan resists a later scratch-file substitution"
@@ -318,16 +467,16 @@
                 (wal-bytes ["SELECT 'segment-two'"])])]
     (with-redefs-fn
       {validate-var
-       (fn [path]
-         (let [plan (validate! path)]
+       (fn [path observe!]
+         (let [plan (validate! path observe!)]
            (when (:statements plan)
              (let [active (swap! live-plans inc)]
                (swap! max-live-plans max active)))
            plan))
        replay-var
-       (fn [path plan ops handle database]
+       (fn [path plan ops handle database observe!]
          (try
-           (replay! path plan ops handle database)
+           (replay! path plan ops handle database observe!)
            (finally
              (when (:statements plan)
                (swap! live-plans dec)))))}
