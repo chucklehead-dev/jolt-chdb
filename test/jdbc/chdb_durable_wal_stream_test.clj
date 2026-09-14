@@ -213,7 +213,9 @@
     (check "running Jolt passes strict and replacement-sentinel capability probes"
            true (require-decoder!))
     (check "startup capability covers every malformed UTF-8 class"
-           [:stray-continuation :truncated-continuation :invalid-lead
+           [:stray-continuation :truncated-continuation
+            :invalid-continuation-after-valid-lead :invalid-lead
+            :obsolete-five-byte-lead
             :two-byte-overlong :three-byte-overlong :four-byte-overlong
             :encoded-surrogate :above-unicode-maximum]
            (mapv first @malformed-probes-var))
@@ -317,7 +319,7 @@
         events (atom [])
         expected-phases
         [:wal-download :wal-hash :wal-lf-scan :wal-record-buffer
-         :wal-record-copy :wal-strict-decode :wal-json-parse
+         :wal-record-copy :wal-decode :wal-json-parse
          :wal-plan-retention :wal-replay-classification :wal-replay-native]]
     (attempt-open
      payload {:recovery-phase! #(swap! events conj %)}

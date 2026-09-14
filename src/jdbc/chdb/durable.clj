@@ -36,7 +36,7 @@
 (def ^:private recovery-phase-labels
   #{:base-download :base-hash :wal-download :wal-hash
     :wal-lf-scan :wal-record-buffer :wal-record-copy
-    :wal-strict-decode :wal-json-parse :wal-plan-retention
+    :wal-decode :wal-json-parse :wal-plan-retention
     :wal-replay-classification :wal-replay-native})
 
 (def ^:private recovery-nano-time #(System/nanoTime))
@@ -392,7 +392,14 @@
   [[:stray-continuation (byte-array [(unchecked-byte 0x80)])]
    [:truncated-continuation (byte-array [(unchecked-byte 0xe2)
                                          (unchecked-byte 0x82)])]
+   [:invalid-continuation-after-valid-lead
+    (byte-array [(unchecked-byte 0xe2) (unchecked-byte 0x28)
+                 (unchecked-byte 0xa1)])]
    [:invalid-lead (byte-array [(unchecked-byte 0xff)])]
+   [:obsolete-five-byte-lead
+    (byte-array [(unchecked-byte 0xf8) (unchecked-byte 0x88)
+                 (unchecked-byte 0x80) (unchecked-byte 0x80)
+                 (unchecked-byte 0x80)])]
    [:two-byte-overlong (byte-array [(unchecked-byte 0xc0)
                                     (unchecked-byte 0xaf)])]
    [:three-byte-overlong (byte-array [(unchecked-byte 0xe0)
@@ -592,7 +599,7 @@
                                       #(.toByteArray line))
                                      text
                                      (observed-recovery-phase
-                                      observe! :wal-strict-decode
+                                      observe! :wal-decode
                                       record-wire-bytes
                                       #(decode-wal-text! record-bytes))]
                                  (when-not @first-failure

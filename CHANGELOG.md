@@ -48,7 +48,7 @@
 
 - Add opt-in, scalar-only Durable recovery phase observations through the
   existing open-operation seam. Fixed labels now separate base/WAL download
-  and hashing, LF scanning, record buffering and copying, strict UTF-8 decode,
+  and hashing, LF scanning, record buffering and copying, WAL decoding,
   JSON parsing, bounded replay-plan retention, classification, and native
   replay. The default path performs no instrumentation clock reads; observer
   failures cannot replace a recovery result or throwable, and events retain no
