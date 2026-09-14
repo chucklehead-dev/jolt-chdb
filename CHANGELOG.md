@@ -5,8 +5,8 @@
 - Specialize Durable WAL raw-LF scanning with an explicit byte-array and
   primitive-index source contract while preserving strict UTF-8 validation,
   JSONL framing, error precedence, and verify-before-replay behavior. An
-  immutable 52,224-row A/B/B/A qualification measured a 48.72% lower LF-phase
-  mean and an 11.73% lower complete-recovery mean with identical inventory and
+  immutable 52,224-row A/B/B/A qualification measured a 51.13% lower LF-phase
+  mean and a 15.37% lower complete-recovery mean with identical inventory and
   aggregates. These two-observation results are descriptive, not percentile or
   general Durable-throughput claims; the emitted-code comparison is preserved
   separately from the source-shape regression control.
