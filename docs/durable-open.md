@@ -41,10 +41,13 @@ validated can still use the existing protocol-sized streaming buffers. The
 fallback preserves support for every legal 128 MiB WAL without retaining the
 whole segment as managed strings.
 
-Each buffered record is decoded with a strict UTF-8 `CharsetDecoder`, so
-malformed, overlong, surrogate, out-of-range, and truncated byte sequences fail
-without re-encoding the decoded string for a byte comparison. The visitor
-already knows each JSON record's wire-byte length.
+Each buffered record first uses Jolt's native UTF-8 String decoder. Text without
+U+FFFD is canonical immediately. Text containing U+FFFD takes the strict
+`CharsetDecoder` path, distinguishing a legitimate encoded replacement scalar
+from replacement introduced by malformed, overlong, surrogate, out-of-range,
+or truncated input. This keeps strict rejection without re-encoding every
+ordinary record for a byte comparison. The visitor already knows each JSON
+record's wire-byte length.
 Because a decoded JSON string cannot have more UTF-8 bytes than its complete
 encoded record, records at or below the 64 MiB statement limit also avoid
 creating a second statement-sized byte array solely to count it. Records above

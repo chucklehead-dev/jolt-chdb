@@ -358,7 +358,7 @@
            "The running Jolt lacks strict UTF-8 decoder support"))
   true)
 
-(defn- decode-wal-text! [bytes]
+(defn- strict-decode-wal-text! [bytes]
   (try
     (let [decoder (.newDecoder utf8-charset)]
       (.onMalformedInput decoder CodingErrorAction/REPORT)
@@ -366,6 +366,18 @@
       (str (.decode decoder (ByteBuffer/wrap bytes))))
     (catch CharacterCodingException _
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))))
+
+(defn- decode-wal-text! [bytes]
+  ;; Jolt's String byte constructor reaches Chez's native UTF-8 decoder, while
+  ;; CharsetDecoder deliberately models the JVM's incremental per-code-point
+  ;; loop. The constructor exposes every malformed sequence as U+FFFD. A record
+  ;; without that sentinel is therefore canonical immediately; a record with
+  ;; it takes the strict path so a legitimate encoded U+FFFD remains accepted
+  ;; while replacement caused by malformed input is still rejected.
+  (let [text (String. bytes "UTF-8")]
+    (if (= -1 (.indexOf text (int 0xfffd)))
+      text
+      (strict-decode-wal-text! bytes))))
 
 (defn- exact-statement-bytes-exceed? [sql limit]
   (> (alength (.getBytes sql "UTF-8")) limit))

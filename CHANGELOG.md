@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Decode ordinary Durable WAL records through Jolt's native UTF-8 String
+  constructor, falling back to the strict `CharsetDecoder` only when decoded
+  text contains U+FFFD. The fallback distinguishes a legitimate encoded U+FFFD
+  from replacement caused by malformed input, preserving strict rejection and
+  existing termination/error/effect ordering without re-encoding every record.
+  Exhaustive byte strings through length two plus targeted three/four-byte
+  malformed and scalar-boundary cases match the prior decoder exactly. On one
+  immutable 52,224-row A/B/B/A recovery qualification, mean open time fell from
+  6.131 s to 3.536 s (42.3%) with identical inventory and aggregate results.
+  This bounded comparison is not a percentile, allocation, RSS-plateau, or
+  matched Rust qualification.
+
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
   pushback-reader call and one single-character String allocation per escape.
