@@ -16,15 +16,29 @@
    {:gc-count 0 :gc-time-ms 0}
    (ManagementFactory/getGarbageCollectorMXBeans)))
 
+(defn- enable-if-supported!
+  [supported? enabled? enable!]
+  (when (and supported? (not (enabled?)))
+    (enable! true))
+  supported?)
+
 (defn provider []
   (let [thread-bean (ManagementFactory/getThreadMXBean)
         cpu? (.isCurrentThreadCpuTimeSupported thread-bean)
-        allocation? (instance? ThreadMXBean thread-bean)
-        allocation-bean (when allocation? ^ThreadMXBean thread-bean)]
+        allocation-bean (when (instance? ThreadMXBean thread-bean)
+                          ^ThreadMXBean thread-bean)
+        allocation-supported?
+        (boolean (and allocation-bean
+                      (.isThreadAllocatedMemorySupported allocation-bean)))
+        allocation?
+        (enable-if-supported!
+         allocation-supported?
+         #(and allocation-bean
+               (.isThreadAllocatedMemoryEnabled allocation-bean))
+         #(when allocation-bean
+            (.setThreadAllocatedMemoryEnabled allocation-bean %)))]
     (when (and cpu? (not (.isThreadCpuTimeEnabled thread-bean)))
       (.setThreadCpuTimeEnabled thread-bean true))
-    (when (and allocation? (not (.isThreadAllocatedMemoryEnabled allocation-bean)))
-      (.setThreadAllocatedMemoryEnabled allocation-bean true))
     {:support {:calling-thread-cpu (if cpu? :supported :unsupported)
                :managed-allocation (if allocation?
                                      :jvm-thread-allocated-bytes

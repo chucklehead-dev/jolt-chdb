@@ -119,10 +119,22 @@
     (when (= :jvm (keyword (or (System/getenv "BENCH_RUNTIME") "jvm")))
       (let [primitive
             (requiring-resolve
-             'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)]
+             'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)
+            enable-if-supported!
+            (requiring-resolve
+             'jdbc.chdb-cross-host-jvm-metrics/enable-if-supported!)
+            enable-calls (atom 0)]
         (check "JVM primitive control matches shared boundary scanner"
                second-boundaries
-               (primitive bytes 2)))))
+               (primitive bytes 2))
+        (check "unsupported allocation counters remain unsupported"
+               false
+               (enable-if-supported!
+                false
+                #(throw (ex-info "unsupported capability was queried" {}))
+                (fn [_] (swap! enable-calls inc))))
+        (check "unsupported allocation counters are never enabled"
+               0 @enable-calls))))
   (let [append-checkpoint! (private-fn 'append-checkpoint!)
         file (java.io.File/createTempFile "cross-host-checkpoint-" ".edn")]
     (try
