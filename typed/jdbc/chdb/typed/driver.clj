@@ -26,7 +26,7 @@
     :ready
     :unavailable))
 
-(t/ann stable-unsupported typed-abi/UnsupportedCoreCapability)
+(t/ann stable-unsupported typed-abi/UnsupportedCapability)
 (def stable-unsupported
   {:status :unsupported
    :type :jdbc.chdb.native/unsupported-core

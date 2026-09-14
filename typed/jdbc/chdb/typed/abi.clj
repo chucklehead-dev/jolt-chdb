@@ -86,7 +86,7 @@
                        :symbols (t/Map FunctionId SymbolStatus)
                        :provenance SourceProvenance}
           :complete? true))
-(t/defalias UnsupportedCoreCapability
+(t/defalias UnsupportedCapability
   (t/HMap :mandatory {:status ':unsupported
                        :type ':jdbc.chdb.native/unsupported-core
                        :contract ':durable-v1
@@ -106,7 +106,7 @@
                        :provenance SourceProvenance}
           :complete? true))
 (t/defalias DurableCapability
-  (t/U SupportedCapability UnsupportedCoreCapability
+  (t/U SupportedCapability UnsupportedCapability
        UnsupportedVersionCapability))
 
 ;; These signatures are an explicit trusted seam: the unchanged production
