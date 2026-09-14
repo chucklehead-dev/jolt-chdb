@@ -230,14 +230,16 @@
      :sink (consume-result value)}))
 
 (defn- measure-raw-phase
-  [bytes expected-record-count metrics scanner]
-  (let [{:keys [value] :as measurement}
-        (measure-once metrics #(scanner bytes))]
-    (when-not (= expected-record-count value)
-      (fail! "raw LF count differs from the caller-verified fixture count" {}))
-    (measured-phase
-     (assoc (dissoc measurement :value) :warmups 0 :samples 1)
-     {:input-bytes (alength bytes)} expected-record-count)))
+  ([bytes expected-record-count metrics scanner]
+   (measure-raw-phase bytes expected-record-count metrics scanner measure-once))
+  ([bytes expected-record-count metrics scanner measurer]
+   (let [{:keys [value] :as measurement}
+         (measurer metrics #(scanner bytes))]
+     (when-not (= expected-record-count value)
+       (fail! "raw LF count differs from the caller-verified fixture count" {}))
+     (measured-phase
+      (assoc (dissoc measurement :value) :warmups 0 :samples 1)
+      {:input-bytes (alength bytes)} expected-record-count))))
 
 (defn- artifact-path [output suffix]
   (str/replace output #"\.edn$" suffix))
@@ -327,6 +329,8 @@
       :repo-tree (required-env "BENCH_REPO_TREE")
       :wal-source-sha256 (required-env "BENCH_WAL_SOURCE_SHA256")
       :report-source-sha256 (required-env "BENCH_REPORT_SOURCE_SHA256")
+      :jolt-metrics-source-sha256
+      (required-env "BENCH_JOLT_METRICS_SOURCE_SHA256")
       :jvm-metrics-source-sha256
       (required-env "BENCH_JVM_METRICS_SOURCE_SHA256")
       :jvm-profile-source-sha256

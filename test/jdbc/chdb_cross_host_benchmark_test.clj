@@ -69,11 +69,23 @@
              false
              (or (contains? result :value)
                  (str/includes? (pr-str result) "{\"sql\""))))
-    ;; The rejected harness performed two setup scans plus warmups and samples:
-    ;; 5 + 20 + 2 = 27 whole-segment passes per primary host. This control
-    ;; makes reintroducing that loop visibly distinct from the one-scan path.
-    (check "legacy whole-segment mutant performs 27 scans at 5/20" 27
-           (+ 5 20 2)))
+    (let [calls (atom 0)
+          measure-once (private-fn 'measure-once)
+          ;; Causal reconstruction of the rejected harness: two setup calls,
+          ;; five warmups, and twenty measured calls all invoke the same
+          ;; whole-segment scanner before returning the final measurement.
+          legacy-measurer
+          (fn [metrics f]
+            (dotimes [_ 26] (f))
+            (measure-once metrics f))]
+      (measure-raw-phase
+       bytes 2 {:snapshot nil}
+       (fn [input]
+         (swap! calls inc)
+         (count-newlines input))
+       legacy-measurer)
+      (check "legacy whole-segment mutant performs 27 scans at 5/20"
+             27 @calls)))
   (let [append-checkpoint! (private-fn 'append-checkpoint!)
         file (java.io.File/createTempFile "cross-host-checkpoint-" ".edn")]
     (try

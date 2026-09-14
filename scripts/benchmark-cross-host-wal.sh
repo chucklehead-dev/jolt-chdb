@@ -148,6 +148,7 @@ bb_bin=$(realpath "$(command -v bb)")
 java_bin=$(realpath "$(command -v java)")
 wal_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)
 report_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)
+jolt_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jolt_metrics.clj | cut -d' ' -f1)
 jvm_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)
 jvm_profile_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)
 runner_sha=$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)
@@ -161,6 +162,7 @@ verify_checkout_provenance() {
      [[ "$(git rev-parse HEAD^{tree})" != "$repo_tree" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_wal.clj | cut -d' ' -f1)" != "$wal_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' -f1)" != "$report_source_sha" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_jolt_metrics.clj | cut -d' ' -f1)" != "$jolt_metrics_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)" != "$jvm_metrics_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)" != "$jvm_profile_source_sha" ]] ||
      [[ "$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)" != "$runner_sha" ]]; then
@@ -179,6 +181,7 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_REPO_TREE="$repo_tree"
              BENCH_WAL_SOURCE_SHA256="$wal_source_sha"
              BENCH_REPORT_SOURCE_SHA256="$report_source_sha"
+             BENCH_JOLT_METRICS_SOURCE_SHA256="$jolt_metrics_source_sha"
              BENCH_JVM_METRICS_SOURCE_SHA256="$jvm_metrics_source_sha"
              BENCH_JVM_PROFILE_SOURCE_SHA256="$jvm_profile_source_sha"
              BENCH_RUNNER_SHA256="$runner_sha"
