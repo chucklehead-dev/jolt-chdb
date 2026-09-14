@@ -80,26 +80,27 @@
     (catch CharacterCodingException _
       (fail! "selected WAL record is not strict UTF-8" {}))))
 
-(defn- count-newlines [bytes]
-  (loop [index 0 count 0]
-    (if (= index (alength bytes))
-      count
-      (recur (inc index)
-             (if (= 10 (bit-and 255 (aget bytes index)))
-               (inc count) count)))))
-
-(defn- selected-record [bytes ordinal]
+(defn- scan-record-boundaries [^bytes bytes ordinal]
   (when-not (and (pos? (alength bytes))
                  (= 10 (bit-and 255 (aget bytes (dec (alength bytes))))))
     (fail! "WAL fixture must be non-empty and LF terminated" {}))
-  (loop [index 0 start 0 current 1]
-    (if (= index (alength bytes))
-      (fail! "record ordinal exceeds the WAL fixture" {:ordinal ordinal})
-      (if (= 10 (bit-and 255 (aget bytes index)))
-        (if (= current ordinal)
-          (Arrays/copyOfRange bytes start index)
-          (recur (inc index) (inc index) (inc current)))
-        (recur (inc index) start current)))))
+  (let [result
+        (loop [index 0 start 0 current 1 record-count 0
+               target-start -1 target-end -1]
+          (if (= index (alength bytes))
+            {:record-count record-count
+             :record-start target-start
+             :record-end-exclusive target-end}
+            (if (= 10 (bit-and 255 (aget bytes index)))
+              (let [target? (= current ordinal)]
+                (recur (inc index) (inc index) (inc current) (inc record-count)
+                       (if target? start target-start)
+                       (if target? index target-end)))
+              (recur (inc index) start current record-count
+                     target-start target-end))))]
+    (when (neg? (:record-start result))
+      (fail! "record ordinal exceeds the WAL fixture" {:ordinal ordinal}))
+    result))
 
 (defn- metrics-provider [runtime]
   (case runtime
@@ -229,17 +230,22 @@
      :resource-delta (counter-delta before after)
      :sink (consume-result value)}))
 
-(defn- measure-raw-phase
-  ([bytes expected-record-count metrics scanner]
-   (measure-raw-phase bytes expected-record-count metrics scanner measure-once))
-  ([bytes expected-record-count metrics scanner measurer]
+(defn- measure-boundary-phase
+  ([bytes ordinal expected-record-count metrics scanner]
+   (measure-boundary-phase bytes ordinal expected-record-count metrics
+                           scanner measure-once))
+  ([bytes ordinal expected-record-count metrics scanner measurer]
    (let [{:keys [value] :as measurement}
-         (measurer metrics #(scanner bytes))]
-     (when-not (= expected-record-count value)
-       (fail! "raw LF count differs from the caller-verified fixture count" {}))
-     (measured-phase
-      (assoc (dissoc measurement :value) :warmups 0 :samples 1)
-      {:input-bytes (alength bytes)} expected-record-count))))
+         (measurer metrics #(scanner bytes ordinal))]
+     (when-not (= expected-record-count (:record-count value))
+       (fail! "WAL boundary count differs from the caller-verified fixture count" {}))
+     {:value value
+      :result
+      (measured-phase
+       (assoc (dissoc measurement :value) :warmups 0 :samples 1)
+       {:input-bytes (alength bytes)
+        :includes-record-selection true}
+       value)})))
 
 (defn- artifact-path [output suffix]
   (str/replace output #"\.edn$" suffix))
@@ -290,25 +296,36 @@
       (fail! "BENCH_RUNTIME is not a supported host" {:runtime runtime}))
     runtime))
 
+(defn- load-reused-boundaries
+  [path expected-sha expected-bytes expected-count ordinal]
+  (let [text (slurp path)
+        source (edn/read-string text)
+        fixture (:fixture source)
+        boundaries (select-keys fixture
+                                [:record-count :record-start
+                                 :record-end-exclusive])]
+    (when-not (and (= :complete (:status source))
+                   (= :jvm (get-in source [:host :runtime]))
+                   (= :casselc-data-json
+                      (get-in source [:libraries :json-parser :implementation]))
+                   (= expected-sha (:sha256 fixture))
+                   (= expected-bytes (:bytes fixture))
+                   (= expected-count (:record-count fixture))
+                   (= ordinal (:record-ordinal fixture))
+                   (integer? (:record-start boundaries))
+                   (integer? (:record-end-exclusive boundaries))
+                   (<= 0 (:record-start boundaries)
+                       (:record-end-exclusive boundaries)
+                       expected-bytes))
+      (fail! "reused JVM boundary report does not match this fixture" {}))
+    (assoc boundaries
+           :source-report-sha256
+           (sha256-bytes (.getBytes text "UTF-8")))))
+
 (defn run-report [fixture expected-sha ordinal warmups samples output]
   (let [fixture-path (Paths/get fixture no-path-parts)
-        _ (when-not (Files/isRegularFile fixture-path (make-array java.nio.file.LinkOption 0))
-            (fail! "WAL fixture is not a regular file" {}))
-        bytes (Files/readAllBytes fixture-path)
-        actual-sha (sha256-bytes bytes)
-        _ (when-not (= expected-sha actual-sha)
-            (fail! "WAL fixture digest does not match" {}))
-        record-bytes (selected-record bytes ordinal)
-        record-text (strict-decode record-bytes)
         runtime (runtime-id)
         data-json-sha (required-env "BENCH_DATA_JSON_GIT_SHA")
-        parser (json-parser runtime data-json-sha)
-        read-json (:read-str parser)
-        sql (get (read-json record-text) "sql")
-        _ (when-not (string? sql)
-            (fail! "selected JSON record has no string sql value" {}))
-        metrics (metrics-provider runtime)
-        measure-raw? (not= "0" (System/getenv "BENCH_MEASURE_RAW"))
         expected-record-count
         (parse-positive "expected record count"
                         (required-env "BENCH_EXPECTED_RECORD_COUNT") Long/MAX_VALUE)
@@ -325,48 +342,45 @@
             (parse-positive "matrix position"
                             (required-env "BENCH_MATRIX_POSITION") 5)}
         harness {:repo-head (required-env "BENCH_REPO_HEAD")
-      :repo-parent (required-env "BENCH_REPO_PARENT")
-      :repo-tree (required-env "BENCH_REPO_TREE")
-      :wal-source-sha256 (required-env "BENCH_WAL_SOURCE_SHA256")
-      :report-source-sha256 (required-env "BENCH_REPORT_SOURCE_SHA256")
-      :jolt-metrics-source-sha256
-      (required-env "BENCH_JOLT_METRICS_SOURCE_SHA256")
-      :jvm-metrics-source-sha256
-      (required-env "BENCH_JVM_METRICS_SOURCE_SHA256")
-      :jvm-profile-source-sha256
-      (required-env "BENCH_JVM_PROFILE_SOURCE_SHA256")
-      :runner-sha256 (required-env "BENCH_RUNNER_SHA256")
-      :scan-scope :one-wal-segment
-      :parse-scope :one-selected-record}
-        libraries {:json-parser (:identity parser)
-      :abi (resource-identity "jdbc/chdb/abi.edn")
-      :compatibility (resource-identity "jdbc/chdb/ffi-compatibility.edn")
-      :jolt-compiler
-      {:source-sha (required-env "BENCH_JOLT_SOURCE_SHA")
-       :executable-sha256 (required-env "BENCH_JOLT_EXECUTABLE_SHA256")}
-      :native
-      {:version (required-env "BENCH_NATIVE_VERSION")
-       :library-sha256 (required-env "BENCH_NATIVE_LIBRARY_SHA256")}}
-        fixture-map {:file-name (.getName (.toFile ^Path fixture-path))
-               :bytes (alength bytes)
-               :sha256 actual-sha
-               :record-ordinal ordinal
-               :record-count expected-record-count
-               :record-bytes (alength record-bytes)
-               :record-sha256 (sha256-bytes record-bytes)
-               :decoded-chars (count record-text)
-               :json {:status :verified
-                      :sql-chars (count sql)
-                      :sql-sha256 (sha256-bytes (.getBytes sql "UTF-8"))}}
+                 :repo-parent (required-env "BENCH_REPO_PARENT")
+                 :repo-tree (required-env "BENCH_REPO_TREE")
+                 :wal-source-sha256 (required-env "BENCH_WAL_SOURCE_SHA256")
+                 :report-source-sha256 (required-env "BENCH_REPORT_SOURCE_SHA256")
+                 :jolt-metrics-source-sha256
+                 (required-env "BENCH_JOLT_METRICS_SOURCE_SHA256")
+                 :jvm-metrics-source-sha256
+                 (required-env "BENCH_JVM_METRICS_SOURCE_SHA256")
+                 :jvm-profile-source-sha256
+                 (required-env "BENCH_JVM_PROFILE_SOURCE_SHA256")
+                 :jvm-scan-source-sha256
+                 (required-env "BENCH_JVM_SCAN_SOURCE_SHA256")
+                 :runner-sha256 (required-env "BENCH_RUNNER_SHA256")
+                 :scan-scope :one-wal-segment
+                 :parse-scope :one-selected-record}
+        fixture-base {:file-name (.getName (.toFile ^Path fixture-path))
+                      :sha256 expected-sha
+                      :record-ordinal ordinal
+                      :record-count expected-record-count}
         journal-path (artifact-path output ".journal.edn")
         csv-path (artifact-path output ".csv")
         checkpoint-base {:schema-version report/schema-version
                          :event :phase
                          :host host
                          :harness harness
-                         :fixture (select-keys fixture-map
-                                               [:file-name :bytes :sha256
-                                                :record-ordinal :record-count])}
+                         :fixture fixture-base}
+        _journal-init (spit journal-path "")
+        _csv-init (spit csv-path
+                        "runtime,phase,status,warmups,samples,count,total_ns,max_ns\n")
+        _host-start
+        (append-checkpoint! journal-path
+                            {:schema-version report/schema-version
+                             :event :host :status :started
+                             :host host :harness harness :fixture fixture-base})
+        profile (atom (if (= runtime :jvm)
+                        (or (start-jvm-profile)
+                            {:status :not-run :reason :no-jfr-path})
+                        {:status :not-run :reason :not-a-jvm-runtime}))
+        metrics (metrics-provider runtime)
         phases (atom (sorted-map))
         checkpoint!
         (fn [phase result]
@@ -375,6 +389,11 @@
                               (assoc checkpoint-base :phase phase :result result))
           (append-csv! csv-path runtime phase result)
           result)
+        phase-start!
+        (fn [phase]
+          (append-checkpoint! journal-path
+                              (assoc checkpoint-base :phase phase
+                                     :result {:status :started})))
         fail-phase!
         (fn [phase throwable]
           (let [result {:status :failed
@@ -383,8 +402,22 @@
                                 :type (:type (ex-data throwable))}}]
             (checkpoint! phase result)
             (throw throwable)))
+        run-once!
+        (fn [phase inputs f summarize]
+          (phase-start! phase)
+          (try
+            (let [{:keys [value] :as measurement} (measure-once metrics f)
+                  summary (summarize value)]
+              (checkpoint!
+               phase
+               (measured-phase
+                (assoc (dissoc measurement :value) :warmups 0 :samples 1)
+                inputs summary))
+              value)
+            (catch Throwable throwable (fail-phase! phase throwable))))
         run-sampled!
         (fn [phase inputs expected-result f]
+          (phase-start! phase)
           (try
             (checkpoint!
              phase
@@ -393,61 +426,142 @@
                      :warmups warmups :samples samples)
               inputs expected-result))
             (catch Throwable throwable (fail-phase! phase throwable))))
-        _journal-init (spit journal-path "")
-        _csv-init (spit csv-path
-                        "runtime,phase,status,warmups,samples,count,total_ns,max_ns\n")
-        _raw-result
-        (if measure-raw?
-          (try
-            (checkpoint! :raw-lf-scan
-                         (measure-raw-phase bytes expected-record-count
-                                            metrics count-newlines))
-            (catch Throwable throwable (fail-phase! :raw-lf-scan throwable)))
-          (checkpoint! :raw-lf-scan (not-run-phase :measured-once-per-host)))
-        _strict-not-run
-        (when-not measure-raw?
-          (checkpoint! :strict-utf8-decode
-                       (not-run-phase :measured-once-per-host)))
-        json-phases
-        [[:json-read-str {:input-chars (count record-text)} (count sql)
-          #(get (read-json record-text) "sql")]
-         [:decode-and-json-read-str {:input-bytes (alength record-bytes)} (count sql)
-          #(get (read-json (strict-decode record-bytes)) "sql")]]
-        selected-phases
-        (if measure-raw?
-          (into [[:strict-utf8-decode {:input-bytes (alength record-bytes)}
-                  (count record-text) #(strict-decode record-bytes)]]
-                json-phases)
-          json-phases)
-        profile (atom (if (= runtime :jvm)
-                        {:path (System/getenv "BENCH_JFR_PATH")
-                         :status :not-run :reason :not-started}
-                        {:status :not-run :reason :not-a-jvm-runtime}))]
+        completed (atom nil)]
     (try
-      ;; Startup and every phase's warmup finish before JFR starts.
-      (doseq [[phase _ _ f] selected-phases]
-        (try (warm! warmups f)
-             (catch Throwable throwable (fail-phase! phase throwable))))
-      (when (= runtime :jvm)
-        ;; JFR enriches JVM diagnosis, but unsupported tooling must not erase
-        ;; otherwise valid phase timings or make the matrix fail.
-        (reset! profile
-                (or (start-jvm-profile)
-                    {:status :not-run :reason :no-jfr-path})))
-      (doseq [[phase inputs expected-result f] selected-phases]
-        (run-sampled! phase inputs expected-result f))
+      (when-not (Files/isRegularFile fixture-path
+                                     (make-array java.nio.file.LinkOption 0))
+        (fail! "WAL fixture is not a regular file" {}))
+      (let [bytes
+            (run-once! :file-read {:file-name (:file-name fixture-base)}
+                       #(Files/readAllBytes fixture-path) alength)
+            actual-sha
+            (run-once!
+             :sha256 {:input-bytes (alength bytes)}
+             #(sha256-bytes bytes)
+             (fn [value]
+               (when-not (= expected-sha value)
+                 (fail! "WAL fixture digest does not match" {}))
+               value))
+            reused-path (System/getenv "BENCH_REUSE_BOUNDARY_REPORT")
+            boundaries
+            (if reused-path
+              (let [value (load-reused-boundaries
+                           reused-path actual-sha (alength bytes)
+                           expected-record-count ordinal)]
+                (phase-start! :record-boundary-scan)
+                (checkpoint! :record-boundary-scan
+                             (assoc (not-run-phase
+                                     :reused-primary-jvm-boundaries)
+                                    :source-report-sha256
+                                    (:source-report-sha256 value)))
+                (dissoc value :source-report-sha256))
+              (do
+                (phase-start! :record-boundary-scan)
+                (try
+                  (let [{:keys [value result]}
+                        (measure-boundary-phase
+                         bytes ordinal expected-record-count metrics
+                         scan-record-boundaries)]
+                    (checkpoint! :record-boundary-scan result)
+                    value)
+                  (catch Throwable throwable
+                    (fail-phase! :record-boundary-scan throwable)))))
+            primitive-boundaries
+            (if (and (= runtime :jvm) (not reused-path))
+              (let [scanner
+                    (requiring-resolve
+                     'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)]
+                (phase-start! :jvm-primitive-boundary-scan)
+                (try
+                  (let [{:keys [value result]}
+                        (measure-boundary-phase
+                         bytes ordinal expected-record-count metrics scanner)]
+                    (when-not (= boundaries value)
+                      (fail! "JVM primitive boundary scan differs from shared scanner" {}))
+                    (checkpoint! :jvm-primitive-boundary-scan result)
+                    value)
+                  (catch Throwable throwable
+                    (fail-phase! :jvm-primitive-boundary-scan throwable))))
+              (do
+                (phase-start! :jvm-primitive-boundary-scan)
+                (checkpoint! :jvm-primitive-boundary-scan
+                             (not-run-phase
+                              (if reused-path
+                                :reused-primary-jvm-boundaries
+                                :jvm-only-control)))))
+            record-bytes
+            (run-once!
+             :record-copy
+             {:record-start (:record-start boundaries)
+              :record-end-exclusive (:record-end-exclusive boundaries)}
+             #(Arrays/copyOfRange bytes (:record-start boundaries)
+                                  (:record-end-exclusive boundaries))
+             (fn [value]
+               {:bytes (alength value)
+                :sha256 (sha256-bytes value)}))
+            record-text
+            (run-once! :strict-utf8-decode {:input-bytes (alength record-bytes)}
+                       #(strict-decode record-bytes) count)
+            parser
+            (run-once! :parser-load {:runtime runtime}
+                       #(json-parser runtime data-json-sha) :identity)
+            read-json (:read-str parser)
+            sql
+            (run-once!
+             :json-oracle {:input-chars (count record-text)}
+             #(get (read-json record-text) "sql")
+             (fn [value]
+               (when-not (string? value)
+                 (fail! "selected JSON record has no string sql value" {}))
+               {:sql-chars (count value)
+                :sql-sha256 (sha256-bytes (.getBytes value "UTF-8"))}))
+            json-phases
+            [[:json-read-str {:input-chars (count record-text)} (count sql)
+              #(get (read-json record-text) "sql")]
+             [:decode-and-json-read-str {:input-bytes (alength record-bytes)}
+              (count sql) #(get (read-json (strict-decode record-bytes)) "sql")]]]
+        (doseq [[phase _ _ f] json-phases]
+          (try (warm! warmups f)
+               (catch Throwable throwable (fail-phase! phase throwable))))
+        (doseq [[phase inputs expected-result f] json-phases]
+          (run-sampled! phase inputs expected-result f))
+        (reset!
+         completed
+         {:libraries
+          {:json-parser (:identity parser)
+           :abi (resource-identity "jdbc/chdb/abi.edn")
+           :compatibility (resource-identity "jdbc/chdb/ffi-compatibility.edn")
+           :jolt-compiler
+           {:source-sha (required-env "BENCH_JOLT_SOURCE_SHA")
+            :executable-sha256 (required-env "BENCH_JOLT_EXECUTABLE_SHA256")}
+           :native
+           {:version (required-env "BENCH_NATIVE_VERSION")
+            :library-sha256 (required-env "BENCH_NATIVE_LIBRARY_SHA256")}}
+          :fixture
+          (merge fixture-base
+                 {:bytes (alength bytes)
+                  :sha256 actual-sha
+                  :record-start (:record-start boundaries)
+                  :record-end-exclusive (:record-end-exclusive boundaries)
+                  :record-bytes (alength record-bytes)
+                  :record-sha256 (sha256-bytes record-bytes)
+                  :decoded-chars (count record-text)
+                  :json {:status :verified
+                         :sql-chars (count sql)
+                         :sql-sha256
+                         (sha256-bytes (.getBytes sql "UTF-8"))}})}))
       (catch Throwable throwable
         (append-checkpoint! journal-path
                             {:schema-version report/schema-version
                              :event :host :status :failed
-                             :host host :harness harness :fixture fixture-map
-                             :error {:class (str (type throwable))
-                                     :type (:type (ex-data throwable))}})
+                             :host host :harness harness :fixture fixture-base
+                             :error (error-summary throwable)})
         (throw throwable))
       (finally
         (when (= runtime :jvm)
           (reset! profile (stop-jvm-profile @profile)))))
-    (let [value
+    (let [{:keys [libraries fixture]} @completed
+          value
           {:schema-version report/schema-version
            :status :complete
            :scope :phase-0-characterization
@@ -455,7 +569,7 @@
            :host host
            :harness harness
            :libraries libraries
-           :fixture fixture-map
+           :fixture fixture
            :measurement {:clock :monotonic-nanoseconds
                          :warmups warmups :samples samples
                          :resource-support (:support metrics)
@@ -464,22 +578,22 @@
            :profile {:jfr @profile}
            :limitations
            [:no-durable-open-or-replay
-      :no-production-record-validation-on-babashka-or-jvm
-      :babashka-json-parser-is-bundled-cheshire-not-pinned-data-json
-      :allocation-counters-are-host-specific
-      :jvm-gc-counters-are-process-global]
+            :no-production-record-validation-on-babashka-or-jvm
+            :babashka-json-parser-is-bundled-cheshire-not-pinned-data-json
+            :allocation-counters-are-host-specific
+            :jvm-gc-counters-are-process-global]
            :comparison-axes
            {:runtime-controlled [:jolt :jvm]
-      :runtime-controlled-json-parser :casselc-data-json
-      :natural-host
-      {:jolt :casselc-data-json
-       :babashka :babashka-bundled-cheshire
-       :jvm [:casselc-data-json :upstream-data-json :jvm-cheshire]}
-      :raw-scan-and-decode-controlled [:jolt :babashka :jvm]}}]
+            :runtime-controlled-json-parser :casselc-data-json
+            :natural-host
+            {:jolt :casselc-data-json
+             :babashka :babashka-bundled-cheshire
+             :jvm [:casselc-data-json :upstream-data-json :jvm-cheshire]}
+            :raw-scan-and-decode-controlled [:jolt :babashka :jvm]}}]
       (append-checkpoint! journal-path
                           {:schema-version report/schema-version
                            :event :host :status :complete
-                           :host host :harness harness :fixture fixture-map})
+                           :host host :harness harness :fixture fixture})
       value)))
 
 (defn -main [& args]

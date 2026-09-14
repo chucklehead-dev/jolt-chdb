@@ -10,7 +10,14 @@
   runtime, canonical compiler, clean harness source, native-library, parser,
   and fixture provenance; allow caller-selected recorded matrix order; and
   require every parser to produce the same SQL length and digest. This does not
-  claim Durable open/recovery or production Babashka/JVM support.
+  claim Durable open/recovery or production Babashka/JVM support. Setup now
+  checkpoints file read, digest, one combined boundary/selection scan, record
+  copy, strict decode, parser load, and semantic oracle before sampled parsing;
+  a five-minute first-checkpoint guard preserves already written evidence.
+  Optional JVM JFR starts before setup, and a JVM-only primitive byte-array
+  scanner is reported beside the portable scanner with exact offset/count
+  equivalence. Secondary JVM parser rows reuse verified primary offsets when
+  available instead of hiding repeated whole-segment scans.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

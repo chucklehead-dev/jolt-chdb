@@ -5,6 +5,7 @@ script=$(cd "$(dirname "$0")/.." && pwd -P)/scripts/benchmark-cross-host-wal.sh
 
 BENCH_VALIDATE_ORDER_ONLY=1 "$script" >/dev/null
 BENCH_VALIDATE_JVM_STATUS_ONLY=1 "$script" >/dev/null
+BENCH_VALIDATE_CHECKPOINT_GUARD_ONLY=1 "$script" >/dev/null
 BENCH_VALIDATE_ORDER_ONLY=1 \
   BENCH_MATRIX_ORDER="jvm-cheshire jvm-upstream jvm-casselc babashka jolt" \
   "$script" >/dev/null

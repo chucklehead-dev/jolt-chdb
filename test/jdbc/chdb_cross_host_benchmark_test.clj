@@ -37,35 +37,42 @@
            :jdbc.chdb-cross-host-report/invalid-report
            (:type (ex-data error))))
   (let [bytes (.getBytes "{\"sql\":\"β\"}\n{\"sql\":\"two\"}\n" "UTF-8")
-        count-newlines (private-fn 'count-newlines)
-        selected-record (private-fn 'selected-record)
+        scan-record-boundaries (private-fn 'scan-record-boundaries)
         strict-decode (private-fn 'strict-decode)
-        measure-raw-phase (private-fn 'measure-raw-phase)]
-    (check "raw scanner counts LF-delimited records" 2
-           (count-newlines bytes))
+        measure-boundary-phase (private-fn 'measure-boundary-phase)
+        copy-record (fn [{:keys [record-start record-end-exclusive]}]
+                      (java.util.Arrays/copyOfRange
+                       bytes record-start record-end-exclusive))
+        first-boundaries (scan-record-boundaries bytes 1)
+        second-boundaries (scan-record-boundaries bytes 2)]
+    (check "boundary scanner counts LF-delimited records" 2
+           (:record-count first-boundaries))
     (check "record selection preserves multibyte UTF-8"
            "{\"sql\":\"β\"}"
-           (strict-decode (selected-record bytes 1)))
+           (strict-decode (copy-record first-boundaries)))
     (check "record selection uses one-based ordinals"
            "{\"sql\":\"two\"}"
-           (strict-decode (selected-record bytes 2)))
+           (strict-decode (copy-record second-boundaries)))
     (check "unterminated WAL fails closed"
            :jdbc.chdb-cross-host-wal/invalid-benchmark
-           (error-type #(selected-record (.getBytes "{}" "UTF-8") 1)))
+           (error-type #(scan-record-boundaries (.getBytes "{}" "UTF-8") 1)))
     (let [calls (atom 0)
-          result (measure-raw-phase
-                  bytes 2 {:snapshot nil}
-                  (fn [input]
+          {:keys [value result]}
+          (measure-boundary-phase
+                  bytes 2 2 {:snapshot nil}
+                  (fn [input ordinal]
                     (swap! calls inc)
-                    (count-newlines input)))]
-      (check "corrected raw phase scans the segment exactly once" 1 @calls)
-      (check "single raw scan does not publish unsupported percentiles"
+                    (scan-record-boundaries input ordinal)))]
+      (check "combined boundary phase scans the segment exactly once" 1 @calls)
+      (check "combined boundary phase returns target offsets"
+             second-boundaries value)
+      (check "single boundary scan does not publish unsupported percentiles"
              {:count 1 :p50-supported? false :p95-supported? false
               :p99-supported? false}
              (select-keys (:latency result)
                           [:count :p50-supported? :p95-supported?
                            :p99-supported?]))
-      (check "single raw scan does not retain its measured value or payload"
+      (check "single boundary scan result retains offsets but no payload"
              false
              (or (contains? result :value)
                  (str/includes? (pr-str result) "{\"sql\""))))
@@ -78,20 +85,27 @@
           (fn [metrics f]
             (dotimes [_ 26] (f))
             (measure-once metrics f))]
-      (measure-raw-phase
-       bytes 2 {:snapshot nil}
-       (fn [input]
+      (measure-boundary-phase
+       bytes 2 2 {:snapshot nil}
+       (fn [input ordinal]
          (swap! calls inc)
-         (count-newlines input))
+         (scan-record-boundaries input ordinal))
        legacy-measurer)
       (check "legacy whole-segment mutant performs 27 scans at 5/20"
-             27 @calls)))
+             27 @calls))
+    (when (= :jvm (keyword (or (System/getenv "BENCH_RUNTIME") "jvm")))
+      (let [primitive
+            (requiring-resolve
+             'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)]
+        (check "JVM primitive control matches shared boundary scanner"
+               second-boundaries
+               (primitive bytes 2)))))
   (let [append-checkpoint! (private-fn 'append-checkpoint!)
         file (java.io.File/createTempFile "cross-host-checkpoint-" ".edn")]
     (try
       (spit file "")
       (append-checkpoint! (.getPath file)
-                          {:event :phase :phase :raw-lf-scan
+                          {:event :phase :phase :record-boundary-scan
                            :result {:status :complete :samples 1}})
       (try
         (throw (ex-info "injected late failure" {:type ::injected}))
@@ -106,6 +120,26 @@
                [:complete :failed]
                [(get-in (first events) [:result :status])
                (:status (second events))]))
+      (finally (.delete file))))
+  (let [load-reused-boundaries (private-fn 'load-reused-boundaries)
+        file (java.io.File/createTempFile "cross-host-boundaries-" ".edn")
+        source {:status :complete
+                :host {:runtime :jvm}
+                :libraries {:json-parser {:implementation :casselc-data-json}}
+                :fixture {:sha256 "fixture-sha" :bytes 12 :record-count 2
+                          :record-ordinal 1 :record-start 0
+                          :record-end-exclusive 5}}]
+    (try
+      (spit file (report/render source))
+      (check "secondary JVM row reuses only bounded verified offsets"
+             {:record-count 2 :record-start 0 :record-end-exclusive 5}
+             (dissoc (load-reused-boundaries
+                      (.getPath file) "fixture-sha" 12 2 1)
+                     :source-report-sha256))
+      (check "secondary JVM row rejects mismatched fixture provenance"
+             :jdbc.chdb-cross-host-wal/invalid-benchmark
+             (error-type #(load-reused-boundaries
+                           (.getPath file) "wrong-sha" 12 2 1)))
       (finally (.delete file))))
   (check "missing JFR configuration is an optional not-run capability"
          nil

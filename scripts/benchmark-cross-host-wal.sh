@@ -43,6 +43,45 @@ finish_jvm_run() {
   return "$benchmark_status"
 }
 
+run_with_first_checkpoint() {
+  local journal=$1 timeout_seconds=$2
+  shift 2
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] && (( timeout_seconds <= 300 )) || {
+    echo "first-checkpoint timeout must be between 1 and 300 seconds" >&2
+    return 2
+  }
+  setsid "$@" &
+  local pid=$! started=$SECONDS status=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ -s "$journal" ]]; then
+      wait "$pid" || status=$?
+      return "$status"
+    fi
+    if (( SECONDS - started >= timeout_seconds )); then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      echo "benchmark host produced no first checkpoint within ${timeout_seconds}s" >&2
+      return 124
+    fi
+    sleep 0.1
+  done
+  wait "$pid" || status=$?
+  return "$status"
+}
+
+if [[ "${BENCH_VALIDATE_CHECKPOINT_GUARD_ONLY:-0}" = 1 ]]; then
+  guard_tmp=$(mktemp -d)
+  trap 'rm -rf "$guard_tmp"' EXIT
+  run_with_first_checkpoint "$guard_tmp/ok.journal" 1 \
+    bash -c 'printf "checkpoint\n" > "$1"' _ "$guard_tmp/ok.journal"
+  status=0
+  run_with_first_checkpoint "$guard_tmp/late.journal" 1 \
+    bash -c 'sleep 5' || status=$?
+  [[ "$status" = 124 ]] || exit 1
+  echo "first-checkpoint liveness guard passed"
+  exit 0
+fi
+
 if [[ "${BENCH_VALIDATE_JVM_STATUS_ONLY:-0}" = 1 ]]; then
   matrix_journal=/dev/null
   summarize_optional_jfr() { return 0; }
@@ -185,8 +224,10 @@ report_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_report.clj | cut -d' ' 
 jolt_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jolt_metrics.clj | cut -d' ' -f1)
 jvm_metrics_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)
 jvm_profile_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)
+jvm_scan_source_sha=$(sha256sum bench/jdbc/chdb_cross_host_jvm_scan.clj | cut -d' ' -f1)
 runner_sha=$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)
 matrix_journal="$output_dir/matrix.journal.edn"
+first_checkpoint_timeout=${BENCH_FIRST_CHECKPOINT_TIMEOUT_SECONDS:-300}
 : > "$matrix_journal"
 
 verify_checkout_provenance() {
@@ -199,6 +240,7 @@ verify_checkout_provenance() {
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_jolt_metrics.clj | cut -d' ' -f1)" != "$jolt_metrics_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_metrics.clj | cut -d' ' -f1)" != "$jvm_metrics_source_sha" ]] ||
      [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_profile.clj | cut -d' ' -f1)" != "$jvm_profile_source_sha" ]] ||
+     [[ "$(sha256sum bench/jdbc/chdb_cross_host_jvm_scan.clj | cut -d' ' -f1)" != "$jvm_scan_source_sha" ]] ||
      [[ "$(sha256sum scripts/benchmark-cross-host-wal.sh | cut -d' ' -f1)" != "$runner_sha" ]]; then
     printf '{:event :matrix :status :failed :reason :checkout-provenance-drift}\n' >> "$matrix_journal"
     echo "benchmark checkout provenance changed during the matrix; completed reports preserved" >&2
@@ -218,6 +260,7 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_JOLT_METRICS_SOURCE_SHA256="$jolt_metrics_source_sha"
              BENCH_JVM_METRICS_SOURCE_SHA256="$jvm_metrics_source_sha"
              BENCH_JVM_PROFILE_SOURCE_SHA256="$jvm_profile_source_sha"
+             BENCH_JVM_SCAN_SOURCE_SHA256="$jvm_scan_source_sha"
              BENCH_RUNNER_SHA256="$runner_sha"
              BENCH_EXPECTED_RECORD_COUNT="$expected_record_count")
 
@@ -225,7 +268,8 @@ common=("$wal" "$wal_sha" "$record_ordinal" "$warmups" "$samples")
 
 run_jolt() {
   local output=$1 position=$2
-  env "${jolt_common[@]}" BENCH_RUNTIME=jolt BENCH_JSON_PARSER=casselc-data-json \
+  run_with_first_checkpoint "${output%.edn}.journal.edn" "$first_checkpoint_timeout" \
+    env "${jolt_common[@]}" BENCH_RUNTIME=jolt BENCH_JSON_PARSER=casselc-data-json \
       BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_RUNTIME_VERSION="$jolt_version" \
       BENCH_RUNTIME_REVISION="$jolt_revision" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
@@ -236,7 +280,8 @@ run_jolt() {
 
 run_bb() {
   local output=$1 position=$2
-  env "${jolt_common[@]}" BENCH_RUNTIME=babashka \
+  run_with_first_checkpoint "${output%.edn}.journal.edn" "$first_checkpoint_timeout" \
+    env "${jolt_common[@]}" BENCH_RUNTIME=babashka \
       BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
       BENCH_JSON_PARSER=babashka-bundled-cheshire BENCH_RUNTIME_VERSION="$(bb --version)" \
       BENCH_RUNTIME_REVISION="$expected_bb_commit" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
@@ -248,11 +293,19 @@ run_bb() {
 }
 
 run_jvm() {
-  local profile=$1 alias=$2 version=$3 artifact_sha=$4 raw=$5 output=$6 position=$7
+  local profile=$1 alias=$2 version=$3 artifact_sha=$4 output=$5 position=$6 reuse=${7:-}
   local basename=${output%.edn} benchmark_status=0
-  env "${jolt_common[@]}" BENCH_RUNTIME=jvm BENCH_JSON_PARSER="$profile" \
+  local reuse_env=()
+  # Counterbalanced orders may encounter a secondary JVM parser before the
+  # primary report exists. In that case it performs and reports its own scan;
+  # no scan is silently duplicated or represented as reused.
+  if [[ -n "$reuse" && -s "$reuse" ]]; then
+    reuse_env=(BENCH_REUSE_BOUNDARY_REPORT="$reuse")
+  fi
+  run_with_first_checkpoint "$basename.journal.edn" "$first_checkpoint_timeout" \
+    env "${jolt_common[@]}" "${reuse_env[@]}" BENCH_RUNTIME=jvm BENCH_JSON_PARSER="$profile" \
       BENCH_MATRIX_ORDER="$matrix_order" BENCH_MATRIX_POSITION="$position" \
-      BENCH_JSON_PARSER_VERSION="$version" BENCH_MEASURE_RAW="$raw" \
+      BENCH_JSON_PARSER_VERSION="$version" \
       BENCH_JSON_PARSER_ARTIFACT_SHA256="$artifact_sha" \
       BENCH_RUNTIME_VERSION="$expected_jdk" \
       BENCH_RUNTIME_REVISION="$expected_jdk" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
@@ -276,14 +329,16 @@ for row in "${matrix_rows[@]}"; do
     babashka) run_bb "$output_dir/babashka.edn" "$position" || row_status=$? ;;
     jvm-casselc)
       run_jvm casselc-data-json cross-host-wal-benchmark "$data_json_sha" \
-        not-applicable 1 "$output_dir/jvm-casselc-data-json.edn" "$position" || row_status=$? ;;
+        not-applicable "$output_dir/jvm-casselc-data-json.edn" "$position" || row_status=$? ;;
     jvm-upstream)
       run_jvm upstream-data-json cross-host-wal-upstream-data-json \
-        "$upstream_data_json_version" "$upstream_data_json_sha" 0 \
-        "$output_dir/jvm-upstream-data-json.edn" "$position" || row_status=$? ;;
+        "$upstream_data_json_version" "$upstream_data_json_sha" \
+        "$output_dir/jvm-upstream-data-json.edn" "$position" \
+        "$output_dir/jvm-casselc-data-json.edn" || row_status=$? ;;
     jvm-cheshire)
       run_jvm jvm-cheshire cross-host-wal-cheshire "$cheshire_version" \
-        "$cheshire_sha" 0 "$output_dir/jvm-cheshire.edn" "$position" || row_status=$? ;;
+        "$cheshire_sha" "$output_dir/jvm-cheshire.edn" "$position" \
+        "$output_dir/jvm-casselc-data-json.edn" || row_status=$? ;;
   esac
   if (( row_status != 0 )); then
     printf '{:event :host :runtime-row :%s :status :failed :exit %s :matrix-position %s}\n' \
