@@ -17,6 +17,7 @@ matrix="$repo_root/resources/jdbc/chdb/durable_linux_compatibility.json"
 test -x "$jolt_bin"
 test -x "$wrapper"
 test -f "$matrix"
+jolt_sha=$(sha256sum "$jolt_bin" | awk '{print $1}')
 for directory in "$rc2_dir" "$release_dir"; do
   test -f "$directory/libchdb.so"
   test -f "$directory/chdb.h"
@@ -32,7 +33,8 @@ python3 "$repo_root/scripts/verify-durable-header-library-matrix.py" \
 
 run_jolt() {
   local release=$1
-  shift
+  local cell=$2
+  shift 2
   local native_dir
   case "$release" in
     rc2) native_dir=$rc2_dir ;;
@@ -41,13 +43,13 @@ run_jolt() {
   esac
   env JOLT_CHDB_LIB="$native_dir/libchdb.so" \
       LD_LIBRARY_PATH="$native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-      JOLT_GATEBOOT_BUILD_DIR="$output/gateboot" \
+      JOLT_GATEBOOT_BUILD_DIR="$output/gateboot/$jolt_sha/$cell" \
     "$wrapper" "$jolt_bin" -Srepro -M:durable-linux-compatibility-test "$@"
 }
 
-run_jolt rc2 produce "$matrix" "$output/rc2" rc2 \
+run_jolt rc2 produce-rc2 produce "$matrix" "$output/rc2" rc2 \
   "$rc2_dir/libchdb.so" "$rc2_dir/chdb.h"
-run_jolt release produce "$matrix" "$output/release" release \
+run_jolt release produce-release produce "$matrix" "$output/release" release \
   "$release_dir/libchdb.so" "$release_dir/chdb.h"
 
 run_cell() {
@@ -59,7 +61,8 @@ run_cell() {
     release) reader_dir=$release_dir ;;
     *) echo "unknown reader release: $reader" >&2; exit 2 ;;
   esac
-  run_jolt "$reader" read "$matrix" "$output/$producer/fixture-store" \
+  run_jolt "$reader" "$producer-to-$reader" read "$matrix" \
+    "$output/$producer/fixture-store" \
     "$output/$producer/fixture.json" "$producer" "$reader" \
     "$reader_dir/libchdb.so" "$reader_dir/chdb.h" \
     "$output/$producer-to-$reader.json"

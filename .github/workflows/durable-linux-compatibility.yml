@@ -20,7 +20,7 @@ permissions:
 jobs:
   linux-x86-64:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       RC2_ARCHIVE_SHA256: 8b6f8b95278cc223f8cae0303006aecdaf72cf975fe29c1cb14277f2165e2b85
       RELEASE_ARCHIVE_SHA256: bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031

@@ -225,11 +225,20 @@ fixture.
 
 The same manifest pins the release archive, extracted library, header, upstream
 tag, and commit identities. Matched header/library pairs compile and execute a
-small version probe. Mixed pairs are deliberately refused before native
-execution as a release-provenance policy. This is not evidence that either
-mixed pair is ABI-incompatible; it prevents an unqualified combination from
-silently becoming a supported release surface. Wrong header and library digest
-mutants prove that the identity checks cause the refusal.
+small version probe. The qualification harness resolves each pair's actual
+artifact identities and its release-provenance gate refuses mixed pairs before
+compilation or native execution. This is not evidence that either mixed pair
+is ABI-incompatible; it prevents an unqualified combination from silently
+becoming a supported release surface. A causal mutant that merely records the
+expected refusal without invoked-gate evidence is rejected by the report
+validator.
+
+Separate wrong-header and wrong-library digest mutants prove that artifact
+identity drift also fails closed before compilation or native execution. Those
+mutants exercise the identity gate, not the mixed-release provenance gate.
+Every native cell also gets a distinct gateboot directory below the exact Jolt
+executable SHA, preventing a bridge built in one cell from carrying native
+selection state into another.
 
 With both release archives extracted exactly once, run:
 
@@ -245,6 +254,14 @@ The lane currently qualifies Linux x86-64 only. Equivalent arm64 or macOS
 claims require platform-native CI cells with separately pinned archive,
 library, and header identities; cross-compiling or reusing this result would
 not supply that evidence.
+
+This development commit is stacked on the Python-fixture head `0e052348`, which
+still reports 45 mapped, 2 blocked, and 2 not-applicable upstream cases because
+the independent secret-conformance head `df40ae8` is not its ancestor. Merge
+the secret cases first, rebase the Python fixture onto them, and then rebase
+this matrix. The integrated ledger must report 47 mapped, 0 blocked, and 2
+not-applicable before this matrix is opened or merged; 45/2/2 is intermediate
+stack evidence, not issue-closure evidence.
 
 Run the focused, offline gate with the mandatory compiler selector:
 

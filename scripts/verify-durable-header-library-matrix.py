@@ -17,6 +17,10 @@ DURABLE_SYMBOLS = {
 }
 
 
+class ReleaseProvenanceRefusal(RuntimeError):
+    """A header/library pair is individually valid but not release-matched."""
+
+
 def fail(message):
     raise RuntimeError(message)
 
@@ -73,7 +77,10 @@ def validate(matrix, roots):
             ["nm", "-D", "--defined-only", str(root / "libchdb.so")],
             check=True, text=True, capture_output=True,
         ).stdout
-        available = {line.split()[-1] for line in symbols.splitlines() if line.split()}
+        available = {
+            line.split()[-1].split("@", 1)[0]
+            for line in symbols.splitlines() if line.split()
+        }
         if not DURABLE_SYMBOLS <= available:
             fail(f"{name} library lacks a Durable V1 symbol")
     archive_expected = {
@@ -109,7 +116,7 @@ def validate(matrix, roots):
     return matrix
 
 
-def compile_matching(cell, matrix, roots, output):
+def compile_matching(cell, matrix, roots, output, execution_events):
     release = matrix["releases"][cell["header"]]
     root = pathlib.Path(roots[cell["header"]]).resolve()
     cell_root = output / cell["id"]
@@ -120,15 +127,51 @@ def compile_matching(cell, matrix, roots, output):
         '#include <stdio.h>\n#include "chdb.h"\n'
         'int main(void) { printf("%s\\n%s\\n", CHDB_VERSION, chdb_version()); return 0; }\n'
     )
+    execution_events.append("compile-link")
     subprocess.run([
         "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", f"-I{root}", str(source),
         f"-L{root}", f"-Wl,-rpath,{root}", "-lchdb", "-o", str(binary),
     ], check=True)
+    execution_events.append("native-execute")
     lines = subprocess.run([str(binary)], check=True, text=True, capture_output=True).stdout.splitlines()
     if lines != [release["version"], release["version"]]:
         fail(f'{cell["id"]} compile-time and runtime versions differ: {lines!r}')
     return {"id": cell["id"], "expected": "accept", "actual": "accept",
             "reason": cell["reason"], "header_version": lines[0], "runtime_version": lines[1]}
+
+
+def qualify_pair(cell, matrix, roots, output, execution_events):
+    header_release = cell["header"]
+    library_release = cell["library"]
+    header = pathlib.Path(roots[header_release]) / "chdb.h"
+    library = pathlib.Path(roots[library_release]) / "libchdb.so"
+    if identity(header) != matrix["releases"][header_release]["header"]:
+        fail(f'{cell["id"]} header identity changed before qualification')
+    if identity(library) != matrix["releases"][library_release]["library"]:
+        fail(f'{cell["id"]} library identity changed before qualification')
+    if header_release != library_release:
+        raise ReleaseProvenanceRefusal(
+            f'{cell["id"]} mixes {header_release} header and {library_release} library'
+        )
+    return compile_matching(cell, matrix, roots, output, execution_events)
+
+
+def validate_cell_result(cell, result):
+    common = {"id", "expected", "actual", "reason"}
+    if result.get("id") != cell["id"] or result.get("expected") != cell["expected"]:
+        fail(f'{cell["id"]} result identity or expectation differs')
+    if result.get("actual") != cell["expected"] or result.get("reason") != cell["reason"]:
+        fail(f'{cell["id"]} observed disposition differs')
+    if cell["expected"] == "refuse":
+        exact("refused cell result",
+              common | {"gate", "execution_events", "native_execution"}, result)
+        if (result["gate"] != "release-provenance" or
+                result["execution_events"] != [] or
+                result["native_execution"] is not False):
+            fail(f'{cell["id"]} lacks invoked pre-native provenance-gate evidence')
+    else:
+        exact("accepted cell result", common | {"header_version", "runtime_version"}, result)
+    return result
 
 
 def main(argv):
@@ -146,12 +189,22 @@ def main(argv):
         print(f'PLAN header-library {cell["id"]}: {cell["expected"]} - {cell["reason"]}')
     results = []
     for cell in matrix["header_library_cells"]:
-        if cell["expected"] == "refuse":
-            results.append({"id": cell["id"], "expected": "refuse", "actual": "refuse",
-                            "reason": cell["reason"], "native_execution": False})
+        execution_events = []
+        try:
+            result = qualify_pair(cell, matrix, roots, output, execution_events)
+        except ReleaseProvenanceRefusal:
+            if cell["expected"] != "refuse":
+                fail(f'{cell["id"]} provenance gate unexpectedly refused')
+            result = {"id": cell["id"], "expected": "refuse", "actual": "refuse",
+                      "reason": cell["reason"], "gate": "release-provenance",
+                      "execution_events": execution_events,
+                      "native_execution": "native-execute" in execution_events}
         else:
-            results.append(compile_matching(cell, matrix, roots, output))
+            if cell["expected"] != "accept":
+                fail(f'{cell["id"]} provenance gate unexpectedly accepted')
+        results.append(validate_cell_result(cell, result))
 
+    controls = []
     for label, mutant in (
         ("wrong-header-identity", copy.deepcopy(matrix)),
         ("wrong-library-identity", copy.deepcopy(matrix)),
@@ -163,11 +216,23 @@ def main(argv):
         try:
             validate(mutant, roots)
         except RuntimeError:
-            results.append({"id": label, "expected": "refuse", "actual": "refuse",
-                            "native_execution": False})
+            controls.append({"id": label, "expected": "reject-mutant",
+                             "actual": "reject-mutant", "native_execution": False})
         else:
             fail(f"{label} mutant was accepted")
-    report = {"schema_version": 1, "scope": matrix["scope"], "results": results}
+    mixed = next(cell for cell in matrix["header_library_cells"]
+                 if cell["expected"] == "refuse")
+    passive = {"id": mixed["id"], "expected": "refuse", "actual": "refuse",
+               "reason": mixed["reason"], "native_execution": False}
+    try:
+        validate_cell_result(mixed, passive)
+    except RuntimeError:
+        controls.append({"id": "passive-refusal-record", "expected": "reject-mutant",
+                         "actual": "reject-mutant", "native_execution": False})
+    else:
+        fail("a recorded refusal without invoked-gate evidence was accepted")
+    report = {"schema_version": 1, "scope": matrix["scope"], "results": results,
+              "causal_controls": controls}
     (output / "header-library-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
