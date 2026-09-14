@@ -18,6 +18,15 @@
   wrong-secret-flag, storage, cleanup, and non-secret throwable-identity controls
   move the 49-case ledger to 47 mapped, 0 blocked, and 2 binding-level not
   applicable cases.
+- Add a checksum-pinned Linux x86-64 Durable compatibility matrix. Separate
+  processes prove that 26.7.2-rc.2 archives open under both rc.2 and 26.7.3,
+  26.7.3 archives open under 26.7.3, and rc.2 refuses a 26.7.3 minimum reader
+  before downloading the archive or opening native storage. Matched
+  header/library pairs are qualified, while mixed release provenance and
+  wrong artifact identities fail closed before native execution. Every archive
+  cell preserves the exact logical-object inventory; corrupt-archive and
+  unsupported-minimum-reader mutants prove the intended refusal boundaries.
+
 - Add a pinned Linux x86_64 Python-writer interoperability fixture. Upstream
   `chdb.durable` at commit `66643e50` and checksum-pinned `chdb-core` 26.7.3
   create, flush, close, and independently read a WAL-only object; Jolt 26.7.3
