@@ -37,6 +37,21 @@ The synchronous operations are:
   finishes, then restored and rethrown unless an earlier close failure is
   primary.
 
+Reads that chdb-core classifies as secret-bearing remain allowed because they
+do not enter Durable recovery state. A successful result or encoded byte buffer
+is returned unchanged. If the engine throws, writer and immutable-reader query
+paths replace the engine message, exception data, and nested cause with the
+fixed `secret-query-failed` SQL category. Non-secret failures retain their exact
+throwable identity.
+
+This is an exception-boundary rule, not value redaction. It does not inspect or
+rewrite query results, bound values, persisted statement WAL, telemetry
+attributes, or provider payloads. Secret-bearing mutations are independently
+rejected by the admission policy before native execution or WAL append. For
+parameters, classification sees only validated typed placeholders rather than
+their values; instrumentation that records raw arguments must apply its own
+attribute policy.
+
 An `ArrayBlockingQueue` plus one owned OS thread provides the explicit bounded
 FIFO. The worker is deliberately not a Jolt fiber: native chDB, filesystem, and
 object-store calls may block in ways that pin a shared fiber carrier.

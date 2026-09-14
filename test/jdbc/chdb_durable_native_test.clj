@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-native-test
-  (:require [jdbc.chdb :as chdb]
+  (:require [clojure.string :as str]
+            [jdbc.chdb :as chdb]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
@@ -22,6 +23,30 @@
 
 (defn- rejected [f]
   (try (f) nil (catch Throwable error error)))
+
+(defn- throwable-diagnostics [error]
+  (loop [current error
+         diagnostics []]
+    (if current
+      (recur (.getCause current)
+             (conj diagnostics
+                   [(str current) (ex-message current) (ex-data current)]))
+      (pr-str diagnostics))))
+
+(defn- excludes-secret? [secret error]
+  (let [diagnostics (throwable-diagnostics error)]
+    (and (some? error)
+         (not (str/includes? diagnostics secret))
+         (not (str/includes? diagnostics "s3(")))))
+
+(defn- durable-control-text [store]
+  (let [head (:head (control/read-head! store))
+        wal (get-in head ["manifest" "wal"])]
+    (str (String. (backend/get-bytes store control/head-key) "UTF-8")
+         (apply str
+                (map #(String. (backend/get-bytes store (get % "key"))
+                               "UTF-8")
+                     wal)))))
 
 (defn- delete-tree! [file]
   (when (.exists file)
@@ -187,6 +212,46 @@
                 handle
                 "CREATE USER u IDENTIFIED WITH sha256_password BY 'hunter2'"
                 nil)))
+  (let [secret "SUPERSECRETKEY123"
+        mutation-sql
+        (str "INSERT INTO mem.t SELECT 1 FROM s3('https://x/y.csv', "
+             "'AKIAEXAMPLE', '" secret "')")
+        read-sql
+        (str "SELECT * FROM s3('not a url', 'AKIAEXAMPLE', '"
+             secret "')")]
+    (check "pinned s3 mutation is classified as secret-bearing mutation"
+           [:mutating true]
+           ((juxt :query-class :has-secrets)
+            (native/classify-query! handle mutation-sql "mem")))
+    (check "pinned s3 read is classified as secret-bearing read"
+           [:read-only true]
+           ((juxt :query-class :has-secrets)
+            (native/classify-query! handle read-sql "mem"))))
+  (let [secret "BOUNDSECRETKEY456"
+        params ["https://x/y.csv" "AKIAEXAMPLE" secret]
+        mutation-sql "INSERT INTO mem.t SELECT 1 FROM s3(?, ?, ?)"
+        read-sql "SELECT * FROM s3(?, ?, ?)"
+        mutation-shape
+        "INSERT INTO mem.t SELECT 1 FROM s3({p1:String}, {p2:String}, {p3:String})"
+        read-shape
+        "SELECT * FROM s3({p1:String}, {p2:String}, {p3:String})"
+        actual-mutation-shape (chdb/classification-sql mutation-sql params)
+        actual-read-shape (chdb/classification-sql read-sql params)]
+    (check "bound s3 mutation exposes only its exact typed-placeholder shape"
+           [mutation-shape false]
+           [actual-mutation-shape
+            (str/includes? actual-mutation-shape secret)])
+    (check "bound s3 read exposes only its exact typed-placeholder shape"
+           [read-shape false]
+           [actual-read-shape (str/includes? actual-read-shape secret)])
+    (check "native AST marks bound s3 mutation shape secret-bearing"
+           [:mutating true]
+           ((juxt :query-class :has-secrets)
+            (native/classify-query! handle actual-mutation-shape "mem")))
+    (check "native AST marks bound s3 read shape secret-bearing"
+           [:read-only true]
+           ((juxt :query-class :has-secrets)
+            (native/classify-query! handle actual-read-shape "mem"))))
   (let [analysis (native/classify-query! handle (str "SELECT 1" (char 0) "; USE other") nil)]
     (check "embedded NUL is parsed by explicit byte length" :unknown (:query-class analysis))
     (check "embedded NUL cannot hide a replayable statement" 0 (:statement-count analysis)))
@@ -315,6 +380,56 @@
                            handle awkward (str backups "/orphan.tar.gz")
                            (str backups "/not-a-base.tar.gz"))) ex-data :type))))
 
+(defn- run-native-secret-boundary-checks []
+  (println "Durable native secret-bearing public boundary")
+  (let [secret "SUPERSECRETKEY123"
+        mutation-sql "INSERT INTO t SELECT 1 FROM s3(?, ?, ?)"
+        params ["https://x/y.csv" "AKIAEXAMPLE" secret]
+        store (backend/memory-backend)
+        opened (durable/open-writer!
+                {:store store :owner "native-secret-mutation"
+                 :instance "native-secret-mutation-instance"
+                 :database "secret_mutation" :lease-ttl-ms 30000})]
+    (try
+      (writer/execute!
+       opened "CREATE TABLE t (n Int64) ENGINE=MergeTree ORDER BY n")
+      (let [error (rejected #(writer/sql! opened mutation-sql params))]
+        (check "native pinned secret mutation is refused with redacted diagnostics"
+               [::policy/rejected :secrets true nil]
+               [(:type (ex-data error)) (:reason (ex-data error))
+                (excludes-secret? secret error) (.getCause error)])
+        (check "native pinned secret mutation leaves one earlier WAL entry"
+               1 (:pending-statements (writer/status opened))))
+      (finally
+        (writer/close! opened)))
+    (check "native bound secret mutation leaves stored control text secret-free"
+           false (str/includes? (durable-control-text store) secret)))
+
+  (let [secret "SUPERSECRETKEY123"
+        read-sql "SELECT * FROM s3(?, ?, ?)"
+        params ["not a url" "AKIAEXAMPLE" secret]
+        store (backend/memory-backend)
+        opened (durable/open-writer!
+                {:store store :owner "native-secret-read"
+                 :instance "native-secret-read-instance"
+                 :database "secret_read" :lease-ttl-ms 30000})]
+    (try
+      (let [error (rejected #(writer/sql! opened read-sql params))]
+        (check "native pinned secret read reaches a redacted SQL failure"
+               [::policy/secret-query-failed true true nil]
+               [(:type (ex-data error))
+                (:jdbc/sql-error (ex-data error))
+                (excludes-secret? secret error)
+                (.getCause error)])
+        (check "native pinned secret read writes no WAL"
+               [0 :empty]
+               [(:pending-statements (writer/status opened))
+                (:status (writer/flush! opened))]))
+      (finally
+        (writer/close! opened)))
+    (check "native bound secret read leaves stored control text secret-free"
+           false (str/includes? (durable-control-text store) secret))))
+
 (defn -main [& _]
   (reset! failures 0)
   (let [library (System/getenv "JOLT_CHDB_LIB")]
@@ -361,6 +476,7 @@
            true (boolean (rejected #(native/restore-database! closed "mem" "/tmp/x")))))
   (run-durable-object-e2e)
   (run-durable-local-recovery-e2e)
+  (run-native-secret-boundary-checks)
   (if (zero? @failures)
     (println "all Durable native checks passed")
     (throw (ex-info (str @failures " Durable native checks failed")

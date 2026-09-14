@@ -30,16 +30,19 @@
 (defn- execute-request! [reader request]
   (case (:op request)
     :query
-    (do
-      (require-query! reader (:sql request) (:params request))
-      ((:query-native! (:operations reader))
-       (:handle reader) (:sql request) (:params request)))
+    (let [analysis (require-query! reader (:sql request) (:params request))]
+      (policy/call-with-query-error-redaction
+       analysis
+       #((:query-native! (:operations reader))
+         (:handle reader) (:sql request) (:params request))))
 
     :query-bytes
-    (do
-      (require-query! reader (:sql request) (:params request))
-      ((:query-bytes-native! (:operations reader))
-       (:handle reader) (:sql request) (:params request) (:options request)))
+    (let [analysis (require-query! reader (:sql request) (:params request))]
+      (policy/call-with-query-error-redaction
+       analysis
+       #((:query-bytes-native! (:operations reader))
+         (:handle reader) (:sql request) (:params request)
+         (:options request))))
 
     :close
     (let [primary (atom nil)]
