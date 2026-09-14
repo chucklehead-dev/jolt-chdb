@@ -36,7 +36,7 @@
 (def ^:private recovery-phase-labels
   #{:base-download :base-hash :wal-download :wal-hash
     :wal-lf-scan :wal-record-buffer :wal-record-copy
-    :wal-strict-decode :wal-json-parse :wal-plan-retention
+    :wal-decode :wal-json-parse :wal-plan-retention
     :wal-replay-classification :wal-replay-native})
 
 (def ^:private recovery-nano-time #(System/nanoTime))
@@ -388,23 +388,59 @@
 (def ^:private replay-plan-record-limit 16384)
 (def ^:private utf8-charset (Charset/forName "UTF-8"))
 
+(def ^:private strict-utf8-malformed-probes
+  [[:stray-continuation (byte-array [(unchecked-byte 0x80)])]
+   [:truncated-continuation (byte-array [(unchecked-byte 0xe2)
+                                         (unchecked-byte 0x82)])]
+   [:invalid-continuation-after-valid-lead
+    (byte-array [(unchecked-byte 0xe2) (unchecked-byte 0x28)
+                 (unchecked-byte 0xa1)])]
+   [:invalid-lead (byte-array [(unchecked-byte 0xff)])]
+   [:obsolete-five-byte-lead
+    (byte-array [(unchecked-byte 0xf8) (unchecked-byte 0x88)
+                 (unchecked-byte 0x80) (unchecked-byte 0x80)
+                 (unchecked-byte 0x80)])]
+   [:two-byte-overlong (byte-array [(unchecked-byte 0xc0)
+                                    (unchecked-byte 0xaf)])]
+   [:three-byte-overlong (byte-array [(unchecked-byte 0xe0)
+                                      (unchecked-byte 0x80)
+                                      (unchecked-byte 0x80)])]
+   [:four-byte-overlong (byte-array [(unchecked-byte 0xf0)
+                                     (unchecked-byte 0x80)
+                                     (unchecked-byte 0x80)
+                                     (unchecked-byte 0x80)])]
+   [:encoded-surrogate (byte-array [(unchecked-byte 0xed)
+                                    (unchecked-byte 0xa0)
+                                    (unchecked-byte 0x80)])]
+   [:above-unicode-maximum (byte-array [(unchecked-byte 0xf4)
+                                        (unchecked-byte 0x90)
+                                        (unchecked-byte 0x80)
+                                        (unchecked-byte 0x80)])]])
+
 (defn- strict-utf8-decoder-capable? []
   (try
     (let [strict-decoder
           (fn []
             (doto (.newDecoder utf8-charset)
               (.onMalformedInput CodingErrorAction/REPORT)
-              (.onUnmappableCharacter CodingErrorAction/REPORT)))]
+              (.onUnmappableCharacter CodingErrorAction/REPORT)))
+          strict-rejects?
+          (fn [bytes]
+            (try
+              (.decode (strict-decoder) (ByteBuffer/wrap bytes))
+              false
+              (catch CharacterCodingException _ true)))
+          replacement-visible?
+          (fn [bytes]
+            (not= -1 (.indexOf (String. bytes "UTF-8") (int 0xfffd))))]
       (and (= "β"
               (str (.decode (strict-decoder)
                             (ByteBuffer/wrap (.getBytes "β" "UTF-8")))))
-           (try
-             (.decode (strict-decoder)
-                      (ByteBuffer/wrap
-                       (byte-array [(unchecked-byte 0xc0)
-                                    (unchecked-byte 0xaf)])))
-             false
-             (catch CharacterCodingException _ true))))
+           (= "�" (String. (.getBytes "�" "UTF-8") "UTF-8"))
+           (every? (fn [[_ bytes]]
+                     (and (replacement-visible? bytes)
+                          (strict-rejects? bytes)))
+                   strict-utf8-malformed-probes)))
     (catch Throwable _ false)))
 
 (def ^:private strict-utf8-decoder-capable-result
@@ -416,7 +452,7 @@
            "The running Jolt lacks strict UTF-8 decoder support"))
   true)
 
-(defn- decode-wal-text! [bytes]
+(defn- strict-decode-wal-text! [bytes]
   (try
     (let [decoder (.newDecoder utf8-charset)]
       (.onMalformedInput decoder CodingErrorAction/REPORT)
@@ -424,6 +460,18 @@
       (str (.decode decoder (ByteBuffer/wrap bytes))))
     (catch CharacterCodingException _
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))))
+
+(defn- decode-wal-text! [bytes]
+  ;; Jolt's String byte constructor reaches Chez's native UTF-8 decoder, while
+  ;; CharsetDecoder deliberately models the JVM's incremental per-code-point
+  ;; loop. The constructor exposes every malformed sequence as U+FFFD. A record
+  ;; without that sentinel is therefore canonical immediately; a record with
+  ;; it takes the strict path so a legitimate encoded U+FFFD remains accepted
+  ;; while replacement caused by malformed input is still rejected.
+  (let [text (String. bytes "UTF-8")]
+    (if (= -1 (.indexOf text (int 0xfffd)))
+      text
+      (strict-decode-wal-text! bytes))))
 
 (defn- exact-statement-bytes-exceed? [sql limit]
   (> (alength (.getBytes sql "UTF-8")) limit))
@@ -551,7 +599,7 @@
                                       #(.toByteArray line))
                                      text
                                      (observed-recovery-phase
-                                      observe! :wal-strict-decode
+                                      observe! :wal-decode
                                       record-wire-bytes
                                       #(decode-wal-text! record-bytes))]
                                  (when-not @first-failure

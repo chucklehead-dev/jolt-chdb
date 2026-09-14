@@ -48,12 +48,26 @@
 
 - Add opt-in, scalar-only Durable recovery phase observations through the
   existing open-operation seam. Fixed labels now separate base/WAL download
-  and hashing, LF scanning, record buffering and copying, strict UTF-8 decode,
+  and hashing, LF scanning, record buffering and copying, WAL decoding,
   JSON parsing, bounded replay-plan retention, classification, and native
   replay. The default path performs no instrumentation clock reads; observer
   failures cannot replace a recovery result or throwable, and events retain no
   path, object key, SQL, payload, or exception data. The throughput harness
   aggregates these events with its existing bounded stage report.
+
+- Decode ordinary Durable WAL records through Jolt's native UTF-8 String
+  constructor, falling back to the strict `CharsetDecoder` only when decoded
+  text contains U+FFFD. The fallback distinguishes a legitimate encoded U+FFFD
+  from replacement caused by malformed input, preserving strict rejection and
+  existing termination/error/effect ordering without re-encoding every record.
+  Exhaustive byte strings through length two plus targeted three/four-byte
+  malformed and scalar-boundary cases match the prior decoder exactly. On one
+  immutable 52,224-row A/B/B/A recovery qualification, mean open time fell from
+  6.131 s to 3.536 s (42.3%) with identical inventory and aggregate results.
+  The candidate source base was jolt-chdb `bafd44b`; its mandatory Jolt
+  executable was built separately from compiler source `120643d6` and is not
+  part of this candidate diff. This bounded comparison is not a percentile,
+  allocation, RSS-plateau, or matched Rust qualification.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
