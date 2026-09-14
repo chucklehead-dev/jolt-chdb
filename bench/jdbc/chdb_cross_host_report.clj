@@ -1,6 +1,6 @@
 (ns jdbc.chdb-cross-host-report)
 
-(def schema-version 3)
+(def schema-version 4)
 (def max-samples 10000)
 
 (defn- fail! [message data]

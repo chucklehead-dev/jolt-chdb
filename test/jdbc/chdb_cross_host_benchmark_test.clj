@@ -39,12 +39,17 @@
   (let [bytes (.getBytes "{\"sql\":\"β\"}\n{\"sql\":\"two\"}\n" "UTF-8")
         scan-record-boundaries (private-fn 'scan-record-boundaries)
         strict-decode (private-fn 'strict-decode)
+        sha256-bytes (private-fn 'sha256-bytes)
+        require-digest! (private-fn 'require-digest!)
         measure-boundary-phase (private-fn 'measure-boundary-phase)
         copy-record (fn [{:keys [record-start record-end-exclusive]}]
                       (java.util.Arrays/copyOfRange
                        bytes record-start record-end-exclusive))
         first-boundaries (scan-record-boundaries bytes 1)
-        second-boundaries (scan-record-boundaries bytes 2)]
+        second-boundaries (scan-record-boundaries bytes 2)
+        first-record (copy-record first-boundaries)
+        segment-sha (sha256-bytes bytes)
+        record-sha (sha256-bytes first-record)]
     (check "boundary scanner counts LF-delimited records" 2
            (:record-count first-boundaries))
     (check "record selection preserves multibyte UTF-8"
@@ -53,6 +58,24 @@
     (check "record selection uses one-based ordinals"
            "{\"sql\":\"two\"}"
            (strict-decode (copy-record second-boundaries)))
+    (check "full segment and selected record have distinct digest scopes"
+           false (= segment-sha record-sha))
+    (check "full segment digest validates only full segment bytes"
+           segment-sha (require-digest! "full WAL segment"
+                                        segment-sha (sha256-bytes bytes)))
+    (check "selected-record digest excludes its terminating LF"
+           record-sha
+           (require-digest! "selected WAL record (excluding LF)"
+                            record-sha (sha256-bytes first-record)))
+    (check "swapping selected-record digest into segment scope fails closed"
+           :jdbc.chdb-cross-host-wal/invalid-benchmark
+           (error-type #(require-digest! "full WAL segment"
+                                         record-sha segment-sha)))
+    (check "swapping segment digest into selected-record scope fails closed"
+           :jdbc.chdb-cross-host-wal/invalid-benchmark
+           (error-type #(require-digest!
+                         "selected WAL record (excluding LF)"
+                         segment-sha record-sha)))
     (check "unterminated WAL fails closed"
            :jdbc.chdb-cross-host-wal/invalid-benchmark
            (error-type #(scan-record-boundaries (.getBytes "{}" "UTF-8") 1)))
@@ -126,7 +149,7 @@
         source {:status :complete
                 :host {:runtime :jvm}
                 :libraries {:json-parser {:implementation :casselc-data-json}}
-                :fixture {:sha256 "fixture-sha" :bytes 12 :record-count 2
+                :fixture {:segment-sha256 "fixture-sha" :bytes 12 :record-count 2
                           :record-ordinal 1 :record-start 0
                           :record-end-exclusive 5}}]
     (try

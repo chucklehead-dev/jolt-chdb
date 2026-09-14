@@ -36,6 +36,11 @@
 (defn- sha256-bytes [bytes]
   (bytes->hex (.digest (MessageDigest/getInstance "SHA-256") bytes)))
 
+(defn- require-digest! [scope expected actual]
+  (when-not (= expected actual)
+    (fail! (str scope " digest does not match") {:scope scope}))
+  actual)
+
 (defn- resource-bytes [resource-name]
   (let [resource (io/resource resource-name)]
     (when-not resource
@@ -297,7 +302,7 @@
     runtime))
 
 (defn- load-reused-boundaries
-  [path expected-sha expected-bytes expected-count ordinal]
+  [path expected-segment-sha expected-bytes expected-count ordinal]
   (let [text (slurp path)
         source (edn/read-string text)
         fixture (:fixture source)
@@ -308,7 +313,7 @@
                    (= :jvm (get-in source [:host :runtime]))
                    (= :casselc-data-json
                       (get-in source [:libraries :json-parser :implementation]))
-                   (= expected-sha (:sha256 fixture))
+                   (= expected-segment-sha (:segment-sha256 fixture))
                    (= expected-bytes (:bytes fixture))
                    (= expected-count (:record-count fixture))
                    (= ordinal (:record-ordinal fixture))
@@ -322,7 +327,8 @@
            :source-report-sha256
            (sha256-bytes (.getBytes text "UTF-8")))))
 
-(defn run-report [fixture expected-sha ordinal warmups samples output]
+(defn run-report
+  [fixture expected-segment-sha expected-record-sha ordinal warmups samples output]
   (let [fixture-path (Paths/get fixture no-path-parts)
         runtime (runtime-id)
         data-json-sha (required-env "BENCH_DATA_JSON_GIT_SHA")
@@ -358,8 +364,25 @@
                  :scan-scope :one-wal-segment
                  :parse-scope :one-selected-record}
         fixture-base {:file-name (.getName (.toFile ^Path fixture-path))
-                      :sha256 expected-sha
+                      :segment-sha256 expected-segment-sha
                       :record-ordinal ordinal
+                      :selected-record-sha256 expected-record-sha
+                      :selected-record-includes-lf? false
+                      :source
+                      {:manifest-sha256
+                       (required-env "BENCH_FIXTURE_MANIFEST_SHA256")
+                       :run-id (required-env "BENCH_FIXTURE_RUN_ID")
+                       :producer
+                       {:runtime
+                        (keyword (required-env "BENCH_FIXTURE_PRODUCER_RUNTIME"))
+                        :chdb-rust-git-sha
+                        (required-env "BENCH_FIXTURE_PRODUCER_CHDB_RUST_SHA")
+                        :native-version
+                        (required-env "BENCH_FIXTURE_PRODUCER_NATIVE_VERSION")
+                        :native-library-sha256
+                        (required-env "BENCH_FIXTURE_PRODUCER_NATIVE_SHA256")
+                        :harness-head
+                        (required-env "BENCH_FIXTURE_PRODUCER_HARNESS_HEAD")}}
                       :record-count expected-record-count}
         journal-path (artifact-path output ".journal.edn")
         csv-path (artifact-path output ".csv")
@@ -440,9 +463,7 @@
              :sha256 {:input-bytes (alength bytes)}
              #(sha256-bytes bytes)
              (fn [value]
-               (when-not (= expected-sha value)
-                 (fail! "WAL fixture digest does not match" {}))
-               value))
+               (require-digest! "full WAL segment" expected-segment-sha value)))
             reused-path (System/getenv "BENCH_REUSE_BOUNDARY_REPORT")
             boundaries
             (if reused-path
@@ -498,8 +519,12 @@
              #(Arrays/copyOfRange bytes (:record-start boundaries)
                                   (:record-end-exclusive boundaries))
              (fn [value]
-               {:bytes (alength value)
-                :sha256 (sha256-bytes value)}))
+               (let [actual-record-sha (sha256-bytes value)]
+                 (require-digest! "selected WAL record (excluding LF)"
+                                  expected-record-sha actual-record-sha)
+                 {:bytes (alength value)
+                  :sha256 actual-record-sha
+                  :includes-lf? false})))
             record-text
             (run-once! :strict-utf8-decode {:input-bytes (alength record-bytes)}
                        #(strict-decode record-bytes) count)
@@ -541,11 +566,12 @@
           :fixture
           (merge fixture-base
                  {:bytes (alength bytes)
-                  :sha256 actual-sha
+                  :segment-sha256 actual-sha
                   :record-start (:record-start boundaries)
                   :record-end-exclusive (:record-end-exclusive boundaries)
                   :record-bytes (alength record-bytes)
-                  :record-sha256 (sha256-bytes record-bytes)
+                  :selected-record-sha256 (sha256-bytes record-bytes)
+                  :selected-record-includes-lf? false
                   :decoded-chars (count record-text)
                   :json {:status :verified
                          :sql-chars (count sql)
@@ -598,13 +624,14 @@
       value)))
 
 (defn -main [& args]
-  (when-not (= 6 (count args))
-    (fail! "expected WAL_JSONL SHA256 RECORD_ORDINAL WARMUPS SAMPLES OUTPUT_EDN" {}))
-  (let [[fixture digest ordinal warmups samples output] args
+  (when-not (= 7 (count args))
+    (fail! "expected WAL_JSONL SEGMENT_SHA256 SELECTED_RECORD_SHA256 RECORD_ORDINAL WARMUPS SAMPLES OUTPUT_EDN" {}))
+  (let [[fixture segment-digest record-digest ordinal warmups samples output] args
         ordinal (parse-positive "record ordinal" ordinal Long/MAX_VALUE)
         warmups (parse-positive "warmups" warmups report/max-samples)
         samples (parse-positive "samples" samples report/max-samples)
-        value (run-report fixture digest ordinal warmups samples output)]
+        value (run-report fixture segment-digest record-digest
+                          ordinal warmups samples output)]
     (spit output (report/render value))
     (println (pr-str {:status :ok :runtime (get-in value [:host :runtime])
                       :output output}))))

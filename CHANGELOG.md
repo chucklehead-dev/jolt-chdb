@@ -17,7 +17,10 @@
   Optional JVM JFR starts before setup, and a JVM-only primitive byte-array
   scanner is reported beside the portable scanner with exact offset/count
   equivalence. Secondary JVM parser rows reuse verified primary offsets when
-  available instead of hiding repeated whole-segment scans.
+  available instead of hiding repeated whole-segment scans. Full-segment and
+  selected-record (excluding LF) SHA-256 identities are distinct, checked at
+  their respective phases, and tied to the authoritative Rust fixture manifest
+  and producer provenance.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

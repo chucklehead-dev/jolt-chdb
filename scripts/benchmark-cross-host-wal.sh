@@ -132,19 +132,21 @@ if [[ "${BENCH_VALIDATE_ORDER_ONLY:-0}" = 1 ]]; then
   exit 0
 fi
 
-if [[ $# -ne 8 ]]; then
-  echo "usage: $0 OUTPUT_DIR WAL_JSONL WAL_SHA256 RECORD_ORDINAL WARMUPS SAMPLES JOLT_BIN JOLT_SOURCE_SHA" >&2
+if [[ $# -ne 10 ]]; then
+  echo "usage: $0 OUTPUT_DIR WAL_JSONL WAL_SEGMENT_SHA256 RECORD_ORDINAL SELECTED_RECORD_SHA256 FIXTURE_MANIFEST_JSON WARMUPS SAMPLES JOLT_BIN JOLT_SOURCE_SHA" >&2
   exit 2
 fi
 
 output_dir=$(realpath -m "$1")
 wal=$(realpath "$2")
-wal_sha=$3
+wal_segment_sha=$3
 record_ordinal=$4
-warmups=$5
-samples=$6
-jolt_bin=$(realpath "$7")
-jolt_source_sha=$8
+selected_record_sha=$5
+fixture_manifest=$(realpath "$6")
+warmups=$7
+samples=$8
+jolt_bin=$(realpath "$9")
+jolt_source_sha=${10}
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
 wrapper=/home/chuck/ai-src/tools/jolt-with-chez-10.4.1
 compat="$repo_root/resources/jdbc/chdb/ffi-compatibility.edn"
@@ -235,9 +237,44 @@ native_version=$(JOLT_CHDB_LIB="$stable_lib" bb -cp "$repo_root/src:$repo_root/r
          f (ffi/cfn lib (:symbol spec) (:args spec) (:return spec))]
      (print (f)))')
 [[ "$native_version" = "$expected_native" ]]
-[[ "$(sha256sum "$wal" | cut -d' ' -f1)" = "$wal_sha" ]]
+[[ "$wal_segment_sha" =~ ^[0-9a-f]{64}$ && "$selected_record_sha" =~ ^[0-9a-f]{64}$ ]]
+[[ "$wal_segment_sha" != "$selected_record_sha" ]] || {
+  echo "segment and selected-record digests must identify distinct byte scopes" >&2; exit 2; }
+actual_wal_segment_sha=$(sha256sum "$wal" | cut -d' ' -f1)
+[[ "$actual_wal_segment_sha" = "$wal_segment_sha" ]] || {
+  echo "full WAL segment digest does not match" >&2; exit 2; }
 expected_record_count=$(wc -l < "$wal")
 [[ "$expected_record_count" =~ ^[1-9][0-9]*$ ]]
+
+[[ -f "$fixture_manifest" ]]
+fixture_manifest_sha=$(sha256sum "$fixture_manifest" | cut -d' ' -f1)
+wal_key="wal/$(basename "$wal")"
+manifest_wal_sha=$(jq -er --arg key "$wal_key" \
+  '.manifest.wal[] | select(.key == $key) | .sha256' "$fixture_manifest")
+manifest_wal_size=$(jq -er --arg key "$wal_key" \
+  '.manifest.wal[] | select(.key == $key) | .size' "$fixture_manifest")
+inventory_wal_sha=$(jq -er --arg key "$wal_key" \
+  '.inventory[] | select(.key == $key) | .sha256' "$fixture_manifest")
+inventory_wal_size=$(jq -er --arg key "$wal_key" \
+  '.inventory[] | select(.key == $key) | .bytes' "$fixture_manifest")
+[[ "$manifest_wal_sha" = "$wal_segment_sha" &&
+    "$inventory_wal_sha" = "$wal_segment_sha" &&
+    "$manifest_wal_size" = "$(wc -c < "$wal")" &&
+    "$inventory_wal_size" = "$manifest_wal_size" ]] || {
+  echo "WAL segment identity differs from the authoritative fixture manifest" >&2; exit 2; }
+fixture_run_id=$(jq -er '.run_id' "$fixture_manifest")
+fixture_producer_runtime=$(jq -er '.producer.runtime' "$fixture_manifest")
+fixture_producer_chdb_rust_sha=$(jq -er '.producer.chdb_rust_git_sha' "$fixture_manifest")
+fixture_producer_native_version=$(jq -er '.producer.native_version' "$fixture_manifest")
+fixture_producer_native_sha=$(jq -er '.producer.native_library.sha256' "$fixture_manifest")
+fixture_producer_harness_head=$(jq -er '.producer.harness_state.head' "$fixture_manifest")
+[[ "$fixture_run_id" =~ ^[0-9a-f]{64}$ &&
+    "$fixture_producer_runtime" = rust &&
+    "$fixture_producer_chdb_rust_sha" =~ ^[0-9a-f]{40}$ &&
+    -n "$fixture_producer_native_version" &&
+    "$fixture_producer_native_sha" =~ ^[0-9a-f]{64}$ &&
+    "$fixture_producer_harness_head" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "fixture producer provenance is incomplete or malformed" >&2; exit 2; }
 
 if [[ "${BENCH_PREFLIGHT_ONLY:-0}" = 1 ]]; then
   printf 'cross-host WAL preflight complete: jolt=%s babashka=%s jvm=%s native=%s\n' \
@@ -292,9 +329,16 @@ jolt_common=(BENCH_JOLT_SOURCE_SHA="$jolt_source_sha"
              BENCH_JVM_PROFILE_SOURCE_SHA256="$jvm_profile_source_sha"
              BENCH_JVM_SCAN_SOURCE_SHA256="$jvm_scan_source_sha"
              BENCH_RUNNER_SHA256="$runner_sha"
+             BENCH_FIXTURE_MANIFEST_SHA256="$fixture_manifest_sha"
+             BENCH_FIXTURE_RUN_ID="$fixture_run_id"
+             BENCH_FIXTURE_PRODUCER_RUNTIME="$fixture_producer_runtime"
+             BENCH_FIXTURE_PRODUCER_CHDB_RUST_SHA="$fixture_producer_chdb_rust_sha"
+             BENCH_FIXTURE_PRODUCER_NATIVE_VERSION="$fixture_producer_native_version"
+             BENCH_FIXTURE_PRODUCER_NATIVE_SHA256="$fixture_producer_native_sha"
+             BENCH_FIXTURE_PRODUCER_HARNESS_HEAD="$fixture_producer_harness_head"
              BENCH_EXPECTED_RECORD_COUNT="$expected_record_count")
 
-common=("$wal" "$wal_sha" "$record_ordinal" "$warmups" "$samples")
+common=("$wal" "$wal_segment_sha" "$selected_record_sha" "$record_ordinal" "$warmups" "$samples")
 
 run_jolt() {
   local output=$1 position=$2
