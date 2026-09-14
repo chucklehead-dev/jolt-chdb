@@ -578,9 +578,12 @@
           next-record-count (inc (:record-count plan))]
       (when (and (<= next-wire-bytes replay-plan-wire-byte-limit)
                  (<= next-record-count replay-plan-record-limit))
-        {:wire-bytes next-wire-bytes
-         :record-count next-record-count
-         :statements (conj (:statements plan) sql)}))))
+        (cond-> {:wire-bytes next-wire-bytes
+                 :record-count next-record-count
+                 :statements (conj (:statements plan) sql)}
+          (contains? plan :statement-wire-bytes)
+          (assoc :statement-wire-bytes
+                 (conj (:statement-wire-bytes plan) record-wire-bytes)))))))
 
 (defn- validate-wal!
   ;; The old whole-file decoder classified an unterminated segment first and
@@ -590,7 +593,8 @@
   ([path]
    (validate-wal! path nil))
   ([path observe!]
-   (let [plan (atom {:wire-bytes 0 :record-count 0 :statements []})
+   (let [plan (atom (cond-> {:wire-bytes 0 :record-count 0 :statements []}
+                      observe! (assoc :statement-wire-bytes [])))
          record-count
          (visit-wal!
           path
@@ -602,8 +606,9 @@
                 ;; Do not start retaining again after a later small record.
                 (swap! plan extend-replay-plan sql record-wire-bytes))))
           true observe!)]
-     {:record-count record-count
-      :statements (some-> @plan :statements)})))
+     (merge {:record-count record-count
+             :statements (some-> @plan :statements)}
+            (select-keys @plan [:statement-wire-bytes])))))
 
 (defn- replay-statement!
   [sql operations handle logical-database record-wire-bytes observe!]
@@ -615,11 +620,16 @@
    #((:execute-native! operations) handle sql [])))
 
 (defn- replay-statements!
-  [statements operations handle logical-database observe!]
-  (doseq [sql statements]
-    ;; The retained plan deliberately stores only SQL strings. Its bounded
-    ;; retention accounting was already observed while validating the wire.
-    (replay-statement! sql operations handle logical-database 0 observe!)))
+  [statements statement-wire-bytes operations handle logical-database observe!]
+  (if statement-wire-bytes
+    (doseq [[sql record-wire-bytes] (map vector statements statement-wire-bytes)]
+      ;; Bytes are the exact JSON record bytes excluding its LF delimiter, the
+      ;; same unit reported by the streaming fallback path.
+      (replay-statement! sql operations handle logical-database
+                         record-wire-bytes observe!))
+    ;; Preserve the unobserved plan's old allocation and replay shape.
+    (doseq [sql statements]
+      (replay-statement! sql operations handle logical-database 0 observe!))))
 
 (defn- replay-wal!
   ([path replay-plan operations handle logical-database]
@@ -627,7 +637,8 @@
   ([path replay-plan operations handle logical-database observe!]
    (if-some [statements (:statements replay-plan)]
      (replay-statements!
-      statements operations handle logical-database observe!)
+      statements (:statement-wire-bytes replay-plan)
+      operations handle logical-database observe!)
      (visit-wal!
       path
       (fn [sql record-wire-bytes]

@@ -91,6 +91,9 @@
 (defn- engine-effects [calls]
   (filterv #(contains? #{:analyze-execute :execute} (first %)) calls))
 
+(defn- phase-byte-total [events phase]
+  (reduce + 0 (map :bytes (filter #(= phase (:phase %)) events))))
+
 (def ^:private empty-wal-fixture-root
   "test/fixtures/durable/empty-referenced-wal")
 
@@ -222,6 +225,7 @@
              (reader/close! opened)))))))
 
   (let [payload (wal-bytes ["SELECT 'instrumentation-canary'"])
+        record-wire-bytes (dec (alength payload))
         events (atom [])
         expected-phases
         [:wal-download :wal-hash :wal-lf-scan :wal-record-buffer
@@ -255,7 +259,11 @@
             @events))
     (check "instrumentation retains no path, key, SQL, payload, or error text"
            false
-           (str/includes? (pr-str @events) "instrumentation-canary")))
+           (str/includes? (pr-str @events) "instrumentation-canary"))
+    (check "retained-plan replay reports exact JSON bytes without the LF"
+           [record-wire-bytes record-wire-bytes]
+           [(phase-byte-total @events :wal-replay-classification)
+            (phase-byte-total @events :wal-replay-native)]))
 
   (let [payload (wal-bytes ["SELECT 'same-effects'"])
         run
@@ -374,6 +382,8 @@
 
   (let [sql-values ["SELECT 1" "SELECT 2" "SELECT 3"]
         payload (wal-bytes sql-values)
+        expected-record-bytes
+        (reduce + 0 (map #(dec (alength (wal-bytes [%]))) sql-values))
         wire-limit-var (ns-resolve 'jdbc.chdb.durable
                                    'replay-plan-wire-byte-limit)
         record-limit-var (ns-resolve 'jdbc.chdb.durable
@@ -382,6 +392,7 @@
             [["wire-byte" wire-limit-var 1]
              ["record-count" record-limit-var 1]]]
       (let [wal-decodes (atom 0)
+            events (atom [])
             original-read-str json/read-str]
         (with-redefs-fn
           {limit-var limit
@@ -392,6 +403,7 @@
              (apply original-read-str text options))}
           #(attempt-open
             payload
+            {:recovery-phase! #(swap! events conj %)}
             (fn [open! calls _ _]
               (let [opened (open!)]
                 (try
@@ -403,7 +415,11 @@
                   (finally
                     (reader/close! opened)))))))
         (check (str label " cap causally retains the two-pass fallback")
-               (* 2 (count sql-values)) @wal-decodes))))
+               (* 2 (count sql-values)) @wal-decodes)
+        (check (str label " fallback reports the same exact replay byte unit")
+               [expected-record-bytes expected-record-bytes]
+               [(phase-byte-total @events :wal-replay-classification)
+                (phase-byte-total @events :wal-replay-native)]))))
 
   (let [validate-var (ns-resolve 'jdbc.chdb.durable 'validate-wal!)
         replay-var (ns-resolve 'jdbc.chdb.durable 'replay-wal!)
@@ -424,6 +440,8 @@
     (try
       (Files/write path (wal-bytes original-sql) (make-array OpenOption 0))
       (let [plan (validate! path)]
+        (check "unobserved retained plans allocate no phase byte vector"
+               false (contains? plan :statement-wire-bytes))
         (Files/write path (wal-bytes changed-sql) (make-array OpenOption 0))
         (replay! path plan operations :handle "default"))
       (check "a validated plan resists a later scratch-file substitution"
