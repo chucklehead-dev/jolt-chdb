@@ -219,6 +219,16 @@
                (update :nanos + nanos)
                (update :bytes + (or bytes 0))))))
 
+(defn- record-recovery-phase!
+  [metrics {:keys [phase status calls nanos bytes]}]
+  (swap! metrics update phase
+         (fn [entry]
+           (-> (or entry {:calls 0 :nanos 0 :bytes 0 :statuses {}})
+               (update :calls + calls)
+               (update :nanos + nanos)
+               (update :bytes + bytes)
+               (update-in [:statuses status] (fnil + 0) calls)))))
+
 (defn- timed-stage [metrics stage bytes f]
   (let [start (System/nanoTime)
         value (f)]
@@ -227,9 +237,12 @@
 
 (defn- stage-report [metrics]
   (into {}
-        (map (fn [[stage {:keys [calls nanos bytes]}]]
-               [stage {:calls calls :total-ms (ms nanos) :bytes bytes
-                       :mean-ms (if (zero? calls) 0.0 (ms (/ nanos calls)))}]))
+        (map (fn [[stage {:keys [calls nanos bytes statuses]}]]
+               [stage
+                (cond-> {:calls calls :total-ms (ms nanos) :bytes bytes
+                         :mean-ms
+                         (if (zero? calls) 0.0 (ms (/ nanos calls)))}
+                  statuses (assoc :statuses statuses))]))
         @metrics))
 
 (defn- instrumented-backend [delegate metrics]
@@ -257,7 +270,10 @@
   ;; its complete retry options, including the lease-aware :stopped? predicate.
   ;; Publication remains visible through the timed immutable PUT and head-CAS
   ;; backend operations without changing that control contract.
-  {:classification-sql!
+  {:recovery-phase!
+   (fn [event]
+     (record-recovery-phase! metrics event))
+   :classification-sql!
    (fn [sql params]
      (timed-stage metrics :classification-sql 0
                   #(chdb/classification-sql sql params)))
