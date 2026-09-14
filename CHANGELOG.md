@@ -33,6 +33,14 @@
   ordinal, offset, and byte-visit equivalence controls.
   The canonical Jolt row is qualified against the merged one-character
   `String.indexOf` specialization at `2d39e854a90926d8f8e9bd5d3ddbb109d657afe1`.
+  A selected-record-only A/B/B/A at benchmark head `ac238ae8`, reusing verified
+  offsets and excluding whole-segment scanning, found that compiler neutral for
+  the pinned data.json workload: JSON p50 was 9.204/9.640/9.704/9.985 ms and
+  decode-plus-JSON p50 was 28.131/27.796/28.320/28.702 ms in old/new/new/old
+  order, with effectively unchanged allocation. This is expected because the
+  scanner calls the integer-character `String.indexOf` overload already
+  fast-pathed by the older compiler, rather than the one-character String path
+  optimized by that merge.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
