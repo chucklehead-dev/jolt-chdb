@@ -248,6 +248,7 @@
          durable-throughput-contract-test "jolt -M:durable-throughput-contract-test"
          durable-throughput-metrics-test "jolt -M:durable-throughput-metrics-test"
          cross-host-benchmark-test "jolt -M:cross-host-benchmark-test"
+         cross-host-benchmark-test-bb "bb -cp src:resources:bench:test -m jdbc.chdb-cross-host-benchmark-test babashka babashka-bundled-cheshire"
          cross-host-benchmark-order-test "bash test/cross-host-wal-order.sh"
          typed-check "clojure -M:typed-check"
          test "jolt -M:test"

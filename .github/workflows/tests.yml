@@ -88,6 +88,18 @@ jobs:
         run: jolt -M:setup-native
       - name: Qualify the selected native ABI on Jolt, Babashka, and JVM
         run: bash scripts/qualify-ffi-runtimes.sh jolt
+      - name: Check cross-host WAL benchmark contracts on Jolt and Babashka
+        run: |
+          jolt -Srepro -M:cross-host-benchmark-test
+          bb -cp src:resources:bench:test \
+            -m jdbc.chdb-cross-host-benchmark-test \
+            babashka babashka-bundled-cheshire
+      - name: Check natural JVM WAL parser contracts
+        run: |
+          clojure -Srepro -M:cross-host-benchmark-test-upstream-data-json
+          clojure -Srepro -M:cross-host-benchmark-test-cheshire
+      - name: Check cross-host WAL matrix and liveness controls
+        run: bash test/cross-host-wal-order.sh
       - name: Install pinned Hegel native library
         run: jolt -A:test -m hegel.install
       - name: Test Durable owned threads with one Jolt carrier

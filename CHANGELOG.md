@@ -25,7 +25,9 @@
   match the exact report schema.
   The selected SQL digest is derived once through external `jq` before any
   runtime row starts, so cross-host parser agreement cannot certify a shared
-  misparse; reports retain the oracle's version and executable digest.
+  misparse; reports retain the oracle's version and executable digest. CI runs
+  the causal wrong-digest control through native Babashka as well as Jolt and
+  both natural JVM parser profiles.
   Babashka rows use its native classpath directly and do not invoke JVM
   tools.deps or require a writable user-level classpath cache.
   The ordinary JVM whole-segment boundary phase uses its type-hinted primitive
