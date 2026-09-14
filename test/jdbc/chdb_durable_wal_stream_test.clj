@@ -169,7 +169,7 @@
         scan-source (subs source start end)
         visit-end (str/index-of source "(defn- extend-replay-plan" end)
         visit-source (subs source end visit-end)]
-    (check "typed LF finder has the emitted fast-path contract"
+    (check "typed LF finder retains the intended source shape"
            true
            (and (str/includes? scan-source
                                "[^bytes chunk ^long start ^long end]")
