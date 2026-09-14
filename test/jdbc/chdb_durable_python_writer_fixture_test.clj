@@ -244,7 +244,9 @@
   (when-not (= 6 (count args))
     (fail! "usage: FIXTURE_ROOT DESCRIPTOR SOURCE_ARCHIVE CORE_WHEEL LIBCHDB HEADER"))
   (reset! failures 0)
-  (let [[fixture-root descriptor-path source-archive core-wheel native-library native-header]
+  (let [workflow (slurp ".github/workflows/durable-python-fixture.yml")
+        runner (slurp "scripts/verify-durable-python-writer-fixture.sh")
+        [fixture-root descriptor-path source-archive core-wheel native-library native-header]
         args
         descriptor (json/read-str (slurp descriptor-path) :key-fn keyword)
         before (validate-descriptor! descriptor fixture-root source-archive core-wheel
@@ -256,6 +258,14 @@
         actual (try (observed opened) (finally (reader/close! opened)))
         after (validate-descriptor! descriptor fixture-root source-archive core-wheel
                                     native-library native-header)]
+    (check "hosted fixture exchange uses the already-qualified cached Jolt"
+           [false false]
+           [(str/includes? workflow "/opt/chez")
+            (str/includes? workflow "JOLT_WRAPPER=")])
+    (check "local qualification retains an explicit optional wrapper seam"
+           true
+           (and (str/includes? runner "${JOLT_WRAPPER:-}")
+                (str/includes? runner "jolt_command=(\"$wrapper\" \"$jolt_bin\")")))
     (check "Python writer aggregate survives Jolt WAL recovery" actual
            (require-aggregate! (get-in descriptor [:fixture :expected]) actual))
     (check "read-only recovery preserves every logical object byte" before after)

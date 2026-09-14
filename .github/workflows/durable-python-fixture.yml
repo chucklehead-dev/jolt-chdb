@@ -73,15 +73,7 @@ jobs:
           JOLT_GATEBOOT_BUILD_DIR: ${{ runner.temp }}/jolt-gateboot
         run: |
           set -euo pipefail
-          wrapper="$RUNNER_TEMP/jolt-with-chez-10.4.1"
-          printf '%s\n' '#!/usr/bin/env bash' \
-            'set -euo pipefail' \
-            'test "$(/opt/chez/bin/scheme --version)" = 10.4.1' \
-            'export CHEZ=/opt/chez/bin/scheme CHEZSCHEME=/opt/chez/bin/scheme' \
-            'export JOLT_CHEZ=/opt/chez/bin/scheme JOLT_CHEZ_CSV=/opt/chez/bin/scheme' \
-            'exec "$@"' > "$wrapper"
-          chmod +x "$wrapper"
-          JOLT_WRAPPER="$wrapper" scripts/verify-durable-python-writer-fixture.sh \
+          scripts/verify-durable-python-writer-fixture.sh \
             "$RUNNER_TEMP/python-writer-output" \
             "$QUALIFICATION_ROOT/source-extract/chdb-66643e5" \
             "$QUALIFICATION_ROOT/chdb-source.tar" \

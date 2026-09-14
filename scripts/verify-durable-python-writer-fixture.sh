@@ -15,12 +15,17 @@ jolt_bin=$(realpath "$6")
 libchdb=$(realpath "$7")
 header=$(realpath "$8")
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
-wrapper=${JOLT_WRAPPER:-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1}
+jolt_command=("$jolt_bin")
+
+if [[ -n ${JOLT_WRAPPER:-} ]]; then
+  wrapper=$(realpath "$JOLT_WRAPPER")
+  test -x "$wrapper"
+  jolt_command=("$wrapper" "$jolt_bin")
+fi
 
 for artifact in "$source_archive" "$core_wheel" "$jolt_bin" "$libchdb" "$header"; do
   test -f "$artifact"
 done
-test -x "$wrapper"
 test -d "$source_root"
 test -d "$core_site"
 if [[ -e "$output" ]] && find "$output" -mindepth 1 -print -quit | grep -q .; then
@@ -34,6 +39,6 @@ env PYTHONPATH="$source_root:$core_site" \
   "$source_root" "$source_archive" "$core_wheel" "$libchdb" "$header" "$output"
 
 env JOLT_CHDB_LIB="$libchdb" \
-  "$wrapper" "$jolt_bin" -Srepro -M:durable-python-writer-fixture-test \
+  "${jolt_command[@]}" -Srepro -M:durable-python-writer-fixture-test \
   "$output/fixture-store" "$output/fixture.json" "$source_archive" \
   "$core_wheel" "$libchdb" "$header"
