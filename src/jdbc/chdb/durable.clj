@@ -95,8 +95,8 @@
   (throw (ex-info message {:type type})))
 
 (defn- validate-recovery-phase-observer! [operations]
-  (when-let [observe! (:recovery-phase! operations)]
-    (when-not (fn? observe!)
+  (let [observe! (:recovery-phase! operations)]
+    (when (and (some? observe!) (not (fn? observe!)))
       (fail! ::invalid-options "recovery-phase! must be a function")))
   operations)
 

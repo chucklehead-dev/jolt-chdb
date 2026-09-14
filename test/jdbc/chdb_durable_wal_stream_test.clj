@@ -217,6 +217,16 @@
           (reader/close! (open!)))))
     (check "default recovery performs no instrumentation clock read" true true))
 
+  (let [payload (wal-bytes ["SELECT 'invalid-observer'"])]
+    (attempt-open
+     payload {:recovery-phase! false}
+     (fn [open! calls close-count cleanup-count]
+       (check "non-function instrumentation is rejected"
+              ::durable/invalid-options (error-type open!))
+       (check "invalid instrumentation fails before native recovery effects"
+              [[] 0 0] [(engine-effects @calls)
+                        @close-count @cleanup-count]))))
+
   (let [payload (wal-bytes ["SELECT 'throwing-observer-success'"])]
     (attempt-open
      payload {:recovery-phase! (fn [_]
