@@ -23,6 +23,8 @@
   and producer provenance. JVM managed-allocation metrics are enabled only
   when the runtime reports that capability, and reused boundary reports must
   match the exact report schema.
+  Babashka rows use its native classpath directly and do not invoke JVM
+  tools.deps or require a writable user-level classpath cache.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

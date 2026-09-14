@@ -122,6 +122,37 @@ if [[ "${BENCH_VALIDATE_JVM_STATUS_ONLY:-0}" = 1 ]]; then
   exit 0
 fi
 
+if [[ "${BENCH_VALIDATE_BB_LAUNCH_ONLY:-0}" = 1 ]]; then
+  validation_repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
+  validation_tmp=$(mktemp -d)
+  validation_home="$validation_tmp/read-only-home"
+  validation_checkpoint="$validation_tmp/checkpoint"
+  mkdir -p "$validation_home"
+  chmod 555 "$validation_home"
+  trap 'chmod 755 "$validation_home"; rm -rf "$validation_tmp"' EXIT
+
+  env HOME="$validation_home" \
+    bb -cp "$validation_repo_root/src:$validation_repo_root/resources:$validation_repo_root/bench" \
+       -e '(require (quote jdbc.chdb-cross-host-wal))
+           (spit (first *command-line-args*) "native-bb-checkpoint\n")' \
+       -- "$validation_checkpoint"
+  [[ -s "$validation_checkpoint" ]]
+
+  rm -f "$validation_checkpoint"
+  if env HOME="$validation_home" \
+       bb --config "$validation_repo_root/deps.edn" \
+          --deps-root "$validation_repo_root" \
+          -Sdeps '{:paths ["src" "resources" "bench"]}' \
+          -e '(spit (first *command-line-args*) "mutant-checkpoint\n")' \
+          -- "$validation_checkpoint" >/dev/null 2>&1; then
+    echo "tools.deps Babashka launch mutant unexpectedly succeeded" >&2
+    exit 1
+  fi
+  [[ ! -e "$validation_checkpoint" ]]
+  echo "native Babashka launch survives a read-only home; tools.deps mutant fails before checkpoint"
+  exit 0
+fi
+
 matrix_order=${BENCH_MATRIX_ORDER:-"jolt babashka jvm-casselc jvm-upstream jvm-cheshire"}
 if ! validate_matrix_order "$matrix_order"; then
   echo "BENCH_MATRIX_ORDER must contain all five known rows exactly once" >&2
@@ -360,8 +391,7 @@ run_bb() {
       BENCH_JSON_PARSER=babashka-bundled-cheshire BENCH_RUNTIME_VERSION="$(bb --version)" \
       BENCH_RUNTIME_REVISION="$expected_bb_commit" BENCH_DATA_JSON_GIT_SHA="$data_json_sha" \
       BENCH_RUNTIME_EXECUTABLE_SHA256="$(sha256sum "$bb_bin" | cut -d' ' -f1)" \
-    bb --config "$repo_root/deps.edn" --deps-root "$repo_root" \
-       -Sdeps '{:paths ["src" "resources" "bench"]}' \
+    bb -cp "$repo_root/src:$repo_root/resources:$repo_root/bench" \
        -m jdbc.chdb-cross-host-wal \
        "${common[@]}" "$output"
 }
