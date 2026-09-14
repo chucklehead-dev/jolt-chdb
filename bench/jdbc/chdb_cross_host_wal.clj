@@ -118,12 +118,12 @@
 
 (defn- primary-boundary-scanner [runtime]
   (if (= runtime :jvm)
-    {:implementation :jvm-primitive-byte-array
-     :scanner (fn [bytes ordinal]
-                (checked-record-boundaries
-                 (requiring-resolve
-                  'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)
-                 bytes ordinal))}
+    (let [scanner
+          (requiring-resolve
+           'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)]
+      {:implementation :jvm-primitive-byte-array
+       :scanner (fn [bytes ordinal]
+                  (checked-record-boundaries scanner bytes ordinal))})
     {:implementation :portable-clojure-scalar
      :scanner scan-record-boundaries}))
 
