@@ -173,6 +173,38 @@ Integrations can call `durable/connection-role` before performing any writes;
 it returns `:writer` or `:reader` without publishing state, and rejects ordinary
 chDB connections.
 
+### Read-only status
+
+Call `(durable/status conn)` to obtain a versioned, closed data projection for
+an open Durable connection. It performs no backend or native I/O. In particular,
+it never exposes object keys, SQL or parameter values, credentials, exceptions,
+native handles, lease tokens, or another mutable ownership capability.
+
+The `:observed-manifest-sequence` is the manifest sequence recovered at open or
+confirmed by a later persistence boundary. It is not a lease generation or a
+wall-clock value. A writer reports `:view-current? true` only when every
+mutation that completed before the local snapshot is represented by that
+confirmed boundary. `false` means locally completed work is pending;
+`:unavailable` means the library cannot make a sound currentness claim, such as
+after an ambiguous commit, fencing, or close. This statement does not cover an
+operation still executing, work waiting in an application's queue, or another
+telemetry/export pipeline.
+
+A reader always reports `:view-current? :unavailable`: its
+`:observed-manifest-sequence` identifies the immutable snapshot opened, but
+status deliberately does not reread `head.json` to guess whether a newer writer
+commit exists. `:last-successful-persistence` is therefore unavailable for a
+reader. Passing an ordinary chDB connection, another JDBC driver, or a closed
+connection fails at the existing JDBC extension boundary.
+
+Status is observational (ghost state in modeling terms). Updating it does not
+add a Protocol V1 or Quint transition, does not alter acknowledgement, and does
+not make an attempted publication successful. A writer advances the reported
+boundary only after the same confirmed, ambiguity-reconciled, or unchanged
+outcome that already governs WAL/checkpoint clearing. An error is reduced to a
+closed category while the operation still rethrows the exact original
+`Throwable`.
+
 ### S3-compatible namespace
 
 Compiled Jolt applications should construct the native transport explicitly so

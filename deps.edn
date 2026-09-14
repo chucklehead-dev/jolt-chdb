@@ -74,6 +74,9 @@
            :durable-open-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
+           :durable-status-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-status-test"]}
            :durable-wal-stream-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-wal-stream-test"]}
@@ -198,6 +201,7 @@
          durable-thread-test "jolt -M:durable-thread-test"
          durable-worker-join-test "jolt -M:durable-worker-join-test"
          durable-open-test "jolt -M:durable-open-test"
+         durable-status-test "jolt -M:durable-status-test"
          durable-wal-stream-test "jolt -M:durable-wal-stream-test"
          durable-compatibility-test "jolt -M:durable-compatibility-test"
          durable-epoch-seconds-test "jolt -M:durable-epoch-seconds-test"

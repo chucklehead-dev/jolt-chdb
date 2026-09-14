@@ -41,9 +41,12 @@ An `ArrayBlockingQueue` plus one owned OS thread provides the explicit bounded
 FIFO. The worker is deliberately not a Jolt fiber: native chDB, filesystem, and
 object-store calls may block in ways that pin a shared fiber carrier.
 Admission and the transition to closing share one lock, so an operation cannot
-pass the open check and enter behind the close request. `status` exposes only
-the lifecycle, local writability, pending counts, and whether a checkpoint is
-required. A second owned OS thread renews the lease independently of long
+pass the open check and enter behind the close request. The lower-level writer
+`status` exposes only the lifecycle, local writability, pending counts, and
+whether a checkpoint is required. The public `jdbc.chdb.durable/status`
+projection additionally reports a closed, redacted manifest boundary and
+currentness category without provider I/O; see [Durable storage](durable.md#read-only-status).
+A second owned OS thread renews the lease independently of long
 queued engine work. It remains active after close admission while earlier FIFO
 work drains and while close flushes. Close then signals and positively joins
 the heartbeat before lease release, native close, and scratch cleanup. This

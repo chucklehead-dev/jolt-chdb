@@ -29,6 +29,67 @@
      wal-state lease-state heartbeat-stop backend-context retry-options
      operations worker heartbeat])
 
+(def ^:private unavailable :unavailable)
+
+(declare fail!)
+
+(defn- supported-manifest-sequence? [value]
+  (and (integer? value) (<= 0 value 9007199254740991)))
+
+(defn- persistence-error [error]
+  (case (:type (ex-data error))
+    :jdbc.chdb.durable.control/commit-ambiguous :ambiguous
+    :jdbc.chdb.durable.control/lease-fenced :lease-fenced
+    :failed))
+
+(defn- confirmation [result]
+  (case (:status result)
+    :committed :committed
+    :reconciled :reconciled
+    :empty :unchanged
+    nil))
+
+(defn- observe-persistence-failure! [writer error]
+  (swap! (:wal-state writer)
+         assoc
+         :last-persistence-error (persistence-error error)
+         :unconfirmed? (= :jdbc.chdb.durable.control/commit-ambiguous
+                          (:type (ex-data error)))))
+
+(defn- confirmed-sequence [state boundary result]
+  (let [current (:observed-manifest-sequence state)]
+    (cond
+      (= :empty boundary) current
+      (supported-manifest-sequence?
+       (get-in result [:head "manifest" "seq"]))
+      (get-in result [:head "manifest" "seq"])
+      (and (supported-manifest-sequence? current)
+           (< current 9007199254740991)) (inc current)
+      :else unavailable)))
+
+(defn- observe-persistence-success
+  [state operation boundary result]
+  (let [confirmed (confirmation result)]
+    (when-not confirmed
+      (fail! ::persistence-unconfirmed
+             "The Durable persistence result was not confirmed"))
+    (let [sequence (confirmed-sequence state boundary result)]
+      (if (supported-manifest-sequence? sequence)
+        (assoc state
+               :observed-manifest-sequence sequence
+               :last-successful-persistence
+               {:operation operation
+                :boundary boundary
+                :manifest-sequence sequence
+                :confirmation confirmed}
+               :last-persistence-error :none
+               :unconfirmed? false)
+        (assoc state
+               :observed-manifest-sequence unavailable
+               :last-successful-persistence unavailable
+               :last-persistence-error :none
+               :unconfirmed? false)))))
+
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
 
@@ -122,9 +183,11 @@
           (recur (next remaining) (+ offset length)))))
     output))
 
-(defn- clear-wal! [writer]
-  (reset! (:wal-state writer)
-          {:lines [] :byte-count 0 :checkpoint-required? false}))
+(defn- clear-wal! [writer operation boundary result]
+  (swap! (:wal-state writer)
+         #(-> %
+              (assoc :lines [] :byte-count 0 :checkpoint-required? false)
+              (observe-persistence-success operation boundary result))))
 
 (defn- require-checkpoint! [writer]
   (swap! (:wal-state writer) assoc :checkpoint-required? true))
@@ -258,53 +321,68 @@
 
 (declare do-checkpoint!)
 
-(defn- do-flush! [writer]
-  (assert-writable! writer)
-  (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
-    (cond
-      checkpoint-required?
-      (do-checkpoint! writer)
+(defn- do-flush!
+  ([writer] (do-flush! writer :flush))
+  ([writer operation]
+   (try
+     (assert-writable! writer)
+     (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
+       (cond
+         checkpoint-required?
+         (do-checkpoint! writer operation)
 
-      (zero? byte-count)
-      {:status :empty}
+         (zero? byte-count)
+         (let [result {:status :empty}]
+           (swap! (:wal-state writer)
+                  observe-persistence-success operation :empty result)
+           result)
 
-      :else
-      (let [payload (joined-wal writer)
-            committed
-            (let [publication ((:publish-wal! (:operations writer))
-                               (:store writer) (:token writer) payload)]
-              ((:commit-reference! (:operations writer))
-               (:store writer) (:token writer)
-               {:kind :wal
-                :reference (:reference publication)
-                :verify-reference! control/verify-byte-reference!}))]
-        ;; Retain the complete pending buffer on every failure. Only a confirmed
-        ;; or reconciled head commit proves that replay can recover these writes.
-        (clear-wal! writer)
-        committed))))
+         :else
+         (let [payload (joined-wal writer)
+               committed
+               (let [publication ((:publish-wal! (:operations writer))
+                                  (:store writer) (:token writer) payload)]
+                 ((:commit-reference! (:operations writer))
+                  (:store writer) (:token writer)
+                  {:kind :wal
+                   :reference (:reference publication)
+                   :verify-reference! control/verify-byte-reference!}))]
+           ;; Retain the complete pending buffer on every failure. Only a confirmed
+           ;; or reconciled head commit proves that replay can recover these writes.
+           (clear-wal! writer operation :wal committed)
+           committed)))
+     (catch Throwable error
+       (observe-persistence-failure! writer error)
+       (throw error)))))
 
-(defn- do-checkpoint! [writer]
-  (assert-writable! writer)
-  ((:validate-checkpoint! (:operations writer))
-   (:store writer) (:token writer))
-  (let [path ((:create-checkpoint! (:operations writer))
-              (:handle writer) (:database writer))]
-    (try
-      (let [committed
-            (let [publication ((:publish-checkpoint! (:operations writer))
-                               (:store writer) (:token writer) path)]
-              ((:commit-reference! (:operations writer))
-               (:store writer) (:token writer)
-               {:kind :checkpoint
-                :reference (:reference publication)
-                :verify-reference!
-                (:verify-checkpoint-reference! (:operations writer))}))]
-        ;; The full backup contains every local mutation. Pending statement WAL
-        ;; becomes redundant only after the checkpoint head CAS is proved.
-        (clear-wal! writer)
-        committed)
-      (finally
-        ((:delete-checkpoint! (:operations writer)) path)))))
+(defn- do-checkpoint!
+  ([writer] (do-checkpoint! writer :checkpoint))
+  ([writer operation]
+   (try
+     (assert-writable! writer)
+     ((:validate-checkpoint! (:operations writer))
+      (:store writer) (:token writer))
+     (let [path ((:create-checkpoint! (:operations writer))
+                 (:handle writer) (:database writer))]
+       (try
+         (let [committed
+               (let [publication ((:publish-checkpoint! (:operations writer))
+                                  (:store writer) (:token writer) path)]
+                 ((:commit-reference! (:operations writer))
+                  (:store writer) (:token writer)
+                  {:kind :checkpoint
+                   :reference (:reference publication)
+                   :verify-reference!
+                   (:verify-checkpoint-reference! (:operations writer))}))]
+           ;; The full backup contains every local mutation. Pending statement WAL
+           ;; becomes redundant only after the checkpoint head CAS is proved.
+           (clear-wal! writer operation :checkpoint committed)
+           committed)
+         (finally
+           ((:delete-checkpoint! (:operations writer)) path))))
+     (catch Throwable error
+       (observe-persistence-failure! writer error)
+       (throw error)))))
 
 (defn- first-error [attempts]
   (reduce
@@ -320,7 +398,7 @@
 (defn- do-close! [writer]
   (let [error
         (first-error
-         [#(do-flush! writer)
+         [#(do-flush! writer :close)
           #(deliver (:heartbeat-stop writer) :stop)
           #(when-let [heartbeat (:heartbeat writer)]
              (owned-thread/join! heartbeat))
@@ -459,7 +537,7 @@
   epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
-           engine-metadata]
+           engine-metadata manifest-sequence]
     :or {queue-capacity default-queue-capacity}}]
   (require-wal-byte-writer-capability!)
   (when-not store (fail! ::invalid-options "store is required"))
@@ -467,6 +545,10 @@
   (when-not handle (fail! ::invalid-options "handle is required"))
   (require-string! database "database")
   (require-positive-int! queue-capacity "queue-capacity")
+  (when (and (some? manifest-sequence)
+             (not (supported-manifest-sequence? manifest-sequence)))
+    (fail! ::invalid-options
+           "manifest-sequence must be a nonnegative safe integer"))
   (when-not (= (nil? lease-expiry) (nil? lease-ttl-ms))
     (fail! ::invalid-options
            "lease-expiry and lease-ttl-ms must be supplied together"))
@@ -554,7 +636,13 @@
                   (ArrayBlockingQueue. queue-capacity) (Object.)
                   (atom :open) (promise)
                   (atom {:lines [] :byte-count 0
-                         :checkpoint-required? false})
+                         :checkpoint-required? false
+                         :observed-manifest-sequence
+                         (if (some? manifest-sequence)
+                           manifest-sequence unavailable)
+                         :last-successful-persistence unavailable
+                         :last-persistence-error :none
+                         :unconfirmed? false})
                   lease-state
                   (promise) backend-context retry-options operations
                   worker heartbeat)]
@@ -621,3 +709,52 @@
      :pending-wal-bytes byte-count
      :pending-statements (count lines)
      :checkpoint-required? (boolean checkpoint-required?)}))
+
+(defn public-status
+  "Return a closed, read-only status projection without ownership or payloads."
+  [writer]
+  (let [{:keys [byte-count checkpoint-required? observed-manifest-sequence
+                last-successful-persistence last-persistence-error
+                unconfirmed?]}
+        @(:wal-state writer)
+        lifecycle @(:lifecycle writer)
+        fenced? (true? (:fenced? (some-> (:lease-state writer) deref)))
+        boundary-known? (supported-manifest-sequence?
+                         observed-manifest-sequence)
+        persistence-state
+        (cond
+          (= :closed lifecycle) :unavailable
+          fenced? :unavailable
+          (not boundary-known?) :unavailable
+          unconfirmed? :unconfirmed
+          (or checkpoint-required? (pos? byte-count)) :pending
+          :else :current)
+        view-current?
+        (case persistence-state
+          :current true
+          :pending false
+          unavailable)]
+    {:jdbc.chdb.durable.status/version 1
+     :role :writer
+     :lifecycle lifecycle
+     :availability (if (= :unavailable persistence-state)
+                     :unavailable :available)
+     :unavailable-reason
+     (cond
+       (= :closed lifecycle) :closed
+       fenced? :lease-fenced
+       (not boundary-known?) :boundary-unavailable
+       :else :none)
+     :persistence-state persistence-state
+     :view-current? view-current?
+     :view-current-reason
+     (cond
+       (= :closed lifecycle) :closed
+       fenced? :lease-fenced
+       (not boundary-known?) :boundary-unavailable
+       unconfirmed? :commit-unconfirmed
+       (= :pending persistence-state) :pending-persistence
+       :else :none)
+     :observed-manifest-sequence observed-manifest-sequence
+     :last-successful-persistence last-successful-persistence
+     :last-persistence-error last-persistence-error}))

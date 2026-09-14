@@ -9,7 +9,8 @@
 (def default-queue-capacity 64)
 
 (defrecord DurableReader
-    [handle database queue admission-lock lifecycle closed-result operations worker])
+    [handle database manifest-sequence queue admission-lock lifecycle
+     closed-result operations worker])
 
 (defn reader? [value]
   (instance? DurableReader value))
@@ -104,11 +105,16 @@
 
 (defn start!
   "Start a serialized reader over an already recovered immutable snapshot."
-  [{:keys [handle database queue-capacity operations]
+  [{:keys [handle database manifest-sequence queue-capacity operations]
     :or {queue-capacity default-queue-capacity}}]
   (when-not handle (fail! ::invalid-options "handle is required"))
   (when-not (string? database)
     (fail! ::invalid-options "database must be a string"))
+  (when (and (some? manifest-sequence)
+             (not (and (integer? manifest-sequence)
+                       (<= 0 manifest-sequence 9007199254740991))))
+    (fail! ::invalid-options
+           "manifest-sequence must be a nonnegative safe integer"))
   (when-not (and (integer? queue-capacity) (pos? queue-capacity))
     (fail! ::invalid-options "queue-capacity must be a positive integer"))
   (let [operations
@@ -130,7 +136,8 @@
       (fail! ::invalid-options "reader operations must be functions"))
     (let [worker (owned-thread/completion)
           reader (->DurableReader
-                  handle database (ArrayBlockingQueue. queue-capacity)
+                  handle database (or manifest-sequence :unavailable)
+                  (ArrayBlockingQueue. queue-capacity)
                   (Object.) (atom :open) (promise) operations worker)]
       (owned-thread/start! worker #(worker-loop reader))
       reader)))
@@ -166,3 +173,30 @@
 
 (defn status [reader]
   {:lifecycle @(:lifecycle reader) :read-only? true})
+
+(defn public-status
+  "Return a closed snapshot marker without rereading the Durable head."
+  [reader]
+  (let [lifecycle @(:lifecycle reader)
+        closed? (= :closed lifecycle)
+        boundary-known? (integer? (:manifest-sequence reader))]
+    {:jdbc.chdb.durable.status/version 1
+     :role :reader
+     :lifecycle lifecycle
+     :availability (if (or closed? (not boundary-known?))
+                     :unavailable :available)
+     :unavailable-reason (cond
+                           closed? :closed
+                           (not boundary-known?) :boundary-unavailable
+                           :else :none)
+     :persistence-state (if (or closed? (not boundary-known?))
+                          :unavailable :snapshot)
+     :view-current? :unavailable
+     :view-current-reason
+     (cond
+       closed? :closed
+       (not boundary-known?) :boundary-unavailable
+       :else :snapshot-not-revalidated)
+     :observed-manifest-sequence (:manifest-sequence reader)
+     :last-successful-persistence :unavailable
+     :last-persistence-error :none}))

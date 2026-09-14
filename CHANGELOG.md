@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `jdbc.chdb.durable/status`, a versioned read-only projection of an open
+  Durable connection's lifecycle and locally observed persistence boundary.
+  Writer currentness advances only after a confirmed, reconciled, or unchanged
+  persistence outcome; readers report their recovered manifest sequence but do
+  not guess freshness. The projection performs no provider I/O and excludes
+  object references, SQL and parameter values, credentials, exceptions, native
+  handles, and mutable ownership state.
+
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
   pushback-reader call and one single-character String allocation per escape.

@@ -648,6 +648,7 @@
                           store document operations @scratch @handle)]
             (reader/start!
              {:handle @handle :database database
+              :manifest-sequence (get-in document ["manifest" "seq"])
               :operations
               (assoc operations
                      :cleanup-scratch!
@@ -777,6 +778,7 @@
                 (writer/start!
                  {:store store :token token :handle @handle
                   :database logical-database
+                  :manifest-sequence (get-in document ["manifest" "seq"])
                   :engine-metadata
                   {:version running-version
                    :backup-format reader-backup-format
@@ -833,6 +835,22 @@
           {:keys [handle]}
           (shim/driver-context shim-connection :chdb-durable)]
       (if (reader/reader? handle) :reader :writer))))
+
+(defn status
+  "Return a versioned, redacted status snapshot for an open Durable connection.
+
+  The snapshot is observational only. It performs no backend I/O and never
+  exposes a head, object reference, lease token, SQL value, exception, native
+  handle, or mutable ownership capability. Other driver types and closed
+  connections fail at the JDBC extension boundary."
+  [connection]
+  (shim/extension-operation
+   #(let [shim-connection (proto/connection connection)
+          {:keys [handle]}
+          (shim/driver-context shim-connection :chdb-durable)]
+      (if (reader/reader? handle)
+        (reader/public-status handle)
+        (writer/public-status handle)))))
 
 (defn- jdbc-writer-handle [connection]
   (let [shim-connection (proto/connection connection)
