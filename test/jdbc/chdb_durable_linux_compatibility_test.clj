@@ -29,6 +29,16 @@
 (defn- check! [condition message]
   (when-not condition (fail! message)))
 
+(defn- source-contract! []
+  (let [workflow (slurp ".github/workflows/durable-linux-compatibility.yml")
+        runner (slurp "scripts/verify-durable-linux-compatibility.sh")]
+    (check! (and (not (str/includes? workflow "/opt/chez"))
+                 (not (str/includes? workflow "JOLT_WRAPPER=")))
+            "hosted matrix must use the already-qualified cached Jolt")
+    (check! (and (str/includes? runner "${JOLT_WRAPPER:-}")
+                 (str/includes? runner "jolt_command=(\"$wrapper\" \"$jolt_bin\")"))
+            "local matrix must retain an explicit optional wrapper seam")))
+
 (defn- rejected [f]
   (try (f) nil (catch Throwable error error)))
 
@@ -292,6 +302,7 @@
     (println "PASSED" (:id cell) (:expected cell) "-" (:reason cell))))
 
 (defn -main [& args]
+  (source-contract!)
   (let [[command matrix-file & rest] args]
     (case command
       "produce"

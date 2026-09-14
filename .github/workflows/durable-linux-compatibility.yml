@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-120643d6
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-120643d6
+      PINNED_JOLT_SOURCE_SHA: 120643d6bc322800a700e870de5c8087ad6085fa
+      PINNED_JOLT_VERSION: jolt v0.8.6-97-g120643d6
       RC2_ARCHIVE_SHA256: 8b6f8b95278cc223f8cae0303006aecdaf72cf975fe29c1cb14277f2165e2b85
       RELEASE_ARCHIVE_SHA256: bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031
     steps:
@@ -33,9 +37,9 @@ jobs:
 
       - name: Verify pinned Jolt provenance
         run: |
-          test "${{ steps.pinned-jolt.outputs.source-sha }}" = 120643d6bc322800a700e870de5c8087ad6085fa
-          test "${{ steps.pinned-jolt.outputs.version }}" = "jolt v0.8.6-97-g120643d6"
-          test "$(jolt --version)" = "jolt v0.8.6-97-g120643d6"
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
 
       - name: Acquire each checksum-pinned native release once
         run: |
@@ -58,16 +62,6 @@ jobs:
       - name: Run separate-process archive and provenance cells
         run: |
           set -euo pipefail
-          export JOLT_CACHE_DIR="$RUNNER_TEMP/jolt-cache"
-          export JOLT_GITLIBS_DIR="$RUNNER_TEMP/jolt-gitlibs"
-          wrapper="$RUNNER_TEMP/jolt-with-chez-10.4.1"
-          printf '%s\n' '#!/usr/bin/env bash' \
-            'set -euo pipefail' \
-            'test "$(/opt/chez/bin/scheme --version)" = 10.4.1' \
-            'export CHEZ=/opt/chez/bin/scheme CHEZSCHEME=/opt/chez/bin/scheme' \
-            'export JOLT_CHEZ=/opt/chez/bin/scheme JOLT_CHEZ_CSV=/opt/chez/bin/scheme' \
-            'exec "$@"' > "$wrapper"
-          chmod +x "$wrapper"
-          JOLT_WRAPPER="$wrapper" scripts/verify-durable-linux-compatibility.sh \
+          scripts/verify-durable-linux-compatibility.sh \
             "$RUNNER_TEMP/durable-linux-compatibility-output" \
             "$(command -v jolt)" "$NATIVE_ROOT/rc2" "$NATIVE_ROOT/release"

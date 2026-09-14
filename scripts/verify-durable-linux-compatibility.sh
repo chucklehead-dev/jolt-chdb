@@ -11,11 +11,16 @@ jolt_bin=$(realpath "$2")
 rc2_dir=$(realpath "$3")
 release_dir=$(realpath "$4")
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
-wrapper=${JOLT_WRAPPER:-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1}
 matrix="$repo_root/resources/jdbc/chdb/durable_linux_compatibility.json"
+jolt_command=("$jolt_bin")
+
+if [[ -n ${JOLT_WRAPPER:-} ]]; then
+  wrapper=$(realpath "$JOLT_WRAPPER")
+  test -x "$wrapper"
+  jolt_command=("$wrapper" "$jolt_bin")
+fi
 
 test -x "$jolt_bin"
-test -x "$wrapper"
 test -f "$matrix"
 jolt_sha=$(sha256sum "$jolt_bin" | awk '{print $1}')
 for directory in "$rc2_dir" "$release_dir"; do
@@ -44,7 +49,7 @@ run_jolt() {
   env JOLT_CHDB_LIB="$native_dir/libchdb.so" \
       LD_LIBRARY_PATH="$native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
       JOLT_GATEBOOT_BUILD_DIR="$output/gateboot/$jolt_sha/$cell" \
-    "$wrapper" "$jolt_bin" -Srepro -M:durable-linux-compatibility-test "$@"
+    "${jolt_command[@]}" -Srepro -M:durable-linux-compatibility-test "$@"
 }
 
 run_jolt rc2 produce-rc2 produce "$matrix" "$output/rc2" rc2 \
