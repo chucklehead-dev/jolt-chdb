@@ -266,14 +266,13 @@ claims require platform-native CI cells with separately pinned archive,
 library, and header identities; cross-compiling or reusing this result would
 not supply that evidence.
 
- This integration preserves the reviewed secret-conformance head `df40ae8`,
- Python fixture head `0e052348`, and Linux matrix lineage
- `96c49f5`..`a9daccc` while restacking their changes on current `main`. Before
- the current-main inventory refresh,
- that reviewed 49-case integration reports 47 mapped, 0 blocked, and 2
- binding-level not-applicable cases. The separately identified 50th binding-only
- case produces the current 47/0/3 accounting above. Neither accounting is a
- claim of full cross-platform conformance.
+This integration preserves the reviewed changes from secret-conformance head
+`df40ae8`, Python fixture head `0e052348`, and Linux matrix lineage
+`96c49f5`..`a9daccc` while restacking them on current `main`. Before the
+current-main inventory refresh, that reviewed 49-case integration reports 47
+mapped, 0 blocked, and 2 binding-level not-applicable cases. The separately
+identified 50th binding-only case produces the current 47/0/3 accounting above.
+Neither accounting is a claim of full cross-platform conformance.
 
 Run the focused, offline gate with the mandatory compiler selector:
 

@@ -10,22 +10,6 @@
   0 blocked, and 3 binding-level not-applicable ledger. Exact blob and missing-
   current-case mutants fail closed without claiming full conformance.
 
-- Tolerate a manifest-referenced, size-and-SHA-verified zero-byte Durable WAL
-  as an empty JSONL sequence while continuing to omit empty references from
-  writer flushes. A provenance-pinned fixture, wrong-size and wrong-digest
-  controls, and privacy-shaped recovery events cover integrity-before-
-  validation and the absence of replay effects. The upstream V1 prose does not
-  yet state this boundary explicitly, so the local conformance ledger keeps the
-  clarification pending rather than claiming normative resolution.
-- Map the two remaining pinned secret-bearing conformance cases at public
-  Durable writer and immutable-reader boundaries. Secret-bearing mutations stop
-  before native execution and WAL admission. Failed secret-bearing reads replace
-  arbitrary engine messages, data, and nested causes with one fixed SQL category,
-  while successful results, encoded bytes, persisted WAL SQL, and
-  telemetry-shaped attribute values remain exact. Typed-placeholder, native AST,
-  wrong-secret-flag, storage, cleanup, and non-secret throwable-identity controls
-  move the 49-case ledger to 47 mapped, 0 blocked, and 2 binding-level not
-  applicable cases.
 - Add a checksum-pinned Linux x86-64 Durable compatibility matrix. Separate
   processes prove that 26.7.2-rc.2 archives open under both rc.2 and 26.7.3,
   26.7.3 archives open under 26.7.3, and rc.2 refuses a 26.7.3 minimum reader
@@ -43,6 +27,24 @@
   provider lock file and an injected unreferenced canary, and uses a test-only
   raw read-only adapter because the Python and Jolt local providers have
   different private ETag representations.
+
+- Map the two remaining pinned secret-bearing conformance cases at public
+  Durable writer and immutable-reader boundaries. Secret-bearing mutations stop
+  before native execution and WAL admission. Failed secret-bearing reads replace
+  arbitrary engine messages, data, and nested causes with one fixed SQL category,
+  while successful results, encoded bytes, persisted WAL SQL, and
+  telemetry-shaped attribute values remain exact. Typed-placeholder, native AST,
+  wrong-secret-flag, storage, cleanup, and non-secret throwable-identity controls
+  move the 49-case ledger to 47 mapped, 0 blocked, and 2 binding-level not
+  applicable cases.
+
+- Tolerate a manifest-referenced, size-and-SHA-verified zero-byte Durable WAL
+  as an empty JSONL sequence while continuing to omit empty references from
+  writer flushes. A provenance-pinned fixture, wrong-size and wrong-digest
+  controls, and privacy-shaped recovery events cover integrity-before-
+  validation and the absence of replay effects. The upstream V1 prose does not
+  yet state this boundary explicitly, so the local conformance ledger keeps the
+  clarification pending rather than claiming normative resolution.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
