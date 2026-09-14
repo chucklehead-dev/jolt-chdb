@@ -223,6 +223,34 @@
     (when parent (Files/createDirectories parent (make-array java.nio.file.attribute.FileAttribute 0)))
     (spit output (str (json/write-str value) "\n"))))
 
+(defn- recovery-phase-recorder []
+  (let [metrics (atom {})]
+    {:metrics metrics
+     :observe!
+     (fn [{:keys [phase status calls nanos bytes]}]
+       (swap! metrics update phase
+              (fn [entry]
+                (-> (or entry {:calls 0 :nanos 0 :bytes 0 :statuses {}})
+                    (update :calls + calls)
+                    (update :nanos + nanos)
+                    (update :bytes + bytes)
+                    (update-in [:statuses status] (fnil + 0) calls)))))}))
+
+(defn- checked-phase-source-sha! [source-sha]
+  (when-not (and (string? source-sha)
+                 (re-matches #"[0-9a-f]{40}" source-sha))
+    (fail! "BENCH_RECOVERY_PHASE_SOURCE_SHA must be a full lowercase Git SHA"))
+  source-sha)
+
+(defn- recovery-phase-configuration []
+  (when-let [output (not-empty (System/getenv "BENCH_RECOVERY_PHASE_REPORT"))]
+    (let [source-sha
+          (checked-phase-source-sha!
+           (required-env "BENCH_RECOVERY_PHASE_SOURCE_SHA"))]
+      {:output output
+       :source-sha source-sha
+       :recorder (recovery-phase-recorder)})))
+
 (defn- recover! [root object-id descriptor-path manifest-path ordinal output]
   (let [process-started (System/currentTimeMillis)
         fixture (descriptor descriptor-path)
@@ -236,11 +264,18 @@
         before (validate-fixture! root object-id fixture)
         store (raw-read-only-backend root)
         expected (:expected fixture)
+        phase-configuration (recovery-phase-configuration)
+        recovery-options
+        (cond-> {:namespace-backend store :object-id object-id}
+          phase-configuration
+          (assoc :operations
+                 {:recovery-phase!
+                  (get-in phase-configuration [:recorder :observe!])}))
         start (System/nanoTime)
         actual
         (with-open [reader (jdbc/connection
                             (durable/snapshot-dbspec
-                             {:namespace-backend store :object-id object-id}))]
+                             recovery-options))]
           (let [actual
                 (into {} (map (fn [[key value]] [key (str value)]))
                       (jdbc/fetch-one reader aggregate-sql))]
@@ -281,6 +316,20 @@
             :expected expected :actual actual
             :inventory_unchanged true}}]
       (write-json! output report)
+      (when phase-configuration
+        (write-json!
+         (:output phase-configuration)
+         {:schema_version 1
+          :kind "durable-recovery-phase-sums"
+          :source_sha (:source-sha phase-configuration)
+          :run_id (:run_id plan)
+          :schedule_ordinal ordinal
+          :fixture_inventory_sha256 (:inventory_sha256 fixture)
+          :recovered_rows rows
+          :phases @(get-in phase-configuration [:recorder :metrics])
+          :limitations
+          {:percentiles "unsupported-aggregate-phase-sums"
+           :scope "durable-open-only-excludes-aggregate-query-and-close"}}))
       (println (json/write-str
                 {:status "ok" :runtime "jolt" :trial (:trial schedule)
                  :phase (:phase schedule)

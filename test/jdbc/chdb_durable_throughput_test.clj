@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-throughput-test
-  (:require [jdbc.chdb-durable-throughput :as throughput]))
+  (:require [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
+            [jdbc.chdb-durable-throughput :as throughput]))
 
 (def failures (atom 0))
 
@@ -42,6 +43,9 @@
         successful-flush? #'throughput/successful-flush?
         timed-operations #'throughput/timed-operations
         stage-report #'throughput/stage-report
+        recovery-phase-recorder #'cross-binding/recovery-phase-recorder
+        checked-phase-source-sha!
+        #'cross-binding/checked-phase-source-sha!
         clean-runtime {:jolt-version "jolt v0.8.6-97-g120643d6"
                        :jolt-source-sha
                        "120643d6bc322800a700e870de5c8087ad6085fa"
@@ -308,6 +312,25 @@
              {:calls 2 :total-ms 0.00004 :bytes 60 :mean-ms 0.00002
               :statuses {:complete 1 :failed 1}}
              (:wal-json-parse (stage-report metrics))))
+    (let [{:keys [metrics observe!]} (recovery-phase-recorder)]
+      (observe! {:phase :wal-lf-scan :status :complete
+                 :calls 1 :nanos 11 :bytes 12})
+      (observe! {:phase :wal-lf-scan :status :failed
+                 :calls 1 :nanos 13 :bytes 14})
+      (check "cross-binding phase sidecar aggregation stays scalar and bounded"
+             {:calls 2 :nanos 24 :bytes 26
+              :statuses {:complete 1 :failed 1}}
+             (:wal-lf-scan @metrics)))
+    (check "phase sidecar requires an exact lowercase source SHA"
+           ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            :jdbc.chdb-durable-cross-binding-recovery/invalid-oracle
+            :jdbc.chdb-durable-cross-binding-recovery/invalid-oracle]
+           [(checked-phase-source-sha!
+             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            (rejected-type #(checked-phase-source-sha! "aaaaaaaa"))
+            (rejected-type
+             #(checked-phase-source-sha!
+               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))])
     (check "WAL total and maximum input batch are distinct report fields"
            {:wal-growth-total [:wal-growth :total-bytes]
             :maximum-row-payload [:maximum-row-payload-bytes]
