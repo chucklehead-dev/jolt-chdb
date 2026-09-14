@@ -18,6 +18,14 @@
   wrong-secret-flag, storage, cleanup, and non-secret throwable-identity controls
   move the 49-case ledger to 47 mapped, 0 blocked, and 2 binding-level not
   applicable cases.
+- Add a pinned Linux x86_64 Python-writer interoperability fixture. Upstream
+  `chdb.durable` at commit `66643e50` and checksum-pinned `chdb-core` 26.7.3
+  create, flush, close, and independently read a WAL-only object; Jolt 26.7.3
+  then recovers the exact logical `head.json` and referenced WAL bytes and
+  reconciles the same aggregate. The lane explicitly excludes Python's local
+  provider lock file and an injected unreferenced canary, and uses a test-only
+  raw read-only adapter because the Python and Jolt local providers have
+  different private ETag representations.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one

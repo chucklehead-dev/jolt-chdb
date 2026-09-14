@@ -155,6 +155,51 @@ trace and deterministic ITF projection cover renewal success, pre-expiry loss,
 expiry fencing, and public outcomes; fence-on-first-failure, ignore-expiry,
 allow-fenced-effects, and drop-read mutants each expose the intended invariant.
 
+## Python-writer logical fixture exchange
+
+The focused Linux x86_64 fixture lane runs the upstream Python Durable writer
+from pinned chDB source commit
+`66643e5030fb73c30ac5cdd31d4c7858ea040ed0` with the checksum-pinned
+`chdb-core` 26.7.3 wheel. Python creates, flushes, closes, and independently
+reads a small WAL-only object. The generator exports only its raw `head.json`
+and the WAL object named by that head. It records the source archive, wheel,
+loaded Python extension, Jolt native library/header, complete logical-object
+inventory, and expected aggregate.
+
+Jolt loads a 26.7.3 native library and recovers those exact bytes through a
+test-only raw read-only backend. It verifies the inventory before and after
+open/query/close and rejects source, wheel, inventory, engine, and aggregate
+mutants. This is a Python-writer-to-Jolt-reader protocol fixture, not direct
+local-provider compatibility: Python's local backend stores raw values with an
+`mtime-size` ETag, while Jolt's production local backend uses its own atomic
+value/UUID-ETag envelope. The generator requires Python's private
+`head.json.lock` and an injected unreferenced canary to exist, records that
+both were deliberately excluded, and rejects any other source-provider entry.
+
+After extracting the pinned source archive and installing the pinned wheel
+into an isolated target directory, run:
+
+```sh
+scripts/verify-durable-python-writer-fixture.sh \
+  /tmp/python-fixture \
+  /tmp/chdb-source \
+  /tmp/chdb-66643e5.tar \
+  /tmp/chdb_core-26.7.3-linux-x86_64.whl \
+  /tmp/python-core-site \
+  /absolute/path/to/repository-pinned/jolt \
+  /absolute/path/to/26.7.3/libchdb.so \
+  /absolute/path/to/26.7.3/chdb.h
+```
+
+The source archive SHA-256 is
+`4269548e589fa34497c207e84e660785399b52edecb7294cc929be796b04b381`;
+the CPython abi3 manylinux x86_64 wheel SHA-256 is
+`b10b96f9599fab42ba51d9be80333e1819782bdc8a91b2b26979149693ba431f`.
+`.github/workflows/durable-python-fixture.yml` reproduces acquisition and this
+focused gate when the lane or its Durable recovery dependencies change.
+This lane does not replace the separate archive/header/library cross-version
+matrices and makes no rc.2 refusal claim.
+
 Run the focused, offline gate with the mandatory compiler selector:
 
 ```sh
@@ -173,10 +218,9 @@ visible red control, set `JOLT_CHDB_CONFORMANCE_MUTANT=name-drift`; success from
 that invocation is a gate defect.
 
 This inventory intentionally leaves the remaining issue-47 obligations open:
-full Python-writer fixture exchange, the earlier-archive/new-engine and
-header/library cross-version matrices, current-source AWS OIDC qualification,
-release evidence across claimed platforms/providers/runtimes, protocol
-clarification and refinement-model work, and final review of the eventual full
-matrix.
+ the earlier-archive/new-engine and header/library cross-version matrices,
+ current-source AWS OIDC qualification, release evidence across claimed
+ platforms/providers/runtimes, protocol clarification and refinement-model work,
+ and final review of the eventual full matrix.
 Stable chDB 26.7.0 still lacks the Durable ABI, so the pinned rc.2 ABI
 qualification is not an ordinary-install conformance claim.
