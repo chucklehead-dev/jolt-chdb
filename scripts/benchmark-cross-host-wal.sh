@@ -71,14 +71,18 @@ run_with_first_checkpoint() {
     sleep 0.1
   done
   wait "$pid" || status=$?
-  if (( status == 0 )) && [[ ! -s "$journal" ]]; then
+  if [[ -s "$journal" ]]; then
+    if (( status != 0 )); then
+      checkpoint_guard_reason=child-exit-after-first-checkpoint
+    fi
+    return "$status"
+  fi
+  if (( status == 0 )); then
     checkpoint_guard_reason=missing-first-checkpoint
     echo "benchmark host exited successfully without a first checkpoint" >&2
     return 125
   fi
-  if (( status != 0 )) && [[ ! -s "$journal" ]]; then
-    checkpoint_guard_reason=child-exit-before-first-checkpoint
-  fi
+  checkpoint_guard_reason=child-exit-before-first-checkpoint
   return "$status"
 }
 
@@ -95,6 +99,11 @@ if [[ "${BENCH_VALIDATE_CHECKPOINT_GUARD_ONLY:-0}" = 1 ]]; then
   run_with_first_checkpoint "$guard_tmp/failed.journal" 1 \
     bash -c 'exit 17' || status=$?
   [[ "$status" = 17 && "$checkpoint_guard_reason" = child-exit-before-first-checkpoint ]] || exit 1
+  status=0
+  run_with_first_checkpoint "$guard_tmp/checkpointed-failure.journal" 1 \
+    bash -c 'printf "checkpoint\n" > "$1"; exit 19' \
+    _ "$guard_tmp/checkpointed-failure.journal" || status=$?
+  [[ "$status" = 19 && "$checkpoint_guard_reason" = child-exit-after-first-checkpoint ]] || exit 1
   status=0
   run_with_first_checkpoint "$guard_tmp/late.journal" 1 \
     bash -c 'sleep 5' || status=$?
