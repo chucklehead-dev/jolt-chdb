@@ -198,6 +198,8 @@
 
   (let [decoder-capability-var
         (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
+        malformed-probes-var
+        (ns-resolve 'jdbc.chdb.durable 'strict-utf8-malformed-probes)
         require-decoder-var
         (ns-resolve 'jdbc.chdb.durable
                     'require-strict-utf8-decoder-capability!)
@@ -210,6 +212,11 @@
         decode-source (subs source start end)]
     (check "running Jolt passes strict and replacement-sentinel capability probes"
            true (require-decoder!))
+    (check "startup capability covers every malformed UTF-8 class"
+           [:stray-continuation :truncated-continuation :invalid-lead
+            :two-byte-overlong :three-byte-overlong :four-byte-overlong
+            :encoded-surrogate :above-unicode-maximum]
+           (mapv first @malformed-probes-var))
     (with-redefs-fn
       {decoder-capability-var (delay false)}
       (fn []
