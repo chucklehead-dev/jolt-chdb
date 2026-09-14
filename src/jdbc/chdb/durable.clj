@@ -336,15 +336,17 @@
           (fn []
             (doto (.newDecoder utf8-charset)
               (.onMalformedInput CodingErrorAction/REPORT)
-              (.onUnmappableCharacter CodingErrorAction/REPORT)))]
+              (.onUnmappableCharacter CodingErrorAction/REPORT)))
+          malformed (byte-array [(unchecked-byte 0xc0)
+                                 (unchecked-byte 0xaf)])]
       (and (= "β"
               (str (.decode (strict-decoder)
                             (ByteBuffer/wrap (.getBytes "β" "UTF-8")))))
+           (= "�" (String. (.getBytes "�" "UTF-8") "UTF-8"))
+           (not= -1 (.indexOf (String. malformed "UTF-8") (int 0xfffd)))
            (try
              (.decode (strict-decoder)
-                      (ByteBuffer/wrap
-                       (byte-array [(unchecked-byte 0xc0)
-                                    (unchecked-byte 0xaf)])))
+                      (ByteBuffer/wrap malformed))
              false
              (catch CharacterCodingException _ true))))
     (catch Throwable _ false)))
