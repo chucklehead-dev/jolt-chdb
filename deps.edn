@@ -55,6 +55,9 @@
            :durable-conformance-inventory-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-conformance-inventory-test"]}
+           :durable-secret-conformance-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-secret-conformance-test"]}
            :durable-writer-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
@@ -193,6 +196,7 @@
          durable-aspect-manifest-test "jolt -M:durable-aspect-manifest-test"
          durable-itf-test "jolt -M:durable-itf-test"
          durable-conformance-inventory-test "jolt -M:durable-conformance-inventory-test"
+         durable-secret-conformance-test "jolt -M:durable-secret-conformance-test"
          durable-writer-test "jolt -M:durable-writer-test"
          durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"
          durable-thread-test "jolt -M:durable-thread-test"
