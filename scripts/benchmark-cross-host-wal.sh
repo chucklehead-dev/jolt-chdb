@@ -66,6 +66,10 @@ run_with_first_checkpoint() {
     sleep 0.1
   done
   wait "$pid" || status=$?
+  if (( status == 0 )) && [[ ! -s "$journal" ]]; then
+    echo "benchmark host exited successfully without a first checkpoint" >&2
+    return 125
+  fi
   return "$status"
 }
 
@@ -74,6 +78,9 @@ if [[ "${BENCH_VALIDATE_CHECKPOINT_GUARD_ONLY:-0}" = 1 ]]; then
   trap 'rm -rf "$guard_tmp"' EXIT
   run_with_first_checkpoint "$guard_tmp/ok.journal" 1 \
     bash -c 'printf "checkpoint\n" > "$1"' _ "$guard_tmp/ok.journal"
+  status=0
+  run_with_first_checkpoint "$guard_tmp/missing.journal" 1 true || status=$?
+  [[ "$status" = 125 ]] || exit 1
   status=0
   run_with_first_checkpoint "$guard_tmp/late.journal" 1 \
     bash -c 'sleep 5' || status=$?
