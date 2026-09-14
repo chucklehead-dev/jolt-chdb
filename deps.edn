@@ -170,6 +170,9 @@
            :durable-cross-binding-recovery
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
+           :durable-python-writer-fixture-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-python-writer-fixture-test"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}

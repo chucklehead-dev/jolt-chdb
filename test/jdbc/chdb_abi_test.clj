@@ -117,6 +117,7 @@
   #{".github/workflows/tests.yml"
     ".github/workflows/durable-native.yml"
     ".github/workflows/durable-s3.yml"
+    ".github/workflows/durable-python-fixture.yml"
     ".github/workflows/durable-aws.yml"
     ".github/workflows/durable-head-quint.yml"})
 
