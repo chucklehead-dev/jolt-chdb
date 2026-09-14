@@ -11,8 +11,10 @@
   replay, typed contracts, and red/green version controls use the same floor.
   The former rc.2 qualification matrix is retired rather than carried as a
   supported path. Applications must still keep one connection open for their
-  complete chDB lifetime pending the lifecycle policy tracked in #103;
-  this repin does not claim streaming-insert support.
+  complete chDB lifetime pending the lifecycle policy tracked in #103. A new
+  focused pseudo-terminal gate confirms bounded streaming-insert lifecycle and
+  exact readback without the former `ThreadStatus` diagnostic on the packaged
+  Linux x86-64 library; sustained and cross-platform use remain unqualified.
 
 - Refresh the upstream Durable conformance inventory to chDB main `c5ed925d`,
   exact test-suite Git blob `4b72fa84`, SHA-256 `b4294901`, and 50 ordered

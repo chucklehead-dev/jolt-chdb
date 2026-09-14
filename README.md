@@ -226,12 +226,13 @@ query, destruction, and close diagnostics. Tests prove that ordinary JDBC
 remains usable after successful row/byte overflow recovery. The recovery result
 and original result are each destroyed once on the ordinary error path.
 
-`stream-insert!` remains unsupported for long-running use until the packaged
-26.7.3 library passes the pseudo-terminal diagnostic probe. The earlier 26.7.0
-library retained invalid ClickHouse `ThreadStatus` state and reported a fatal
-diagnostic when its connection closed, even for a contract-compliant
-single-threaded C caller. Use bounded `execute!` inserts instead; the OTel
-exporter does so. Do not infer that the release repin fixes this separate path.
+`stream-insert!` remains unsupported for long-running use. The packaged 26.7.3
+Linux x86-64 library passes the bounded pseudo-terminal diagnostic below, but
+that one platform and short repeated lifecycle do not yet qualify sustained or
+cross-platform use. The earlier 26.7.0 library retained invalid ClickHouse
+`ThreadStatus` state and reported a fatal diagnostic when its connection
+closed, even for a contract-compliant single-threaded C caller. Use bounded
+`execute!` inserts instead; the OTel exporter does so.
 
 ## Native query statistics
 
@@ -312,6 +313,7 @@ bash test/durable-large-checkpoint.sh \
 jolt -M:durable-file-allocation <root> <output> <small-file> <large-file>
 jolt -M:test
 jolt test-threadstatus
+jolt test-stream-threadstatus
 ```
 
 The installer streams the large release archive through `curl`, verifies it
@@ -330,6 +332,11 @@ when the library is not installed at the default cache path. This diagnostic
 launcher currently targets util-linux `script -qefc`; other platforms still
 run the ordinary driver suite but need a platform-specific PTY wrapper before
 claiming equivalent diagnostic coverage.
+
+`jolt test-stream-threadstatus` applies the same pseudo-terminal diagnostic
+check to repeated complete `stream-insert!` lifecycles, with both string and
+byte-array chunks and exact query readback. It is a separate gate because the
+encoded-query lifecycle does not exercise chDB's streaming-insert API.
 
 ## License
 
