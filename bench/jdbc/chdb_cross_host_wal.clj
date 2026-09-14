@@ -85,27 +85,64 @@
     (catch CharacterCodingException _
       (fail! "selected WAL record is not strict UTF-8" {}))))
 
-(defn- scan-record-boundaries [bytes ordinal]
+(def ^:private portable-scan-diagnostic-byte-limit 4096)
+
+(defn- portable-record-boundaries [bytes ordinal]
+  (let [length (alength bytes)]
+    (loop [index 0 start 0 current 1 record-count 0
+           target-start -1 target-end -1]
+      (if (= index length)
+        {:record-count record-count
+         :record-start target-start
+         :record-end-exclusive target-end
+         :bytes-visited index}
+        (if (= 10 (bit-and 255 (aget bytes index)))
+          (let [target? (= current ordinal)]
+            (recur (inc index) (inc index) (inc current) (inc record-count)
+                   (if target? start target-start)
+                   (if target? index target-end)))
+          (recur (inc index) start current record-count
+                 target-start target-end))))))
+
+(defn- checked-record-boundaries [scanner bytes ordinal]
   (when-not (and (pos? (alength bytes))
                  (= 10 (bit-and 255 (aget bytes (dec (alength bytes))))))
     (fail! "WAL fixture must be non-empty and LF terminated" {}))
-  (let [result
-        (loop [index 0 start 0 current 1 record-count 0
-               target-start -1 target-end -1]
-          (if (= index (alength bytes))
-            {:record-count record-count
-             :record-start target-start
-             :record-end-exclusive target-end}
-            (if (= 10 (bit-and 255 (aget bytes index)))
-              (let [target? (= current ordinal)]
-                (recur (inc index) (inc index) (inc current) (inc record-count)
-                       (if target? start target-start)
-                       (if target? index target-end)))
-              (recur (inc index) start current record-count
-                     target-start target-end))))]
+  (let [result (scanner bytes ordinal)]
     (when (neg? (:record-start result))
       (fail! "record ordinal exceeds the WAL fixture" {:ordinal ordinal}))
     result))
+
+(defn- scan-record-boundaries [bytes ordinal]
+  (checked-record-boundaries portable-record-boundaries bytes ordinal))
+
+(defn- primary-boundary-scanner [runtime]
+  (if (= runtime :jvm)
+    {:implementation :jvm-primitive-byte-array
+     :scanner (fn [bytes ordinal]
+                (checked-record-boundaries
+                 (requiring-resolve
+                  'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)
+                 bytes ordinal))}
+    {:implementation :portable-clojure-scalar
+     :scanner scan-record-boundaries}))
+
+(defn- admit-primary-boundary-scanner! [runtime selection]
+  (when (and (= runtime :jvm)
+             (not= :jvm-primitive-byte-array (:implementation selection)))
+    (fail! "ordinary JVM boundary scan must use the primitive byte-array implementation"
+           {}))
+  selection)
+
+(defn- portable-prefix-lf-scan [bytes]
+  (let [limit (min portable-scan-diagnostic-byte-limit (alength bytes))]
+    (loop [index 0 lf-count 0]
+      (if (= index limit)
+        {:bytes-visited index :lf-count lf-count}
+        (recur (inc index)
+               (if (= 10 (bit-and 255 (aget bytes index)))
+                 (inc lf-count)
+                 lf-count))))))
 
 (defn- metrics-provider [runtime]
   (case runtime
@@ -262,8 +299,22 @@
       (measured-phase
        (assoc (dissoc measurement :value) :warmups 0 :samples 1)
        {:input-bytes (alength bytes)
+        :bytes-visited (:bytes-visited value)
         :includes-record-selection true}
        value)})))
+
+(defn- measure-portable-prefix-phase [bytes metrics]
+  (let [{:keys [value] :as measurement}
+        (measure-once metrics #(portable-prefix-lf-scan bytes))]
+    {:value value
+     :result
+     (measured-phase
+      (assoc (dissoc measurement :value) :warmups 0 :samples 1)
+      {:input-bytes (alength bytes)
+       :bounded-input-bytes (:bytes-visited value)
+       :implementation :portable-clojure-scalar
+       :diagnostic true}
+      value)}))
 
 (defn- artifact-path [output suffix]
   (str/replace output #"\.edn$" suffix))
@@ -479,6 +530,9 @@
              (fn [value]
                (require-digest! "full WAL segment" expected-segment-sha value)))
             reused-path (System/getenv "BENCH_REUSE_BOUNDARY_REPORT")
+            primary-scanner
+            (admit-primary-boundary-scanner!
+             runtime (primary-boundary-scanner runtime))
             boundaries
             (if reused-path
               (let [value (load-reused-boundaries
@@ -497,34 +551,31 @@
                   (let [{:keys [value result]}
                         (measure-boundary-phase
                          bytes ordinal expected-record-count metrics
-                         scan-record-boundaries)]
-                    (checkpoint! :record-boundary-scan result)
+                         (:scanner primary-scanner))]
+                    (checkpoint! :record-boundary-scan
+                                 (assoc result :implementation
+                                        (:implementation primary-scanner)))
                     value)
                   (catch Throwable throwable
                     (fail-phase! :record-boundary-scan throwable)))))
-            primitive-boundaries
+            portable-diagnostic
             (if (and (= runtime :jvm) (not reused-path))
-              (let [scanner
-                    (requiring-resolve
-                     'jdbc.chdb-cross-host-jvm-scan/scan-record-boundaries)]
-                (phase-start! :jvm-primitive-boundary-scan)
+              (do
+                (phase-start! :jvm-portable-boundary-scan-diagnostic)
                 (try
                   (let [{:keys [value result]}
-                        (measure-boundary-phase
-                         bytes ordinal expected-record-count metrics scanner)]
-                    (when-not (= boundaries value)
-                      (fail! "JVM primitive boundary scan differs from shared scanner" {}))
-                    (checkpoint! :jvm-primitive-boundary-scan result)
+                        (measure-portable-prefix-phase bytes metrics)]
+                    (checkpoint! :jvm-portable-boundary-scan-diagnostic result)
                     value)
                   (catch Throwable throwable
-                    (fail-phase! :jvm-primitive-boundary-scan throwable))))
+                    (fail-phase! :jvm-portable-boundary-scan-diagnostic throwable))))
               (do
-                (phase-start! :jvm-primitive-boundary-scan)
-                (checkpoint! :jvm-primitive-boundary-scan
+                (phase-start! :jvm-portable-boundary-scan-diagnostic)
+                (checkpoint! :jvm-portable-boundary-scan-diagnostic
                              (not-run-phase
                               (if reused-path
                                 :reused-primary-jvm-boundaries
-                                :jvm-only-control)))))
+                                :jvm-only-diagnostic)))))
             record-bytes
             (run-once!
              :record-copy
@@ -630,7 +681,14 @@
             {:jolt :casselc-data-json
              :babashka :babashka-bundled-cheshire
              :jvm [:casselc-data-json :upstream-data-json :jvm-cheshire]}
-            :raw-scan-and-decode-controlled [:jolt :babashka :jvm]}}]
+            :strict-utf8-decode-controlled [:jolt :babashka :jvm]
+            :full-segment-boundary-scan
+            {:jolt :portable-clojure-scalar
+             :babashka :portable-clojure-scalar
+             :jvm :jvm-primitive-byte-array}
+            :jvm-portable-scan-diagnostic
+            {:implementation :portable-clojure-scalar
+             :maximum-input-bytes portable-scan-diagnostic-byte-limit}}}]
       (append-checkpoint! journal-path
                           {:schema-version report/schema-version
                            :event :host :status :complete

@@ -13,7 +13,8 @@
       (if (= index length)
         {:record-count record-count
          :record-start target-start
-         :record-end-exclusive target-end}
+         :record-end-exclusive target-end
+         :bytes-visited index}
         (if (= (byte 10) (aget bytes index))
           (let [target? (= current ordinal)]
             (recur (unchecked-inc index)

@@ -47,6 +47,10 @@
            (:type (ex-data error))))
   (let [bytes (.getBytes "{\"sql\":\"β\"}\n{\"sql\":\"two\"}\n" "UTF-8")
         scan-record-boundaries (private-fn 'scan-record-boundaries)
+        checked-record-boundaries (private-fn 'checked-record-boundaries)
+        portable-prefix-lf-scan (private-fn 'portable-prefix-lf-scan)
+        primary-boundary-scanner (private-fn 'primary-boundary-scanner)
+        admit-primary-boundary-scanner! (private-fn 'admit-primary-boundary-scanner!)
         strict-decode (private-fn 'strict-decode)
         sha256-bytes (private-fn 'sha256-bytes)
         require-digest! (private-fn 'require-digest!)
@@ -88,6 +92,23 @@
     (check "unterminated WAL fails closed"
            :jdbc.chdb-cross-host-wal/invalid-benchmark
            (error-type #(scan-record-boundaries (.getBytes "{}" "UTF-8") 1)))
+    (check "empty WAL fails closed"
+           :jdbc.chdb-cross-host-wal/invalid-benchmark
+           (error-type #(scan-record-boundaries (byte-array 0) 1)))
+    (check "empty LF-delimited records retain exact ordinal offsets"
+           {:record-count 2 :record-start 1 :record-end-exclusive 1
+            :bytes-visited 2}
+           (scan-record-boundaries (.getBytes "\n\n" "UTF-8") 2))
+    (check "bare CR remains record data rather than a delimiter"
+           {:record-count 2 :record-start 3 :record-end-exclusive 4
+            :bytes-visited 5}
+           (scan-record-boundaries (.getBytes "a\r\nb\n" "UTF-8") 2))
+    (check "ordinal beyond final LF fails closed"
+           :jdbc.chdb-cross-host-wal/invalid-benchmark
+           (error-type #(scan-record-boundaries (.getBytes "a\n" "UTF-8") 2)))
+    (check "portable diagnostic visits only its fixed prefix"
+           {:bytes-visited 4096 :lf-count 0}
+           (portable-prefix-lf-scan (byte-array 5000)))
     (let [calls (atom 0)
           {:keys [value result]}
           (measure-boundary-phase
@@ -133,9 +154,35 @@
             (requiring-resolve
              'jdbc.chdb-cross-host-jvm-metrics/enable-if-supported!)
             enable-calls (atom 0)]
-        (check "JVM primitive control matches shared boundary scanner"
+        (check "JVM primitive full scanner matches shared boundary scanner"
                second-boundaries
-               (primitive bytes 2))
+               (checked-record-boundaries primitive bytes 2))
+        (doseq [[label text ordinal]
+                [["final LF" "a\n" 1]
+                 ["bare CR" "a\r\nb\n" 2]
+                 ["empty record" "\n\n" 2]
+                 ["first ordinal" "first\nsecond\n" 1]
+                 ["last ordinal" "first\nsecond\n" 2]]]
+          (let [input (.getBytes text "UTF-8")]
+            (check (str "JVM primitive corpus matches shared: " label)
+                   (scan-record-boundaries input ordinal)
+                   (checked-record-boundaries primitive input ordinal))))
+        (doseq [[label input ordinal]
+                [["empty input" (byte-array 0) 1]
+                 ["missing final LF" (.getBytes "a" "UTF-8") 1]
+                 ["ordinal beyond final LF" (.getBytes "a\n" "UTF-8") 2]]]
+          (check (str "JVM primitive invalid corpus matches shared: " label)
+                 (error-type #(scan-record-boundaries input ordinal))
+                 (error-type #(checked-record-boundaries primitive input ordinal))))
+        (check "ordinary JVM phase selects primitive implementation"
+               :jvm-primitive-byte-array
+               (:implementation (primary-boundary-scanner :jvm)))
+        (check "old reflective JVM primary selector mutant is rejected"
+               :jdbc.chdb-cross-host-wal/invalid-benchmark
+               (error-type
+                #(admit-primary-boundary-scanner!
+                  :jvm {:implementation :portable-clojure-scalar
+                        :scanner scan-record-boundaries})))
         (check "unsupported allocation counters remain unsupported"
                false
                (enable-if-supported!

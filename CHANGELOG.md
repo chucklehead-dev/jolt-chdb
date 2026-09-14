@@ -25,6 +25,14 @@
   match the exact report schema.
   Babashka rows use its native classpath directly and do not invoke JVM
   tools.deps or require a writable user-level classpath cache.
+  The ordinary JVM whole-segment boundary phase uses its type-hinted primitive
+  byte-array scanner. The equivalent portable scalar implementation remains a
+  separately labeled 4 KiB diagnostic rather than allocating reflectively over
+  a complete large segment; admission rejects selecting that diagnostic as the
+  ordinary JVM scanner. Both implementations retain exact LF/CR, termination,
+  ordinal, offset, and byte-visit equivalence controls.
+  The canonical Jolt row is qualified against the merged one-character
+  `String.indexOf` specialization at `2d39e854a90926d8f8e9bd5d3ddbb109d657afe1`.
 
 - Pin `casselc/data.json` to merge `3174868a`, whose String-backed reader
   decodes the eight ordinary JSON escapes from a local cursor without one
