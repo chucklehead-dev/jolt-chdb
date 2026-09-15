@@ -21,6 +21,7 @@ lifecycle_model="$target/durableWriterLifecycle.qnt"
 lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 native_lifecycle_model="$target/nativeProcessLifecycle.qnt"
 native_lifecycle_tests="$target/nativeProcessLifecycleTest.qnt"
+native_lifecycle_trace_dir="$target/native-process-traces"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
 
@@ -215,6 +216,18 @@ quint test "$native_lifecycle_tests" \
   --backend typescript \
   --verbosity 1
 
+quint test "$native_lifecycle_tests" \
+  --main nativeProcessLifecycleTerminalRetryMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$native_lifecycle_tests" \
+  --main nativeProcessLifecycleDifferentOptionsMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
 quint test "$writer_tests" \
   --main durableWriterBoundaryMutantTest \
   --match '.*Test' \
@@ -235,6 +248,17 @@ cmp "$target/corrected-mbt.itf.json" \
   "$engine_metadata_trace"
 cmp "$engine_metadata_trace" \
   "$repo_root/formal/quint/traces/engine-metadata.itf.json"
+
+"$repo_root/scripts/generate-native-process-lifecycle-itf.sh" \
+  "$native_lifecycle_trace_dir"
+for trace in \
+  native-process-lifecycle.itf.json \
+  native-process-terminal.itf.json \
+  native-process-options.itf.json
+do
+  cmp "$native_lifecycle_trace_dir/$trace" \
+    "$repo_root/formal/quint/traces/$trace"
+done
 
 sample_log="$target/corrected-sampled.log"
 quint run "$model" \
@@ -400,7 +424,7 @@ quint verify "$lifecycle_model" \
 
 quint verify "$native_lifecycle_model" \
   --main nativeProcessLifecycleCorrected \
-  --invariants anchorSurvivesLogicalLastClose engineInitializesAtMostOnce processPathIsImmutable \
+  --invariants anchorSurvivesLogicalLastClose engineInitializesAtMostOnce processPathIsImmutable bootstrapOptionsAreImmutable uncertainBootstrapFailureIsTerminal terminalLifecycleIsClosed terminalRetryIsRejected \
   --max-steps 6 \
   --backend apalache \
   --apalache-version 0.56.1 \
@@ -443,6 +467,14 @@ expect_native_lifecycle_violation \
   nativeProcessLifecycleDifferentPathMutant \
   processPathIsImmutable \
   native-process-lifecycle-different-path-mutant
+expect_native_lifecycle_violation \
+  nativeProcessLifecycleTerminalRetryMutant \
+  uncertainBootstrapFailureIsTerminal \
+  native-process-lifecycle-terminal-retry-mutant
+expect_native_lifecycle_violation \
+  nativeProcessLifecycleDifferentOptionsMutant \
+  bootstrapOptionsAreImmutable \
+  native-process-lifecycle-different-options-mutant
 
 quint verify "$writer_model" \
   --main durableWriterBoundaryCorrected \

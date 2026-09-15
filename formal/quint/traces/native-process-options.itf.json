@@ -56,7 +56,7 @@
       "#meta": {
         "index": 1
       },
-      "mbt::actionTaken": "openMemory",
+      "mbt::actionTaken": "openDiskWithBackups",
       "mbt::nondetPicks": {},
       "lifecycle": {
         "anchored": true,
@@ -64,7 +64,7 @@
           "#bigint": "1"
         },
         "bootstrapOptions": {
-          "tag": "NoBackups",
+          "tag": "BackupsA",
           "value": {
             "#tup": []
           }
@@ -78,7 +78,7 @@
         },
         "optionChangeAccepted": false,
         "path": {
-          "tag": "Memory",
+          "tag": "Disk",
           "value": {
             "#tup": []
           }
@@ -104,7 +104,7 @@
           "#bigint": "1"
         },
         "bootstrapOptions": {
-          "tag": "NoBackups",
+          "tag": "BackupsA",
           "value": {
             "#tup": []
           }
@@ -118,7 +118,7 @@
         },
         "optionChangeAccepted": false,
         "path": {
-          "tag": "Memory",
+          "tag": "Disk",
           "value": {
             "#tup": []
           }
@@ -136,7 +136,7 @@
       "#meta": {
         "index": 3
       },
-      "mbt::actionTaken": "openMemory",
+      "mbt::actionTaken": "openDifferentOptions",
       "mbt::nondetPicks": {},
       "lifecycle": {
         "anchored": true,
@@ -144,61 +144,21 @@
           "#bigint": "1"
         },
         "bootstrapOptions": {
-          "tag": "NoBackups",
+          "tag": "BackupsA",
           "value": {
             "#tup": []
           }
         },
         "differentPathAccepted": false,
         "lastAction": {
-          "tag": "Opened",
+          "tag": "RejectedOptions",
           "value": {
             "#tup": []
           }
         },
         "optionChangeAccepted": false,
         "path": {
-          "tag": "Memory",
-          "value": {
-            "#tup": []
-          }
-        },
-        "references": {
-          "#bigint": "1"
-        },
-        "samePathReopened": true,
-        "terminal": false,
-        "terminalRetryAccepted": false,
-        "uncertainBootstrapFailureOccurred": false
-      }
-    },
-    {
-      "#meta": {
-        "index": 4
-      },
-      "mbt::actionTaken": "closePublic",
-      "mbt::nondetPicks": {},
-      "lifecycle": {
-        "anchored": true,
-        "boots": {
-          "#bigint": "1"
-        },
-        "bootstrapOptions": {
-          "tag": "NoBackups",
-          "value": {
-            "#tup": []
-          }
-        },
-        "differentPathAccepted": false,
-        "lastAction": {
-          "tag": "Closed",
-          "value": {
-            "#tup": []
-          }
-        },
-        "optionChangeAccepted": false,
-        "path": {
-          "tag": "Memory",
+          "tag": "Disk",
           "value": {
             "#tup": []
           }
@@ -206,47 +166,7 @@
         "references": {
           "#bigint": "0"
         },
-        "samePathReopened": true,
-        "terminal": false,
-        "terminalRetryAccepted": false,
-        "uncertainBootstrapFailureOccurred": false
-      }
-    },
-    {
-      "#meta": {
-        "index": 5
-      },
-      "mbt::actionTaken": "openDifferent",
-      "mbt::nondetPicks": {},
-      "lifecycle": {
-        "anchored": true,
-        "boots": {
-          "#bigint": "1"
-        },
-        "bootstrapOptions": {
-          "tag": "NoBackups",
-          "value": {
-            "#tup": []
-          }
-        },
-        "differentPathAccepted": false,
-        "lastAction": {
-          "tag": "RejectedDifferent",
-          "value": {
-            "#tup": []
-          }
-        },
-        "optionChangeAccepted": false,
-        "path": {
-          "tag": "Memory",
-          "value": {
-            "#tup": []
-          }
-        },
-        "references": {
-          "#bigint": "0"
-        },
-        "samePathReopened": true,
+        "samePathReopened": false,
         "terminal": false,
         "terminalRetryAccepted": false,
         "uncertainBootstrapFailureOccurred": false

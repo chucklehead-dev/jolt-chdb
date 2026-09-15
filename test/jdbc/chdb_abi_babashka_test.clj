@@ -5,7 +5,9 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [jdbc.chdb.abi :as abi]))
+            [jdbc.chdb.abi :as abi])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute]))
 
 (def smoke-function-ids
   [:version :set-signal-handlers-enabled :connect :close-conn :query-with-params-n
@@ -197,6 +199,25 @@
 (defn- runtime-id []
   (if (System/getProperty "babashka.version") :babashka :jvm))
 
+(defn- assert-canonical-path-contract! []
+  (let [root (Files/createTempDirectory
+              "jchdb-cross-host-path-" (make-array FileAttribute 0))
+        target (.resolve root "target")
+        alias (.resolve root "alias")]
+    (try
+      (Files/createDirectory target (make-array FileAttribute 0))
+      (Files/createSymbolicLink alias target (make-array FileAttribute 0))
+      (let [canonical (.getCanonicalPath (.toFile (.resolve target "db")))]
+        (assert (= canonical
+                   (.getCanonicalPath
+                    (.toFile (.resolve target "../target/db")))))
+        (assert (= canonical
+                   (.getCanonicalPath (.toFile (.resolve alias "db"))))))
+      (finally
+        (Files/deleteIfExists alias)
+        (Files/deleteIfExists target)
+        (Files/deleteIfExists root)))))
+
 (defn- validate-compatibility! [pins runtime]
   (let [deps (project-deps)
         ffi-path (get-in pins [:jvm :ffi-dependency :deps-path])
@@ -258,6 +279,7 @@
                (throw (ex-info "bounded loader failure" {}
                                (IllegalArgumentException. "dlopen cause"))))]
             (selected-library! path)))]
+    (assert-canonical-path-contract!)
     (when (= :babashka runtime)
       (assert (= expected-bb actual-bb)
               (str "expected Babashka " expected-bb ", got " actual-bb)))

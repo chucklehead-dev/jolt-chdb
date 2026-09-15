@@ -4,6 +4,8 @@ chDB embeds one process-global engine. `jolt-chdb` keeps that engine alive from
 the first successful open until process exit by retaining a private anchor
 connection. Closing an application connection closes that connection, but not
 the anchor. The first physical path is therefore immutable for the process.
+Path identity is canonical: lexical `.`/`..` aliases and existing symlink
+prefixes resolve before the claim is compared.
 
 This policy is deliberately stricter than the chDB C API and is not part of
 Durable V1. The pinned 26.7.3
@@ -25,12 +27,14 @@ selection.
 | allow Linux reinitialize, reject it on macOS | preserves more Linux behavior, but gives applications platform-dependent lifecycle semantics | not chosen; harder to reason about and test portably |
 
 The anchor is created and fully validated before the first public connection
-is returned. A null bootstrap owner leaves the process unclaimed. If chDB
-returns a non-null owner with a null inner connection, the driver closes that
-invalid owner and makes the native lifecycle terminal; retrying could otherwise
-cross the unsafe last-close boundary. Once an anchor exists, failure to create
-a public connection leaves the anchor and path claim intact so a same-path
-retry is safe.
+is returned. Failures before entering `chdb_connect` and its documented null
+owner return leave the process unclaimed and are safe to retry. Any other
+exception after entering the native bootstrap has uncertain engine ownership
+and makes the lifecycle terminal. A non-null owner that cannot yield a valid
+inner connection is closed best-effort before that transition; retrying could
+otherwise cross the unsafe last-close boundary. Once an anchor exists, failure
+to create a public connection leaves the anchor and path claim intact so a
+same-path retry is safe.
 
 Bootstrap options are part of the claim. Reopening the same physical path with
 a different `:backups-allowed-path` is rejected instead of pretending that the
@@ -40,8 +44,8 @@ already-running engine adopted a new global configuration.
 stateDiagram-v2
   [*] --> Cold
   Cold --> Anchored: validate anchor owner and inner connection
-  Cold --> Cold: null owner; reject open
-  Cold --> Terminal: invalid non-null owner; close once
+  Cold --> Cold: pre-native failure or null owner; reject open
+  Cold --> Terminal: uncertain post-entry failure
   Anchored --> Anchored: open/close public same-path handles
   Anchored --> Anchored: reject different path before native connect
   Terminal --> Terminal: reject every open
@@ -74,5 +78,8 @@ scratch parent after the process exits.
 
 The executable correspondence lives in the
 [literate Quint model](../formal/quint/native-process-lifecycle.md), its
-[deterministic ITF trace](../formal/quint/traces/native-process-lifecycle.itf.json),
+[generated deterministic anchor](../formal/quint/traces/native-process-lifecycle.itf.json),
+[terminal-bootstrap](../formal/quint/traces/native-process-terminal.itf.json),
+and [bootstrap-option](../formal/quint/traces/native-process-options.itf.json)
+ADR-015 ITF traces,
 the focused fake-native replay, and the two-process native probe.

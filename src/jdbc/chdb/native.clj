@@ -170,7 +170,18 @@
 (defn- normalized-path [path]
   (if (= path ":memory:")
     path
-    (.getAbsolutePath (java.io.File. path))))
+    ;; getCanonicalPath is available on the supported Jolt, Babashka, and JVM
+    ;; hosts.  Unlike getAbsolutePath it removes lexical aliases and resolves
+    ;; existing symlink prefixes, so the process claim follows physical path
+    ;; identity instead of caller spelling.
+    (.getCanonicalPath (java.io.File. path))))
+
+(defn- terminal-storage-state []
+  {:phase :terminal
+   :path nil
+   :references 0
+   :bootstrap-options nil
+   :anchor-owner nil})
 
 (defn- require-process-path! [requested-path bootstrap-options]
   (let [{:keys [phase path] active-options :bootstrap-options :as state}
@@ -206,21 +217,35 @@
 
 (defrecord ChdbHandle [owner connection path closed? lock])
 
-(defn- connect-owned! [path backups-allowed-path bootstrap?]
+(defn- connect-owned! [path backups-allowed-path bootstrap-attempt]
   (let [connect
         (fn [argc argv]
+          (when bootstrap-attempt
+            (reset! (:native-attempted? bootstrap-attempt) true))
           (let [owner (chdb-connect argc argv)]
             (when (ffi/null? owner)
+              ;; The API returned no owner, so there is no connection to close
+              ;; and no last-close boundary was crossed.  This is the only
+              ;; native-attempt failure proven safe to retry in-process.
+              (when bootstrap-attempt
+                (reset! (:null-owner? bootstrap-attempt) true))
               (throw (ex-info "chDB connection failed"
-                              {:path path :jdbc/sql-error true})))
-            (let [connection (ffi/read owner :pointer)]
-              (when (ffi/null? connection)
-                (chdb-close-conn owner)
-                (throw (ex-info "chDB returned a null connection"
-                                {:path path
-                                 :bootstrap-owner-closed? bootstrap?
-                                 :jdbc/sql-error true})))
-              {:owner owner :connection connection})))]
+                              {:type ::null-native-owner
+                               :path path :jdbc/sql-error true})))
+            (try
+              (let [connection (ffi/read owner :pointer)]
+                (when (ffi/null? connection)
+                  (throw (ex-info "chDB returned a null connection"
+                                  {:path path :jdbc/sql-error true})))
+                {:owner owner :connection connection})
+              (catch Throwable error
+                ;; A non-null owner must not escape on an invalid/read-failed
+                ;; bootstrap.  Closing it may cross final shutdown, so the
+                ;; caller also makes the bootstrap lifecycle terminal.
+                (try
+                  (chdb-close-conn owner)
+                  (catch Throwable _ nil))
+                (throw error)))))]
     ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
     ;; --path=:memory: creates a persistent directory literally named
     ;; :memory:, which is both surprising and unsafe for tests.
@@ -234,12 +259,14 @@
           (connect (count args) argv))))))
 
 (defn- ensure-anchor! [path backups-allowed-path]
-  (let [bootstrap-options {:backups-allowed-path backups-allowed-path}]
+  (let [bootstrap-options {:backups-allowed-path backups-allowed-path}
+        bootstrap-attempt {:native-attempted? (atom false)
+                           :null-owner? (atom false)}]
     (require-process-path! path bootstrap-options)
     (when (= :cold (:phase @storage-state))
       (try
         (let [{:keys [owner]}
-              (connect-owned! path backups-allowed-path true)]
+              (connect-owned! path backups-allowed-path bootstrap-attempt)]
           ;; Publish only a fully validated native owner. Its connection is
           ;; never exposed or used for public queries; retaining the owner
           ;; keeps the embedded engine alive until process exit.
@@ -250,16 +277,13 @@
                    :bootstrap-options bootstrap-options
                    :anchor-owner owner}))
         (catch Throwable error
-          ;; A non-null owner whose inner connection is null has to be closed.
-          ;; That may have crossed final shutdown, so fail terminally rather
-          ;; than risk reinitializing the embedded engine in this process.
-          (when (:bootstrap-owner-closed? (ex-data error))
-            (reset! storage-state
-                    {:phase :terminal
-                     :path nil
-                     :references 0
-                     :bootstrap-options nil
-                     :anchor-owner nil}))
+          ;; Before-native failures cannot have initialized chDB.  A documented
+          ;; null-owner return owns nothing and is likewise safe to retry.  Any
+          ;; other exception after entering chdb_connect has uncertain engine
+          ;; ownership and must make the process lifecycle terminal.
+          (when (and @(:native-attempted? bootstrap-attempt)
+                     (not @(:null-owner? bootstrap-attempt)))
+            (reset! storage-state (terminal-storage-state)))
           (throw error))))
     nil))
 
@@ -277,7 +301,7 @@
      (locking storage-lock
        (ensure-anchor! path backups-allowed-path)
        (let [{:keys [owner connection]}
-             (connect-owned! path backups-allowed-path false)]
+             (connect-owned! path backups-allowed-path nil)]
          (swap! storage-state update :references inc)
          (->ChdbHandle owner connection path (atom false) (Object.)))))))
 

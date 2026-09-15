@@ -64,8 +64,10 @@ path may be used in a process, although multiple and sequential connections to
 that same path are supported. The driver retains a hidden native anchor from
 the first successful open until process exit, so closing the last public
 connection does not reinitialize chDB. A different physical path is rejected
-before another native connect call. `chdb::memory:` is consequently shared for
-the process lifetime; use a fresh process for an independent in-memory engine.
+before another native connect call; lexical `.`/`..` aliases and existing
+symlink prefixes identify the same canonical path. `chdb::memory:` is
+consequently shared for the process lifetime; use a fresh process for an
+independent in-memory engine.
 See [Native process lifecycle](docs/native-lifecycle.md) for the upstream
 rationale, failure semantics, and qualification boundary.
 

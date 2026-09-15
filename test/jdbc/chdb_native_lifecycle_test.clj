@@ -1,10 +1,16 @@
 (ns jdbc.chdb-native-lifecycle-test
   (:require [clojure.data.json :as json]
             [jdbc.chdb.native :as native]
-            [jolt.ffi :as ffi]))
+            [jolt.ffi :as ffi])
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute]))
 
 (def ^:private trace-path
   "formal/quint/traces/native-process-lifecycle.itf.json")
+(def ^:private terminal-trace-path
+  "formal/quint/traces/native-process-terminal.itf.json")
+(def ^:private options-trace-path
+  "formal/quint/traces/native-process-options.itf.json")
 
 (def failures (atom 0))
 
@@ -39,6 +45,7 @@
             (swap! remaining #(if (seq %) (vec (rest %)) %))
             (case result
               :null-owner nil
+              :connect-error (throw (ex-info "uncertain native connect" {}))
               (let [owner {:owner index :result result}]
                 (when (zero? @active) (swap! boots inc))
                 (swap! active inc)
@@ -50,7 +57,9 @@
     {:connect connect
      :close close
      :read (fn [owner _]
-             (when-not (= :null-connection (:result owner))
+             (case (:result owner)
+               :null-connection nil
+               :read-error (throw (ex-info "uncertain owner read" {}))
                [:connection (:owner owner)]))
      :null? nil?
      :set-signals (fn [enabled]
@@ -82,27 +91,72 @@
     (let [owner ((:connect runtime) 0 nil)]
       ((:close runtime) owner))))
 
+(defn- canonical-path-checks! []
+  (let [root (Files/createTempDirectory
+              "jchdb-native-path-" (make-array FileAttribute 0))
+        target (.resolve root "target")
+        alias (.resolve root "alias")
+        lexical (.resolve target "../target/db")
+        linked (.resolve alias "db")
+        normalized (private-var 'normalized-path)]
+    (try
+      (Files/createDirectory target (make-array FileAttribute 0))
+      (Files/createSymbolicLink alias target (make-array FileAttribute 0))
+      (check "lexical path aliases share one canonical process identity"
+             (normalized (str (.resolve target "db")))
+             (normalized (str lexical)))
+      (check "symlink path aliases share one canonical process identity"
+             (normalized (str (.resolve target "db")))
+             (normalized (str linked)))
+      (finally
+        (Files/deleteIfExists alias)
+        (Files/deleteIfExists target)
+        (Files/deleteIfExists root)))))
+
 (defn- trace-int [value]
   (bigint (get value "#bigint")))
 
 (defn- model-state [state]
   (let [lifecycle (get state "lifecycle")
-        anchored? (get lifecycle "anchored")]
+        anchored? (get lifecycle "anchored")
+        terminal? (get lifecycle "terminal")
+        normalized (private-var 'normalized-path)]
     {:anchored? (get lifecycle "anchored")
+     :phase (cond terminal? :terminal anchored? :anchored :else :cold)
      :path (when anchored?
              (case (get-in lifecycle ["path" "tag"])
                "Memory" ":memory:"
-               "Disk" "/tmp/different-path"))
+               "Disk" (normalized "/tmp/lifecycle-path")))
+     :bootstrap-options
+     (when anchored?
+       {:backups-allowed-path
+        (case (get-in lifecycle ["bootstrapOptions" "tag"])
+          "NoBackups" nil
+          "BackupsA" (normalized "/tmp/backups-a")
+          "BackupsB" (normalized "/tmp/backups-b"))})
      :references (trace-int (get lifecycle "references"))
      :boots (trace-int (get lifecycle "boots"))
      :different-path-accepted? (get lifecycle "differentPathAccepted")
      :last-action (get-in lifecycle ["lastAction" "tag"])}))
 
 (defn- runtime-state [runtime last-action different-path-accepted?]
-  (merge (native/active-storage)
+  (let [state @@(private-var 'storage-state)]
+    (merge (native/active-storage)
+           {:bootstrap-options (:bootstrap-options state)}
          {:boots (bigint @(:boots runtime))
           :different-path-accepted? different-path-accepted?
-          :last-action last-action}))
+          :last-action last-action})))
+
+(def ^:private refinement-keys
+  [:anchored? :phase :path :bootstrap-options :references :boots
+   :different-path-accepted? :last-action])
+
+(defn- check-refinement! [label observations]
+  (doseq [[index {:keys [model runtime]}]
+          (map-indexed vector observations)]
+    (check (str label " ITF state " index " refines native ownership")
+           (select-keys model refinement-keys)
+           (select-keys runtime refinement-keys))))
 
 (defn- replay-model-trace! [runtime trace]
   (let [states (get trace "states")
@@ -129,8 +183,63 @@
                                   false)}))
      states)))
 
+(defn- replay-terminal-trace! [runtime trace]
+  (let [states (get trace "states")
+        actions (mapv #(get % "mbt::actionTaken") states)]
+    (when-not (= ["init" "uncertainBootstrapFailure" "retryAfterTerminal"]
+                 actions)
+      (throw (ex-info "Native terminal ITF actions are not canonical"
+                      {:type ::invalid-trace :actions actions})))
+    (mapv
+     (fn [state]
+       (case (get state "mbt::actionTaken")
+         "init" nil
+         "uncertainBootstrapFailure"
+         (when-not (rejected #(native/open! ":memory:"))
+           (throw (ex-info "uncertain bootstrap model step was accepted" {})))
+         "retryAfterTerminal"
+         (let [error (rejected #(native/open! ":memory:"))]
+           (when-not (= ::native/terminal-native-lifecycle
+                        (:type (ex-data error)))
+             (throw (ex-info "terminal retry model step was not rejected" {})))))
+       {:model (model-state state)
+        :runtime (runtime-state runtime
+                                (get-in state ["lifecycle" "lastAction" "tag"])
+                                false)})
+     states)))
+
+(defn- replay-options-trace! [runtime trace]
+  (let [states (get trace "states")
+        actions (mapv #(get % "mbt::actionTaken") states)
+        handle (atom nil)]
+    (when-not (= ["init" "openDiskWithBackups" "closePublic"
+                  "openDifferentOptions"] actions)
+      (throw (ex-info "Native options ITF actions are not canonical"
+                      {:type ::invalid-trace :actions actions})))
+    (mapv
+     (fn [state]
+       (case (get state "mbt::actionTaken")
+         "init" nil
+         "openDiskWithBackups"
+         (reset! handle
+                 (native/open! "/tmp/lifecycle-path"
+                               {:backups-allowed-path "/tmp/backups-a"}))
+         "closePublic" (do (native/close! @handle) (reset! handle nil))
+         "openDifferentOptions"
+         (when-not
+          (rejected #(native/open! "/tmp/lifecycle-path"
+                                   {:backups-allowed-path "/tmp/backups-b"}))
+          (throw (ex-info "different-options model step was accepted" {}))))
+       {:model (model-state state)
+        :runtime (runtime-state runtime
+                                (get-in state ["lifecycle" "lastAction" "tag"])
+                                false)})
+     states)))
+
 (defn run-checks! []
   (println "chDB process-lifetime native ownership")
+
+  (canonical-path-checks!)
 
   (let [legacy (fake-native [])]
     (legacy-last-close-cycle! legacy)
@@ -191,7 +300,7 @@
                  [(:type (ex-data error)) (:jdbc/sql-error (ex-data error))
                   @(:connects runtime)])))))
 
-  (let [runtime (fake-native [:null-owner])]
+  (let [runtime (fake-native [:null-owner :valid :valid])]
     (with-fake-native
       runtime
       (fn []
@@ -201,23 +310,35 @@
                   {:phase :cold :path nil :references 0 :anchored? false}
                   0]
                  [(ex-message error) (native/active-storage)
-                  (count @(:closes runtime))])))))
+                  (count @(:closes runtime))]))
+        (let [handle (native/open! ":memory:")]
+          (native/close! handle)
+          (check "documented null-owner bootstrap is safe to retry"
+                 [3 1 1 {:phase :anchored :path ":memory:"
+                         :references 0 :anchored? true}]
+                 [@(:connects runtime) @(:boots runtime) @(:active runtime)
+                  (native/active-storage)])))))
 
   (let [runtime (fake-native [])
         trace (json/read-str (slurp trace-path))]
     (with-fake-native
       runtime
       (fn []
-        (let [observations (replay-model-trace! runtime trace)]
-          (doseq [[index {:keys [model runtime]}]
-                  (map-indexed vector observations)]
-            (check (str "ITF state " index " refines native ownership")
-                   (select-keys model
-                                [:anchored? :path :references :boots
-                                 :different-path-accepted? :last-action])
-                   (select-keys runtime
-                                [:anchored? :path :references :boots
-                                 :different-path-accepted? :last-action])))))))
+        (check-refinement! "anchor" (replay-model-trace! runtime trace)))))
+
+  (let [runtime (fake-native [:connect-error])
+        trace (json/read-str (slurp terminal-trace-path))]
+    (with-fake-native
+      runtime
+      #(check-refinement! "terminal"
+                          (replay-terminal-trace! runtime trace))))
+
+  (let [runtime (fake-native [])
+        trace (json/read-str (slurp options-trace-path))]
+    (with-fake-native
+      runtime
+      #(check-refinement! "options"
+                          (replay-options-trace! runtime trace))))
 
   (let [runtime (fake-native [:null-connection])]
     (with-fake-native
@@ -236,6 +357,28 @@
                   (:jdbc/sql-error (ex-data retry-error))
                   @(:connects runtime) (count @(:closes runtime))
                   (native/active-storage)])))))
+
+  (doseq [failure [:connect-error :read-error]]
+    (let [runtime (fake-native [failure])]
+      (with-fake-native
+        runtime
+        (fn []
+          (let [first-error (rejected #(native/open! ":memory:"))
+                before-connects @(:connects runtime)
+                retry-error (rejected #(native/open! ":memory:"))]
+            (check (str "uncertain bootstrap " (name failure)
+                        " makes lifecycle terminal")
+                   [(case failure
+                      :connect-error "uncertain native connect"
+                      :read-error "uncertain owner read")
+                    ::native/terminal-native-lifecycle
+                    before-connects
+                    (if (= failure :read-error) 1 0)
+                    {:phase :terminal :path nil
+                     :references 0 :anchored? false}]
+                   [(ex-message first-error) (:type (ex-data retry-error))
+                    @(:connects runtime) (count @(:closes runtime))
+                    (native/active-storage)]))))))
 
   (let [runtime (fake-native [:valid :null-owner :valid])]
     (with-fake-native
