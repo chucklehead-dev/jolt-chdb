@@ -98,7 +98,7 @@
         alias (.resolve root "alias")
         lexical (.resolve target "../target/db")
         linked (.resolve alias "db")
-        normalized (private-var 'normalized-path)]
+        normalized native/canonical-storage-path]
     (try
       (Files/createDirectory target (make-array FileAttribute 0))
       (Files/createSymbolicLink alias target (make-array FileAttribute 0))
@@ -120,7 +120,7 @@
   (let [lifecycle (get state "lifecycle")
         anchored? (get lifecycle "anchored")
         terminal? (get lifecycle "terminal")
-        normalized (private-var 'normalized-path)]
+        normalized native/canonical-storage-path]
     {:anchored? (get lifecycle "anchored")
      :phase (cond terminal? :terminal anchored? :anchored :else :cold)
      :path (when anchored?

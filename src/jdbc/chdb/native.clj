@@ -167,7 +167,9 @@
         (chdb-set-signal-handlers-enabled 0)
         (reset! signals-disabled? true)))))
 
-(defn- normalized-path [path]
+(defn canonical-storage-path
+  "Returns the canonical process-lifetime identity for a chDB storage path."
+  [path]
   (if (= path ":memory:")
     path
     ;; getCanonicalPath is available on the supported Jolt, Babashka, and JVM
@@ -254,7 +256,7 @@
       (let [args (cond-> ["chdb" (str "--path=" path)]
                    backups-allowed-path
                    (conj (str "--backups.allowed_path="
-                              (normalized-path backups-allowed-path))))]
+                              (canonical-storage-path backups-allowed-path))))]
         (ffi/with-c-string-array [argv (count args)] args
           (connect (count args) argv))))))
 
@@ -296,8 +298,9 @@
                       :path path :option :backups-allowed-path})))
    (require-driver!)
    (disable-signal-handlers!)
-   (let [path (normalized-path path)
-         backups-allowed-path (some-> backups-allowed-path normalized-path)]
+   (let [path (canonical-storage-path path)
+         backups-allowed-path (some-> backups-allowed-path
+                                      canonical-storage-path)]
      (locking storage-lock
        (ensure-anchor! path backups-allowed-path)
        (let [{:keys [owner connection]}

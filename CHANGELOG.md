@@ -11,7 +11,9 @@
   anchor-owned scratch until an external owner cleans it after process exit.
   Canonical path identity collapses lexical and existing-symlink aliases;
   uncertain post-entry bootstrap failures make the lifecycle terminal while
-  pre-native and documented null-owner failures remain retryable. A literate
+  pre-native and documented null-owner failures remain retryable. Durable
+  scratch cleanup uses that same canonical identity so a symlink-spelled
+  scratch parent cannot remove the live anchor's data directory. A literate
   Quint model, three generated deterministic ITF implementation replays,
   causal last-close/path-switch/terminal/options mutants, exact Linux
   host-signal address checks, and two-process `:memory:` probe cover the

@@ -352,7 +352,9 @@
   ;; is unsafe. An external process owner may remove the scratch tree only
   ;; after this process exits.
   (let [active-path (:path (native/active-storage))
-        scratch-data (when scratch (str (.resolve ^Path scratch "data")))]
+        scratch-data (when scratch
+                       (native/canonical-storage-path
+                        (str (.resolve ^Path scratch "data"))))]
     (when-not (= active-path scratch-data)
       (delete-tree! scratch)))
   nil)
