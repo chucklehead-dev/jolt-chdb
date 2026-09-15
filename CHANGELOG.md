@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Converge the Durable JDBC dependency with Samizdat on the canonical
+  `jolt-lang/db` library key at `casselc/db` revision `802ba509`. That revision
+  descends from the prior jolt-chdb pin `a5bf25d9`, Samizdat's `d85f391c` pin,
+  and current `jolt-lang/db` `a54cc49f`, retaining casselc's driver/lifecycle
+  contracts, Samizdat's SQLite/java.sql behavior, and the current Jolt provider
+  declaration. Consumers should remove `io.github.casselc/db`; they must not
+  exclude either lineage or override an unrelated revision onto the canonical
+  key. Jolt 0.8.6 remains the ordinary JDBC floor; the combined Durable fixture
+  uses the documented `120643d6` compiler until its required interop fixes are
+  available in a release. The exact Samizdat `22be90d` graph now has one
+  physical `db.*`/`next.jdbc.*` source root, while a causal fixture retains the
+  two historical coordinates and is rejected for two `db/sqlite.clj`
+  providers.
+
 - Make stable chDB core 26.7.3 the packaged driver and Durable native floor.
   The installer and qualification oracle pin all four official release-archive
   SHA-256 values plus upstream commit `7d84d719`; ABI and runtime capability
