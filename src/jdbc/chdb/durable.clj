@@ -346,6 +346,28 @@
                            :cause-class (some-> error class str)}))))))
   nil)
 
+(defn- default-cleanup-scratch! [scratch]
+  ;; The process-lifetime native anchor still owns scratch/data after the
+  ;; public handle closes. Removing that directory underneath the live engine
+  ;; is unsafe. An external process owner may remove the scratch tree only
+  ;; after this process exits.
+  (let [active-path (:path (native/active-storage))
+        scratch-data (when scratch (str (.resolve ^Path scratch "data")))]
+    (when-not (= active-path scratch-data)
+      (delete-tree! scratch)))
+  nil)
+
+(defn- require-fresh-default-native-lifetime! [operation-overrides]
+  ;; Tests and embedders with a complete :open-native! seam own its lifecycle.
+  ;; The production adapter creates a fresh recovery scratch path per open, so
+  ;; an existing process anchor must reject before backend reads or lease CAS.
+  (when (and (not (every? #(contains? operation-overrides %)
+                          [:open-native! :close-native! :cleanup-scratch!]))
+             (not= :cold (:phase (native/active-storage))))
+    (fail! ::native-process-lifetime-exhausted
+           (str "This process already owns a chDB storage lifetime; "
+                "open an independent Durable snapshot in a fresh process"))))
+
 (defn- download-reference!
   [store scratch label reference max-bytes reference-kind observe!]
   (let [size (get reference "size")]
@@ -727,7 +749,7 @@
    :await-backoff! retry/await-backoff!
    :durable-capability native/durable-capability
    :create-scratch! default-scratch!
-   :cleanup-scratch! delete-tree!
+   :cleanup-scratch! default-cleanup-scratch!
    :open-native! (fn [scratch]
                    (native/open!
                     (str (.resolve ^Path scratch "data"))
@@ -841,6 +863,7 @@
     :or {scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
   (require-strict-utf8-decoder-capability!)
+  (require-fresh-default-native-lifetime! (or operations {}))
   (let [store (resolve-store! options)
         operations (validate-recovery-phase-observer!
                     (merge (default-open-operations) operations))]
@@ -892,6 +915,7 @@
     :as options}]
   (writer/require-wal-byte-writer-capability!)
   (require-strict-utf8-decoder-capability!)
+  (require-fresh-default-native-lifetime! (or operations {}))
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
   (let [configured-operations operations
         configured-preparation?
@@ -1095,7 +1119,8 @@
        :product-name "ClickHouse (chDB Durable V1)"
        :capabilities {:transactions :none :generated-keys :none
                       :query-bytes chdb/query-bytes-capability}
-       :constraints {:active-storage-paths :one-per-process
+       :constraints {:active-storage-paths :one-per-process-lifetime
+                     :durable-native-lifetimes :one-per-process
                      :mutation-parameters :checkpoint-fallback}
        :schema-sql nil})
     (open-handle [_ spec]

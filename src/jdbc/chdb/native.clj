@@ -152,7 +152,13 @@
     capability))
 
 (defonce ^:private signals-disabled? (atom false))
-(defonce ^:private storage-state (atom {:path nil :references 0}))
+(defonce ^:private storage-lock (Object.))
+(defonce ^:private storage-state
+  (atom {:phase :cold
+         :path nil
+         :references 0
+         :bootstrap-options nil
+         :anchor-owner nil}))
 
 (defn- disable-signal-handlers! []
   (when-not @signals-disabled?
@@ -166,26 +172,96 @@
     path
     (.getAbsolutePath (java.io.File. path))))
 
-(defn- claim-path! [path]
-  (swap! storage-state
-         (fn [{current :path n :references :as state}]
-           (cond
-             (zero? n) {:path path :references 1}
-             (= current path) (assoc state :references (inc n))
-             :else (throw (ex-info "chDB supports one storage path per process"
-                                   {:active-path current :requested-path path
-                                    :jdbc/sql-error true})))))
-  path)
+(defn- require-process-path! [requested-path bootstrap-options]
+  (let [{:keys [phase path] active-options :bootstrap-options :as state}
+        @storage-state]
+    (cond
+      (= phase :terminal)
+      (throw (ex-info "chDB native lifecycle is terminal after a failed bootstrap"
+                      {:type ::terminal-native-lifecycle
+                       :requested-path requested-path
+                       :jdbc/sql-error true}))
 
-(defn- release-path! [path]
+      (and (= phase :anchored) (not= path requested-path))
+      (throw (ex-info "chDB storage path is immutable for this process"
+                      {:type ::different-process-path
+                       :active-path path :requested-path requested-path
+                       :jdbc/sql-error true}))
+
+      (and (= phase :anchored) (not= active-options bootstrap-options))
+      (throw (ex-info "chDB bootstrap options are immutable for this process"
+                      {:type ::different-process-options
+                       :active-options active-options
+                       :requested-options bootstrap-options
+                       :jdbc/sql-error true}))
+
+      :else state)))
+
+(defn- release-reference! [path]
   (swap! storage-state
          (fn [{current :path n :references :as state}]
            (if (and (= current path) (pos? n))
-             (if (= n 1) {:path nil :references 0}
-                 (assoc state :references (dec n)))
+             (assoc state :references (dec n))
              state))))
 
 (defrecord ChdbHandle [owner connection path closed? lock])
+
+(defn- connect-owned! [path backups-allowed-path bootstrap?]
+  (let [connect
+        (fn [argc argv]
+          (let [owner (chdb-connect argc argv)]
+            (when (ffi/null? owner)
+              (throw (ex-info "chDB connection failed"
+                              {:path path :jdbc/sql-error true})))
+            (let [connection (ffi/read owner :pointer)]
+              (when (ffi/null? connection)
+                (chdb-close-conn owner)
+                (throw (ex-info "chDB returned a null connection"
+                                {:path path
+                                 :bootstrap-owner-closed? bootstrap?
+                                 :jdbc/sql-error true})))
+              {:owner owner :connection connection})))]
+    ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
+    ;; --path=:memory: creates a persistent directory literally named
+    ;; :memory:, which is both surprising and unsafe for tests.
+    (if (= path ":memory:")
+      (connect 0 ffi/null)
+      (let [args (cond-> ["chdb" (str "--path=" path)]
+                   backups-allowed-path
+                   (conj (str "--backups.allowed_path="
+                              (normalized-path backups-allowed-path))))]
+        (ffi/with-c-string-array [argv (count args)] args
+          (connect (count args) argv))))))
+
+(defn- ensure-anchor! [path backups-allowed-path]
+  (let [bootstrap-options {:backups-allowed-path backups-allowed-path}]
+    (require-process-path! path bootstrap-options)
+    (when (= :cold (:phase @storage-state))
+      (try
+        (let [{:keys [owner]}
+              (connect-owned! path backups-allowed-path true)]
+          ;; Publish only a fully validated native owner. Its connection is
+          ;; never exposed or used for public queries; retaining the owner
+          ;; keeps the embedded engine alive until process exit.
+          (reset! storage-state
+                  {:phase :anchored
+                   :path path
+                   :references 0
+                   :bootstrap-options bootstrap-options
+                   :anchor-owner owner}))
+        (catch Throwable error
+          ;; A non-null owner whose inner connection is null has to be closed.
+          ;; That may have crossed final shutdown, so fail terminally rather
+          ;; than risk reinitializing the embedded engine in this process.
+          (when (:bootstrap-owner-closed? (ex-data error))
+            (reset! storage-state
+                    {:phase :terminal
+                     :path nil
+                     :references 0
+                     :bootstrap-options nil
+                     :anchor-owner nil}))
+          (throw error))))
+    nil))
 
 (defn open!
   ([path] (open! path {}))
@@ -196,33 +272,14 @@
                       :path path :option :backups-allowed-path})))
    (require-driver!)
    (disable-signal-handlers!)
-   (let [path (claim-path! (normalized-path path))]
-    (try
-      (let [connect (fn [argc argv]
-                      (let [owner (chdb-connect argc argv)]
-                        (when (ffi/null? owner)
-                          (throw (ex-info "chDB connection failed"
-                                          {:path path :jdbc/sql-error true})))
-                        (let [connection (ffi/read owner :pointer)]
-                          (when (ffi/null? connection)
-                            (chdb-close-conn owner)
-                            (throw (ex-info "chDB returned a null connection"
-                                            {:path path :jdbc/sql-error true})))
-                          (->ChdbHandle owner connection path (atom false) (Object.)))))]
-        ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
-        ;; --path=:memory: creates a persistent directory literally named
-        ;; :memory:, which is both surprising and unsafe for tests.
-        (if (= path ":memory:")
-          (connect 0 ffi/null)
-          (let [args (cond-> ["chdb" (str "--path=" path)]
-                       backups-allowed-path
-                       (conj (str "--backups.allowed_path="
-                                  (normalized-path backups-allowed-path))))]
-            (ffi/with-c-string-array [argv (count args)] args
-              (connect (count args) argv)))))
-      (catch Throwable t
-        (release-path! path)
-        (throw t))))))
+   (let [path (normalized-path path)
+         backups-allowed-path (some-> backups-allowed-path normalized-path)]
+     (locking storage-lock
+       (ensure-anchor! path backups-allowed-path)
+       (let [{:keys [owner connection]}
+             (connect-owned! path backups-allowed-path false)]
+         (swap! storage-state update :references inc)
+         (->ChdbHandle owner connection path (atom false) (Object.)))))))
 
 (defn close! [handle]
   (locking (:lock handle)
@@ -231,7 +288,8 @@
       ;; fails; ownership would then be uncertain and opening a different path
       ;; would be unsound.
       (chdb-close-conn (:owner handle))
-      (release-path! (:path handle))))
+      (locking storage-lock
+        (release-reference! (:path handle)))))
   nil)
 
 (defn with-live-handle [handle f]
@@ -241,7 +299,12 @@
                       {:db.chdb/closed true :jdbc/sql-error true})))
     (f (:connection handle))))
 
-(defn active-storage [] @storage-state)
+(defn active-storage []
+  (let [{:keys [phase path references]} @storage-state]
+    {:phase phase
+     :path path
+     :references references
+     :anchored? (= phase :anchored)}))
 
 (def ^:private query-classes
   {0 :read-only

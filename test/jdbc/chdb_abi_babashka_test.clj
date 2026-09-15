@@ -8,8 +8,18 @@
             [jdbc.chdb.abi :as abi]))
 
 (def smoke-function-ids
-  [:version :connect :close-conn :query-with-params-n
+  [:version :set-signal-handlers-enabled :connect :close-conn :query-with-params-n
    :destroy-query-result :result-buffer :result-length :result-error])
+
+(defn- host-os []
+  (let [name (str/lower-case (System/getProperty "os.name"))]
+    (cond
+      (str/includes? name "linux") :linux
+      (or (str/includes? name "mac") (str/includes? name "darwin")) :mac
+      :else :unsupported)))
+
+(defn- fatal-signals []
+  {:ill 4 :abrt 6 :bus (if (= :mac (host-os)) 10 7) :fpe 8 :segv 11})
 
 (defn- compatibility []
   (-> "jdbc/chdb/ffi-compatibility.edn" io/resource slurp edn/read-string))
@@ -67,10 +77,31 @@
       (ffi/write-array pointer :byte data))
     {:pointer pointer :length (alength data)}))
 
+(defn- signal-handlers [sigaction]
+  (into (sorted-map)
+        (map
+         (fn [[signal number]]
+           (with-open [arena (ffi/confined-arena)]
+             (let [size (case (host-os) :linux 152 :mac 16)
+                   action (ffi/alloc arena size)]
+               (ffi/write-array action :byte (byte-array size))
+               (when-not (zero? (sigaction number ffi/null action))
+                 (throw (ex-info "sigaction snapshot failed"
+                                 {:signal signal :number number})))
+               [signal
+                (mapv #(bit-and 255 %)
+                      (take (ffi/sizeof :pointer)
+                            (ffi/read-array action :byte size)))])))
+         (fatal-signals))))
+
 (defn- run-native-smoke [{:keys [functions capabilities]}]
-  (let [{:keys [version connect close-conn query-with-params-n
+  (let [{:keys [version set-signal-handlers-enabled connect close-conn query-with-params-n
                 destroy-query-result result-buffer result-length result-error]}
         functions
+        libc (ffi/load-library {:linux "libc.so.6"
+                                :mac "libSystem.B.dylib"})
+        sigaction (ffi/cfn libc "sigaction" [:int :pointer :pointer] :int)
+        signals-before (signal-handlers sigaction)
         native-version (version)
         _ (when-not (every? :available? capabilities)
             (throw (ex-info "selected libchdb lacks a required smoke symbol"
@@ -78,6 +109,7 @@
         destroyed (atom 0)
         closed (atom 0)
         copied-result (atom nil)
+        _ (set-signal-handlers-enabled 0)
         owner (connect 0 ffi/null)]
     (when (ffi/null? owner)
       (throw (ex-info "chDB returned a null owner" {})))
@@ -134,7 +166,13 @@
       (finally
         (close-conn owner)
         (swap! closed inc)))
-    (assoc @copied-result :destroyed @destroyed :closed @closed)))
+    (let [signals-after (signal-handlers sigaction)]
+      (assoc @copied-result
+             :destroyed @destroyed
+             :closed @closed
+             :signals-preserved (= signals-before signals-after)
+             :signal-probe-nonvacuous
+             (boolean (some #(some pos? %) (vals signals-before)))))))
 
 (defn- run-owned! [f]
   (let [outcome (promise)
@@ -234,9 +272,14 @@
                      (get-in smoke [:missing-reinterpret-error :message])))
     (assert (= 1 (:destroyed smoke)))
     (assert (= 1 (:closed smoke)))
+    (assert (:signals-preserved smoke)
+            "disabled chDB handlers must preserve exact host handler addresses")
+    (assert (:signal-probe-nonvacuous smoke)
+            "host signal handler probe must observe at least one handler")
     (assert (= :completed (:result smoke)))
     (assert (= #{:result :native-version :capabilities :bytes
-                 :missing-reinterpret-error :destroyed :closed}
+                 :missing-reinterpret-error :destroyed :closed
+                 :signals-preserved :signal-probe-nonvacuous}
                (set (keys smoke)))
             "native pointers must not escape the owned worker")
     (assert (= ::library-missing (:type (ex-data missing-library-error)))

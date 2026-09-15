@@ -8,6 +8,7 @@
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.native :as native]
             [jdbc.chdb-durable-open-test-support :as support]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.writer :as writer]
@@ -1020,6 +1021,16 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (with-redefs [native/active-storage
+                (fn [] {:phase :anchored :path ":memory:"
+                        :references 0 :anchored? true})]
+    (check "default reader rejects a consumed native process before storage"
+           ::durable/native-process-lifetime-exhausted
+           (error-type #(durable/open-reader! {})))
+    (check "default writer rejects a consumed native process before lease CAS"
+           ::durable/native-process-lifetime-exhausted
+           (error-type #(durable/open-writer!
+                         {:owner "owner" :instance "instance"}))))
   (run-deterministic-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable open checks failed")
