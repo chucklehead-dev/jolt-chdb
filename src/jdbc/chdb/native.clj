@@ -148,7 +148,7 @@
   (let [capability @driver-support]
     (when-not (= :supported (:status capability))
       (throw (ex-info "loaded libchdb is below the supported driver contract"
-                      capability)))
+                      (assoc capability :jdbc/sql-error true))))
     capability))
 
 (defonce ^:private signals-disabled? (atom false))

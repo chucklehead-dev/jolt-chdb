@@ -517,6 +517,8 @@
               #(rejected (fn [] (native/open! ":memory:"))))]
         (check "old native floor fails with its typed version category"
                ::native/unsupported-version (:type (ex-data error)))
+        (check "old native floor remains a JDBC connection error"
+               true (:jdbc/sql-error (ex-data error)))
         (check "old native floor fails before signal, connection, or path effects"
                [[] before] [@calls (native/active-storage)]))))
 

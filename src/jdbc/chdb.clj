@@ -454,9 +454,10 @@
        ", result_overflow_mode='throw'"))
 
 (defn- reset-output-format-after-error! [connection]
-  ;; libchdb 26.7.0 retains a failed encoded query's output format for exactly
-  ;; one subsequent query. Consume that stale format with a successful zero-row
-  ;; internal query before returning the original error, or ordinary JDBC JSON
+  ;; The pinned libchdb 26.7.3 retains a failed encoded query's output format
+  ;; for exactly one subsequent query. Consume that stale format with a
+  ;; successful zero-row internal query before returning the original error,
+  ;; or ordinary JDBC JSON
   ;; decoding would see Arrow/Parquet bytes. This query is deliberately raw:
   ;; its result is opaque and destroyed without attempting to decode the stale
   ;; format it is expected to receive.
