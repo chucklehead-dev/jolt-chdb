@@ -2,10 +2,10 @@
  :jolt/min-version "0.8.6"
  :deps {jolt-lang/db
         {:git/url "https://github.com/casselc/db.git"
-         ;; Canonical provider coordinate. c700960 is a descendant of the
+         ;; Canonical provider coordinate. 2de2ce8 is a descendant of the
          ;; casselc JDBC/driver line a5bf25d and Samizdat's jolt-lang/db pin
          ;; d85f391, and also merges current upstream a54cc49.
-         :git/sha "c700960f3dc9342cbb3d6b9883f8ab0559fc83b9"}
+         :git/sha "2de2ce8e19b889eed2ad3d1f56077d14516eb447"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
          :git/sha "3174868a7baa06e118fb8d1201edd98c5769b335"}

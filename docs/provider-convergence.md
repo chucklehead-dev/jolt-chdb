@@ -2,12 +2,13 @@
 
 jolt-chdb and Samizdat share one database/JDBC implementation. The canonical
 library key is `jolt-lang/db`; jolt-chdb resolves that key to the integrated
-`casselc/db` revision `c700960f3dc9342cbb3d6b9883f8ab0559fc83b9`.
+`casselc/db` revision `2de2ce8e19b889eed2ad3d1f56077d14516eb447`.
 
 This is ancestry, not a resolver substitution:
 
 ```text
-c700960f  type both direct next.jdbc batch failure paths
+2de2ce8e  cover plain Statement batching and direct isolation metadata
+  c700960f  type both direct next.jdbc batch failure paths
   5865955  type every host executeBatch failure path
   3974bf0  scope partial-count parity to current Jolt capability
   802ba509  retain structured causes through BatchUpdateException
@@ -26,6 +27,10 @@ Jolt's `:jolt/provides` declaration. Direct `setTransactionIsolation` calls
 outside a transaction keep jolt-lang/db's standard-constant metadata
 round-trip. Unsupported SQLite isolation requested by `jdbc/atomic` is still
 rejected while the transaction is staged, before its body or native `BEGIN`.
+Every batch entry point preserves the exact modeled `BatchUpdateException`
+class and original driver cause. Current Jolt does not yet model the exception's
+partial update-count storage, constructors, or `getUpdateCounts`; that runtime
+prerequisite is tracked in `chucklehead-dev/jolt-aspect-packs#131`.
 
 ## Consumer migration
 
@@ -34,7 +39,7 @@ Use only the canonical key:
 ```clojure
 jolt-lang/db
 {:git/url "https://github.com/casselc/db.git"
- :git/sha "c700960f3dc9342cbb3d6b9883f8ab0559fc83b9"}
+ :git/sha "2de2ce8e19b889eed2ad3d1f56077d14516eb447"}
 ```
 
 Remove `io.github.casselc/db` from a graph that already has `jolt-lang/db`.
@@ -64,7 +69,7 @@ resolved `-Stree` and `-Spath` text should be retained as build evidence.
 
 The green graph combines Samizdat commit
 `22be90ddf9b05ba8406d6ec231d2748a4da22d8e` with the current jolt-chdb
-checkout. Its `jolt -Stree` must select `jolt-lang/db c700960`; its
+checkout. Its `jolt -Stree` must select `jolt-lang/db 2de2ce8`; its
 `jolt -Spath` must expose exactly one physical source root for every shared
 `db.*` and `next.jdbc.*` namespace path derived from that provider tree. The
 same process then keeps
@@ -79,7 +84,7 @@ control; dependency order is never treated as coexistence evidence.
 
 The qualifier creates run-scoped `JOLT_CACHE_DIR` and `JOLT_GITLIBS_DIR`
 trees. It derives the complete `db/**/*.clj` and `next/**/*.clj` inventory from
-the resolved `c700960f3dc9342cbb3d6b9883f8ab0559fc83b9` provider root rather
+the resolved `2de2ce8e19b889eed2ad3d1f56077d14516eb447` provider root rather
 than a hand-maintained list, and its causal control proves that a newly added
 namespace is checked. `-Stree` abbreviates git revisions and is only a graph
 diagnostic; the full-SHA gate is the exact revision embedded in the resolved
@@ -90,7 +95,7 @@ complete revision as one path segment, and fails closed if that layout changes.
 
 1. Merge the `casselc/db` provider-convergence PR into `casselc/db` `main`
    with a strategy that preserves commit
-   `c700960f3dc9342cbb3d6b9883f8ab0559fc83b9`. Do not squash or rebase it away.
+   `2de2ce8e19b889eed2ad3d1f56077d14516eb447`. Do not squash or rebase it away.
 2. Verify that the commit is reachable from the published `casselc/db` main
    line and that a fresh git dependency cache can resolve the exact SHA.
 3. Only then publish and open the jolt-chdb PR. Its `deps.edn` deliberately pins
