@@ -152,7 +152,13 @@
     capability))
 
 (defonce ^:private signals-disabled? (atom false))
-(defonce ^:private storage-state (atom {:path nil :references 0}))
+(defonce ^:private storage-lock (Object.))
+(defonce ^:private storage-state
+  (atom {:phase :cold
+         :path nil
+         :references 0
+         :bootstrap-options nil
+         :anchor-owner nil}))
 
 (defn- disable-signal-handlers! []
   (when-not @signals-disabled?
@@ -161,31 +167,127 @@
         (chdb-set-signal-handlers-enabled 0)
         (reset! signals-disabled? true)))))
 
-(defn- normalized-path [path]
+(defn canonical-storage-path
+  "Returns the canonical process-lifetime identity for a chDB storage path."
+  [path]
   (if (= path ":memory:")
     path
-    (.getAbsolutePath (java.io.File. path))))
+    ;; getCanonicalPath is available on the supported Jolt, Babashka, and JVM
+    ;; hosts.  Unlike getAbsolutePath it removes lexical aliases and resolves
+    ;; existing symlink prefixes, so the process claim follows physical path
+    ;; identity instead of caller spelling.
+    (.getCanonicalPath (java.io.File. path))))
 
-(defn- claim-path! [path]
-  (swap! storage-state
-         (fn [{current :path n :references :as state}]
-           (cond
-             (zero? n) {:path path :references 1}
-             (= current path) (assoc state :references (inc n))
-             :else (throw (ex-info "chDB supports one storage path per process"
-                                   {:active-path current :requested-path path
-                                    :jdbc/sql-error true})))))
-  path)
+(defn- terminal-storage-state []
+  {:phase :terminal
+   :path nil
+   :references 0
+   :bootstrap-options nil
+   :anchor-owner nil})
 
-(defn- release-path! [path]
+(defn- require-process-path! [requested-path bootstrap-options]
+  (let [{:keys [phase path] active-options :bootstrap-options :as state}
+        @storage-state]
+    (cond
+      (= phase :terminal)
+      (throw (ex-info "chDB native lifecycle is terminal after a failed bootstrap"
+                      {:type ::terminal-native-lifecycle
+                       :requested-path requested-path
+                       :jdbc/sql-error true}))
+
+      (and (= phase :anchored) (not= path requested-path))
+      (throw (ex-info "chDB storage path is immutable for this process"
+                      {:type ::different-process-path
+                       :active-path path :requested-path requested-path
+                       :jdbc/sql-error true}))
+
+      (and (= phase :anchored) (not= active-options bootstrap-options))
+      (throw (ex-info "chDB bootstrap options are immutable for this process"
+                      {:type ::different-process-options
+                       :active-options active-options
+                       :requested-options bootstrap-options
+                       :jdbc/sql-error true}))
+
+      :else state)))
+
+(defn- release-reference! [path]
   (swap! storage-state
          (fn [{current :path n :references :as state}]
            (if (and (= current path) (pos? n))
-             (if (= n 1) {:path nil :references 0}
-                 (assoc state :references (dec n)))
+             (assoc state :references (dec n))
              state))))
 
 (defrecord ChdbHandle [owner connection path closed? lock])
+
+(defn- connect-owned! [path backups-allowed-path bootstrap-attempt]
+  (let [connect
+        (fn [argc argv]
+          (when bootstrap-attempt
+            (reset! (:native-attempted? bootstrap-attempt) true))
+          (let [owner (chdb-connect argc argv)]
+            (when (ffi/null? owner)
+              ;; The API returned no owner, so there is no connection to close
+              ;; and no last-close boundary was crossed.  This is the only
+              ;; native-attempt failure proven safe to retry in-process.
+              (when bootstrap-attempt
+                (reset! (:null-owner? bootstrap-attempt) true))
+              (throw (ex-info "chDB connection failed"
+                              {:type ::null-native-owner
+                               :path path :jdbc/sql-error true})))
+            (try
+              (let [connection (ffi/read owner :pointer)]
+                (when (ffi/null? connection)
+                  (throw (ex-info "chDB returned a null connection"
+                                  {:path path :jdbc/sql-error true})))
+                {:owner owner :connection connection})
+              (catch Throwable error
+                ;; A non-null owner must not escape on an invalid/read-failed
+                ;; bootstrap.  Closing it may cross final shutdown, so the
+                ;; caller also makes the bootstrap lifecycle terminal.
+                (try
+                  (chdb-close-conn owner)
+                  (catch Throwable _ nil))
+                (throw error)))))]
+    ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
+    ;; --path=:memory: creates a persistent directory literally named
+    ;; :memory:, which is both surprising and unsafe for tests.
+    (if (= path ":memory:")
+      (connect 0 ffi/null)
+      (let [args (cond-> ["chdb" (str "--path=" path)]
+                   backups-allowed-path
+                   (conj (str "--backups.allowed_path="
+                              (canonical-storage-path backups-allowed-path))))]
+        (ffi/with-c-string-array [argv (count args)] args
+          (connect (count args) argv))))))
+
+(defn- ensure-anchor! [path backups-allowed-path]
+  (let [bootstrap-options {:backups-allowed-path backups-allowed-path}
+        bootstrap-attempt {:native-attempted? (atom false)
+                           :null-owner? (atom false)}]
+    (require-process-path! path bootstrap-options)
+    (when (= :cold (:phase @storage-state))
+      (try
+        (let [{:keys [owner]}
+              (connect-owned! path backups-allowed-path bootstrap-attempt)]
+          ;; Publish only a fully validated native owner. Its connection is
+          ;; never exposed or used for public queries; retaining the owner
+          ;; keeps the embedded engine alive until process exit.
+          (reset! storage-state
+                  {:phase :anchored
+                   :path path
+                   :references 0
+                   :bootstrap-options bootstrap-options
+                   :anchor-owner owner}))
+        (catch Throwable error
+          ;; Before-native failures cannot have initialized chDB.  A documented
+          ;; null-owner return owns nothing and is likewise safe to retry.  Any
+          ;; other exception after entering chdb_connect has uncertain engine
+          ;; ownership and must make the process lifecycle terminal.
+          (when (and @(:native-attempted? bootstrap-attempt)
+                     (not @(:null-owner? bootstrap-attempt)))
+            (reset! storage-state (terminal-storage-state)))
+          (throw error))))
+    nil))
 
 (defn open!
   ([path] (open! path {}))
@@ -196,33 +298,15 @@
                       :path path :option :backups-allowed-path})))
    (require-driver!)
    (disable-signal-handlers!)
-   (let [path (claim-path! (normalized-path path))]
-    (try
-      (let [connect (fn [argc argv]
-                      (let [owner (chdb-connect argc argv)]
-                        (when (ffi/null? owner)
-                          (throw (ex-info "chDB connection failed"
-                                          {:path path :jdbc/sql-error true})))
-                        (let [connection (ffi/read owner :pointer)]
-                          (when (ffi/null? connection)
-                            (chdb-close-conn owner)
-                            (throw (ex-info "chDB returned a null connection"
-                                            {:path path :jdbc/sql-error true})))
-                          (->ChdbHandle owner connection path (atom false) (Object.)))))]
-        ;; The C API's documented in-memory mode is argc=0/argv=NULL. Passing
-        ;; --path=:memory: creates a persistent directory literally named
-        ;; :memory:, which is both surprising and unsafe for tests.
-        (if (= path ":memory:")
-          (connect 0 ffi/null)
-          (let [args (cond-> ["chdb" (str "--path=" path)]
-                       backups-allowed-path
-                       (conj (str "--backups.allowed_path="
-                                  (normalized-path backups-allowed-path))))]
-            (ffi/with-c-string-array [argv (count args)] args
-              (connect (count args) argv)))))
-      (catch Throwable t
-        (release-path! path)
-        (throw t))))))
+   (let [path (canonical-storage-path path)
+         backups-allowed-path (some-> backups-allowed-path
+                                      canonical-storage-path)]
+     (locking storage-lock
+       (ensure-anchor! path backups-allowed-path)
+       (let [{:keys [owner connection]}
+             (connect-owned! path backups-allowed-path nil)]
+         (swap! storage-state update :references inc)
+         (->ChdbHandle owner connection path (atom false) (Object.)))))))
 
 (defn close! [handle]
   (locking (:lock handle)
@@ -231,7 +315,8 @@
       ;; fails; ownership would then be uncertain and opening a different path
       ;; would be unsound.
       (chdb-close-conn (:owner handle))
-      (release-path! (:path handle))))
+      (locking storage-lock
+        (release-reference! (:path handle)))))
   nil)
 
 (defn with-live-handle [handle f]
@@ -241,7 +326,12 @@
                       {:db.chdb/closed true :jdbc/sql-error true})))
     (f (:connection handle))))
 
-(defn active-storage [] @storage-state)
+(defn active-storage []
+  (let [{:keys [phase path references]} @storage-state]
+    {:phase phase
+     :path path
+     :references references
+     :anchored? (= phase :anchored)}))
 
 (def ^:private query-classes
   {0 :read-only

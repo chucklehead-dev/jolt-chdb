@@ -8,12 +8,14 @@
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb.native :as native]
             [jdbc.chdb-durable-open-test-support :as support]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.core :as jdbc]
             [jolt.fibers :as fibers])
   (:import [java.nio.file Files Path]
+           [java.nio.file.attribute FileAttribute]
            [java.util.concurrent ArrayBlockingQueue]))
 
 (def failures (atom 0))
@@ -41,6 +43,53 @@
         (when current
           (or (:type (ex-data current))
               (recur (.getCause current))))))))
+
+(defn- private-var [symbol]
+  (or (ns-resolve 'jdbc.chdb.durable symbol)
+      (throw (ex-info "missing Durable test seam" {:symbol symbol}))))
+
+(defn- check-canonical-scratch-cleanup! []
+  (let [root (Files/createTempDirectory
+              "jchdb-durable-cleanup-" (make-array FileAttribute 0))
+        physical (.resolve root "physical")
+        alias (.resolve root "alias")
+        delete-tree! (private-var 'delete-tree!)
+        cleanup! (private-var 'default-cleanup-scratch!)
+        create-scratch!
+        (fn [name]
+          (let [scratch (.resolve physical name)]
+            (Files/createDirectories (.resolve scratch "data")
+                                     (make-array FileAttribute 0))
+            scratch))]
+    (try
+      (Files/createDirectory physical (make-array FileAttribute 0))
+      (Files/createSymbolicLink alias physical (make-array FileAttribute 0))
+      (let [legacy-physical (create-scratch! "legacy")
+            legacy-alias (.resolve alias "legacy")
+            active (native/canonical-storage-path
+                    (str (.resolve legacy-alias "data")))]
+        ;; This is the superseded comparison, kept as a causal red control.
+        (when-not (= active (str (.resolve legacy-alias "data")))
+          (delete-tree! legacy-alias))
+        (check "noncanonical cleanup comparison deletes live-anchor scratch"
+               false (.exists (.toFile legacy-physical))))
+      (let [protected-physical (create-scratch! "protected")
+            protected-alias (.resolve alias "protected")
+            unrelated (create-scratch! "unrelated")
+            active (native/canonical-storage-path
+                    (str (.resolve protected-alias "data")))]
+        (with-redefs [native/active-storage
+                      (fn [] {:phase :anchored :path active
+                              :references 0 :anchored? true})]
+          (cleanup! protected-alias)
+          (cleanup! unrelated))
+        (check "canonical cleanup identity preserves live-anchor scratch"
+               true (.exists (.toFile protected-physical)))
+        (check "canonical cleanup still deletes unrelated scratch"
+               false (.exists (.toFile unrelated))))
+      (finally
+        (Files/deleteIfExists alias)
+        (delete-tree! root)))))
 
 (defn- prepare-raw-wal-store! [store payload]
   (let [token (:token (control/acquire! store initial-options))
@@ -1020,6 +1069,17 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (check-canonical-scratch-cleanup!)
+  (with-redefs [native/active-storage
+                (fn [] {:phase :anchored :path ":memory:"
+                        :references 0 :anchored? true})]
+    (check "default reader rejects a consumed native process before storage"
+           ::durable/native-process-lifetime-exhausted
+           (error-type #(durable/open-reader! {})))
+    (check "default writer rejects a consumed native process before lease CAS"
+           ::durable/native-process-lifetime-exhausted
+           (error-type #(durable/open-writer!
+                         {:owner "owner" :instance "instance"}))))
   (run-deterministic-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable open checks failed")

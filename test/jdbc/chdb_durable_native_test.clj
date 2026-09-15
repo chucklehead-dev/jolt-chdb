@@ -48,24 +48,38 @@
                                "UTF-8")
                      wal)))))
 
-(defn- delete-tree! [file]
-  (when (.exists file)
-    (doseq [child (reverse (file-seq file))]
-      (.delete child))))
-
 (defn- scalar [handle sql]
   (-> (chdb/execute-any handle sql []) :rows first first str))
 
 (defn- unsigned-prefix [bytes length]
   (mapv #(bit-and 255 %) (take length bytes)))
 
-(defn- run-durable-object-e2e []
-  (println "Durable native object checkpoint and read-only reopen")
-  (let [store (backend/memory-backend)
-        opened (durable/open-writer!
-                {:store store :owner "native-e2e-writer"
-                 :instance "native-e2e-instance" :database "snapshot"
-                 :lease-ttl-ms 30000})]
+(defn- required-env [name]
+  (or (some-> (System/getenv name) str/trim not-empty)
+      (throw (ex-info "durable native subprocess environment is incomplete"
+                      {:environment name}))))
+
+(defn- process-store [object-id]
+  (let [namespace (local-posix/local-backend
+                   (required-env "JOLT_CHDB_NATIVE_OBJECT_ROOT"))]
+    {:namespace namespace
+     :store (backend/object-backend namespace object-id)}))
+
+(defn- scratch-options []
+  {:scratch-parent (required-env "JOLT_CHDB_NATIVE_SCRATCH_ROOT")})
+
+(defn- run-durable-object-e2e [phase]
+  (println "Durable native object checkpoint and cross-process reopen" phase)
+  (let [{:keys [namespace store]} (process-store "native-object")]
+    (case phase
+      :writer
+      (let [opened (durable/open-writer!
+                    (merge
+                     {:namespace-backend namespace :object-id "native-object"
+                      :owner "native-e2e-writer"
+                      :instance "native-e2e-instance" :database "snapshot"
+                      :lease-ttl-ms 30000}
+                     (scratch-options)))]
     (try
       (writer/execute! opened
                        "CREATE TABLE t (id UInt32) ENGINE = MergeTree ORDER BY id")
@@ -93,8 +107,13 @@
              [(get-in head ["manifest" "seq"])
               (boolean (get-in head ["manifest" "base"]))
               (get-in head ["manifest" "wal"])
-              (get-in head ["lease" "owner"])]))
-    (let [opened (durable/open-reader! {:store store})]
+              (get-in head ["lease" "owner"])])))
+
+      :reader
+      (let [opened (durable/open-reader!
+                    (merge {:namespace-backend namespace
+                            :object-id "native-object"}
+                           (scratch-options)))]
       (try
         (check "read-only reopen restores checkpoint rows"
                3 (-> (reader/query! opened "SELECT count() n FROM t" [])
@@ -115,21 +134,21 @@
                           :max-bytes (* 4 1024 1024)}))
                 6))
         (finally
-          (reader/close! opened))))))
+          (reader/close! opened)))))))
 
-(defn- run-durable-local-recovery-e2e []
-  (println "Durable native local object WAL and checkpoint recovery")
-  (let [root-file (java.io.File/createTempFile "jolt-chdb-recovery-" "")
-        _ (.delete root-file)
-        _ (.mkdirs root-file)
-        namespace (local-posix/local-backend (.getAbsolutePath root-file))
+(defn- run-durable-local-recovery-e2e [phase]
+  (println "Durable native local object WAL and checkpoint recovery" phase)
+  (let [{:keys [namespace store]} (process-store "native-recovery")
         object-id "native-recovery"
         database "数据库-α"]
-    (try
+    (case phase
+      :wal-writer
       (let [opened (durable/open-writer!
-                    {:namespace-backend namespace :object-id object-id
-                     :owner "wal-writer" :instance "wal-instance"
-                     :database database :lease-ttl-ms 30000})]
+                    (merge
+                     {:namespace-backend namespace :object-id object-id
+                      :owner "wal-writer" :instance "wal-instance"
+                      :database database :lease-ttl-ms 30000}
+                     (scratch-options)))]
         (try
           (writer/execute!
            opened
@@ -139,33 +158,42 @@
                  :committed (:status (writer/flush! opened)))
           (finally
             (writer/close! opened))))
-      (let [head (:head (control/read-head-read-only!
-                         (backend/object-backend namespace object-id)))]
+
+      :wal-reader
+      (do
+       (let [head (:head (control/read-head-read-only! store))]
         (check "WAL-only head has no base and one ordered WAL"
                [1 nil 1]
                [(get-in head ["manifest" "seq"])
                 (get-in head ["manifest" "base"])
                 (count (get-in head ["manifest" "wal"]))]))
       (let [opened (durable/open-reader!
-                    {:namespace-backend namespace :object-id object-id})]
+                    (merge {:namespace-backend namespace :object-id object-id}
+                           (scratch-options)))]
         (try
           (check "fresh reader replays WAL-only mutation"
                  10 (-> (reader/query! opened "SELECT sum(id) FROM `данные`" [])
                         :rows first first))
           (finally
-            (reader/close! opened))))
+            (reader/close! opened)))))
+
+      :checkpoint-writer
       (let [opened (durable/open-writer!
-                    {:namespace-backend namespace :object-id object-id
-                     :owner "checkpoint-writer" :instance "checkpoint-instance"
-                     :database "ignored-for-existing" :lease-ttl-ms 30000})]
+                    (merge
+                     {:namespace-backend namespace :object-id object-id
+                      :owner "checkpoint-writer" :instance "checkpoint-instance"
+                      :database "ignored-for-existing" :lease-ttl-ms 30000}
+                     (scratch-options)))]
         (try
           (writer/execute! opened "INSERT INTO `данные` VALUES (20)")
           (check "checkpoint after WAL commits"
                  :committed (:status (writer/checkpoint! opened)))
           (finally
             (writer/close! opened))))
-      (let [head (:head (control/read-head-read-only!
-                         (backend/object-backend namespace object-id)))]
+
+      :checkpoint-reader
+      (do
+       (let [head (:head (control/read-head-read-only! store))]
         (check "checkpoint folds prior and pending WAL into one base"
                [2 true [] database]
                [(get-in head ["manifest" "seq"])
@@ -173,15 +201,14 @@
                 (get-in head ["manifest" "wal"])
                 (get-in head ["manifest" "db"])]))
       (let [opened (durable/open-reader!
-                    {:namespace-backend namespace :object-id object-id})]
+                    (merge {:namespace-backend namespace :object-id object-id}
+                           (scratch-options)))]
         (try
           (check "fresh reader restores the folded checkpoint"
                  30 (-> (reader/query! opened "SELECT sum(id) FROM `данные`" [])
                         :rows first first))
           (finally
-            (reader/close! opened))))
-      (finally
-        (delete-tree! root-file)))))
+            (reader/close! opened))))))))
 
 (defn- run-analysis-checks [handle]
   (println "Durable native query classification")
@@ -380,16 +407,20 @@
                            handle awkward (str backups "/orphan.tar.gz")
                            (str backups "/not-a-base.tar.gz"))) ex-data :type))))
 
-(defn- run-native-secret-boundary-checks []
-  (println "Durable native secret-bearing public boundary")
-  (let [secret "SUPERSECRETKEY123"
+(defn- run-native-secret-boundary-checks [phase]
+  (println "Durable native secret-bearing public boundary" phase)
+  (case phase
+    :mutation
+    (let [secret "SUPERSECRETKEY123"
         mutation-sql "INSERT INTO t SELECT 1 FROM s3(?, ?, ?)"
         params ["https://x/y.csv" "AKIAEXAMPLE" secret]
         store (backend/memory-backend)
         opened (durable/open-writer!
-                {:store store :owner "native-secret-mutation"
-                 :instance "native-secret-mutation-instance"
-                 :database "secret_mutation" :lease-ttl-ms 30000})]
+                (merge
+                 {:store store :owner "native-secret-mutation"
+                  :instance "native-secret-mutation-instance"
+                  :database "secret_mutation" :lease-ttl-ms 30000}
+                 (scratch-options)))]
     (try
       (writer/execute!
        opened "CREATE TABLE t (n Int64) ENGINE=MergeTree ORDER BY n")
@@ -402,17 +433,20 @@
                1 (:pending-statements (writer/status opened))))
       (finally
         (writer/close! opened)))
-    (check "native bound secret mutation leaves stored control text secret-free"
-           false (str/includes? (durable-control-text store) secret)))
+      (check "native bound secret mutation leaves stored control text secret-free"
+             false (str/includes? (durable-control-text store) secret)))
 
-  (let [secret "SUPERSECRETKEY123"
+    :read
+    (let [secret "SUPERSECRETKEY123"
         read-sql "SELECT * FROM s3(?, ?, ?)"
         params ["not a url" "AKIAEXAMPLE" secret]
         store (backend/memory-backend)
         opened (durable/open-writer!
-                {:store store :owner "native-secret-read"
-                 :instance "native-secret-read-instance"
-                 :database "secret_read" :lease-ttl-ms 30000})]
+                (merge
+                 {:store store :owner "native-secret-read"
+                  :instance "native-secret-read-instance"
+                  :database "secret_read" :lease-ttl-ms 30000}
+                 (scratch-options)))]
     (try
       (let [error (rejected #(writer/sql! opened read-sql params))]
         (check "native pinned secret read reaches a redacted SQL failure"
@@ -427,11 +461,10 @@
                 (:status (writer/flush! opened))]))
       (finally
         (writer/close! opened)))
-    (check "native bound secret read leaves stored control text secret-free"
-           false (str/includes? (durable-control-text store) secret))))
+      (check "native bound secret read leaves stored control text secret-free"
+             false (str/includes? (durable-control-text store) secret)))))
 
-(defn -main [& _]
-  (reset! failures 0)
+(defn- check-runtime! []
   (let [library (System/getenv "JOLT_CHDB_LIB")]
     (when-not (and library (.isFile (java.io.File. library)))
       (throw (ex-info "durable native qualification requires JOLT_CHDB_LIB"
@@ -439,7 +472,9 @@
     (check "qualification library has the exact stable version"
            "26.7.3" (:native-version (native/durable-capability)))
     (check "all Durable V1 symbols resolve"
-           :supported (:status (native/durable-capability))))
+           :supported (:status (native/durable-capability)))))
+
+(defn- run-core-native-checks []
   (run-layout-mutants)
   (let [before (native/active-storage)]
     (check "backup configuration cannot turn :memory: into a persistent path"
@@ -448,8 +483,7 @@
                ex-data :type))
     (check "rejected :memory: options do not claim process storage"
            before (native/active-storage)))
-  (let [root-file (java.io.File/createTempFile "jolt-chdb-durable-" "")
-        _ (.delete root-file)
+  (let [root-file (java.io.File. (required-env "JOLT_CHDB_NATIVE_CORE_ROOT"))
         _ (.mkdirs root-file)
         root (.getAbsolutePath root-file)
         backups-file (java.io.File. root-file "backups")
@@ -464,20 +498,29 @@
       (run-analysis-checks handle)
       (run-backup-checks handle root backups)
       (finally
-        (native/close! handle)
-        (delete-tree! root-file))))
-  (let [closed (native/open! ":memory:")]
-    (native/close! closed)
+        (native/close! handle)))
     (check "classification on a closed handle fails without a native call"
-           true (boolean (rejected #(native/classify-query! closed "SELECT 1" nil))))
+           true (boolean (rejected #(native/classify-query! handle "SELECT 1" nil))))
     (check "backup on a closed handle fails without a native call"
-           true (boolean (rejected #(native/backup-database! closed "mem" "/tmp/x"))))
+           true (boolean (rejected #(native/backup-database! handle "mem" "/tmp/x"))))
     (check "restore on a closed handle fails without a native call"
-           true (boolean (rejected #(native/restore-database! closed "mem" "/tmp/x")))))
-  (run-durable-object-e2e)
-  (run-durable-local-recovery-e2e)
-  (run-native-secret-boundary-checks)
+           true (boolean (rejected #(native/restore-database! handle "mem" "/tmp/x"))))))
+
+(defn -main [& [mode]]
+  (reset! failures 0)
+  (check-runtime!)
+  (case mode
+    "core" (run-core-native-checks)
+    "object-writer" (run-durable-object-e2e :writer)
+    "object-reader" (run-durable-object-e2e :reader)
+    "wal-writer" (run-durable-local-recovery-e2e :wal-writer)
+    "wal-reader" (run-durable-local-recovery-e2e :wal-reader)
+    "checkpoint-writer" (run-durable-local-recovery-e2e :checkpoint-writer)
+    "checkpoint-reader" (run-durable-local-recovery-e2e :checkpoint-reader)
+    "secret-mutation" (run-native-secret-boundary-checks :mutation)
+    "secret-read" (run-native-secret-boundary-checks :read)
+    (throw (ex-info "unknown Durable native subprocess phase" {:mode mode})))
   (if (zero? @failures)
-    (println "all Durable native checks passed")
+    (println "all Durable native checks passed" mode)
     (throw (ex-info (str @failures " Durable native checks failed")
                     {:failures @failures}))))

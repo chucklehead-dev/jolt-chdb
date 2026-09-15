@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Retain a private native anchor from first successful chDB bootstrap until
+  process exit, making the first physical path immutable without crossing the
+  upstream last-close/reinitialize boundary. Public same-path handles can close
+  and reopen without another engine boot; different paths fail before native
+  connect. Default Durable recovery admits one private scratch lifetime per
+  process and rejects a later one before backend or lease effects, retaining
+  anchor-owned scratch until an external owner cleans it after process exit.
+  Canonical path identity collapses lexical and existing-symlink aliases;
+  uncertain post-entry bootstrap failures make the lifecycle terminal while
+  pre-native and documented null-owner failures remain retryable. Durable
+  scratch cleanup uses that same canonical identity so a symlink-spelled
+  scratch parent cannot remove the live anchor's data directory. A literate
+  Quint model, three generated deterministic ITF implementation replays,
+  causal last-close/path-switch/terminal/options mutants, exact Linux
+  host-signal address checks, and two-process `:memory:` probe cover the
+  policy. macOS signal/lifecycle qualification remains explicit platform work
+  rather than an inferred claim.
+
 - Converge the Durable JDBC dependency with Samizdat on the canonical
   `jolt-lang/db` library key at `casselc/db` revision `6db79163`. That revision
   descends from the prior jolt-chdb pin `a5bf25d9`, Samizdat's `d85f391c` pin,

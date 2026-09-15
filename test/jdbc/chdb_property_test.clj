@@ -100,8 +100,9 @@
            valid? (and (contains? #{:arrow :parquet} format)
                        (<= 1 max-rows chdb/max-encoded-result-rows)
                        (<= 1 max-bytes chdb/max-encoded-result-bytes))]
-       ;; Every case owns a fresh connection, so a failure and its shrink replay
-       ;; begin from equivalent native state.
+       ;; Every case owns a fresh public connection on the same process anchor;
+       ;; this query is stateless, so shrink replay begins from equivalent SQL
+       ;; state without assuming last-close resets the in-memory engine.
        (with-open [conn (jdbc/connection "chdb::memory:")]
          (let [outcome (try
                          {:result ((case api
@@ -139,12 +140,21 @@
            octets (vec (.getBytes payload "UTF-8"))
            chunks (h/draw! (g/chunkings octets))]
        (with-open [conn (jdbc/connection "chdb::memory:")]
-         (jdbc/execute! conn "create table streamed_property (id Int64) engine=Memory")
-         (chdb/stream-insert! conn "insert into streamed_property"
-                              (mapv #(byte-array (map int %)) chunks))
-         (require! "chdb/stream/chunk-boundaries" (sort ids)
-                   (mapv :id (jdbc/fetch conn
-                                         "select id from streamed_property order by id"))))))))
+         ;; Hegel runs and shrink replays share the process-lifetime in-memory
+         ;; engine. Reset this property's own table explicitly; relying on the
+         ;; public connection becoming native last-close is the causal mutant.
+         (jdbc/execute! conn "drop table if exists streamed_property")
+         (try
+           (jdbc/execute! conn
+                          "create table streamed_property (id Int64) engine=Memory")
+           (chdb/stream-insert! conn "insert into streamed_property"
+                                (mapv #(byte-array (map int %)) chunks))
+           (require! "chdb/stream/chunk-boundaries" (sort ids)
+                     (mapv :id (jdbc/fetch
+                                conn
+                                "select id from streamed_property order by id")))
+           (finally
+             (jdbc/execute! conn "drop table if exists streamed_property"))))))))
 
 (defn- lifecycle-swarm! []
   (run-property!

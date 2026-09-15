@@ -90,10 +90,12 @@ its only carrier, and a stop signal is not proof that heartbeat has terminated.
 | release follows heartbeat termination | `releaseFollowsHeartbeatJoin` | a test-scoped post-loop barrier proves release remains blocked while the heartbeat OS thread is observably live | removing the heartbeat join permits release and public close before heartbeat-thread exit |
 | renewal cannot follow release | `noRenewAfterRelease` | close positively joins the heartbeat OS thread before release | release-before-join mutant enables a post-release heartbeat tick and violates the invariant |
 | public close leaves no owned operation worker | close lifecycle terminates after cleanup | a test-scoped post-worker-loop barrier proves reader and writer close remain blocked until the actual OS thread exits; concurrent and repeated failure paths retain exact identity | removing the operation-worker join returns or rethrows while that thread is observably live |
+| logical last close cannot reinitialize the process-global native engine | native-process `anchorSurvivesLogicalLastClose`, `engineInitializesAtMostOnce`, and `processPathIsImmutable` | fake-native ITF replay plus two real processes prove same-path reuse, path rejection before connect, fresh `:memory:` isolation, clean exit, and exact host signal-handler preservation | drop-anchor and accept-different-path mutants produce direct counterexamples; the legacy fake-native red control boots twice |
 
 The head-CAS model and its ITF replay remain authoritative for ownership,
 publication, and CAS state, but intentionally contain no clock, executor,
-operation queue, or close lifecycle. The writer Hegel state machine covers WAL
+operation queue, writer close lifecycle, or process-global native lifecycle.
+The separate native-process model owns the latter claim. The writer Hegel state machine covers WAL
 and checkpoint state across sequential commands. Neither layer should be cited
 as evidence for thread isolation or close-time heartbeat ordering; changes to
 those claims must retain the lifecycle model and the isolated runtime gate.

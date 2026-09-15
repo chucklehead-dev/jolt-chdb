@@ -30,6 +30,7 @@
             [jdbc.chdb-durable-policy-test :as durable-policy]
             [jdbc.chdb-durable-retry-test :as durable-retry]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb-native-lifecycle-test :as native-lifecycle]
             [jdbc.chdb-property-test :as property]
             [jdbc.core :as jdbc]
             [jdbc.proto :as proto]
@@ -671,9 +672,11 @@
       (finally
         (native/close! b)
         (native/close! a))))
-  (check "last close releases process storage claim"
-         {:path nil :references 0}
-         (native/active-storage)))
+  (check "logical last close retains the process anchor and immutable path"
+         {:phase :anchored :path ":memory:" :references 0 :anchored? true}
+         (native/active-storage))
+  (check "a different path remains rejected after logical last close" true
+         (throws? #(native/open! "/tmp/jolt-chdb-forbidden-after-close"))))
 
 (defn -main [& _]
   (reset! failures 0)
@@ -682,6 +685,7 @@
   (run-encoded-query-checks)
   (run-logical-database-checks)
   (run-storage-checks)
+  (native-lifecycle/run-checks!)
   (durable-head/run-checks!)
   (durable-head-whitespace/run-checks!)
   (durable-head-depth/run-checks!)

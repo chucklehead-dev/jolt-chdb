@@ -93,7 +93,11 @@ grep -q 'db/sqlite.clj has 2 source providers' "$work/red.err" || {
 }
 echo "causal red control rejected two db/sqlite.clj providers"
 
-(cd "$fixture_root/green" && jolt_cmd -M:run)
+mkdir -p "$work/runtime"
+(cd "$fixture_root/green" && \
+  PROVIDER_CONVERGENCE_RUNTIME_ROOT="$work/runtime" jolt_cmd -M:run write)
+(cd "$fixture_root/green" && \
+  PROVIDER_CONVERGENCE_RUNTIME_ROOT="$work/runtime" jolt_cmd -M:run read)
 
 if [ -n "${PROVIDER_CONVERGENCE_EVIDENCE_DIR:-}" ]; then
   mkdir -p "$PROVIDER_CONVERGENCE_EVIDENCE_DIR"

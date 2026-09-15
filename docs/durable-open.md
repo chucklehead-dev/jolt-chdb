@@ -72,8 +72,11 @@ The focused public-open conformance corpus exercises missing, wrong-size, and
 wrong-digest checkpoint and WAL references through both reader and writer open.
 Valid controls reach restore or replay; malformed references return `corrupt`
 before those stages. Writer failure still releases the acquired lease and both
-open modes close native state and remove scratch without allowing secondary
-cleanup errors to replace the verification result.
+open modes close their public native state without allowing secondary cleanup
+errors to replace the verification result. The production process anchor still
+owns `scratch/data`, so that scratch tree remains until an external owner
+removes it after process exit. Test operation seams that own no real native
+anchor continue to remove scratch at logical close.
 
 The active writer runs its operation queue and heartbeat on separate owned OS
 threads; the read-only queue likewise owns an OS thread. These are deliberately

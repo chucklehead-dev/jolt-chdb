@@ -18,6 +18,12 @@
  :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
+           :native-lifecycle-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-native-lifecycle-test"]}
+           :native-process-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-native-process-test"]}
            :abi-babashka-jvm-test
            {:extra-deps
             {io.github.babashka/ffi
@@ -200,6 +206,8 @@
                   :main-opts ["-m" "jdbc.chdb-test"]}}
  :tasks {setup-native "jolt -M:setup-native"
          abi-test "jolt -M:abi-test"
+         native-lifecycle-test "jolt -M:native-lifecycle-test"
+         native-process-test "bash scripts/check-native-process-lifecycle.sh"
          durable-native-test "jolt -M:durable-native-test"
          durable-policy-test "jolt -M:durable-policy-test"
          durable-control-test "jolt -M:durable-control-test"

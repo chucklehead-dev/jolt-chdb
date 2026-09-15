@@ -60,12 +60,16 @@ jolt -M:setup-native
 
 Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 `JOLT_CHDB_CACHE_DIR` to choose the installer destination. Only one chDB storage
-path may be active in a process at once, although multiple connections to that
-same path are supported. Until the safe process-lifecycle policy tracked in
-[#103](https://github.com/chucklehead-dev/jolt-chdb/issues/103) lands, keep at
-least one connection open for the application's entire chDB lifetime. Do not
-close the final connection and later reopen chDB or select a different path in
-the same process; use a fresh process for independent lifetimes.
+path may be used in a process, although multiple and sequential connections to
+that same path are supported. The driver retains a hidden native anchor from
+the first successful open until process exit, so closing the last public
+connection does not reinitialize chDB. A different physical path is rejected
+before another native connect call; lexical `.`/`..` aliases and existing
+symlink prefixes identify the same canonical path. `chdb::memory:` is
+consequently shared for the process lifetime; use a fresh process for an
+independent in-memory engine.
+See [Native process lifecycle](docs/native-lifecycle.md) for the upstream
+rationale, failure semantics, and qualification boundary.
 
 ## Durable storage (experimental)
 
@@ -141,7 +145,10 @@ in WAL. A fresh process can open `(durable/snapshot-dbspec
 {:namespace-backend storage :object-id "primary"})`; it restores one fixed
 manifest snapshot and does not take the writer lease. The constructors return
 ordinary JDBC maps, reject role/configuration mistakes before opening resources,
-and do not add another lifecycle abstraction.
+and do not add another lifecycle abstraction. Production Durable recovery owns
+one private native scratch path per process lifetime. Open a later snapshot or
+writer in a fresh process; a second default Durable open is rejected before
+backend reads or lease mutation.
 
 See [Durable storage](docs/durable.md) for configuration, recovery and
 acknowledgement behavior, provider status, and the modeling/testing method.

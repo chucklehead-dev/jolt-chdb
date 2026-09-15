@@ -665,7 +665,7 @@
        :product-name "ClickHouse (chDB)"
        :capabilities {:transactions :none :generated-keys :none
                       :query-bytes query-bytes-capability}
-       :constraints {:active-storage-paths :one-per-process
+       :constraints {:active-storage-paths :one-per-process-lifetime
                      :logical-databases {:spec-key :database
                                          :create-if-missing true
                                          :identifier :ascii-simple}}

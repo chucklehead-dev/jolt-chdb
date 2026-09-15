@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 qualification_root=${1:?usage: scripts/qualify-durable-native.sh DIRECTORY}
 jolt_bin=${JOLT_BIN:-jolt}
 release=26.7.3
@@ -81,4 +82,32 @@ cc -std=c11 -Wall -Wextra \
   ./chdbDurableAbiTest
 )
 
-JOLT_CHDB_LIB="$library_path" "$jolt_bin" -M:durable-native-test
+JOLT_CHDB_LIB="$library_path" \
+  "$repo_root/scripts/check-native-process-lifecycle.sh" "$jolt_bin"
+
+process_root=$(mktemp -d "$qualification_root/process-lifecycle.XXXXXX")
+trap 'rm -rf -- "$process_root"' EXIT HUP INT TERM
+object_root="$process_root/objects"
+core_root="$process_root/core"
+mkdir -p "$object_root" "$core_root"
+
+run_phase() {
+  local phase=$1
+  local scratch_root="$process_root/scratch-$phase"
+  mkdir -p "$scratch_root"
+  JOLT_CHDB_LIB="$library_path" \
+  JOLT_CHDB_NATIVE_OBJECT_ROOT="$object_root" \
+  JOLT_CHDB_NATIVE_CORE_ROOT="$core_root" \
+  JOLT_CHDB_NATIVE_SCRATCH_ROOT="$scratch_root" \
+    "$jolt_bin" -M:durable-native-test "$phase"
+  rm -rf -- "$scratch_root"
+}
+
+for phase in \
+  core \
+  object-writer object-reader \
+  wal-writer wal-reader checkpoint-writer checkpoint-reader \
+  secret-mutation secret-read
+do
+  run_phase "$phase"
+done
