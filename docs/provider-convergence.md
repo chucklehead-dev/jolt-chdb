@@ -72,11 +72,13 @@ The green graph combines Samizdat commit
 `22be90ddf9b05ba8406d6ec231d2748a4da22d8e` with the current jolt-chdb
 checkout. Its `jolt -Stree` must select `jolt-lang/db 6db7916`; its
 `jolt -Spath` must expose exactly one physical source root for every shared
-`db.*` and `next.jdbc.*` namespace path derived from that provider tree. The
-same process then keeps
-Samizdat's SQLite connection open while a production local-posix Durable chDB
-writer creates and queries telemetry, flushes, closes, and is restored through
-an immutable snapshot reader.
+`db.*` and `next.jdbc.*` namespace path derived from that provider tree. Two
+fresh Jolt processes then each keep a Samizdat SQLite connection open. The
+first runs a production local-posix Durable chDB writer that creates and queries
+telemetry, flushes, and closes; the second restores the same object through an
+immutable snapshot reader. Separate processes preserve chDB's process-lifetime
+native ownership policy while proving that each JDBC role coexists with the
+single converged provider tree.
 
 The red graph retains `jolt-lang/db` `d85f391c` and
 `io.github.casselc/db` `a5bf25d9`. The same exact-one oracle must reject it
