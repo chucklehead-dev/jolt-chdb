@@ -15,6 +15,9 @@
   physical `db.*`/`next.jdbc.*` source root, while a causal fixture retains the
   two historical coordinates and is rejected for two `db/sqlite.clj`
   providers.
+  Qualification uses run-scoped compiler and gitlib caches, derives the shared
+  namespace inventory from the exact full-SHA provider tree, and documents the
+  SHA-preserving database-first rollout order.
 
 - Make stable chDB core 26.7.3 the packaged driver and Durable native floor.
   The installer and qualification oracle pin all four official release-archive

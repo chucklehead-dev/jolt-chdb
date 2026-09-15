@@ -3,22 +3,24 @@ set -eu
 
 classpath_file=$1
 providers_file=$2
+reference_root=$3
 
-set -- db/datasource.clj \
-  db/jdbc.clj \
-  db/jdbc_shim.clj \
-  db/pg.clj \
-  db/sqlite.clj \
-  next/jdbc.clj \
-  next/jdbc/prepare.clj \
-  next/jdbc/result_set.clj \
-  next/jdbc/sql.clj \
-  next/jdbc/transaction.clj
+namespaces_file=$providers_file.namespaces
+find "$reference_root/db" "$reference_root/next" -type f -name '*.clj' -print |
+  while IFS= read -r source; do
+    printf '%s\n' "${source#"$reference_root"/}"
+  done |
+  LC_ALL=C sort -u > "$namespaces_file"
+
+if [ ! -s "$namespaces_file" ]; then
+  echo "provider reference tree contains no db/next.jdbc sources: $reference_root" >&2
+  exit 1
+fi
 
 : > "$providers_file"
 failures=0
 classpath=$(cat "$classpath_file")
-for namespace do
+while IFS= read -r namespace; do
   count=0
   old_ifs=$IFS
   IFS=:
@@ -33,7 +35,7 @@ for namespace do
     echo "provider cardinality violation: $namespace has $count source providers" >&2
     failures=$((failures + 1))
   fi
-done
+done < "$namespaces_file"
 
 provider_count=$(sort -u "$providers_file" | wc -l | tr -d ' ')
 if [ "$provider_count" -ne 1 ]; then

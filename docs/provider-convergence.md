@@ -62,8 +62,9 @@ resolved `-Stree` and `-Spath` text should be retained as build evidence.
 The green graph combines Samizdat commit
 `22be90ddf9b05ba8406d6ec231d2748a4da22d8e` with the current jolt-chdb
 checkout. Its `jolt -Stree` must select `jolt-lang/db 802ba50`; its
-`jolt -Spath` must expose exactly one physical source root for all ten shared
-`db.*` and `next.jdbc.*` namespace paths. The same process then keeps
+`jolt -Spath` must expose exactly one physical source root for every shared
+`db.*` and `next.jdbc.*` namespace path derived from that provider tree. The
+same process then keeps
 Samizdat's SQLite connection open while a production local-posix Durable chDB
 writer creates and queries telemetry, flushes, closes, and is restored through
 an immutable snapshot reader.
@@ -72,3 +73,26 @@ The red graph retains `jolt-lang/db` `d85f391c` and
 `io.github.casselc/db` `a5bf25d9`. The same exact-one oracle must reject it
 specifically because two roots provide `db/sqlite.clj`. This is the causal
 control; dependency order is never treated as coexistence evidence.
+
+The qualifier creates run-scoped `JOLT_CACHE_DIR` and `JOLT_GITLIBS_DIR`
+trees. It derives the complete `db/**/*.clj` and `next/**/*.clj` inventory from
+the resolved `802ba50948a231594fa7a94193d8c30b99032c7e` provider root rather
+than a hand-maintained list, and its causal control proves that a newly added
+namespace is checked. `-Stree` abbreviates git revisions and is only a graph
+diagnostic; the full-SHA gate is the exact revision embedded in the resolved
+source-root path. This assumes Jolt's gitlib layout continues to retain the
+complete revision as one path segment, and fails closed if that layout changes.
+
+## Rollout order
+
+1. Merge the `casselc/db` provider-convergence PR into `casselc/db` `main`
+   with a strategy that preserves commit
+   `802ba50948a231594fa7a94193d8c30b99032c7e`. Do not squash or rebase it away.
+2. Verify that the commit is reachable from the published `casselc/db` main
+   line and that a fresh git dependency cache can resolve the exact SHA.
+3. Only then publish and open the jolt-chdb PR. Its `deps.edn` deliberately pins
+   that immutable commit, so opening it first produces an unresolvable graph in
+   clean CI rather than a meaningful convergence result.
+
+After both land, consumers remove the historical `io.github.casselc/db`
+coordinate. They do not add exclusions or overrides during the rollout.
