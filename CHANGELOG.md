@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Converge the Durable JDBC dependency with Samizdat on the canonical
-  `jolt-lang/db` library key at `casselc/db` revision `2de2ce8e`. That revision
+  `jolt-lang/db` library key at `casselc/db` revision `6db79163`. That revision
   descends from the prior jolt-chdb pin `a5bf25d9`, Samizdat's `d85f391c` pin,
   and current `jolt-lang/db` `a54cc49f`, retaining casselc's driver/lifecycle
   contracts, Samizdat's SQLite/java.sql behavior, and the current Jolt provider
