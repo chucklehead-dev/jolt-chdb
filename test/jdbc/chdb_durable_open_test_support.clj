@@ -20,7 +20,7 @@
                value))
    :await-heartbeat! (fn [stop _] @stop :stop)
    :durable-capability (fn [] {:status :supported
-                               :native-version "26.7.2-rc.2"})
+                               :native-version "26.7.3"})
    :create-scratch! (fn [_]
                       (let [path (Files/createTempDirectory
                                   "jolt-chdb-open-test-"

@@ -60,9 +60,9 @@
    :now 100M
    :clock-skew 5M
    :database "default"
-   :engine-version "26.7.2-rc.2"
+   :engine-version "26.7.3"
    :backup-format 1
-   :min-reader "26.7.2-rc.2"})
+   :min-reader "26.7.3"})
 
 (defn -main [endpoint]
   (reset! failures 0)

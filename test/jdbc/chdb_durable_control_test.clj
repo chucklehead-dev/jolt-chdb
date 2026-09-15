@@ -38,9 +38,9 @@
    :now 100M
    :clock-skew 5M
    :database "default"
-   :engine-version "26.7.2-rc.2"
+   :engine-version "26.7.3"
    :backup-format 1
-   :min-reader "26.7.2-rc.2"})
+   :min-reader "26.7.3"})
 
 (def abc-digest
   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
@@ -552,7 +552,7 @@
       (check "normal takeover waits through clock skew and increments generation"
              2 (:generation token2))
       (check "takeover updates only producer version and preserves engine fields"
-             ["26.8.0" 1 "26.7.2-rc.2" {"retained" true}]
+             ["26.8.0" 1 "26.7.3" {"retained" true}]
              (let [engine (get (:head takeover) "engine")]
                [(get engine "version")
                 (get engine "backup_format")

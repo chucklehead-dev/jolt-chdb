@@ -94,8 +94,8 @@
 
 (def acquire-options
   {:owner "writer" :instance "instance" :expires-at 200M :now 100M
-   :database "default" :engine-version "26.7.2-rc.2"
-   :backup-format 1 :min-reader "26.7.2-rc.2"})
+   :database "default" :engine-version "26.7.3"
+   :backup-format 1 :min-reader "26.7.3"})
 
 (defn run-checks! []
   (reset! failures 0)

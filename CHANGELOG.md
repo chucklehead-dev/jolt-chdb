@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Make stable chDB core 26.7.3 the packaged driver and Durable native floor.
+  The installer and qualification oracle pin all four official release-archive
+  SHA-256 values plus upstream commit `7d84d719`; ABI and runtime capability
+  checks reject 26.7.2 before connection/storage work even when all expected
+  symbols appear present. Current Durable heads advertise 26.7.3 as producer
+  and minimum reader, while the literate engine-metadata model, generated ITF
+  replay, typed contracts, and red/green version controls use the same floor.
+  The former rc.2 qualification matrix is retired rather than carried as a
+  supported path. Applications must still keep one connection open for their
+  complete chDB lifetime pending the lifecycle policy tracked in #103. A new
+  focused pseudo-terminal gate confirms bounded streaming-insert lifecycle and
+  exact readback without the former `ThreadStatus` diagnostic on the packaged
+  Linux x86-64 library; sustained and cross-platform use remain unqualified.
+
 - Refresh the upstream Durable conformance inventory to chDB main `c5ed925d`,
   exact test-suite Git blob `4b72fa84`, SHA-256 `b4294901`, and 50 ordered
   cases. The reviewed 49-case ledger remains historical 47/0/2 evidence; the
@@ -9,15 +23,6 @@
   jolt-chdb's ObjectBackend-based API, yielding an honest current 47 mapped,
   0 blocked, and 3 binding-level not-applicable ledger. Exact blob and missing-
   current-case mutants fail closed without claiming full conformance.
-
-- Add a checksum-pinned Linux x86-64 Durable compatibility matrix. Separate
-  processes prove that 26.7.2-rc.2 archives open under both rc.2 and 26.7.3,
-  26.7.3 archives open under 26.7.3, and rc.2 refuses a 26.7.3 minimum reader
-  before downloading the archive or opening native storage. Matched
-  header/library pairs are qualified, while mixed release provenance and
-  wrong artifact identities fail closed before native execution. Every archive
-  cell preserves the exact logical-object inventory; corrupt-archive and
-  unsupported-minimum-reader mutants prove the intended refusal boundaries.
 
 - Add a pinned Linux x86_64 Python-writer interoperability fixture. Upstream
   `chdb.durable` at commit `66643e50` and checksum-pinned `chdb-core` 26.7.3

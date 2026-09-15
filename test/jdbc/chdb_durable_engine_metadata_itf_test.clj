@@ -31,7 +31,7 @@
 (defn- model-version [rank]
   (cond
     (= rank 1) "26.6.0"
-    (= rank 2) "26.7.2-rc.2"
+    (= rank 2) "26.7.3"
     :else
     (throw (ex-info "Unsupported engine-metadata model version rank"
                     {:type ::invalid-trace}))))
@@ -93,21 +93,21 @@
         observations (replay! trace)]
     (check "takeover replays the model producer transition"
            ["TakeoverTransition" "AppliedResult"
-            {"version" "26.7.2-rc.2"
+            {"version" "26.7.3"
              "backup_format" 0
              "min_reader" "26.6.0"}
-            {"version" "26.7.2-rc.2"
+            {"version" "26.7.3"
              "backup_format" 0
              "min_reader" "26.6.0"}]
            (first observations))
     (check "checkpoint replays all modeled compatibility metadata"
            ["CheckpointTransition" "AppliedResult"
-            {"version" "26.7.2-rc.2"
+            {"version" "26.7.3"
              "backup_format" 1
-             "min_reader" "26.7.2-rc.2"}
-            {"version" "26.7.2-rc.2"
+             "min_reader" "26.7.3"}
+            {"version" "26.7.3"
              "backup_format" 1
-             "min_reader" "26.7.2-rc.2"}]
+             "min_reader" "26.7.3"}]
            (second observations)))
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " engine-metadata ITF checks failed")

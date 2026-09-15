@@ -28,9 +28,8 @@ Implemented today:
 
 Important limits:
 
-- The normal installer pins stable chDB 26.7.0, which does not export the
-  Durable ABI. Durable use currently requires the separately qualified
-  26.7.2-rc.2 library.
+- The normal installer and Durable qualification both pin stable chDB 26.7.3,
+  which is also the minimum accepted native release.
 - Hosted native qualification currently runs on Linux x86-64. Release assets
   are pinned for Linux arm64 and macOS, but those mappings are not evidence of
   equivalent hosted qualification.
@@ -46,6 +45,11 @@ Important limits:
   the Durable writer contract. Reads also support bound parameters.
 - A reader sees the immutable manifest snapshot it opened. It does not follow
   later writer commits.
+- Until the safe process-lifecycle policy tracked in
+  [#103](https://github.com/chucklehead-dev/jolt-chdb/issues/103) lands, an
+  application must keep one connection open for its complete chDB lifetime.
+  Do not close the final connection and reinitialize chDB in the same process;
+  use subprocesses for independent paths or fresh in-memory databases.
 
 These limits make Durable useful for development, qualification, and controlled
 single-host trials. They also mean it should not yet be presented as a broadly
@@ -107,8 +111,7 @@ independent of the selected provider.
 
 ## Enabling Durable
 
-First qualify the checksum-pinned chDB 26.7.2-rc.2 asset and select it. On
-Linux x86-64:
+Install or qualify the checksum-pinned chDB 26.7.3 asset. On Linux x86-64:
 
 ```sh
 bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable
@@ -117,8 +120,9 @@ export JOLT_CHDB_LIB=/tmp/jolt-chdb-durable/native/libchdb.so
 
 The script also runs the pinned upstream C ABI oracle and Jolt's independent
 classification, backup, restore, WAL recovery, and checkpoint recovery checks.
-Use `libchdb.dylib` instead on macOS. Do not replace the normal stable pin with
-this prerelease without doing the same qualification in your deployment.
+Use `libchdb.dylib` instead on macOS. The ordinary `jolt -M:setup-native`
+installer selects the same release; use the qualification script when you need
+the upstream oracle and independent Durable gate as deployment evidence.
 
 ### Local writer
 
@@ -540,7 +544,7 @@ Current CI separates the claims:
 - [`durable-native-qualification`](../.github/workflows/durable-native.yml)
   runs the upstream C oracle and the Jolt native ABI, classification,
   backup/restore, and local WAL/checkpoint recovery suite against chDB
-  26.7.2-rc.2 on Linux x86-64; and
+  stable 26.7.3 on Linux x86-64; and
 - [`durable-head-quint`](../.github/workflows/durable-head-quint.yml) tangles
   the literate spec and always runs fast deterministic, sampled,
   mutation-control, and ITF replay checks on its Durable trigger paths. Its

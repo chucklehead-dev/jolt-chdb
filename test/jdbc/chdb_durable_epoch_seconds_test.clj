@@ -266,9 +266,9 @@
           :now python-now-ms
           :clock-skew 0M
           :database "default"
-          :engine-version "26.7.2-rc.2"
+          :engine-version "26.7.3"
           :backup-format 1
-          :min-reader "26.7.2-rc.2"})]
+          :min-reader "26.7.3"})]
     (check "old millisecond boundary steals a live Python lease (red control)"
            [:acquired 2]
            [(:status result)
@@ -411,8 +411,8 @@
          delegate
          {:owner "red-control" :instance "red-instance"
           :expires-at 10M :now 0M :clock-skew 0M
-          :database "default" :engine-version "26.7.2-rc.2"
-          :backup-format 1 :min-reader "26.7.2-rc.2"})
+          :database "default" :engine-version "26.7.3"
+          :backup-format 1 :min-reader "26.7.3"})
         replace-count (atom 0)
         local-now (atom 0M)
         store (fail-one-replace-backend delegate 1 replace-count)

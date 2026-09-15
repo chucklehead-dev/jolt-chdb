@@ -587,7 +587,7 @@ recovery gets its own phase and request counts.
 The opt-in job requires `AWS_DURABLE_THROUGHPUT_JOLT_SHA` in the protected
 environment to equal the workflow's exact compiler source pin. Leave the
 variable unset until the local 512-row qualification has selected that same
-pin. The job also runs the checksum-pinned chDB 26.7.2-rc.2 native gate before
+pin. The job also runs the checksum-pinned chDB 26.7.3 native gate before
 assuming the AWS role. It also depends on the complete provider/redaction job,
 so its own OIDC role assumption cannot begin after a failed provider contract.
 A live dispatch remains prohibited until the execution gate is satisfied and

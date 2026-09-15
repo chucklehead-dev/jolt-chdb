@@ -4,8 +4,8 @@
 the libchdb surface used by this repository. Its Durable V1 entries were audited
 against these immutable upstream sources:
 
-- chDB core release: `v26.7.2-rc.2`
-- commit: `30488a59b2700188ee36ecbced7713081a909f56`
+- chDB core release: `v26.7.3`
+- commit: `7d84d719da07184f6a49405a11b112f16925af72`
 - header: `programs/local/chdb.h`
 - C oracle: `examples/chdbDurableAbiTest.c`
 - Python oracle: `tests/test_durable_backup_restore_classify.py`
@@ -24,7 +24,7 @@ duplicate-symbol, and missing-symbol mutants. This makes descriptor drift and
 vacuous capability tests fail locally rather than surfacing as native memory
 corruption.
 
-`scripts/qualify-durable-native.sh DIRECTORY` authenticates the matching rc.2
+`scripts/qualify-durable-native.sh DIRECTORY` authenticates the matching 26.7.3
 asset on each of the four published platforms, compiles and runs the exact
 pinned upstream C oracle, and then runs the independent Jolt classification and
 backup/restore suite against that same library. The hosted qualification gate
@@ -36,19 +36,19 @@ otherwise the script resolves `jolt` from `PATH`.
 
 ## Release boundary
 
-The production installer remains pinned to stable libchdb 26.7.0. That library
-does not export `chdb_backup_database_n`, `chdb_restore_database_n`, or
-`chdb_classify_query_n`. `jdbc.chdb.native/durable-capability` loads the selected
-library, resolves every symbol named by the versioned contract, and reports
-missing symbols as `:jdbc.chdb.native/unsupported-core`. It does not invoke a
-missing binding and ordinary JDBC remains usable.
+The production installer and Durable qualification are both pinned to stable
+libchdb 26.7.3. `jdbc.chdb.native/contract-capability` validates the selected
+library's semantically ordered release before opening native storage and then
+resolves every symbol named by the versioned contract. A release below 26.7.3
+reports `:jdbc.chdb.native/unsupported-version`; a missing required symbol on a
+supported release reports `:jdbc.chdb.native/unsupported-core`. Neither path
+invokes a missing binding or opens a connection.
 
 This remains below the Durable control plane. It does not implement object
 layout, WAL segments, storage, leases, CAS, backup policy, or replay.
-The native production pin must not move to this prerelease. Once a stable chDB
-release carries the ABI, its assets and checksums must be pinned and the upstream
-C oracle plus independent Jolt classification and backup/restore tests must pass
-before Durable is advertised as supported.
+The native ABI is only one layer of Durable correctness. The upstream C oracle
+and independent Jolt classification, backup/restore, recovery, model, and
+provider gates must still pass for every supported release and platform claim.
 
 ## Phase 0 Babashka and JVM characterization
 
@@ -85,9 +85,8 @@ manifest-pinned SHA-256, installs it through setup-java's local-file provider,
 and then checks the actual vendor and `25.0.2+10-LTS` runtime identity. A
 cross-file mutant guard fails if the workflow archive version or digest drifts
 from the compatibility manifest.
-The only qualified Phase 0 native target is stable
-libchdb `26.7.0` on Linux amd64. This is not a claim of Durable, Windows, or
-unqualified-platform support.
+The only qualified Phase 0 native target is stable libchdb `26.7.3` on Linux
+amd64. This is not a claim of Windows or unqualified-platform support.
 
 Two controls keep this characterization meaningful. A raw C result-buffer
 pointer must reject copying until it is reinterpreted to the exact native

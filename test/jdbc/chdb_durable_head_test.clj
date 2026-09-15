@@ -38,9 +38,9 @@
                 "reader_features" []
                 "writer_features" []}
    "engine" {"name" "chdb"
-             "version" "26.7.2-rc.2"
+             "version" "26.7.3"
              "backup_format" 1
-             "min_reader" "26.7.2-rc.2"}
+             "min_reader" "26.7.3"}
    "lease" {"generation" 3
             "owner" "worker-1"
             "instance" "unique-live-instance-id"

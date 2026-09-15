@@ -2425,7 +2425,9 @@ checkpoint reference. This separate functional model uses ordered integer
 release ranks; the runtime tests retain the full chDB release/prerelease
 comparison. Acquisition changes only the producer version. A checkpoint records
 the producer and current archive format while refusing to lower either stored
-reader requirement. The parameterized model binds each fault independently:
+reader requirement. Release rank `1` is an older unsupported engine, rank `2`
+is the supported chDB 26.7.3 floor, and rank `3` is a future release. The
+parameterized model binds each fault independently:
 two omission mutants capture the previous behavior, while a lowering mutant
 starts from newer stored requirements and shows why unchecked writer
 requirements are unsafe. A
@@ -2457,6 +2459,10 @@ module durableEngineMetadata {
   }
 
   var state: MetadataState
+
+  pure val unsupportedRelease: int = 1
+  pure val supportedRelease: int = 2
+  pure val futureRelease: int = 3
 
   pure def readerCompatible(
     runningVersion: int,
@@ -2519,8 +2525,8 @@ module durableEngineMetadata {
     expectedResult: AppliedResult,
     metadata:
       if (OMIT_ACQUISITION_UPDATE)
-        acquisitionOmissionMutant(current.metadata, 2)
-      else acquireMetadata(current.metadata, 2),
+        acquisitionOmissionMutant(current.metadata, supportedRelease)
+      else acquireMetadata(current.metadata, supportedRelease),
   }
 
   pure def canCheckpoint(current: MetadataState): bool =
@@ -2533,10 +2539,10 @@ module durableEngineMetadata {
     expectedResult: AppliedResult,
     metadata:
       if (OMIT_CHECKPOINT_REQUIREMENTS)
-        checkpointOmissionMutant(current.metadata, 2, 1)
+        checkpointOmissionMutant(current.metadata, supportedRelease, 1)
       else if (ALLOW_REQUIREMENT_LOWERING)
-        checkpointLoweringMutant(current.metadata, 2, 1)
-      else checkpointMetadata(current.metadata, 2, 1),
+        checkpointLoweringMutant(current.metadata, supportedRelease, 1)
+      else checkpointMetadata(current.metadata, supportedRelease, 1),
   }
 
   action init: bool = all {
@@ -2546,13 +2552,13 @@ module durableEngineMetadata {
       expectedResult: NoResult,
       metadata:
         if (START_WITH_NEWER_REQUIREMENTS) {
-          producerVersion: 3,
+          producerVersion: futureRelease,
           backupFormat: 2,
-          minReader: 3,
+          minReader: futureRelease,
         } else {
-          producerVersion: 1,
+          producerVersion: unsupportedRelease,
           backupFormat: 0,
-          minReader: 1,
+          minReader: unsupportedRelease,
         },
     },
   }
@@ -2584,12 +2590,12 @@ module durableEngineMetadata {
 
   val transitionMetadataIsComplete: bool = and {
     if (state.phase == BeforeCheckpoint)
-      state.metadata.producerVersion == 2
+      state.metadata.producerVersion == supportedRelease
     else true,
     if (state.phase == Complete) and {
-      state.metadata.producerVersion == 2,
+      state.metadata.producerVersion == supportedRelease,
       state.metadata.backupFormat >= 1,
-      state.metadata.minReader >= 2,
+      state.metadata.minReader >= supportedRelease,
     } else true,
   }
 
@@ -2646,71 +2652,86 @@ module durableEngineMetadataTest {
   ).* from "./durableEngineMetadata"
 
   pure val older: EngineMetadata = {
-    producerVersion: 1,
+    producerVersion: unsupportedRelease,
     backupFormat: 0,
-    minReader: 1,
+    minReader: unsupportedRelease,
   }
 
   run acquisitionUpdatesOnlyProducerTest =
-    acquireMetadata(older, 2) == {
-      producerVersion: 2,
+    acquireMetadata(older, supportedRelease) == {
+      producerVersion: supportedRelease,
       backupFormat: 0,
       minReader: 1,
     }
 
   run checkpointAdvancesCompatibilityTest =
-    checkpointMetadata(older, 2, 1) == {
-      producerVersion: 2,
+    checkpointMetadata(older, supportedRelease, 1) == {
+      producerVersion: supportedRelease,
       backupFormat: 1,
-      minReader: 2,
+      minReader: supportedRelease,
     }
 
   run checkpointNeverLowersRequirementsTest =
     checkpointMetadata({
-      producerVersion: 3,
+      producerVersion: futureRelease,
       backupFormat: 2,
-      minReader: 3,
-    }, 2, 1) == {
-      producerVersion: 2,
+      minReader: futureRelease,
+    }, supportedRelease, 1) == {
+      producerVersion: supportedRelease,
       backupFormat: 2,
-      minReader: 3,
+      minReader: futureRelease,
     }
 
   run producerVersionIsNotEqualityGateTest =
-    readerCompatible(2, 1, {
-      producerVersion: 3,
+    readerCompatible(supportedRelease, 1, {
+      producerVersion: futureRelease,
       backupFormat: 1,
-      minReader: 1,
+      minReader: unsupportedRelease,
+    })
+
+  run oldNativeFloorIsRejectedTest =
+    not(readerCompatible(unsupportedRelease, 1, {
+      producerVersion: supportedRelease,
+      backupFormat: 1,
+      minReader: supportedRelease,
+    }))
+
+  run supportedNativeFloorIsAcceptedTest =
+    readerCompatible(supportedRelease, 1, {
+      producerVersion: supportedRelease,
+      backupFormat: 1,
+      minReader: supportedRelease,
     })
 
   run incompatibleBackupFormatIsRejectedTest =
-    not(readerCompatible(2, 1, {
-      producerVersion: 3,
+    not(readerCompatible(supportedRelease, 1, {
+      producerVersion: futureRelease,
       backupFormat: 2,
-      minReader: 1,
+      minReader: unsupportedRelease,
     }))
 
   run incompatibleMinimumReaderIsRejectedTest =
-    not(readerCompatible(2, 1, {
-      producerVersion: 3,
+    not(readerCompatible(supportedRelease, 1, {
+      producerVersion: futureRelease,
       backupFormat: 1,
-      minReader: 3,
+      minReader: futureRelease,
     }))
 
   run acquisitionOmissionMutantWitnessTest =
-    acquisitionOmissionMutant(older, 2) != acquireMetadata(older, 2)
+    acquisitionOmissionMutant(older, supportedRelease)
+      != acquireMetadata(older, supportedRelease)
 
   run checkpointOmissionMutantWitnessTest =
-    checkpointOmissionMutant(older, 2, 1)
-      != checkpointMetadata(older, 2, 1)
+    checkpointOmissionMutant(older, supportedRelease, 1)
+      != checkpointMetadata(older, supportedRelease, 1)
 
   run checkpointLoweringMutantWitnessTest = {
     val current = {
-      producerVersion: 3,
+      producerVersion: futureRelease,
       backupFormat: 2,
-      minReader: 3,
+      minReader: futureRelease,
     }
-    val lowered = checkpointLoweringMutant(current, 2, 1)
+    val lowered = checkpointLoweringMutant(current, supportedRelease, 1)
     and {
       lowered.backupFormat < current.backupFormat,
       lowered.minReader < current.minReader,
@@ -2725,7 +2746,7 @@ module durableEngineMetadataTest {
         state.phase == Complete,
         state.transitionKind == CheckpointTransition,
         state.expectedResult == AppliedResult,
-        state.metadata == checkpointMetadata(older, 2, 1),
+        state.metadata == checkpointMetadata(older, supportedRelease, 1),
         engineMetadataIsSound,
       })
 }

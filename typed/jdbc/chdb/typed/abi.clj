@@ -41,11 +41,11 @@
                                  [':query-class ':uint32]]}
           :complete? true))
 (t/defalias DriverContract
-  (t/HMap :mandatory {:minimum-native-version (t/Val "26.7.0")}
+  (t/HMap :mandatory {:minimum-native-version (t/Val "26.7.3")}
           :complete? true))
 (t/defalias DurableContract
   (t/HMap :mandatory {:version (t/Val 1)
-                       :minimum-native-version (t/Val "26.7.2")}
+                       :minimum-native-version (t/Val "26.7.3")}
           :complete? true))
 (t/defalias ContractSpec (t/U DriverContract DurableContract))
 (t/defalias QueryClassEnum
@@ -82,7 +82,7 @@
   (t/HMap :mandatory {:status ':supported
                        :contract ':durable-v1
                        :native-version t/Str
-                       :minimum-native-version (t/Val "26.7.2")
+                       :minimum-native-version (t/Val "26.7.3")
                        :symbols (t/Map FunctionId SymbolStatus)
                        :provenance SourceProvenance}
           :complete? true))
@@ -91,12 +91,23 @@
                        :type ':jdbc.chdb.native/unsupported-core
                        :contract ':durable-v1
                        :native-version t/Str
-                       :minimum-native-version (t/Val "26.7.2")
+                       :minimum-native-version (t/Val "26.7.3")
                        :symbols (t/Map FunctionId SymbolStatus)
                        :provenance SourceProvenance
                        :missing (t/Vec FunctionId)}
           :complete? true))
-(t/defalias DurableCapability (t/U SupportedCapability UnsupportedCapability))
+(t/defalias UnsupportedVersionCapability
+  (t/HMap :mandatory {:status ':unsupported
+                       :type ':jdbc.chdb.native/unsupported-version
+                       :contract ':durable-v1
+                       :native-version t/Str
+                       :minimum-native-version (t/Val "26.7.3")
+                       :symbols (t/Map FunctionId SymbolStatus)
+                       :provenance SourceProvenance}
+          :complete? true))
+(t/defalias DurableCapability
+  (t/U SupportedCapability UnsupportedCapability
+       UnsupportedVersionCapability))
 
 ;; These signatures are an explicit trusted seam: the unchanged production
 ;; bodies are verified by the stock Jolt ABI/JDBC gates, while this pilot checks

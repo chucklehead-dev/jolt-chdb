@@ -21,8 +21,8 @@
 (def ^:private initial-options
   {:owner "old-writer" :instance "old-instance"
    :expires-at 100M :now 0M :clock-skew 0M
-   :database "tenant`one" :engine-version "26.7.2-rc.2"
-   :backup-format 1 :min-reader "26.7.2-rc.2"})
+   :database "tenant`one" :engine-version "26.7.3"
+   :backup-format 1 :min-reader "26.7.3"})
 
 (defn- check [label expected actual]
   (if (= expected actual)
@@ -438,9 +438,9 @@
                                   (.getBytes "abc" "UTF-8"))
     (control/commit-reference!
      store token {:kind :checkpoint :reference reference
-                  :engine-metadata {:version "26.7.2-rc.2"
+                  :engine-metadata {:version "26.7.3"
                                     :backup-format 1
-                                    :min-reader "26.7.2-rc.2"}
+                                    :min-reader "26.7.3"}
                   :verify-reference! control/verify-byte-reference!})
     (control/release! store token)
     store))
@@ -615,6 +615,16 @@
   (check "release precedence compares numeric identifiers numerically"
          true (neg? (durable/compare-release-versions
                      "26.7.2-rc.2" "26.7.2-rc.10")))
+  (let [current-document
+        {"engine" {"backup_format" 1 "min_reader" "26.7.3"}}]
+    (check "supported 26.7.3 reader accepts the current Durable floor"
+           current-document
+           (durable/check-engine-compatibility! current-document "26.7.3"))
+    (check "26.7.2 reader rejects the current Durable floor"
+           ::durable/engine-incompatible
+           (error-type
+            #(durable/check-engine-compatibility!
+              current-document "26.7.2"))))
   (check "future backup formats fail closed"
          ::durable/engine-incompatible
          (error-type
@@ -679,13 +689,13 @@
                  :operations operations})]
     (try
       (check "existing-head acquisition records the running producer version"
-             ["26.7.2-rc.2" 0 "26.6.0"]
+             ["26.7.3" 0 "26.6.0"]
              (let [engine (get (:head (control/read-head! store)) "engine")]
                [(get engine "version")
                 (get engine "backup_format")
                 (get engine "min_reader")]))
       (check "checkpoint advances producer compatibility without lowering it"
-             ["26.7.2-rc.2" 1 "26.7.2-rc.2"]
+             ["26.7.3" 1 "26.7.3"]
              (do
                (writer/checkpoint! opened)
                (let [engine (get (:head (control/read-head! store)) "engine")]

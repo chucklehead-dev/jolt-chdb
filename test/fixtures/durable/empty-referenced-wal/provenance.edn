@@ -5,7 +5,7 @@
  :empty-sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
  :fixture
  {:head {:path "object/head.json"
-         :sha256 "9bdeaca83d49c41dba06be7f0a8fde6a21fea563cc3d2aad95030061568e6cc6"}
+         :sha256 "2099fa9883b5b9a9df889f301e418b0ca1c07f59d27c9036faf2b46c067a8994"}
   :wal {:path "object/wal/1-1-00000000.jsonl"
         :sha256 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}
  :sources

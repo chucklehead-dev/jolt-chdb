@@ -46,8 +46,8 @@
          store
          {:owner "owned-thread-writer" :instance "instance-1"
           :expires-at (+ now 1000) :now now :clock-skew 0
-          :database "default" :engine-version "26.7.2-rc.2"
-          :backup-format 1 :min-reader "26.7.2-rc.2"})
+          :database "default" :engine-version "26.7.3"
+          :backup-format 1 :min-reader "26.7.3"})
         worker-in-fiber? (atom nil)
         heartbeat-in-fiber? (atom nil)
         renewed (promise)

@@ -22,10 +22,13 @@
     nil
     (catch Throwable error (ex-data error))))
 
+(defn- rejected [f]
+  (try (f) nil (catch Throwable error error)))
+
 (def expected-source
   {:repository "https://github.com/chdb-io/chdb-core.git"
-   :release "v26.7.2-rc.2"
-   :commit "30488a59b2700188ee36ecbced7713081a909f56"
+   :release "v26.7.3"
+   :commit "7d84d719da07184f6a49405a11b112f16925af72"
    :header "programs/local/chdb.h"
    :c-oracle "examples/chdbDurableAbiTest.c"
    :python-oracle "tests/test_durable_backup_restore_classify.py"})
@@ -118,7 +121,6 @@
     ".github/workflows/durable-native.yml"
     ".github/workflows/durable-s3.yml"
     ".github/workflows/durable-python-fixture.yml"
-    ".github/workflows/durable-linux-compatibility.yml"
     ".github/workflows/durable-aws.yml"
     ".github/workflows/durable-head-quint.yml"})
 
@@ -329,8 +331,8 @@
            expected-result-statistics-functions
            (select-keys (abi/contract-functions :driver)
                         (keys expected-result-statistics-functions)))
-    (check "Durable contract is explicitly V1 at the first native release"
-           {:version 1 :minimum-native-version "26.7.2"}
+    (check "Durable contract is explicitly V1 at the supported native release"
+           {:version 1 :minimum-native-version "26.7.3"}
            (abi/contract-spec :durable-v1))
     (check "query class enum preserves fail-closed ordering"
            {:read-only 0 :mutating 1 :mutating-global 2 :control 3 :unknown 4}
@@ -467,7 +469,7 @@
       (check label ::abi/invalid-descriptor (:type (rejected-data mutant))))))
 
 (defn- run-stock-library-checks []
-  (println "stock libchdb capability negotiation")
+  (println "stable libchdb capability negotiation")
   (check "raw Durable symbols are not callable through the public namespace"
          {}
          (select-keys
@@ -482,15 +484,43 @@
            native/version (:native-version driver))
     (check "every stable driver symbol was actually resolved"
            true (every? :available? (vals (:symbols driver))))
-    (check "production libchdb lacks Durable V1 without breaking load"
-           :unsupported (:status durable))
-    (check "old-library result has the typed unsupported-core identity"
-           ::native/unsupported-core (:type durable))
-    (check "old-library negative names exactly the three new symbols"
-           [:backup-database-n :classify-query-n :restore-database-n]
-           (:missing durable))
-    (check "old-library report retains its actual native version"
+    (check "production libchdb provides Durable V1"
+           :supported (:status durable))
+    (check "supported Durable result has no failure type"
+           nil (:type durable))
+    (check "supported Durable result has no missing symbols"
+           nil (:missing durable))
+    (check "Durable result retains its actual native version"
            native/version (:native-version durable)))
+
+  (with-redefs [native/chdb-version (fn [] "26.7.2")
+                ffi/find-symbol (fn [_] 1)]
+    (let [driver (native/contract-capability :driver)
+          durable (native/durable-capability)]
+      (check "old driver floor is rejected despite complete symbols"
+             [:unsupported ::native/unsupported-version "26.7.3"]
+             [(:status driver) (:type driver) (:minimum-native-version driver)])
+      (check "old Durable floor is rejected despite complete symbols"
+             [:unsupported ::native/unsupported-version "26.7.3"]
+             [(:status durable) (:type durable)
+              (:minimum-native-version durable)])
+      (let [driver-support-var (ns-resolve 'jdbc.chdb.native 'driver-support)
+            calls (atom [])
+            before (native/active-storage)
+            error
+            (with-redefs-fn
+              {driver-support-var (delay driver)
+               #'native/chdb-set-signal-handlers-enabled
+               (fn [_] (swap! calls conj :signal-configured))
+               #'native/chdb-connect
+               (fn [& _] (swap! calls conj :connected) ffi/null)}
+              #(rejected (fn [] (native/open! ":memory:"))))]
+        (check "old native floor fails with its typed version category"
+               ::native/unsupported-version (:type (ex-data error)))
+        (check "old native floor remains a JDBC connection error"
+               true (:jdbc/sql-error (ex-data error)))
+        (check "old native floor fails before signal, connection, or path effects"
+               [[] before] [@calls (native/active-storage)]))))
 
   (with-redefs [ffi/find-symbol (fn [_] 1)]
     (let [capability (native/durable-capability)]
@@ -512,7 +542,7 @@
   (println "Jolt descriptor-driven owned-thread ABI smoke")
   (let [result (run-jolt-native-smoke)]
     (check "positive control crosses real chdb_version"
-           "26.7.0" (:native-version result))
+           "26.7.3" (:native-version result))
     (check "parameterized SELECT 42 is copied exactly before destruction"
            [52 50 10] (:bytes result))
     (check "query result is destroyed exactly once" 1 (:destroyed result))

@@ -177,9 +177,6 @@
            :durable-python-writer-fixture-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-python-writer-fixture-test"]}
-           :durable-linux-compatibility-test
-           {:extra-paths ["test"]
-            :main-opts ["-m" "jdbc.chdb-durable-linux-compatibility-test"]}
            :durable-throughput-metrics-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-metrics-test"]}
@@ -232,4 +229,5 @@
          durable-throughput-metrics-test "jolt -M:durable-throughput-metrics-test"
          typed-check "clojure -M:typed-check"
          test "jolt -M:test"
-         test-threadstatus "bash test/encoded-threadstatus.sh"}}
+         test-threadstatus "bash test/encoded-threadstatus.sh"
+         test-stream-threadstatus "bash test/stream-insert-threadstatus.sh"}}

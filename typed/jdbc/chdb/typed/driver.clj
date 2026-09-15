@@ -31,8 +31,8 @@
   {:status :unsupported
    :type :jdbc.chdb.native/unsupported-core
    :contract :durable-v1
-   :native-version "26.7.0"
-   :minimum-native-version "26.7.2"
+   :native-version "26.7.3"
+   :minimum-native-version "26.7.3"
    :symbols
    {:version {:symbol "chdb_version" :available? true}
     :connect {:symbol "chdb_connect" :available? true}

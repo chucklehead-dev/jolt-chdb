@@ -44,7 +44,7 @@
 
 (defn- recovery-operations [scratch-parent expected restored]
   {:durable-capability (fn [] {:status :supported
-                               :native-version "26.7.2-rc.2"})
+                               :native-version "26.7.3"})
    :create-scratch! (fn [_]
                       (Files/createTempDirectory
                        (path scratch-parent) "recovery-"
@@ -107,9 +107,9 @@
    :now 100M
    :clock-skew 0M
    :database "qualification"
-   :engine-version "26.7.2-rc.2"
+   :engine-version "26.7.3"
    :backup-format 1
-   :min-reader "26.7.2-rc.2"})
+   :min-reader "26.7.3"})
 
 (defn- run-stream! [endpoint source scratch-parent]
   (let [source (path source)
@@ -125,9 +125,9 @@
                 store token
                 {:kind :checkpoint
                  :reference reference
-                 :engine-metadata {:version "26.7.2-rc.2"
+                 :engine-metadata {:version "26.7.3"
                                    :backup-format 1
-                                   :min-reader "26.7.2-rc.2"}
+                                   :min-reader "26.7.3"}
                  :verify-reference! control/verify-file-reference!})]
     (when-not (= (get zero-file-digests (:size expected)) (:sha256 expected))
       (fail! "deterministic checkpoint digest differs from the known oracle"))

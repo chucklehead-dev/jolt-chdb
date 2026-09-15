@@ -3,8 +3,8 @@ set -euo pipefail
 
 qualification_root=${1:?usage: scripts/qualify-durable-native.sh DIRECTORY}
 jolt_bin=${JOLT_BIN:-jolt}
-release=26.7.2-rc.2
-commit=30488a59b2700188ee36ecbced7713081a909f56
+release=26.7.3
+commit=7d84d719da07184f6a49405a11b112f16925af72
 oracle_digest=56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99
 
 if [[ "$jolt_bin" == */* ]]; then
@@ -22,22 +22,22 @@ fi
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     asset=linux-x86_64-libchdb.tar.gz
-    digest=8b6f8b95278cc223f8cae0303006aecdaf72cf975fe29c1cb14277f2165e2b85
+    digest=bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031
     library=libchdb.so
     ;;
   Linux:aarch64|Linux:arm64)
     asset=linux-aarch64-libchdb.tar.gz
-    digest=50c4bde57197c5947288ddab13adf9cd56910ae0efbe92317f54825db5034064
+    digest=d153adad1ff39b2e3caf0417f09d8bd9edd41939c7c67a3c4978a61e73fb9227
     library=libchdb.so
     ;;
   Darwin:arm64)
     asset=macos-arm64-libchdb.tar.gz
-    digest=8a22ea8a18f30744d9ba1d64b915b64b4cb16827761f02ac2508df808001a56e
+    digest=5640e50dccf711bf3dd5551333d08e43f433edf7bd94b2289f36c2539e627762
     library=libchdb.dylib
     ;;
   Darwin:x86_64)
     asset=macos-x86_64-libchdb.tar.gz
-    digest=33ba79e7df73cb0e1755f3267c3d6ce2f8c0d6472412eec52f785150e6fa3b31
+    digest=af5ded3ed3e84c31af1cd198dcf459f11d2b6aad4f6ddeccc04b8a519b0300fc
     library=libchdb.dylib
     ;;
   *)

@@ -1,14 +1,14 @@
 {:schema 1
  :source
  {:repository "https://github.com/chdb-io/chdb-core.git"
-  :release "v26.7.2-rc.2"
-  :commit "30488a59b2700188ee36ecbced7713081a909f56"
+  :release "v26.7.3"
+  :commit "7d84d719da07184f6a49405a11b112f16925af72"
   :header "programs/local/chdb.h"
   :c-oracle "examples/chdbDurableAbiTest.c"
   :python-oracle "tests/test_durable_backup_restore_classify.py"}
  :contracts
- {:driver {:minimum-native-version "26.7.0"}
-  :durable-v1 {:version 1 :minimum-native-version "26.7.2"}}
+ {:driver {:minimum-native-version "26.7.3"}
+  :durable-v1 {:version 1 :minimum-native-version "26.7.3"}}
  :enums
  {:query-class {:read-only 0
                 :mutating 1

@@ -19,9 +19,9 @@
    :now 0M
    :clock-skew 0M
    :database "default"
-   :engine-version "26.7.2-rc.2"
+   :engine-version "26.7.3"
    :backup-format 1
-   :min-reader "26.7.2-rc.2"})
+   :min-reader "26.7.3"})
 
 (defn- fail! [message data]
   (throw (ex-info message

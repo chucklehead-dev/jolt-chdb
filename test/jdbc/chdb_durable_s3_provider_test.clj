@@ -85,8 +85,8 @@
       (let [acquire-options
             {:owner "writer-a" :instance "instance-a"
              :now 100M :expires-at 300M
-             :database "default" :engine-version "26.7.2-rc.2"
-             :backup-format 1 :min-reader "26.7.2-rc.2"}
+             :database "default" :engine-version "26.7.3"
+             :backup-format 1 :min-reader "26.7.3"}
             acquired (control/acquire! store acquire-options)
             token (:token acquired)]
         (check "real S3 head create acquires generation one"

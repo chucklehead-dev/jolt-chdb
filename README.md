@@ -51,7 +51,7 @@ reported as unsupported before executing SQL.
 
 ## Native installation
 
-The driver pins chDB 26.7.0 release archives and their SHA-256 checksums.
+The driver pins stable chDB 26.7.3 release archives and their SHA-256 checksums.
 Requiring the namespace never downloads code. Install explicitly:
 
 ```sh
@@ -61,7 +61,11 @@ jolt -M:setup-native
 Set `JOLT_CHDB_LIB` to use an already installed `libchdb`, or
 `JOLT_CHDB_CACHE_DIR` to choose the installer destination. Only one chDB storage
 path may be active in a process at once, although multiple connections to that
-same path are supported.
+same path are supported. Until the safe process-lifecycle policy tracked in
+[#103](https://github.com/chucklehead-dev/jolt-chdb/issues/103) lands, keep at
+least one connection open for the application's entire chDB lifetime. Do not
+close the final connection and later reopen chDB or select a different path in
+the same process; use a fresh process for independent lifetimes.
 
 ## Durable storage (experimental)
 
@@ -88,20 +92,18 @@ checks the declared size and digest before decoding. It then validates the
 complete JSONL segment in one bounded streaming pass before a second bounded
 pass revalidates and replays each statement. This keeps corrupt-tail recovery
 atomic without retaining the whole segment or its decoded statements in memory.
-Durable is still experimental: the stable 26.7.0 library installed by
-`-M:setup-native` does not expose the required ABI, hosted native qualification
-covers only Linux x86-64, and a broader crash/corruption and platform matrix
-remain unfinished.
+Durable is still experimental: stable 26.7.3 is the minimum and packaged native
+release, but hosted positive native qualification currently covers Linux
+x86-64 and a broader crash/corruption and platform matrix remains unfinished.
 
-Choose Durable now when you can pin and qualify chDB 26.7.2-rc.2 yourself and
-want to evaluate explicit persistence boundaries on one POSIX host or an
-S3-compatible test deployment. Do not choose it yet when you need a stable
-native dependency, broad platform/provider qualification, streaming inserts,
+Choose Durable now when you want to evaluate explicit persistence boundaries
+on one qualified POSIX host or an S3-compatible test deployment. Do not choose
+it yet when you need broad platform/provider qualification, streaming inserts,
 or a production-ready remote durability claim.
 
-To try the local backend, first point `JOLT_CHDB_LIB` at a qualified
-26.7.2-rc.2 library. The qualification script downloads the checksum-pinned
-asset and runs the upstream C oracle plus the Jolt native suite:
+The ordinary installer and the qualification script both select stable 26.7.3.
+The qualification script downloads the checksum-pinned asset and runs the
+upstream C oracle plus the Jolt native suite:
 
 ```sh
 bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable
@@ -224,12 +226,13 @@ query, destruction, and close diagnostics. Tests prove that ordinary JDBC
 remains usable after successful row/byte overflow recovery. The recovery result
 and original result are each destroyed once on the ordinary error path.
 
-Do not use `stream-insert!` with the packaged 26.7.0 native library in a long-running
-process: even a contract-compliant single-threaded C caller causes that build
-to retain invalid ClickHouse `ThreadStatus` state and report a fatal diagnostic
-when the connection closes. Use bounded `execute!` inserts instead; the OTel
-exporter does so. Re-enable streaming only after qualifying a fixed native
-release with the pseudo-terminal diagnostic probe.
+`stream-insert!` remains unsupported for long-running use. The packaged 26.7.3
+Linux x86-64 library passes the bounded pseudo-terminal diagnostic below, but
+that one platform and short repeated lifecycle do not yet qualify sustained or
+cross-platform use. The earlier 26.7.0 library retained invalid ClickHouse
+`ThreadStatus` state and reported a fatal diagnostic when its connection
+closed, even for a contract-compliant single-threaded C caller. Use bounded
+`execute!` inserts instead; the OTel exporter does so.
 
 ## Native query statistics
 
@@ -266,7 +269,7 @@ an outer monotonic wall-time bracket to estimate Jolt/JDBC/FFI overhead. They
 do not report process RSS or all native allocation; use OS/native profiling for
 that. Embedded chDB also exposes cumulative `system.events`, instantaneous
 `system.metrics`, and storage state in `system.parts`, but does not provide the
-server's persistent `system.query_log` in the pinned 26.7.0 build.
+server's persistent `system.query_log` in the pinned embedded build.
 
 ## Development
 
@@ -286,7 +289,7 @@ Install the pinned native library and run the full driver suite:
 ```sh
 jolt -M:setup-native
 jolt -M:abi-test
-# downloads/authenticates rc.2 and runs its C oracle plus the Jolt ABI suite
+# downloads/authenticates 26.7.3 and runs its C oracle plus the Jolt ABI suite
 bash scripts/qualify-durable-native.sh /tmp/jolt-chdb-durable-qualification
 jolt -M:durable-head-test
 jolt -M:durable-backend-test
@@ -310,6 +313,7 @@ bash test/durable-large-checkpoint.sh \
 jolt -M:durable-file-allocation <root> <output> <small-file> <large-file>
 jolt -M:test
 jolt test-threadstatus
+jolt test-stream-threadstatus
 ```
 
 The installer streams the large release archive through `curl`, verifies it
@@ -328,6 +332,11 @@ when the library is not installed at the default cache path. This diagnostic
 launcher currently targets util-linux `script -qefc`; other platforms still
 run the ordinary driver suite but need a platform-specific PTY wrapper before
 claiming equivalent diagnostic coverage.
+
+`jolt test-stream-threadstatus` applies the same pseudo-terminal diagnostic
+check to repeated complete `stream-insert!` lifecycles, with both string and
+byte-array chunks and exact query readback. It is a separate gate because the
+encoded-query lifecycle does not exercise chDB's streaming-insert API.
 
 ## License
 
