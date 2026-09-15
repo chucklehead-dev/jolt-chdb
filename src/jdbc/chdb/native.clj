@@ -160,6 +160,27 @@
          :bootstrap-options nil
          :anchor-owner nil}))
 
+(defn- close-anchor-at-process-exit! []
+  ;; Claim the retained owner before entering native code. Shutdown hooks may be
+  ;; reached from ordinary return, System/exit, or a handled termination signal;
+  ;; every path must observe the same exactly-once owner transition. Public
+  ;; owners remain independently closeable, but no new owner may be opened once
+  ;; process teardown has begun.
+  (locking storage-lock
+    (let [{:keys [phase anchor-owner]} @storage-state]
+      (when (and (= :anchored phase) anchor-owner)
+        (swap! storage-state assoc
+               :phase :exiting
+               :anchor-owner nil)
+        (chdb-close-conn anchor-owner)
+        (swap! storage-state assoc :phase :exit-closed))))
+  nil)
+
+(defn- register-anchor-shutdown-hook! []
+  (.addShutdownHook
+   (Runtime/getRuntime)
+   (Thread. close-anchor-at-process-exit!)))
+
 (defn- disable-signal-handlers! []
   (when-not @signals-disabled?
     (locking signals-disabled?
@@ -192,6 +213,12 @@
       (= phase :terminal)
       (throw (ex-info "chDB native lifecycle is terminal after a failed bootstrap"
                       {:type ::terminal-native-lifecycle
+                       :requested-path requested-path
+                       :jdbc/sql-error true}))
+
+      (contains? #{:exiting :exit-closed} phase)
+      (throw (ex-info "chDB native lifecycle is closing for process exit"
+                      {:type ::process-exiting
                        :requested-path requested-path
                        :jdbc/sql-error true}))
 
@@ -269,15 +296,30 @@
       (try
         (let [{:keys [owner]}
               (connect-owned! path backups-allowed-path bootstrap-attempt)]
-          ;; Publish only a fully validated native owner. Its connection is
-          ;; never exposed or used for public queries; retaining the owner
-          ;; keeps the embedded engine alive until process exit.
-          (reset! storage-state
-                  {:phase :anchored
-                   :path path
-                   :references 0
-                   :bootstrap-options bootstrap-options
-                   :anchor-owner owner}))
+          (try
+            ;; Register while the caller holds storage-lock and before
+            ;; publishing. A concurrently starting shutdown hook therefore
+            ;; cannot observe a cold state after registration or close the
+            ;; anchor before the first public owner has been established.
+            (register-anchor-shutdown-hook!)
+            ;; Publish only a fully validated native owner. Its connection is
+            ;; never exposed or used for public queries; retaining the owner
+            ;; keeps the embedded engine alive across logical last close. The
+            ;; registered hook releases it explicitly before host teardown.
+            (reset! storage-state
+                    {:phase :anchored
+                     :path path
+                     :references 0
+                     :bootstrap-options bootstrap-options
+                     :anchor-owner owner})
+            (catch Throwable error
+              ;; A registered hook is part of publishing native ownership. If
+              ;; registration fails, retire the unpublishable owner once and
+              ;; let the outer bootstrap boundary make this process terminal.
+              (try
+                (chdb-close-conn owner)
+                (catch Throwable _ nil))
+              (throw error))))
         (catch Throwable error
           ;; Before-native failures cannot have initialized chDB.  A documented
           ;; null-owner return owns nothing and is likewise safe to retry.  Any
@@ -314,8 +356,10 @@
       ;; Keep the process-wide path claimed if the native destructor itself
       ;; fails; ownership would then be uncertain and opening a different path
       ;; would be unsound.
-      (chdb-close-conn (:owner handle))
       (locking storage-lock
+        ;; Serialize public-owner destruction with the process anchor hook so
+        ;; the native reference-count boundary has one total close order.
+        (chdb-close-conn (:owner handle))
         (release-reference! (:path handle)))))
   nil)
 

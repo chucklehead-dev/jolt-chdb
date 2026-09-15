@@ -228,6 +228,12 @@ quint test "$native_lifecycle_tests" \
   --backend typescript \
   --verbosity 1
 
+quint test "$native_lifecycle_tests" \
+  --main nativeProcessLifecycleSkipAnchorExitCloseMutantTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
 quint test "$writer_tests" \
   --main durableWriterBoundaryMutantTest \
   --match '.*Test' \
@@ -424,7 +430,7 @@ quint verify "$lifecycle_model" \
 
 quint verify "$native_lifecycle_model" \
   --main nativeProcessLifecycleCorrected \
-  --invariants anchorSurvivesLogicalLastClose engineInitializesAtMostOnce processPathIsImmutable bootstrapOptionsAreImmutable uncertainBootstrapFailureIsTerminal terminalLifecycleIsClosed terminalRetryIsRejected \
+  --invariants anchorSurvivesLogicalLastClose engineInitializesAtMostOnce processPathIsImmutable bootstrapOptionsAreImmutable uncertainBootstrapFailureIsTerminal terminalLifecycleIsClosed terminalRetryIsRejected processExitReleasesAnchorExactlyOnce \
   --max-steps 6 \
   --backend apalache \
   --apalache-version 0.56.1 \
@@ -475,6 +481,10 @@ expect_native_lifecycle_violation \
   nativeProcessLifecycleDifferentOptionsMutant \
   bootstrapOptionsAreImmutable \
   native-process-lifecycle-different-options-mutant
+expect_native_lifecycle_violation \
+  nativeProcessLifecycleSkipAnchorExitCloseMutant \
+  processExitReleasesAnchorExactlyOnce \
+  native-process-lifecycle-skip-anchor-exit-close-mutant
 
 quint verify "$writer_model" \
   --main durableWriterBoundaryCorrected \

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Close the retained native anchor exactly once during orderly process exit,
+  after logical application close and before Jolt tears down the host runtime.
+  This prevents the post-PASS invalid-memory abort exposed by typed ClickHouse
+  export/readback while preserving same-path anchor reuse and Durable scratch
+  ownership. A reduced child-process regression and an executable host-exit
+  model obligation with a causal skip-close mutant cover the boundary (#111).
+
 - Retain a private native anchor from first successful chDB bootstrap until
   process exit, making the first physical path immutable without crossing the
   upstream last-close/reinitialize boundary. Public same-path handles can close

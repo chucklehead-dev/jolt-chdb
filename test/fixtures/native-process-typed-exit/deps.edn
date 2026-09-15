@@ -1,0 +1,8 @@
+{:paths ["src"]
+ :jolt/min-version "0.8.6"
+ :deps {io.github.chucklehead-dev/jolt-chdb
+        {:local/root "../../.."}
+        io.github.chucklehead-dev/jolt-otel-clickhouse
+        {:git/url "https://github.com/chucklehead-dev/jolt-otel-clickhouse.git"
+         :git/sha "14a2998a27f64a9bff329811461be9157a00c849"}}
+ :aliases {:run {:main-opts ["-m" "native-process-typed-exit.fixture"]}}}

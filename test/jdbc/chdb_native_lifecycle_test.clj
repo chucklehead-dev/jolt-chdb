@@ -36,6 +36,7 @@
         active (atom 0)
         boots (atom 0)
         signals (atom [])
+        shutdown-hooks (atom [])
         events (atom [])
         connect
         (fn [& _]
@@ -65,11 +66,17 @@
      :set-signals (fn [enabled]
                     (swap! events conj [:signals enabled])
                     (swap! signals conj enabled))
+     :register-shutdown-hook
+     (fn []
+       (swap! events conj :register-shutdown-hook)
+       (swap! shutdown-hooks conj
+              (fn [] ((deref (private-var 'close-anchor-at-process-exit!))))))
      :connects connects
      :closes closes
      :active active
      :boots boots
      :signals signals
+     :shutdown-hooks shutdown-hooks
      :events events}))
 
 (defn- with-fake-native [runtime f]
@@ -79,6 +86,8 @@
      (private-var 'storage-state)
      (atom {:phase :cold :path nil :references 0
             :bootstrap-options nil :anchor-owner nil})
+     (private-var 'register-anchor-shutdown-hook!)
+     (:register-shutdown-hook runtime)
      #'native/chdb-set-signal-handlers-enabled (:set-signals runtime)
      #'native/chdb-connect (:connect runtime)
      #'native/chdb-close-conn (:close runtime)
@@ -280,9 +289,72 @@
           (check "host signal ownership is configured before native bootstrap"
                  [[:signals 0] :connect]
                  (vec (take 2 @(:events runtime))))
+          (check "anchor shutdown hook is registered once before public open"
+                 [1 [[:signals 0] :connect :register-shutdown-hook :connect]]
+                 [(count @(:shutdown-hooks runtime))
+                  (vec (take 4 @(:events runtime)))])
           (check "active storage never exposes the anchor owner pointer"
                  #{:phase :path :references :anchored?}
-                 (set (keys (native/active-storage))))))))
+                 (set (keys (native/active-storage))))
+
+          ((first @(:shutdown-hooks runtime)))
+          ((first @(:shutdown-hooks runtime)))
+          (check "process exit closes the hidden anchor exactly once"
+                 [0 3 {:phase :exit-closed :path ":memory:"
+                       :references 0 :anchored? false}]
+                 [@(:active runtime) (count @(:closes runtime))
+                  (native/active-storage)])
+          (let [before-connects @(:connects runtime)
+                error (rejected #(native/open! ":memory:"))]
+            (check "process-exit claim rejects every later native open"
+                   [::native/process-exiting before-connects]
+                   [(:type (ex-data error)) @(:connects runtime)]))))))
+
+  (let [runtime (fake-native [])]
+    (with-fake-native
+      runtime
+      (fn []
+        (let [handle (native/open! ":memory:")
+              hook (first @(:shutdown-hooks runtime))
+              anchor-close-attempts (atom 0)]
+          (native/close! handle)
+          (with-redefs-fn
+            {#'native/chdb-close-conn
+             (fn [_]
+               (swap! anchor-close-attempts inc)
+               (throw (ex-info "anchor close failed" {})))}
+            (fn []
+              (let [close-error (rejected hook)]
+                ;; A claimed native destructor is terminal even when it throws:
+                ;; retrying could double-free an owner that closed partially.
+                (hook)
+                (let [before-connects @(:connects runtime)
+                      open-error (rejected #(native/open! ":memory:"))]
+                  (check "failed exit close stays claimed and rejects reopen"
+                         ["anchor close failed" 1
+                          {:phase :exiting :path ":memory:"
+                           :references 0 :anchored? false}
+                          ::native/process-exiting before-connects]
+                         [(ex-message close-error) @anchor-close-attempts
+                          (native/active-storage)
+                          (:type (ex-data open-error))
+                          @(:connects runtime)])))))))))
+
+  (let [runtime (fake-native [])]
+    (with-fake-native
+      runtime
+      (fn []
+        (with-redefs-fn
+          {(private-var 'register-anchor-shutdown-hook!)
+           (fn [] (throw (ex-info "shutdown hook rejected" {})))}
+          (fn []
+            (let [error (rejected #(native/open! ":memory:"))]
+              (check "hook-registration failure retires owner and is terminal"
+                     ["shutdown hook rejected" 1 0
+                      {:phase :terminal :path nil
+                       :references 0 :anchored? false}]
+                     [(ex-message error) (count @(:closes runtime))
+                      @(:active runtime) (native/active-storage)])))))))
 
   (let [runtime (fake-native [])]
     (with-fake-native

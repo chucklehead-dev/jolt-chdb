@@ -84,6 +84,8 @@ cc -std=c11 -Wall -Wextra \
 
 JOLT_CHDB_LIB="$library_path" \
   "$repo_root/scripts/check-native-process-lifecycle.sh" "$jolt_bin"
+JOLT_CHDB_LIB="$library_path" \
+  "$repo_root/scripts/check-native-typed-process-exit.sh" "$jolt_bin"
 
 process_root=$(mktemp -d "$qualification_root/process-lifecycle.XXXXXX")
 trap 'rm -rf -- "$process_root"' EXIT HUP INT TERM

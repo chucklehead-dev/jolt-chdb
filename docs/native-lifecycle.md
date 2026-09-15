@@ -1,11 +1,17 @@
 # Native process lifecycle
 
 chDB embeds one process-global engine. `jolt-chdb` keeps that engine alive from
-the first successful open until process exit by retaining a private anchor
-connection. Closing an application connection closes that connection, but not
-the anchor. The first physical path is therefore immutable for the process.
+the first successful open across every logical last close by retaining a
+private anchor connection. Closing an application connection closes that
+connection, but not the anchor. At orderly process exit, a driver-owned
+shutdown hook claims and closes the anchor exactly once before host native
+teardown. The first physical path is therefore immutable for the process.
 Path identity is canonical: lexical `.`/`..` aliases and existing symlink
 prefixes resolve before the claim is compared.
+
+The C owner is a raw FFI pointer, not a host-managed object with a native
+finalizer. Retaining it in process state preserves ownership but does not
+release it; the explicit hook is therefore part of the ownership contract.
 
 This policy is deliberately stricter than the chDB C API and is not part of
 Durable V1. The pinned 26.7.3
@@ -48,8 +54,28 @@ stateDiagram-v2
   Cold --> Terminal: uncertain post-entry failure
   Anchored --> Anchored: open/close public same-path handles
   Anchored --> Anchored: reject different path before native connect
+  Anchored --> Exiting: process hook claims anchor
+  Exiting --> ExitClosed: process hook closes anchor once
+  ExitClosed --> ExitClosed: reject every new open
   Terminal --> Terminal: reject every open
 ```
+
+At exact Jolt revision
+[`2d39e854`](https://github.com/casselc/jolt/blob/2d39e854a90926d8f8e9bd5d3ddbb109d657afe1/host/chez/java/concurrency.ss#L2803-L2862),
+shutdown registration prepends each hook, the once-only runner reverses that
+snapshot, and one `for-each` invokes each hook body directly on the shutdown
+thread. Hooks therefore run sequentially in registration order, rather than
+with the JVM's concurrent/unspecified ordering. The ordinary-return path calls
+that runner after user threads finish and before host teardown in
+[`cli-core.ss`](https://github.com/casselc/jolt/blob/2d39e854a90926d8f8e9bd5d3ddbb109d657afe1/host/chez/cli-core.ss#L395-L421).
+
+The anchor hook serializes its native close with public-owner closes, while
+ordinary query and export operations retain their existing path and throughput.
+The process-exit regression uses a later observer hook to prove that typed
+ClickHouse export/readback, checkpoint, and explicit application close all
+complete before the anchor reaches `ExitClosed`. Forced termination and
+applications that leave public owners live remain outside this orderly-exit
+guarantee.
 
 Host signal handlers remain host-owned. Before any native bootstrap,
 `jolt-chdb` calls `chdb_set_signal_handlers_enabled(0)` exactly once. The Linux
@@ -83,3 +109,5 @@ The executable correspondence lives in the
 and [bootstrap-option](../formal/quint/traces/native-process-options.itf.json)
 ADR-015 ITF traces,
 the focused fake-native replay, and the two-process native probe.
+The typed child-process exit fixture additionally exercises the Linux failure
+boundary from issue #111 without making the exporter a production dependency.
