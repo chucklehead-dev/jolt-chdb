@@ -5,13 +5,13 @@ fixture_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 workspace_root=$(CDPATH= cd -- "$fixture_root/../../.." && pwd)
 jolt_wrapper=${JOLT_WRAPPER:-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1}
 jolt_bin=${JOLT_BIN:-jolt}
-provider_sha=802ba50948a231594fa7a94193d8c30b99032c7e
+provider_sha=c700960f3dc9342cbb3d6b9883f8ab0559fc83b9
 work=$(mktemp -d "${TMPDIR:-/tmp}/jolt-chdb-provider-convergence.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 # Dependency resolution and compilation caches are run-scoped. In particular,
 # a cpcache created while deps.edn selected cdc6931 must not answer a later
-# request for 802ba509.
+# request for c700960f.
 mkdir -p "$work/jolt-cache" "$work/jolt-gitlibs"
 jolt_cmd() {
   env JOLT_CACHE_DIR="$work/jolt-cache" JOLT_GITLIBS_DIR="$work/jolt-gitlibs" \
@@ -20,7 +20,7 @@ jolt_cmd() {
 
 (cd "$fixture_root/green" && jolt_cmd -Stree > "$work/green.stree")
 (cd "$fixture_root/green" && jolt_cmd -Spath > "$work/green.spath")
-grep -q 'jolt-lang/db 802ba50 :newer-version' "$work/green.stree" || {
+grep -q 'jolt-lang/db c700960 :newer-version' "$work/green.stree" || {
   echo "green graph did not select the reviewed integrated provider revision" >&2
   exit 1
 }
