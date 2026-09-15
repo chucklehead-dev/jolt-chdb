@@ -152,6 +152,9 @@ backend reads or lease mutation.
 
 See [Durable storage](docs/durable.md) for configuration, recovery and
 acknowledgement behavior, provider status, and the modeling/testing method.
+Applications that also use Samizdat or another SQLite/JDBC consumer should
+follow the [database-provider convergence contract](docs/provider-convergence.md)
+rather than adding exclusions or dependency overrides.
 The lower-level ABI, head, backend, control, writer, open/recovery, S3, and trace
 documents are linked from that guide.
 

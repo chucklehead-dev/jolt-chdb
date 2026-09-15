@@ -86,6 +86,10 @@ jobs:
         run: clojure -M:durable-head-depth-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
+      - name: Qualify Samizdat and Durable database-provider convergence
+        env:
+          JOLT_WRAPPER: /usr/bin/env
+        run: test/fixtures/provider-convergence/qualify.sh
       - name: Qualify the selected native ABI on Jolt, Babashka, and JVM
         run: bash scripts/qualify-ffi-runtimes.sh jolt
       - name: Install pinned Hegel native library
