@@ -50,9 +50,11 @@ check_reason() {
 
 for path in \
   formal/quint/durable-head-cas.md \
+  formal/quint/native-process-lifecycle.md \
   formal/quint/future-model.unknown \
   formal/durable-head-cas.smt2 \
   formal/quint/traces/corrected-mbt.itf.json \
+  formal/quint/traces/native-process-lifecycle.itf.json \
   scripts/check-durable-head-quint.sh \
   scripts/check-durable-head-itf-corpus.sh \
   scripts/generate-durable-head-itf.sh \

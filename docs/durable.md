@@ -45,11 +45,11 @@ Important limits:
   the Durable writer contract. Reads also support bound parameters.
 - A reader sees the immutable manifest snapshot it opened. It does not follow
   later writer commits.
-- Until the safe process-lifecycle policy tracked in
-  [#103](https://github.com/chucklehead-dev/jolt-chdb/issues/103) lands, an
-  application must keep one connection open for its complete chDB lifetime.
-  Do not close the final connection and reinitialize chDB in the same process;
-  use subprocesses for independent paths or fresh in-memory databases.
+- The driver retains one hidden native anchor and one immutable physical path
+  until process exit. Production Durable recovery creates a private scratch
+  path, so a later independent Durable open belongs in a fresh process and is
+  rejected before backend reads or lease mutation in the old process. See the
+  [native lifecycle guide](native-lifecycle.md).
 
 These limits make Durable useful for development, qualification, and controlled
 single-host trials. They also mean it should not yet be presented as a broadly
@@ -340,10 +340,11 @@ both pending recovery obligations if that outcome cannot be proved.
 publication, and then conditionally replaces the checkpoint reference while
 clearing covered WALs. That same head CAS records the running producer version,
 the writer's archive format, and a minimum reader that never moves backward.
-A successful close drains queued work, flushes pending
-statements, releases the lease, closes chDB, removes scratch storage, and
-positively joins the owned operation OS thread before returning. Reader close
-has the same worker-join boundary after native close and scratch cleanup. Thus
+A successful close drains queued work, flushes pending statements, releases the
+lease, closes the public chDB handle, and positively joins the owned operation
+OS thread before returning. Production scratch remains owned by the hidden
+native anchor until process exit; test-owned operation seams still clean their
+scratch at logical close. Reader close has the same worker-join boundary. Thus
 a returned or rethrown public close proves that its operation thread is no
 longer live, not only that the worker published a terminal result.
 
@@ -484,6 +485,13 @@ does not change. It checks that heartbeat covers admitted-close drain and
 flush, that release follows a positive heartbeat termination handshake, and
 that renewal cannot follow release. Its stopped-at-close-admission mutant must
 expose the prior lease-expiry counterexample.
+
+[`formal/quint/native-process-lifecycle.md`](../formal/quint/native-process-lifecycle.md)
+separately models the process-global engine boundary. It verifies that the
+hidden anchor survives logical last close, the engine initializes at most
+once, and a different physical path remains rejected. Its two causal mutants
+drop the anchor or accept a path switch; a deterministic ITF trace is replayed
+against the fake-native ownership seam.
 
 ### Model-based traces and Hegel
 

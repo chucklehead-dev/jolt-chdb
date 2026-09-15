@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Retain a private native anchor from first successful chDB bootstrap until
+  process exit, making the first physical path immutable without crossing the
+  upstream last-close/reinitialize boundary. Public same-path handles can close
+  and reopen without another engine boot; different paths fail before native
+  connect. Default Durable recovery admits one private scratch lifetime per
+  process and rejects a later one before backend or lease effects, retaining
+  anchor-owned scratch until an external owner cleans it after process exit.
+  A literate Quint model, deterministic ITF implementation replay, causal
+  last-close/path-switch mutants, exact Linux host-signal address checks, and
+  two-process `:memory:` probe cover the policy. macOS signal/lifecycle
+  qualification remains explicit platform work rather than an inferred claim.
+
 - Make stable chDB core 26.7.3 the packaged driver and Durable native floor.
   The installer and qualification oracle pin all four official release-archive
   SHA-256 values plus upstream commit `7d84d719`; ABI and runtime capability
