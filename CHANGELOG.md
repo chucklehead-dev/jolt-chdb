@@ -55,6 +55,15 @@
   path, object key, SQL, payload, or exception data. The throughput harness
   aggregates these events with its existing bounded stage report.
 
+- Specialize Durable WAL raw-LF scanning with an explicit byte-array and
+  primitive-index source contract while preserving strict UTF-8 validation,
+  JSONL framing, error precedence, and verify-before-replay behavior. An
+  immutable 52,224-row A/B/B/A qualification measured a 51.13% lower LF-phase
+  mean and a 15.37% lower complete-recovery mean with identical inventory and
+  aggregates. These two-observation results are descriptive, not percentile or
+  general Durable-throughput claims; the emitted-code comparison is preserved
+  separately from the source-shape regression control.
+
 - Decode ordinary Durable WAL records through Jolt's native UTF-8 String
   constructor, falling back to the strict `CharsetDecoder` only when decoded
   text contains U+FFFD. The fallback distinguishes a legitimate encoded U+FFFD

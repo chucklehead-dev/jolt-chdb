@@ -3,6 +3,8 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [hegel.core :as h]
+            [hegel.generator :as g]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
@@ -56,6 +58,47 @@
 
 (defn- raw-bytes [values]
   (byte-array (map unchecked-byte values)))
+
+(defn- model-lf-offsets [values]
+  (into []
+        (keep-indexed (fn [index value]
+                        (when (= 10 (bit-and 255 value)) index)))
+        values))
+
+(defn- scanned-lf-offsets [next-lf! chunks]
+  (loop [remaining chunks base 0 result []]
+    (if-let [chunk-values (first remaining)]
+      (let [chunk (raw-bytes chunk-values)
+            length (alength chunk)
+            found (loop [start 0 offsets result]
+                    (let [index (next-lf! chunk start length)]
+                      (if (= index length)
+                        offsets
+                        (recur (inc index) (conj offsets (+ base index))))))]
+        (recur (next remaining) (+ base length) found))
+      result)))
+
+(defn- run-lf-framing-property! [next-lf!]
+  (println "Durable raw-LF framing Hegel property")
+  (let [result
+        (h/run-test!
+         {:name "chdb/durable-wal-raw-lf-chunkings"
+          :database "" :derandomize? true :verbosity :quiet :test-cases 80}
+         (fn [_]
+           (let [payload (vec (h/draw! (g/bytes {:max-size 256})))
+                 chunks (h/draw! (g/chunkings payload))
+                 expected (model-lf-offsets payload)
+                 actual (scanned-lf-offsets next-lf! chunks)]
+             (when-not (= expected actual)
+               (throw (ex-info "raw LF offsets changed across chunking"
+                               {:hegel/origin
+                                "chdb/durable-wal/raw-lf-chunkings"
+                                :expected expected :actual actual}))))))]
+    (println "  hegel raw-lf-chunkings seed" (:seed result)
+             "valid" (:valid-test-cases result))
+    (when-not (and (:passed? result) (not (:flaky? result)))
+      (swap! failures inc)
+      (println "  FAIL raw-lf-chunkings" (pr-str result)))))
 
 (def ^:private test-utf8-charset (Charset/forName "UTF-8"))
 
@@ -195,6 +238,54 @@
 (defn run-checks! []
   (reset! failures 0)
   (println "Durable bounded WAL validation and replay")
+
+  (let [next-lf-var (ns-resolve 'jdbc.chdb.durable 'next-lf-index)
+        next-lf! @next-lf-var
+        source (slurp "src/jdbc/chdb/durable.clj")
+        start (str/index-of source "(defn- next-lf-index")
+        end (str/index-of source "(defn- visit-wal!" start)
+        scan-source (subs source start end)
+        visit-end (str/index-of source "(defn- extend-replay-plan" end)
+        visit-source (subs source end visit-end)]
+    (check "typed LF finder retains the intended source shape"
+           true
+           (and (str/includes? scan-source
+                               "[^bytes chunk ^long start ^long end]")
+                (str/includes? scan-source
+                               "(bit-and 255 (aget chunk index))")
+                (str/includes? scan-source "(unchecked-inc index)")
+                (not (str/includes? scan-source "(byte 10)"))))
+    (check "WAL visitation reaches only the typed LF finder through observation"
+           true
+           (and (str/includes? scan-source
+                               "(next-lf-index chunk start end)")
+                (str/includes? visit-source
+                               "(observed-next-lf-index")
+                (not (str/includes? visit-source "(aget chunk"))))
+    (doseq [[label values chunk-width]
+            [["empty input" [] 1]
+             ["empty records" [10 10] 1]
+             ["missing final LF" [65 66] 1]
+             ["lone CR is data" [65 13 66 10] 2]
+             ["CRLF ends only at LF" [65 13 10 66 10] 2]
+             ["LF at and around chunk boundaries"
+              [10 65 10 66 10 10 67] 3]]]
+      (let [chunks (partition-all chunk-width values)]
+        (check (str label " retains exact raw LF offsets")
+               (model-lf-offsets values)
+               (scanned-lf-offsets next-lf! chunks))))
+    (let [values (vec (concat (repeat 65535 65)
+                              [10 13 66 10]
+                              (repeat 9 67) [10]))]
+      (check "64 KiB boundary framing remains exact"
+             [65535 65538 65548]
+             (scanned-lf-offsets next-lf!
+                                 (partition-all 65536 values))))
+    ;; The historical first-match-only mutant loses every later LF in a chunk.
+    (check "all LF matches in one chunk are causally required"
+           [0 2 4]
+           (scanned-lf-offsets next-lf! [[10 65 10 66 10]]))
+    (run-lf-framing-property! next-lf!))
 
   (let [decoder-capability-var
         (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
