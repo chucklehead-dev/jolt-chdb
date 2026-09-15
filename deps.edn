@@ -208,6 +208,7 @@
          abi-test "jolt -M:abi-test"
          native-lifecycle-test "jolt -M:native-lifecycle-test"
          native-process-test "bash scripts/check-native-process-lifecycle.sh"
+         native-typed-process-test "bash scripts/check-native-typed-process-exit.sh"
          durable-native-test "jolt -M:durable-native-test"
          durable-policy-test "jolt -M:durable-policy-test"
          durable-control-test "jolt -M:durable-control-test"

@@ -19,6 +19,9 @@
       "mbt::actionTaken": "init",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": false,
         "boots": {
           "#bigint": "0"
@@ -30,6 +33,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "Initialized",
           "value": {
@@ -59,6 +63,9 @@
       "mbt::actionTaken": "openMemory",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": true,
         "boots": {
           "#bigint": "1"
@@ -70,6 +77,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "Opened",
           "value": {
@@ -99,6 +107,9 @@
       "mbt::actionTaken": "closePublic",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": true,
         "boots": {
           "#bigint": "1"
@@ -110,6 +121,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "Closed",
           "value": {
@@ -139,6 +151,9 @@
       "mbt::actionTaken": "openMemory",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": true,
         "boots": {
           "#bigint": "1"
@@ -150,6 +165,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "Opened",
           "value": {
@@ -179,6 +195,9 @@
       "mbt::actionTaken": "closePublic",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": true,
         "boots": {
           "#bigint": "1"
@@ -190,6 +209,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "Closed",
           "value": {
@@ -219,6 +239,9 @@
       "mbt::actionTaken": "openDifferent",
       "mbt::nondetPicks": {},
       "lifecycle": {
+        "anchorCloseCount": {
+          "#bigint": "0"
+        },
         "anchored": true,
         "boots": {
           "#bigint": "1"
@@ -230,6 +253,7 @@
           }
         },
         "differentPathAccepted": false,
+        "hostExitStarted": false,
         "lastAction": {
           "tag": "RejectedDifferent",
           "value": {

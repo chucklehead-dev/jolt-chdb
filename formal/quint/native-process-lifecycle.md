@@ -5,7 +5,9 @@ path after every connection has closed, but the pinned upstream header warns
 that repeatedly crossing that last-close/reinitialize boundary can corrupt the
 allocator on macOS. `jolt-chdb` therefore adopts a stricter, driver-owned
 policy: the first successful open creates a hidden connection that remains
-owned until process exit. Public close releases only the public connection.
+owned across logical last close. A process shutdown hook explicitly closes the
+hidden owner before host runtime teardown. Public close releases only the
+public connection.
 
 This is a conservative host-lifecycle policy, not a Durable V1 protocol rule.
 It has three observable consequences:
@@ -29,9 +31,16 @@ is safe to retry because it owns no native engine. Any other exception after
 entering the native call has uncertain engine ownership and makes the process
 lifecycle terminal. A terminal lifecycle rejects every later open.
 
-The four constants below are executable negative controls. They cover dropping
+The host-exit transition is intentionally narrower than the Durable protocol:
+it represents an orderly process exit after every public owner has closed. It
+requires the retained anchor to be claimed and closed exactly once before the
+host tears down native libraries. Leaked public connections and OS-forced
+termination remain host concerns outside this state machine.
+
+The five constants below are executable negative controls. They cover dropping
 the anchor, accepting a different path, retrying after uncertain bootstrap
-failure, and replacing the successful bootstrap's option identity.
+failure, replacing the successful bootstrap's option identity, and skipping
+the anchor close at orderly process exit.
 
 Generated `.qnt` files live under `target/formal/quint/`; edit this Markdown,
 not those files.
@@ -45,6 +54,7 @@ module nativeProcessLifecycle {
   type NativeAction =
     Initialized | Opened | Closed | RejectedDifferent | RejectedOptions
       | BootstrapFailedSafe | BootstrapFailedTerminal | RejectedTerminal
+      | ProcessExited
 
   type Lifecycle = {
     anchored: bool,
@@ -58,6 +68,8 @@ module nativeProcessLifecycle {
     terminalRetryAccepted: bool,
     uncertainBootstrapFailureOccurred: bool,
     samePathReopened: bool,
+    hostExitStarted: bool,
+    anchorCloseCount: int,
     lastAction: NativeAction,
   }
 
@@ -65,6 +77,7 @@ module nativeProcessLifecycle {
   const ACCEPT_DIFFERENT_PATH_MUTANT: bool
   const RETRY_UNCERTAIN_BOOTSTRAP_MUTANT: bool
   const ACCEPT_DIFFERENT_OPTIONS_MUTANT: bool
+  const SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT: bool
   var lifecycle: Lifecycle
 
   action init: bool =
@@ -80,10 +93,13 @@ module nativeProcessLifecycle {
       terminalRetryAccepted: false,
       uncertainBootstrapFailureOccurred: false,
       samePathReopened: false,
+      hostExitStarted: false,
+      anchorCloseCount: 0,
       lastAction: Initialized,
     }
 
   action openMemory: bool = all {
+    not(lifecycle.hostExitStarted),
     lifecycle.references < 2,
     not(lifecycle.terminal),
     not(lifecycle.anchored) or lifecycle.path == Memory,
@@ -100,6 +116,7 @@ module nativeProcessLifecycle {
   }
 
   action closePublic: bool = all {
+    not(lifecycle.hostExitStarted),
     lifecycle.references > 0,
     lifecycle' = {
       ...lifecycle,
@@ -113,6 +130,7 @@ module nativeProcessLifecycle {
   }
 
   action openDifferent: bool = all {
+    not(lifecycle.hostExitStarted),
     lifecycle.boots > 0,
     lifecycle.references == 0,
     not(lifecycle.terminal),
@@ -131,6 +149,7 @@ module nativeProcessLifecycle {
   }
 
   action openDiskWithBackups: bool = all {
+    not(lifecycle.hostExitStarted),
     not(lifecycle.anchored),
     not(lifecycle.terminal),
     lifecycle.boots == 0,
@@ -146,6 +165,7 @@ module nativeProcessLifecycle {
   }
 
   action openDifferentOptions: bool = all {
+    not(lifecycle.hostExitStarted),
     lifecycle.anchored,
     not(lifecycle.terminal),
     lifecycle.path == Disk,
@@ -163,6 +183,7 @@ module nativeProcessLifecycle {
   }
 
   action safeBootstrapFailure: bool = all {
+    not(lifecycle.hostExitStarted),
     not(lifecycle.anchored),
     not(lifecycle.terminal),
     lifecycle.boots == 0,
@@ -170,6 +191,7 @@ module nativeProcessLifecycle {
   }
 
   action uncertainBootstrapFailure: bool = all {
+    not(lifecycle.hostExitStarted),
     not(lifecycle.anchored),
     not(lifecycle.terminal),
     lifecycle.boots == 0,
@@ -182,6 +204,7 @@ module nativeProcessLifecycle {
   }
 
   action retryAfterTerminal: bool = all {
+    not(lifecycle.hostExitStarted),
     lifecycle.uncertainBootstrapFailureOccurred,
     lifecycle.lastAction == BootstrapFailedTerminal,
     if (RETRY_UNCERTAIN_BOOTSTRAP_MUTANT)
@@ -198,6 +221,26 @@ module nativeProcessLifecycle {
       lifecycle' = { ...lifecycle, lastAction: RejectedTerminal },
   }
 
+  action processExit: bool = all {
+    // This host-lifecycle transition models only an orderly exit after logical
+    // last close. refs > 0 means a leaked public owner; forced teardown and its
+    // cleanup ordering are deliberately outside the Durable protocol model.
+    not(lifecycle.hostExitStarted),
+    lifecycle.anchored,
+    lifecycle.references == 0,
+    not(lifecycle.terminal),
+    lifecycle' = {
+      ...lifecycle,
+      anchored: SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT,
+      hostExitStarted: true,
+      anchorCloseCount:
+        if (SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT)
+          lifecycle.anchorCloseCount
+        else lifecycle.anchorCloseCount + 1,
+      lastAction: ProcessExited,
+    },
+  }
+
   action step: bool = any {
     openMemory,
     closePublic,
@@ -207,10 +250,12 @@ module nativeProcessLifecycle {
     safeBootstrapFailure,
     uncertainBootstrapFailure,
     retryAfterTerminal,
+    processExit,
   }
 
   val anchorSurvivesLogicalLastClose: bool =
-    if (lifecycle.boots > 0 and lifecycle.references == 0)
+    if (lifecycle.boots > 0 and lifecycle.references == 0
+        and not(lifecycle.hostExitStarted))
       lifecycle.anchored
     else true
 
@@ -226,6 +271,10 @@ module nativeProcessLifecycle {
       not(lifecycle.anchored) and lifecycle.references == 0
     else true
   val terminalRetryIsRejected: bool = not(lifecycle.terminalRetryAccepted)
+  val processExitReleasesAnchorExactlyOnce: bool =
+    if (lifecycle.hostExitStarted)
+      not(lifecycle.anchored) and lifecycle.anchorCloseCount == 1
+    else lifecycle.anchorCloseCount == 0
   val logicalLastCloseReached: bool =
     lifecycle.lastAction == Closed and lifecycle.references == 0
   val samePathReopenReached: bool =
@@ -243,6 +292,10 @@ module nativeProcessLifecycle {
     if (lifecycle.lastAction == BootstrapFailedSafe)
       not(lifecycle.anchored) and not(lifecycle.terminal) and lifecycle.boots == 0
     else true
+  val orderlyProcessExitReached: bool =
+    lifecycle.lastAction == ProcessExited
+      and lifecycle.hostExitStarted
+      and lifecycle.references == 0
 }
 
 module nativeProcessLifecycleCorrected {
@@ -250,7 +303,8 @@ module nativeProcessLifecycleCorrected {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 }
 
@@ -259,7 +313,8 @@ module nativeProcessLifecycleDropAnchorMutant {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = true,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 }
 
@@ -268,7 +323,8 @@ module nativeProcessLifecycleDifferentPathMutant {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = true,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 }
 
@@ -277,7 +333,8 @@ module nativeProcessLifecycleTerminalRetryMutant {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = true,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 }
 
@@ -286,7 +343,18 @@ module nativeProcessLifecycleDifferentOptionsMutant {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = true
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = true,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
+  ).* from "./nativeProcessLifecycle"
+}
+
+module nativeProcessLifecycleSkipAnchorExitCloseMutant {
+  import nativeProcessLifecycle(
+    DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
+    ACCEPT_DIFFERENT_PATH_MUTANT = false,
+    RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = true
   ).* from "./nativeProcessLifecycle"
 }
 ```
@@ -304,7 +372,8 @@ module nativeProcessLifecycleCorrectedTest {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   run anchoredReopenAndRejectDifferentTest =
@@ -345,6 +414,16 @@ module nativeProcessLifecycleCorrectedTest {
 
   run safeBootstrapFailureTest =
     init.then(safeBootstrapFailure).expect(safeBootstrapFailureRemainsCold)
+
+  run orderlyProcessExitClosesAnchorTest =
+    init
+      .then(openMemory)
+      .then(closePublic)
+      .then(processExit)
+      .expect(and {
+        processExitReleasesAnchorExactlyOnce,
+        orderlyProcessExitReached,
+      })
 }
 
 module nativeProcessLifecycleDropAnchorMutantTest {
@@ -352,7 +431,8 @@ module nativeProcessLifecycleDropAnchorMutantTest {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = true,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   run lastCloseDropsAnchorWitnessTest =
@@ -367,7 +447,8 @@ module nativeProcessLifecycleDifferentPathMutantTest {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = true,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   run differentPathReinitializesWitnessTest =
@@ -386,7 +467,8 @@ module nativeProcessLifecycleTerminalRetryMutantTest {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = true,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   run uncertainFailureRetryWitnessTest =
@@ -404,7 +486,8 @@ module nativeProcessLifecycleDifferentOptionsMutantTest {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = true
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = true,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   run differentOptionsAcceptedWitnessTest =
@@ -415,12 +498,30 @@ module nativeProcessLifecycleDifferentOptionsMutantTest {
       .expect(not(bootstrapOptionsAreImmutable))
 }
 
+module nativeProcessLifecycleSkipAnchorExitCloseMutantTest {
+  import nativeProcessLifecycle(
+    DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
+    ACCEPT_DIFFERENT_PATH_MUTANT = false,
+    RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = true
+  ).* from "./nativeProcessLifecycle"
+
+  run skippedAnchorExitCloseWitnessTest =
+    init
+      .then(openMemory)
+      .then(closePublic)
+      .then(processExit)
+      .expect(not(processExitReleasesAnchorExactlyOnce))
+}
+
 module nativeProcessLifecycleAnchorTrace {
   import nativeProcessLifecycle(
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   action traceStep: bool =
@@ -435,7 +536,8 @@ module nativeProcessLifecycleTerminalTrace {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   action traceStep: bool =
@@ -448,7 +550,8 @@ module nativeProcessLifecycleOptionsTrace {
     DROP_ANCHOR_AT_LAST_CLOSE_MUTANT = false,
     ACCEPT_DIFFERENT_PATH_MUTANT = false,
     RETRY_UNCERTAIN_BOOTSTRAP_MUTANT = false,
-    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false
+    ACCEPT_DIFFERENT_OPTIONS_MUTANT = false,
+    SKIP_ANCHOR_CLOSE_AT_PROCESS_EXIT_MUTANT = false
   ).* from "./nativeProcessLifecycle"
 
   action traceStep: bool =
