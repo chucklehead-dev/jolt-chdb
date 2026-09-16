@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Run maintained Durable throughput writer trials and snapshot reconciliation
+  in separately settled, bounded processes, retaining partial evidence and
+  independently checking timestamp bounds, distinctness and nanosecond sums.
+  Built-in local/S3 providers reconstruct without persisting credentials;
+  custom closure factories require an explicit serializable provider contract.
+
 - Retain native qualification fixtures on failure, timeout or signal; remove
   them only after successful completion, with bounded typed-child kill grace (#114).
 

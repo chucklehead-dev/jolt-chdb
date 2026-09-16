@@ -592,3 +592,46 @@ assuming the AWS role. It also depends on the complete provider/redaction job,
 so its own OIDC role assumption cannot begin after a failed provider contract.
 A live dispatch remains prohibited until the execution gate is satisfied and
 reviewed.
+# Process lifetime and timestamp reconciliation
+
+The maintained harness requires `BENCH_JOLT_BIN` to name the selected absolute
+executable (or a pinned provider wrapper that preserves its dependency/host
+selection). Every mode/trial runs in a fresh owned process. Durable writers
+must terminate successfully before a separate snapshot reader is started;
+ordinary controls also get their own process. Instrumented supplementary
+controls and the diagnostic selector use the same writer/reader boundary.
+Each child has a 600-second initial wait and a five-second owned-tree
+settlement wait after a failed wait. Nonzero exit, timeout, uncertain
+settlement, missing/duplicate completion, mismatched role/trial/provider scope,
+or changed runtime provenance stops later work and retains evidence.
+
+Built-in local and S3 provider descriptors contain no credentials. S3 workers
+reconstruct the existing provider from inherited controlled environment;
+writer logical/transport observations seed the reader's recovery recorder.
+These counters and durations are descriptive, not CPU attribution. Arbitrary
+custom `:backend-context!` closures now fail closed because they cannot be
+reconstructed safely across a process boundary; they require a future
+explicit serializable provider contract, not an inline fallback.
+
+Corpus generation, maintained quoted timestamp spelling, rotated mode order,
+trial counts and encode-included/preencoded admission/flush timing regions
+are unchanged. Recovery duration starts inside the reader, excluding process
+startup; whole-harness wall time includes startup and reconciliation and must
+not be mislabeled as the in-region rate. Successful and unsuccessful child
+request/result/log files are retained beneath each reported worker-evidence
+directory; no fixture deletion is used as a settlement witness.
+
+The reader recomputes expected aggregates from approved configuration and
+corpus indices, compares the writer's inventory, and checks all original nine
+aggregates plus exact `toUnixTimestamp64Nano` minimum, maximum, distinct count
+and Decimal128 nanosecond sum. Expected time comes independently from corpus
+span indices, not the timestamp value supplied by the writer. This unchanged
+corpus has one-millisecond steps: it does not itself prove arbitrary one-ns
+precision. The separate seven-cell native semantic diagnostic passed original
+quoted indices 0/1 and a distinct integer 3-ns-tail control on package 26.7.3 /
+SQL engine 26.7.2.1; it is not Rust binding execution or Durable throughput.
+
+This source slice remains unqualified until the existing contract suite,
+real local smoke/sweep, causal child-failure controls and protected S3 profile
+are executed on the exact selected compiler/native/dependency stack. It does
+not establish the whole-Durable throughput/latency or recovery/S3 targets.

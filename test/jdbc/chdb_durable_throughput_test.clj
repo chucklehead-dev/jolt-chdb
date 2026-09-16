@@ -1,6 +1,7 @@
 (ns jdbc.chdb-durable-throughput-test
   (:require [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
-            [jdbc.chdb-durable-throughput :as throughput]))
+            [jdbc.chdb-durable-throughput :as throughput]
+            [jdbc.core :as jdbc]))
 
 (def failures (atom 0))
 
@@ -208,7 +209,12 @@
                      :body_bytes (reduce + (map #(alength (.getBytes (get % "Body") "UTF-8")) rows))
                      :question_bodies 3
                      :min_trace (first trace-ids) :max_trace (last trace-ids)
-                     :min_span (first span-ids) :max_span (last span-ids)}]
+                     :min_span (first span-ids) :max_span (last span-ids)
+                     ;; base + [0, 1, 20] * 1000000 ns; sum = 3*base + 21000000.
+                     :timestamp_min "1700000000000000000"
+                     :timestamp_max "1700000000020000000"
+                     :timestamp_distinct 3
+                     :timestamp_sum "5100000000021000000"}]
       (check "incremental recovery oracle preserves the prior aggregate contract"
              reference
              (accumulate-expected-batch empty-expected rows true)))
@@ -377,9 +383,91 @@
                :provider-kind :provider-identity-canary
                :cleanup! (fn [] nil)})))))
 
+(defn- worker-contract-checks! []
+  (let [options {:batch-size 2 :batches 1 :warmup-batches 0 :trial 1
+                 :question-mark? false :encode-included? false}
+        descriptor {:root "/tmp/owned-benchmark-contract"
+                    :provider-kind :local-posix
+                    :object-id "bench-worker-00000000-0000-0000-0000-000000000001"}
+        token "00000000-0000-0000-0000-000000000002"
+        runtime {:scheme-version "10.4.1"}
+        request {:kind :uninstrumented :role :writer :token token
+                 :options options :descriptor descriptor :runtime-identity runtime}
+        receipt {:schema-version 1 :role :writer :token token :runtime runtime
+                 :value {} :inventory (select-keys request [:kind :options :descriptor])}
+        require-receipt #'throughput/require-worker-receipt!
+        require-scope #'throughput/require-worker-scope!
+        require-completion #'throughput/require-worker-completion!
+        require-marker #'throughput/require-worker-marker!
+        line (str ":durable-bench-worker-complete :writer " token)
+        expected (#'throughput/accumulate-expected-batch
+                  @#'throughput/empty-expected-aggregates
+                  [(#'throughput/log-row 0 false) (#'throughput/log-row 1 false)] false)]
+    (check "owned worker positive receipt preserves its exact inventory"
+           receipt (require-receipt receipt :writer token request))
+    (doseq [[label altered]
+            [["cross-role" (assoc receipt :role :reader)]
+             ["wrong-trial" (assoc-in receipt [:inventory :options :trial] 2)]
+             ["wrong-descriptor" (assoc-in receipt [:inventory :descriptor :root] "/tmp/other")]
+             ["wrong-source" (assoc-in receipt [:runtime :scheme-version] "other")]]]
+      (check (str "worker rejects " label " receipt")
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #(require-receipt altered :writer token request))))
+    (check "owned worker request path scope is exact" nil
+           (require-scope request "/tmp/owned-benchmark-contract/writer-request.edn"
+                          "/tmp/owned-benchmark-contract/writer-result.edn"))
+    (check "worker rejects descriptor tampering before backend reconstruction"
+           :jdbc.chdb-durable-throughput/invalid-worker-receipt
+           (rejected-type #(require-scope (assoc-in request [:descriptor :root] "/tmp/other")
+                                         "/tmp/owned-benchmark-contract/writer-request.edn"
+                                         "/tmp/owned-benchmark-contract/writer-result.edn")))
+    (check "exact worker completion marker is accepted" nil
+           (require-marker [line] :writer token))
+    (doseq [lines [[] [line line]]]
+      (check "missing/duplicate completion is not qualified"
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #(require-marker lines :writer token))))
+    (check "ordinary settled exit zero permits the next worker" nil
+           (require-completion {:exit 0} {:exit 0}))
+    (doseq [[initial settled] [[nil nil] [nil {:exit 0}] [{:exit 7} {:exit 7}]
+                              [{:exit 7} {:exit 0}]]]
+      (check "timeout/unconfirmed/nonzero primary cannot qualify a later receipt"
+             :jdbc.chdb-durable-throughput/worker-failed
+             (rejected-type #(require-completion initial settled))))
+    (check "late zero exit does not replace the failed initial-wait primary"
+           {:type :jdbc.chdb-durable-throughput/worker-failed
+            :terminal? true :primary :wait-failed}
+           (try (require-completion nil {:exit 0}) nil
+                (catch Throwable error (ex-data error))))
+    (with-redefs [clojure.core/slurp (fn [_] (str (pr-str receipt) "\n" (pr-str receipt)))]
+      (check "duplicate result forms cannot hide behind one stdout marker"
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #( #'throughput/read-owned-edn! :controlled-path))))
+    (check "nonserializable custom provider remains explicitly unsupported"
+           :jdbc.chdb-durable-throughput/nonserializable-provider
+           (rejected-type #( #'throughput/provider-descriptor!
+                             {:backend-context! (fn [_] nil)} "/tmp/owned")))
+    (check "independent timestamp oracle retains the original millisecond corpus"
+           {:timestamp_min "1700000000000000000" :timestamp_max "1700000000001000000"
+            :timestamp_distinct 2 :timestamp_sum "3400000000001000000"}
+           (select-keys expected [:timestamp_min :timestamp_max :timestamp_distinct :timestamp_sum]))
+    (let [altered-wire (#'throughput/accumulate-expected-batch
+                        @#'throughput/empty-expected-aggregates
+                        [(assoc (#'throughput/log-row 0 false) "Timestamp" "0.000000000")
+                         (assoc (#'throughput/log-row 1 false) "Timestamp" "0.000000000")] false)]
+      (check "timestamp expectations do not follow a corrupted writer wire value"
+             expected altered-wire))
+    (doseq [field [:timestamp_min :timestamp_max :timestamp_distinct :timestamp_sum]]
+      (let [wrong (assoc expected field (if (= field :timestamp_distinct) 1 "0"))]
+        (with-redefs [jdbc/fetch-one (fn [_ _] wrong)]
+          (check (str "original nine matching fields cannot hide wrong " (name field))
+                 :jdbc.chdb-durable-throughput/reconciliation-failed
+                 (rejected-type #( #'throughput/verify-counts! nil expected :controlled-test))))))))
+
 (defn -main [& _]
   (reset! failures 0)
   (run-checks!)
+  (worker-contract-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " throughput checks failed")
                     {:failures @failures}))))

@@ -5,7 +5,8 @@
   persisted flush boundary, and ordinary non-Durable execution. It uses a
   ClickStack-compatible log shape and verifies every run by reopening the
   immutable Durable snapshot. This is a manual benchmark, not a CI gate."
-  (:require [clojure.data.json :as json]
+  (:require [clojure.edn :as edn]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [db.jdbc]
             [db.jdbc-shim :as shim]
@@ -22,7 +23,8 @@
             [jdbc.core :as jdbc]
             [jdbc.proto :as proto]
             [jolt.ffi :as ffi]
-            [jolt.host :as host])
+            [jolt.host :as host]
+            [jolt.process :as process])
   (:import [java.io File]))
 
 (def ^:private logs-ddl
@@ -315,7 +317,9 @@
 
 (def ^:private empty-expected-aggregates
   {:n 0 :flags 0 :severity_sum 0 :body_bytes 0 :question_bodies 0
-   :min_trace nil :max_trace nil :min_span nil :max_span nil})
+   :min_trace nil :max_trace nil :min_span nil :max_span nil
+   :timestamp_min nil :timestamp_max nil :timestamp_distinct 0
+   :timestamp_sum "0"})
 
 (defn- lesser-string [left right]
   (if (or (nil? left) (neg? (compare right left))) right left))
@@ -325,7 +329,12 @@
 
 (defn- accumulate-expected-row [expected row question-mark?]
   (let [trace-id (get row "TraceId")
-        span-id (get row "SpanId")]
+        span-id (get row "SpanId")
+        ;; Independently derive the corpus index from its span ID, not from
+        ;; the timestamp wire spelling being qualified.
+        nanos (+ base-nanos (* 1000000 (- (Long/parseLong span-id 16) 1000000)))
+        previous-min (:timestamp_min expected)
+        previous-max (:timestamp_max expected)]
     (-> expected
         (update :n inc)
         (update :flags + (get row "TraceFlags"))
@@ -335,7 +344,13 @@
         (update :min_trace lesser-string trace-id)
         (update :max_trace greater-string trace-id)
         (update :min_span lesser-string span-id)
-        (update :max_span greater-string span-id))))
+        (update :max_span greater-string span-id)
+        (assoc :timestamp_min (str (if previous-min
+                                    (min (Long/parseLong previous-min) nanos) nanos))
+               :timestamp_max (str (if previous-max
+                                    (max (Long/parseLong previous-max) nanos) nanos)))
+        (update :timestamp_distinct inc)
+        (update :timestamp_sum #(str (+' (bigint %) nanos))))))
 
 (defn- accumulate-expected-batch [expected rows question-mark?]
   (reduce #(accumulate-expected-row %1 %2 question-mark?) expected rows))
@@ -348,11 +363,16 @@
                      "sum(length(Body)) body_bytes, "
                      "countIf(position(Body, '?') > 0) question_bodies, "
                      "min(TraceId) min_trace, max(TraceId) max_trace, "
-                     "min(SpanId) min_span, max(SpanId) max_span "
+                     "min(SpanId) min_span, max(SpanId) max_span, "
+                     "toString(min(toUnixTimestamp64Nano(Timestamp))) timestamp_min, "
+                     "toString(max(toUnixTimestamp64Nano(Timestamp))) timestamp_max, "
+                     "uniqExact(toUnixTimestamp64Nano(Timestamp)) timestamp_distinct, "
+                     "toString(sum(toDecimal128(toUnixTimestamp64Nano(Timestamp), 0))) timestamp_sum "
                      "FROM otel_logs"))]
     (when-not (= expected actual)
       (throw (ex-info "benchmark row reconciliation failed"
-                      {:label label :expected expected :actual actual})))
+                      {:type ::reconciliation-failed
+                       :label label :expected expected :actual actual})))
     actual))
 
 (defn- reduce-row-batches
@@ -516,6 +536,9 @@
             boundary
             (recur completed)))))))
 
+(def ^:dynamic *writer-role?* false)
+(def ^:dynamic *worker-descriptor* nil)
+
 (defn- durable-uninstrumented-trial
   [{:keys [batch-size batches warmup-batches question-mark? encode-included?
            target-wal-bytes trial] :as options}]
@@ -652,32 +675,12 @@
                        (ms flush-nanos))})))
           (when provider-metrics
             (provider-metrics/set-phase! provider-metrics :close))))
-      (when provider-metrics
-        (provider-metrics/set-phase! provider-metrics :recovery))
-      (let [memory-before (runtime-memory-observation)
-            recovery-start (System/nanoTime)
-            recovered
-            (with-open [reader (jdbc/connection
-                                (durable/snapshot-dbspec
-                                 {:namespace-backend store :object-id object-id}))]
-              (let [actual (verify-counts! reader @expected :durable-recovery)]
-                {:actual actual
-                 :memory-after (runtime-memory-observation)}))]
-        (let [result
-              (assoc @trial-result
-                     :recovery {:result (:actual recovered)
-                                :ms (ms (- (System/nanoTime) recovery-start))
-                                :expected @expected
-                                :memory (recovery-memory-observation
-                                         memory-before
-                                         (:memory-after recovered))})]
-          (if provider-metrics
-            (let [report (provider-metrics/report provider-metrics)]
-              (provider-metrics/assert-uncontended-flush-control!
-               report @flush-outcome)
-              (provider-metrics/assert-transport-coverage! report)
-              (assoc result :provider-metrics report))
-            result)))
+      {:result @trial-result :expected @expected
+         :flush-outcome @flush-outcome
+         :provider-observations
+         (when provider-metrics
+           {:logical @(:logical provider-metrics)
+            :transport @(:transport provider-metrics)})}
       (finally
         (cleanup!)))))
 
@@ -807,25 +810,7 @@
                       :payload-bytes (:payload-bytes measured)
                       :statement-bytes (:statement-bytes measured)}
                      (wal-size-observation pending measured)))))
-      ;; Closing above releases the writer. This open must recover solely from
-      ;; the persisted checkpoint/WAL objects and exact manifest order.
-      (let [memory-before (runtime-memory-observation)
-            recovery-start (System/nanoTime)
-            recovered
-            (with-open [reader (jdbc/connection
-                                (durable/snapshot-dbspec
-                                 {:namespace-backend store :object-id object-id
-                                  :operations (timed-operations metrics)}))]
-              (let [actual (verify-counts! reader @expected :durable-recovery)]
-                {:actual actual
-                 :memory-after (runtime-memory-observation)}))
-            recovery-nanos (- (System/nanoTime) recovery-start)]
-        (assoc @trial-result
-               :recovery {:result (:actual recovered) :ms (ms recovery-nanos)
-                          :expected @expected
-                          :memory (recovery-memory-observation
-                                   memory-before (:memory-after recovered))}
-               :stages-through-recovery (stage-report metrics)))
+      {:result @trial-result :expected @expected :stage-observations @metrics}
       (finally
         (cleanup!)))))
 
@@ -1229,6 +1214,218 @@
                         {:type ::dirty-provenance
                          :git-status (:git-status required)}))))))
 
+(defn- worker-options [options]
+  (select-keys options [:batch-size :batches :warmup-batches :question-mark?
+                       :encode-included? :target-wal-bytes :trial]))
+
+(defn- provider-descriptor! [options root]
+  (let [factory (:backend-context! options)]
+    (when (and factory (not (identical? factory aws-trial-context))
+               (not (identical? factory local-trial-context)))
+      (throw (ex-info "custom benchmark factories cannot cross worker boundaries"
+                      {:type ::nonserializable-provider})))
+    {:provider-kind (if (identical? factory aws-trial-context) :aws-s3 :local-posix)
+     :root root :object-id (str "bench-worker-" (random-uuid))}))
+
+(defn- reconstruct-context! [descriptor options]
+  (case (:provider-kind descriptor)
+    :local-posix
+    {:namespace-backend (local/local-backend (:root descriptor))
+     :object-id (:object-id descriptor) :provider-kind :local-posix
+     :cleanup! (fn [] nil)}
+    :aws-s3
+    ;; Authentication is read only by the existing constructor from inherited
+    ;; environment. Neither request nor receipt contains provider credentials.
+    (assoc (aws-trial-context options) :object-id (:object-id descriptor))
+    (throw (ex-info "unsupported benchmark provider" {:type ::invalid-worker-provider}))))
+
+(defn- await-worker [child milliseconds]
+  (try
+    (let [result (deref child milliseconds ::timeout)]
+      (when (and (map? result) (integer? (:exit result))) result))
+    (catch Throwable _ nil)))
+
+(defn- runtime-identity [runtime]
+  (select-keys runtime [:jolt-executable :native-library :benchmark-harness :scheme-version]))
+
+(defn- read-owned-edn! [path]
+  (let [forms (edn/read-string (str "[" (slurp path) "]"))]
+    (when-not (= 1 (count forms))
+      (throw (ex-info "missing or duplicate worker result"
+                      {:type ::invalid-worker-receipt})))
+    (first forms)))
+
+(defn- require-worker-receipt! [receipt role token request]
+  (when-not (and (map? receipt) (= 1 (:schema-version receipt))
+                 (= role (:role receipt)) (= token (:token receipt))
+                 (map? (:value receipt)) (map? (:runtime receipt))
+                 (= (:inventory receipt) (select-keys request [:kind :options :descriptor]))
+                 (= (runtime-identity (:runtime receipt)) (:runtime-identity request)))
+    (throw (ex-info "invalid benchmark worker receipt" {:type ::invalid-worker-receipt})))
+  receipt)
+
+(defn- require-worker-completion! [initial settled]
+  (when-not (and initial settled
+                 (integer? (:exit initial)) (zero? (:exit initial))
+                 (integer? (:exit settled)) (zero? (:exit settled)))
+    (throw (ex-info "benchmark worker did not complete successfully"
+                    {:type ::worker-failed :terminal? (boolean settled)
+                     :primary (if initial :nonzero-exit :wait-failed)}))))
+
+(defn- require-worker-marker! [lines role token]
+  (when-not (= 1 (count (filter #(= (str ":durable-bench-worker-complete " role " " token) %)
+                               lines)))
+    (throw (ex-info "missing or duplicate benchmark receipt"
+                    {:type ::invalid-worker-receipt}))))
+
+(defn- require-worker-scope! [request request-path result-path]
+  (let [{:keys [role token kind descriptor]} request
+        root (:root descriptor)]
+    (when-not (and (contains? #{:writer :reader :native} role)
+                   (contains? #{:uninstrumented :instrumented :diagnostic :native} kind)
+                   (= (= role :native) (= kind :native))
+                   (string? token) (re-matches #"[0-9a-f-]{36}" token)
+                   (string? root) (.isAbsolute (File. root))
+                   (contains? provider-kinds (:provider-kind descriptor))
+                   (string? (:object-id descriptor))
+                   (re-matches #"bench-worker-[0-9a-f-]{36}" (:object-id descriptor))
+                   (= request-path (.getAbsolutePath (File. root (str (name role) "-request.edn"))))
+                   (= result-path (.getAbsolutePath (File. root (str (name role) "-result.edn")))))
+      (throw (ex-info "invalid owned benchmark worker scope" {:type ::invalid-worker-receipt}))))
+  nil)
+
+(defn- run-worker! [root role request]
+  (let [executable (System/getenv "BENCH_JOLT_BIN")
+        executable-file (when executable (File. executable))
+        _ (when-not (and executable-file (.isAbsolute executable-file)
+                          (.isFile executable-file) (.canExecute executable-file))
+            (throw (ex-info "absolute benchmark executable is required"
+                            {:type ::missing-worker-executable})))
+        token (str (random-uuid))
+        request-file (File. root (str (name role) "-request.edn"))
+        result-file (File. root (str (name role) "-result.edn"))
+        log-file (File. root (str (name role) ".log"))
+        error-file (File. root (str (name role) ".err"))
+        _ (spit request-file (pr-str (assoc request :role role :token token)))
+        child (process/process
+               [executable "-Srepro" "-M:durable-throughput" "--worker"
+                (.getAbsolutePath request-file) (.getAbsolutePath result-file)]
+               {:out log-file :err error-file})
+        initial (await-worker child 600000)
+        _ (when-not initial
+            (try (process/destroy-tree child) (catch Throwable _ nil)))
+        settled (or initial (await-worker child 5000))]
+    ;; Never continue to a reader/later trial on uncertain settlement, even
+    ;; if a partial result file or a success marker exists.
+    (require-worker-completion! initial settled)
+    (let [receipt (read-owned-edn! result-file)]
+      (require-worker-marker! (str/split-lines (slurp log-file)) role token)
+      (require-worker-receipt! receipt role token request))))
+
+(defn- reader-value! [request]
+  (let [{:keys [descriptor options handoff]} request
+        context (reconstruct-context! descriptor options)
+        batches (get-in handoff [:result :batches])
+        _ (when-not (and (integer? batches) (pos? batches)
+                          (or (:target-wal-bytes options) (= batches (:batches options))))
+            (throw (ex-info "invalid worker batch inventory" {:type ::invalid-worker-receipt})))
+        independent-expected
+        (reduce-row-batches log-row (:batch-size options)
+                            (+ (:warmup-batches options) batches)
+                            (:question-mark? options) 0 empty-expected-aggregates
+                            (fn [expected _ rows]
+                              (accumulate-expected-batch expected rows (:question-mark? options))))
+        _ (when-not (= independent-expected (:expected handoff))
+            (throw (ex-info "writer corpus inventory differs" {:type ::invalid-worker-receipt})))
+        metrics (atom (or (:stage-observations handoff) {}))
+        store (if (:stage-observations handoff)
+                (instrumented-backend (:namespace-backend context) metrics)
+                (:namespace-backend context))
+        recorder (:provider-metrics context)
+        _ (when recorder
+            (doseq [key [:logical :transport]]
+              (reset! (get recorder key)
+                      (get-in handoff [:provider-observations key] {})))
+            (provider-metrics/set-phase! recorder :recovery))
+        before (runtime-memory-observation)
+        start (System/nanoTime)
+        recovered
+        (with-open [reader (jdbc/connection
+                            (durable/snapshot-dbspec
+                             (cond-> {:namespace-backend store
+                                      :object-id (:object-id context)}
+                               (:stage-observations handoff)
+                               (assoc :operations (timed-operations metrics)))))]
+          {:actual (verify-counts! reader independent-expected :durable-recovery)
+           :memory-after (runtime-memory-observation)})
+        recovery {:result (:actual recovered) :expected independent-expected
+                  :ms (ms (- (System/nanoTime) start))
+                  :memory (recovery-memory-observation before (:memory-after recovered))}
+        report (when recorder (provider-metrics/report recorder))]
+    (when report
+      (provider-metrics/assert-uncontended-flush-control! report (:flush-outcome handoff))
+      (provider-metrics/assert-transport-coverage! report))
+    (cond-> {:recovery recovery}
+      report (assoc :provider-metrics report)
+      (:stage-observations handoff) (assoc :stages-through-recovery (stage-report metrics)))))
+
+(declare diagnostic!)
+
+(defn- worker-main! [request-path result-path]
+  (let [{:keys [role token descriptor options kind] :as request}
+        (read-owned-edn! request-path)
+        _ (require-worker-scope! request request-path result-path)
+        _ (when-not (= (runtime-identity (runtime-metadata)) (:runtime-identity request))
+            (throw (ex-info "benchmark worker source provenance differs"
+                            {:type ::invalid-worker-receipt})))
+        value
+        (case role
+          :writer
+          (let [context (reconstruct-context! descriptor options)]
+            (binding [*writer-role?* true *worker-descriptor* descriptor]
+              (if (= kind :diagnostic)
+                (diagnostic! (str (:root descriptor) "/diagnostic-progress.edn"))
+              ((case kind
+                 :instrumented durable-trial
+                 :uninstrumented durable-uninstrumented-trial)
+               (assoc options :backend-context! (fn [_] context))))))
+          :reader (reader-value! request)
+          :native (native-trial options)
+          (throw (ex-info "invalid benchmark worker role" {:type ::invalid-worker-role})))
+        receipt {:schema-version 1 :role role :token token :value value
+                 :inventory (select-keys request [:kind :options :descriptor])
+                 :runtime (runtime-metadata)}]
+    (spit result-path (str (pr-str receipt) "\n"))
+    (println :durable-bench-worker-complete role token)))
+
+(defn- owned-trial! [kind options]
+  (let [options (if (= kind :diagnostic)
+                  {:batch-size 512 :batches 1 :warmup-batches 1 :question-mark? false}
+                  options)
+        root (File/createTempFile "jolt-chdb-throughput-workers-" "")
+        _ (when-not (and (.delete root) (.mkdirs root))
+            (throw (ex-info "cannot create owned benchmark evidence"
+                            {:type ::worker-evidence-failed})))
+        descriptor (provider-descriptor! options (.getAbsolutePath root))
+        request {:kind kind :options (worker-options options) :descriptor descriptor
+                 :runtime-identity (runtime-identity (runtime-metadata))}]
+    (if (= kind :native)
+      (let [receipt (run-worker! root :native request)]
+        (assoc (:value receipt) :worker-evidence (.getAbsolutePath root)
+               :worker-runtime {:native (:runtime receipt)}))
+      (let [writer-receipt (run-worker! root :writer request)
+            handoff (:value writer-receipt)
+            reader-receipt (run-worker! root :reader (assoc request :handoff handoff))]
+        (assoc (cond-> (merge (:result handoff) (:value reader-receipt))
+                 (= kind :diagnostic)
+                 (update :phases into
+                         [{:phase :reopened-and-reconciled
+                           :data (:recovery (:value reader-receipt))}
+                          {:phase :complete :data {:status :ok}}]))
+               :worker-evidence (.getAbsolutePath root)
+               :worker-runtime {:writer (:runtime writer-receipt)
+                                :reader (:runtime reader-receipt)})))))
+
 (defn- run-config [configuration]
   (let [{:keys [trials modes]} configuration
         measured-results
@@ -1242,15 +1439,15 @@
                 (let [result
                       (case mode
                         :durable-encode-included
-                        (durable-uninstrumented-trial
+                        (owned-trial! :uninstrumented
                          (assoc configuration :trial trial
                                 :encode-included? true))
                         :durable-preencoded
-                        (durable-uninstrumented-trial
+                        (owned-trial! :uninstrumented
                          (assoc configuration :trial trial
                                 :encode-included? false))
                         :ordinary-native-preencoded
-                        (native-trial (assoc configuration :trial trial)))]
+                        (owned-trial! :native (assoc configuration :trial trial)))]
                   (*progress!* :uninstrumented-trial
                                (select-keys
                                 result
@@ -1315,7 +1512,7 @@
               (*progress!* :isolated-stages-complete isolated))
           instrumented
           (when-not isolated-selector?
-            (durable-trial {:batch-size (if smoke? 32 512)
+            (owned-trial! :instrumented {:batch-size (if smoke? 32 512)
                             :batches (if smoke? 2 1)
                             :warmup-batches 1 :trials 1 :trial 1
                             :question-mark? false :encode-included? false}))
@@ -1350,11 +1547,13 @@
      :configurations configuration-results})))
 
 (defn- diagnostic! [output]
-  (let [root-file (File/createTempFile "jolt-chdb-throughput-diagnostic-" "")
-        _ (.delete root-file)
-        _ (.mkdirs root-file)
+  (let [root-file (if *worker-descriptor*
+                    (File. (:root *worker-descriptor*))
+                    (File/createTempFile "jolt-chdb-throughput-diagnostic-" ""))
+        _ (when-not *worker-descriptor* (.delete root-file))
+        _ (when-not *worker-descriptor* (.mkdirs root-file))
         store (local/local-backend (.getAbsolutePath root-file))
-        object-id (str "diagnostic-" (random-uuid))
+        object-id (or (:object-id *worker-descriptor*) (str "diagnostic-" (random-uuid)))
         warmup-rows (one-row-batch 512 false 0)
         measured-rows (one-row-batch 512 false 512)
         warmup (encode-batch-production warmup-rows)
@@ -1439,6 +1638,9 @@
           (finally
             (.close connection)
             (emit! :writer-closed {}))))
+      (if *writer-role?*
+        {:result (assoc @progress :batches 1) :expected expected}
+        (do
       (let [memory-before (runtime-memory-observation)
             start (System/nanoTime)
             recovered
@@ -1456,23 +1658,27 @@
                 :memory (recovery-memory-observation
                          memory-before (:memory-after recovered))}))
       (emit! :complete {:status :ok})
-      @progress
+      @progress))
       (catch Throwable error
-        (emit! :failed {:class (str (class error))
-                        :message (ex-message error)
-                        :type (:type (ex-data error))})
+        (emit! :failed {:category :controlled-worker-failure})
         (throw error))
       (finally
-        (delete-tree! root-file)))))
+        (when-not *worker-descriptor* (delete-tree! root-file))))))
 
-(defn -main [& [profile-text output]]
+(defn -main [& [profile-text output worker-result]]
+  (if (= profile-text "--worker")
+    (try
+      (worker-main! output worker-result)
+      (catch Throwable _
+        (println :durable-bench-worker-failed :controlled-error)
+        (System/exit 1)))
   (let [profile (parse-profile! profile-text)
         output (or output (str "target/profiles/durable-throughput-"
                                (name profile) ".edn"))]
     (try
       (.mkdirs (.getParentFile (File. output)))
       (if (= profile :diagnostic)
-        (do (diagnostic! output)
+        (do (spit output (str (pr-str (owned-trial! :diagnostic {})) "\n"))
             (println (pr-str {:status :ok :profile profile :output output})))
         (let [progress (atom {:schema-version 2 :profile profile :phases []})
               emit! (fn [phase data]
@@ -1498,4 +1704,4 @@
       (catch Throwable error
         (if (= :s3-curve profile)
           (provider-metrics/throw-redacted-failure! error)
-          (throw error))))))
+          (throw error)))))))
