@@ -375,6 +375,39 @@
 (defn execute-any [handle sql params]
   (execute-prepared-any handle (prepare-query sql params)))
 
+(defn insert-json-rows!
+  "Insert an encoder-produced JSONEachRow String through an ordinary chDB
+  connection. `table` is one simple ASCII identifier in the selected database;
+  `columns` is a nonempty vector of unique ASCII identifiers (dotted nested
+  column names are supported). The driver validates/quotes these identifiers
+  and constructs the INSERT; payload bytes are never scanned for placeholders.
+
+  Payload is trusted format-encoded row data, not arbitrary SQL. Identifier
+  validation does not validate JSON, row shape, numeric values or payload size;
+  the encoder/caller owns those checks and libchdb owns format parsing. This
+  API does not promise safe execution of adversarial unvalidated payloads.
+  Durable connections are rejected: their exact SQL preparation, policy and
+  WAL admission must continue through their ordinary JDBC execution path.
+  Native execution retains the existing handle lock and result ownership."
+  [conn table columns payload]
+  (when-not (and (string? table) (<= (count table) 255)
+                (re-matches #"[A-Za-z_][A-Za-z0-9_]*" table)
+                (vector? columns) (seq columns)
+                (every? #(and (string? %) (<= (count %) 255)
+                              (re-matches #"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*" %))
+                        columns)
+                (= (count columns) (count (set columns)))
+                (string? payload))
+    (throw (ex-info "Invalid ordinary chDB JSONEachRow insert data"
+                    {:type ::invalid-json-rows :jdbc/sql-error true})))
+  (let [{:keys [handle]} (shim/driver-context (proto/connection conn) :chdb)
+        sql (str "INSERT INTO `" table "` ("
+                 (str/join ", " (map #(str "`" % "`") columns))
+                 ") FORMAT JSONEachRow\n" payload)]
+    ;; Narrow, private construction: no public bypass for arbitrary SQL or
+    ;; parameter rewriting. This INSERT has no SQL parameters; '?' is row data.
+    (execute-prepared-any handle (PreparedQuery. sql []))))
+
 (defn- validate-encoded-sql! [sql]
   (let [trimmed (str/trim sql)
         n (count sql)]

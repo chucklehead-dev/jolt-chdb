@@ -8,6 +8,13 @@
 - Preserve the first checkpoint publication or commit failure when archive
   cleanup also fails; standalone cleanup failures remain observable (#113).
 
+- Add ordinary-only `jdbc.chdb/insert-json-rows!` for trusted encoded
+  JSONEachRow payloads and ordered validated identifiers. The driver constructs
+  the INSERT without lexing row data for SQL placeholders and reuses locked
+  query/result ownership rather than streaming insertion. Durable preparation,
+  classification and WAL admission remain unchanged. Encoder row-shape,
+  numeric and size validation remain caller responsibilities.
+
 - Close the retained native anchor exactly once during orderly process exit,
   after logical application close and before Jolt tears down the host runtime.
   This prevents the post-PASS invalid-memory abort exposed by typed ClickHouse
