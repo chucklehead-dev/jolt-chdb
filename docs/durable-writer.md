@@ -100,8 +100,27 @@ before preserving and rethrowing that exact terminal failure.
 
 The V1 limits are applied before a mutation reaches the engine: 64 MiB of SQL
 UTF-8 per statement and 128 MiB for the uncompressed JSONL segment. A local
-engine failure does not append a replay record. A failed or ambiguous flush
-retains the complete buffer.
+engine failure does not append a replay record. A flush failure before confirmed
+or reconciled commit retains the complete buffer. A checkpoint archive cleanup
+failure after confirmed commit is different: the public call still throws, but
+HEAD is committed and covered pending state has already been cleared. A thrown
+flush is not proof of rollback and must not cause blind replay of application
+mutations. Retrying `flush!` checks current pending state: an empty retry returns
+`{:status :empty}` without committing another checkpoint. When a commit outcome
+has not returned confirmed, pending state remains; a later flush can publish a
+fresh full checkpoint and legitimately advance HEAD again without re-executing
+local mutations. Explicit `checkpoint!` requests are new checkpoints, not an
+automatic retry of an old reference. Control-layer ambiguous CAS reconciliation
+remains distinct from a caller-injected failure after control returned success.
+
+Checkpoint publication/commit errors take precedence over archive deletion
+errors; standalone deletion errors remain observable. Secondary cleanup error
+reporting is deferred. These error boundaries do not change acknowledgement,
+WAL admission or CAS algorithms.
+
+The checkpoint error/retry controls use model native operations with real
+memory-backend HEAD CAS and ambiguous-CAS reconciliation. Their verified,
+reachable model checkpoint bytes are not native backup-recovery qualification.
 
 The frozen WAL stores replayable SQL text. Fully materialized mutations use
 that path. Parameterized mutations retain their native bound values for local

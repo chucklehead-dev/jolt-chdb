@@ -7,6 +7,17 @@ the eventual flush writable.
 
 The implementation correspondence is deliberately small:
 
+Abstraction boundary (#113): this lifecycle model's `cleanup` action represents
+terminal native/scratch retirement after lease release. It does not represent
+per-checkpoint archive deletion, competing primary/cleanup Throwable identity,
+or a cleanup error after confirmed HEAD commit and pending-state clearing.
+Deterministic writer tests cover those four cuts and subsequent public flush
+retries, including actual landed-CAS reconciliation. No exhaustive proof of
+these omitted exception/ACK boundaries is claimed; the extracted model code is
+unchanged by this documentation note.
+These controls use model native operations and real memory-backend/control CAS,
+not a native engine or native checkpoint recovery test.
+
 | Model action | Runtime boundary |
 | --- | --- |
 | `admitClose` | `close!` changes `:open` to `:closing` under `admission-lock` and enqueues behind earlier work |

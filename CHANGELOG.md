@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Clarify checkpoint cleanup error/flush retry semantics and qualify public
+  retries with model-native operations and real memory-backend CAS; document
+  the lifecycle model's omitted per-checkpoint exception boundary (#113).
+
 - Retain native qualification fixtures on failure, timeout or signal; remove
   them only after successful completion, with bounded typed-child kill grace (#114).
 
