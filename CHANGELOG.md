@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Exercise maintained benchmark orchestration with bounded real child controls:
+  nonzero exit, timeout followed by confirmed zero, invalid marker/inventory,
+  writer-before-reader ordering, and explicitly modeled settlement-observation
+  loss. These synthetic worker bodies do not qualify native/S3 throughput.
+
 - Run maintained Durable throughput writer trials and snapshot reconciliation
   in separately settled, bounded processes, retaining partial evidence and
   independently checking timestamp bounds, distinctness and nanosecond sums.

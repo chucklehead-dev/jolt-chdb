@@ -1,5 +1,8 @@
 (ns jdbc.chdb-durable-throughput-test
-  (:require [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            [jolt.process :as process]
+            [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
             [jdbc.chdb-durable-throughput :as throughput]
             [jdbc.core :as jdbc]))
 
@@ -464,10 +467,131 @@
                  :jdbc.chdb-durable-throughput/reconciliation-failed
                  (rejected-type #( #'throughput/verify-counts! nil expected :controlled-test))))))))
 
+(defn- real-worker-orchestration-checks! []
+  ;; Real OS processes, synthetic worker/native bodies. The maintained parent
+  ;; run-config/owned-trial!/run-worker! functions and check counters are intact.
+  ;; BENCH_JOLT_BIN must be absolute; the gate supplies its pinned executable.
+  (doseq [scenario [:positive :nonzero :timeout-zero :duplicate :inventory
+                    :modeled-unconfirmed]]
+    (let [spawn process/process
+          destroy process/destroy-tree
+          await @#'throughput/await-worker
+          runtime {:scheme-version "controlled-protocol-test"}
+          owned (atom [])
+          terminals (atom [])
+          waits (atom [])
+          signals (atom [])
+          cleanup (atom [])
+          outcome (atom nil)]
+      (try
+        (with-redefs
+          [throughput/runtime-metadata (fn [] runtime)
+           process/process
+           (fn [command options]
+             (let [[executable repro alias worker request-path result-path] command
+                   request (edn/read-string (slurp request-path))
+                   role (:role request)
+                   index (count @owned)
+                   first? (zero? index)
+                   mode (if first?
+                          (case scenario :nonzero "nonzero"
+                            :timeout-zero "timeout" :duplicate "duplicate" "success")
+                          "success")
+                   marker (str ":durable-bench-worker-complete " role " " (:token request))
+                   result {:mode :durable-preencoded :trial (get-in request [:options :trial])
+                           :batch-size 1 :batches 1 :measured-rows 1
+                           :ingest-ms 1.0 :persisted-ms 2.0
+                           :ingest-rows-per-second 1000.0 :persisted-rows-per-second 500.0
+                           :jdbc.chdb-durable-throughput/batch-latency-samples [1000000]}
+                   receipt {:schema-version 1 :role role :token (:token request)
+                            :runtime runtime
+                            :inventory (select-keys request [:kind :options :descriptor])
+                            :value (if (= role :writer)
+                                     {:result result :expected {:n 1}}
+                                     {:recovery {:result {:n 1} :expected {:n 1}}})}
+                   receipt (if (and first? (= :inventory scenario))
+                             (assoc-in receipt [:inventory :options :trial] 999) receipt)
+                   template (str request-path ".control-template")]
+               (check "actual control retains maintained worker command"
+                      ["-Srepro" "-M:durable-throughput" "--worker"] [repro alias worker])
+               (check "actual control requires selected absolute executable"
+                      (System/getenv "BENCH_JOLT_BIN") executable)
+               (when (= role :reader)
+                 (check "reader spawn follows actual writer terminal zero"
+                        {:role :writer :exit 0} (last @terminals)))
+               (spit template (pr-str receipt))
+               (let [child (spawn ["/bin/sh" "test/support/durable_benchmark_worker_control.sh"
+                                   mode template result-path marker] options)]
+                 (swap! owned conj {:child child :role role :out (:out options)})
+                 child)))
+           throughput/await-worker
+           (fn [child milliseconds]
+             (let [entry (first (filter #(identical? child (:child %)) @owned))
+                   shortened (if (and (= :timeout-zero scenario) (= 600000 milliseconds))
+                               1000 milliseconds)
+                   result (await child shortened)]
+               (swap! waits conj [(:role entry) milliseconds shortened (:exit result)])
+               (when result (swap! terminals conj {:role (:role entry) :exit (:exit result)}))
+               ;; Explicitly modeled observation loss, never a claim that the
+               ;; genuine child remained alive; final cleanup uses real await.
+               (if (= :modeled-unconfirmed scenario) nil result)))
+           process/destroy-tree
+           (fn [child]
+             (when-not (some #(identical? child (:child %)) @owned)
+               (throw (ex-info "unowned control process" {})))
+             (swap! signals conj child)
+             (destroy child))]
+          (try
+            (reset! outcome {:value (#'throughput/run-config
+                                     {:label :worker-control :batch-size 1 :batches 1
+                                      :warmup-batches 0 :trials 2 :question-mark? false
+                                      :modes [:durable-preencoded]})})
+            (catch Throwable error (reset! outcome {:error (ex-data error)}))))
+        (finally
+          ;; Settle ONLY known owned handles. Retain all evidence even on
+          ;; failure; no scratch deletion relies on a termination request.
+          (doseq [{:keys [child]} @owned]
+            (let [initial (await child 0)
+                  _ (when-not initial (destroy child))
+                  terminal (or initial (await child 5000))]
+              (swap! cleanup conj (boolean terminal))))))
+      (check (str scenario " every actual direct child settled")
+             (vec (repeat (count @owned) true)) @cleanup)
+      (check (str scenario " reader and later trial launch policy")
+             (if (= scenario :positive) [:writer :reader :writer :reader] [:writer])
+             (mapv :role @owned))
+      (check (str scenario " actual parent outcome")
+             (case scenario :positive nil
+               (:duplicate :inventory) :jdbc.chdb-durable-throughput/invalid-worker-receipt
+               :jdbc.chdb-durable-throughput/worker-failed)
+             (get-in @outcome [:error :type]))
+      (when (= scenario :positive)
+        (check "real positive orchestration completes both original trials" 2
+               (count (get-in @outcome [:value :results])))
+        (check "successful children require no destroy request" 0 (count @signals)))
+      (when (= scenario :nonzero)
+        (check "plausible receipt never hides actual exit seven" [7]
+               (mapv :exit @terminals)))
+      (when (= scenario :timeout-zero)
+        (check "actual timeout keeps failed initial wait primary"
+               {:type :jdbc.chdb-durable-throughput/worker-failed
+                :terminal? true :primary :wait-failed} (:error @outcome))
+        (check "actual timeout delegates short initial and unchanged settlement wait"
+               [[:writer 600000 1000 nil] [:writer 5000 5000 0]] @waits)
+        (check "actual timeout requests only one owned destruction" 1 (count @signals))
+        (let [output (slurp (:out (first @owned)))]
+          (check "real timeout child actually started" true (str/includes? output ":worker-control-ready"))
+          (check "real timeout child actually exited zero after TERM" true
+                 (str/includes? output ":worker-control-terminated-zero"))))
+      (when (= scenario :modeled-unconfirmed)
+        (check "modeled lost settlement never admits later workers" false
+               (get-in @outcome [:error :terminal?]))))))
+
 (defn -main [& _]
   (reset! failures 0)
   (run-checks!)
   (worker-contract-checks!)
+  (real-worker-orchestration-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " throughput checks failed")
                     {:failures @failures}))))
