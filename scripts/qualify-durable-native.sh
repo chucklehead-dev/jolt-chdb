@@ -88,7 +88,19 @@ JOLT_CHDB_LIB="$library_path" \
   "$repo_root/scripts/check-native-typed-process-exit.sh" "$jolt_bin"
 
 process_root=$(mktemp -d "$qualification_root/process-lifecycle.XXXXXX")
-trap 'rm -rf -- "$process_root"' EXIT HUP INT TERM
+completion=false
+cleanup() {
+  local status=$?
+  if [[ "$completion" == true && "$status" == 0 &&
+        "$process_root" == "$qualification_root"/process-lifecycle.* &&
+        -d "$process_root" && ! -L "$process_root" ]]; then
+    rm -rf -- "$process_root"
+  fi
+}
+trap cleanup EXIT
+trap 'completion=false; exit 129' HUP
+trap 'completion=false; exit 130' INT
+trap 'completion=false; exit 143' TERM
 object_root="$process_root/objects"
 core_root="$process_root/core"
 mkdir -p "$object_root" "$core_root"
@@ -102,7 +114,6 @@ run_phase() {
   JOLT_CHDB_NATIVE_CORE_ROOT="$core_root" \
   JOLT_CHDB_NATIVE_SCRATCH_ROOT="$scratch_root" \
     "$jolt_bin" -M:durable-native-test "$phase"
-  rm -rf -- "$scratch_root"
 }
 
 for phase in \
@@ -113,3 +124,4 @@ for phase in \
 do
   run_phase "$phase"
 done
+completion=true
