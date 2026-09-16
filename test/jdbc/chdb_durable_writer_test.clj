@@ -1274,12 +1274,88 @@
       (swap! failures inc)
       (println "  FAIL writer property" (pr-str result)))))
 
+(defn- run-checkpoint-cleanup-precedence-checks! []
+  (doseq [cut [:publish :pre-cas :post-cas :confirmed]]
+    (let [calls (atom [])
+          close-count (atom 0)
+          fault (atom true)
+          deletions (atom 0)
+          commits (atom 0)
+          primary (ex-info "controlled checkpoint primary" {:type ::checkpoint-primary})
+          cleanup (ex-info "controlled checkpoint cleanup" {:type ::checkpoint-cleanup})
+          base (model-checkpoint-operations calls close-count)
+          operations
+          (assoc base
+                 :publish-checkpoint!
+                 (fn [store token path]
+                   (if (and @fault (= cut :publish))
+                     (throw primary)
+                     ((:publish-checkpoint! base) store token path)))
+                 :commit-reference!
+                 (fn [store token request]
+                   (swap! commits inc)
+                   (when (and @fault (= cut :pre-cas)) (throw primary))
+                   (let [result (control/commit-reference!
+                                 store token
+                                 (assoc request :engine-metadata
+                                        {:version (:engine-version base-options)
+                                         :backup-format (:backup-format base-options)
+                                         :min-reader (:min-reader base-options)}))]
+                     ;; The real memory-backend CAS has advanced HEAD before this
+                     ;; controlled lost-response failure. Throwing is not rollback.
+                     (when (and @fault (= cut :post-cas)) (throw primary))
+                     result))
+                 :delete-checkpoint!
+                 (fn [_]
+                   (swap! deletions inc)
+                   (when @fault (throw cleanup))))
+          {:keys [store writer]} (new-writer calls close-count operations)]
+      (try
+        (writer/execute! writer "INSERT INTO t VALUES (1)")
+        (writer/sql! writer "INSERT INTO t VALUES (?)" [2])
+        (let [before (stored-head-bytes store)
+              wal-before @(:wal-state writer)
+              error (try (writer/flush! writer) nil
+                         (catch Throwable thrown thrown))
+              committed? (contains? #{:post-cas :confirmed} cut)
+              confirmed? (= cut :confirmed)
+              head (:head (control/read-head! store))
+              status (writer/status writer)]
+          (check (str (name cut) " preserves exact primary or standalone cleanup identity")
+                 true (identical? (if confirmed? cleanup primary) error))
+          (check (str (name cut) " attempts archive cleanup once") 1 @deletions)
+          (check (str (name cut) " reaches only the expected commit cut")
+                 (if (= cut :publish) 0 1) @commits)
+          (check (str (name cut) " independently observes the committed HEAD boundary")
+                 [(if committed? 1 0) committed? []]
+                 [(get-in head ["manifest" "seq"])
+                  (boolean (get-in head ["manifest" "base"]))
+                  (get-in head ["manifest" "wal"])])
+          (when-not committed?
+            (check (str (name cut) " leaves pre-CAS HEAD bytes unchanged")
+                   before (stored-head-bytes store)))
+          (check (str (name cut) " retains WAL until confirmed checkpoint return")
+                 [(if confirmed? 0 1) (not confirmed?)]
+                 [(:pending-statements status) (:checkpoint-required? status)])
+          (check (str (name cut) " preserves the complete pending buffer before confirmation")
+                 true
+                 (if confirmed?
+                   (= {:lines [] :byte-count 0 :checkpoint-required? false}
+                      @(:wal-state writer))
+                   (= wal-before @(:wal-state writer)))))
+        (finally
+          ;; Disable injected failures before ordinary owned shutdown; measurements
+          ;; above concern one flush, not cleanup retries during fixture teardown.
+          (reset! fault false)
+          (writer/close! writer))))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-statement-size-fastpath-checks!)
   (let [supported? (run-capability-checks!)]
     (if supported?
       (do
+        (run-checkpoint-cleanup-precedence-checks!)
         (run-deterministic-checks!)
         (run-stateful-property!))
       (do

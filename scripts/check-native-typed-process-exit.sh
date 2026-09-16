@@ -11,10 +11,22 @@ else
 fi
 
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/jolt-chdb-typed-exit.XXXXXX")
-trap 'rm -rf -- "$run_root"' EXIT HUP INT TERM
+completion=false
+cleanup() {
+  local status=$?
+  if [[ "$completion" == true && "$status" == 0 &&
+        "$run_root" == "${TMPDIR:-/tmp}"/jolt-chdb-typed-exit.* &&
+        -d "$run_root" && ! -L "$run_root" ]]; then
+    rm -rf -- "$run_root"
+  fi
+}
+trap cleanup EXIT
+trap 'completion=false; exit 129' HUP
+trap 'completion=false; exit 130' INT
+trap 'completion=false; exit 143' TERM
 
 set +e
-output=$(cd "$fixture_root" && timeout 120 "${jolt_command[@]}" -M:run "$run_root" 2>&1)
+output=$(cd "$fixture_root" && timeout --signal=TERM --kill-after=5s 120s "${jolt_command[@]}" -M:run "$run_root" 2>&1)
 status=$?
 set -e
 printf '%s\n' "$output"
@@ -26,3 +38,4 @@ fi
 
 grep -Fq "PASS typed export readback checkpoint explicit close" <<<"$output"
 grep -Fq "PASS typed process-exit anchor closed before host teardown" <<<"$output"
+completion=true

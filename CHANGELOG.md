@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Retain native qualification fixtures on failure, timeout or signal; remove
+  them only after successful completion, with bounded typed-child kill grace (#114).
+
+- Preserve the first checkpoint publication or commit failure when archive
+  cleanup also fails; standalone cleanup failures remain observable (#113).
+
 - Close the retained native anchor exactly once during orderly process exit,
   after logical application close and before Jolt tears down the host runtime.
   This prevents the post-PASS invalid-memory abort exposed by typed ClickHouse
