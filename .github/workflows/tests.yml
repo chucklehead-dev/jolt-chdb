@@ -86,6 +86,11 @@ jobs:
         run: clojure -M:durable-head-depth-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
+      - name: Qualify ordinary JSONEachRow native insertion
+        timeout-minutes: 3
+        run: |
+          timeout --signal=TERM --kill-after=5s 90s jolt -Srepro -A:abi-test -e \
+            "(require 'jdbc.chdb-json-rows-test) (jdbc.chdb-json-rows-test/run-native!)"
       - name: Qualify Samizdat and Durable database-provider convergence
         env:
           JOLT_WRAPPER: /usr/bin/env
