@@ -297,23 +297,32 @@
   ((:validate-checkpoint! (:operations writer))
    (:store writer) (:token writer))
   (let [path ((:create-checkpoint! (:operations writer))
-              (:handle writer) (:database writer))]
-    (try
-      (let [committed
-            (let [publication ((:publish-checkpoint! (:operations writer))
-                               (:store writer) (:token writer) path)]
-              ((:commit-reference! (:operations writer))
-               (:store writer) (:token writer)
-               {:kind :checkpoint
-                :reference (:reference publication)
-                :verify-reference!
-                (:verify-checkpoint-reference! (:operations writer))}))]
-        ;; The full backup contains every local mutation. Pending statement WAL
-        ;; becomes redundant only after the checkpoint head CAS is proved.
-        (clear-wal! writer)
-        committed)
-      (finally
-        ((:delete-checkpoint! (:operations writer)) path)))))
+              (:handle writer) (:database writer))
+        outcome
+        (try
+          (let [committed
+                (let [publication ((:publish-checkpoint! (:operations writer))
+                                   (:store writer) (:token writer) path)]
+                  ((:commit-reference! (:operations writer))
+                   (:store writer) (:token writer)
+                   {:kind :checkpoint
+                    :reference (:reference publication)
+                    :verify-reference!
+                    (:verify-checkpoint-reference! (:operations writer))}))]
+            ;; The full backup contains every local mutation. Pending statement WAL
+            ;; becomes redundant only after the checkpoint head CAS is proved.
+            (clear-wal! writer)
+            {:result committed})
+          (catch Throwable error {:primary error}))
+        cleanup-error
+        (try
+          ((:delete-checkpoint! (:operations writer)) path)
+          nil
+          (catch Throwable error error))]
+    (cond
+      (:primary outcome) (throw (:primary outcome))
+      cleanup-error (throw cleanup-error)
+      :else (:result outcome))))
 
 (defn- first-error [attempts]
   (reduce
