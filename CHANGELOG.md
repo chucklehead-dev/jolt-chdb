@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a serial, pinned Jolt-writer to Python-reader logical WAL fixture gate,
+  complementing Python-writer to Jolt-reader coverage. Check exact rows,
+  aggregates, unchanged protocol bytes, and corrupt/missing WAL controls;
+  this does not qualify checkpoints, other releases or other platforms.
+
 - Skip exhaustive Durable checks for known literate-prose-only edits only when
   exact base/head effective models and checker/tool/corpus inventories match.
   Preserve fast and manual gates; missing/unknown inputs or extraction failures
