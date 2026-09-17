@@ -132,7 +132,7 @@
    (apply str (map #(str (:key %) "\u0000" (:bytes %) "\u0000" (:sha256 %) "\n")
                    entries))))
 
-(defn- validate-descriptor!
+(defn- validate-provenance!
   [descriptor fixture-root source-archive core-wheel native-library native-header]
   (exact-keys! "descriptor" #{:schema_version :source :python :jolt_native
                                :provider_boundary :fixture} descriptor)
@@ -154,6 +154,8 @@
                (get-in descriptor [:fixture :expected]))
   (exact-keys! "manifest" #{:base :db :seq :wal}
                (get-in descriptor [:fixture :manifest]))
+  (when-let [base (get-in descriptor [:fixture :manifest :base])]
+    (exact-keys! "base reference" #{:key :size :sha256} base))
   (doseq [reference (get-in descriptor [:fixture :manifest :wal])]
     (exact-keys! "WAL reference" #{:key :size :sha256} reference))
   (doseq [[label value] [["source archive" (get-in descriptor [:source :archive])]
@@ -189,8 +191,14 @@
                  (= "jolt-test-only-raw-read-only"
                     (get-in descriptor [:provider_boundary :consumer]))
                  (false? (get-in descriptor [:provider_boundary :direct_provider_compatibility]))
-                 (= ["head.json.lock" "unreferenced-provider.canary"]
-                    (get-in descriptor [:provider_boundary :excluded_provider_private_keys]))
+                 (let [excluded (get-in descriptor [:provider_boundary :excluded_provider_private_keys])
+                       checkpoint? (some? (get-in descriptor [:fixture :manifest :base]))]
+                   (and (vector? excluded)
+                        (= (count excluded) (if checkpoint? 3 2))
+                        (contains? (set excluded) "head.json.lock")
+                        (contains? (set excluded) "unreferenced-provider.canary")
+                        (or (not checkpoint?)
+                            (= 1 (count (filter #(str/starts-with? % "wal/") excluded))))))
                  (= "python-writer" (get-in descriptor [:fixture :object_id]))
                  (= "fixture" (get-in descriptor [:fixture :database]))
                  (= expected-aggregate (get-in descriptor [:fixture :expected])))
@@ -207,6 +215,11 @@
     (when-not (= expected actual) (fail! (str label " identity differs"))))
   (when-not (= expected-engine (:native-version (native/durable-capability)))
     (fail! "running Jolt chDB engine differs from the Python fixture engine"))
+  descriptor)
+
+(defn- validate-descriptor!
+  [descriptor fixture-root source-archive core-wheel native-library native-header]
+  (validate-provenance! descriptor fixture-root source-archive core-wheel native-library native-header)
   (let [object-root (.resolve (path fixture-root)
                               (get-in descriptor [:fixture :object_id]))
         actual (inventory object-root)]
@@ -218,8 +231,16 @@
     (let [head-bytes (Files/readAllBytes (.resolve object-root "head.json"))
           head (json/read-str (String. head-bytes "UTF-8") :key-fn keyword)
           keys (set (map :key actual))
-          referenced (set (cons "head.json"
-                                (map :key (get-in head [:manifest :wal]))))]
+          referenced (set (concat ["head.json"]
+                                  (map :key (get-in head [:manifest :wal]))
+                                  (when-let [base (get-in head [:manifest :base])] [(:key base)])))]
+      (when-not (and (= expected-engine (get-in head [:engine :version]))
+                     (= expected-engine (get-in head [:engine :min_reader]))
+                     (= 1 (get-in head [:engine :backup_format]))
+                     (nil? (get-in head [:lease :owner]))
+                     (= (if (get-in head [:manifest :base]) 3 1) (get-in head [:manifest :seq]))
+                     (= 1 (count (get-in head [:manifest :wal]))))
+        (fail! "head fixture shape differs"))
       (when-not (and (= (get-in descriptor [:fixture :manifest]) (:manifest head))
                      (= keys referenced)
                      (= (int \{) (bit-and 255 (aget head-bytes 0))))
@@ -240,7 +261,79 @@
     (fail! "recovered aggregate differs from the Python writer readback"))
   actual)
 
-(defn -main [& args]
+(defn- require-rows! [opened expected]
+  (let [rows (:rows (reader/query! opened "SELECT n, ok, label FROM fixture.events ORDER BY n" []))]
+    (when-not (= expected rows) (fail! "exact typed rows differ"))
+    (doseq [[n ok label] rows]
+      (when-not (and (integer? n) (instance? Boolean ok) (string? label))
+        (fail! "recovered row types differ")))))
+
+(defn- checkpoint-controls! [fixture-root descriptor artifact-paths]
+  (let [object-id (get-in descriptor [:fixture :object_id])
+        object-root (.resolve (path fixture-root) object-id)
+        base (get-in descriptor [:fixture :manifest :base])
+        wal (first (get-in descriptor [:fixture :manifest :wal]))
+        snapshot-root (.resolve (.getParent (path fixture-root)) "base-only-store")
+        snapshot-object (.resolve snapshot-root object-id)
+        snapshot-before (inventory snapshot-object)
+        snapshot-head (json/read-str (slurp (str (.resolve snapshot-object "head.json"))) :key-fn keyword)]
+    (when-not (and (= 2 (get-in snapshot-head [:manifest :seq]))
+                   (= base (get-in snapshot-head [:manifest :base]))
+                   (empty? (get-in snapshot-head [:manifest :wal]))
+                   (= #{"head.json" (:key base)} (set (map :key snapshot-before))))
+      (fail! "invalid base-only snapshot"))
+    (doseq [[label ref action] [["missing-base" base :missing] ["corrupt-base" base :corrupt]
+                               ["truncated-base" base :truncated] ["missing-wal" wal :missing]
+                               ["corrupt-wal" wal :corrupt] ["backup-format" nil :format]]]
+      (let [scenario-root (.resolve (.getParent (path fixture-root)) (str "controls/" label))
+            scenario (.resolve scenario-root object-id)]
+        (doseq [entry (inventory object-root)]
+          (let [target (.resolve scenario (safe-key! (:key entry)))]
+            (Files/createDirectories (.getParent target) (make-array java.nio.file.attribute.FileAttribute 0))
+            (Files/copy (.resolve object-root (:key entry)) target no-copy-options)))
+        (if (= action :format)
+          (let [target (.resolve scenario "head.json")
+                head (json/read-str (slurp (str target)) :key-fn keyword)]
+            (spit (str target) (json/write-str (assoc-in head [:engine :backup_format] 2))))
+          (let [target (.resolve scenario (:key ref))]
+          (if (= action :missing) (Files/delete target)
+            (let [bytes (Files/readAllBytes target)
+                  value (if (= action :truncated)
+                          (let [value (byte-array (dec (alength bytes)))]
+                            (System/arraycopy bytes 0 value 0 (alength value)) value)
+                          bytes)]
+              (when (= action :corrupt) (aset-byte value 0 (unchecked-byte (bit-xor 1 (aget value 0)))))
+              (Files/write target value (make-array java.nio.file.OpenOption 0))))))
+        (when (= action :format)
+          (let [entries (inventory scenario)
+                mutant (-> descriptor (assoc-in [:fixture :logical_inventory] entries)
+                           (assoc-in [:fixture :inventory_sha256] (inventory-sha entries)))
+                called? (atom false)
+                error (with-redefs [durable/open-reader! (fn [& _] (reset! called? true) (fail! "reader unexpectedly opened"))]
+                        (rejected #(apply validate-descriptor! mutant scenario-root artifact-paths)))]
+            (when-not (and (= ::invalid-fixture (:type (ex-data error))) (false? @called?))
+              (fail! "backup-format mismatch was not rejected before reader open"))
+            (println "ok backup-format mismatch rejected before reader open")))
+        (println "prepared independent Jolt control" label)))))
+
+(defn- run-control! [fixture-root label]
+  (let [object-id "python-writer"
+        root (.resolve (path fixture-root) object-id)
+        before (inventory root)
+        error (try
+                (let [opened (durable/open-reader! {:namespace-backend (raw-read-only-backend fixture-root) :object-id object-id})]
+                  (try (when (= label "base-only")
+                         (require-rows! opened [[1 true "snowman ☃"] [2 false "question ?"]]))
+                       (finally (reader/close! opened))))
+                nil (catch Throwable error error))]
+    (if (= label "base-only")
+      (when error (throw error))
+      (when-not (= :jdbc.chdb.durable/corrupt (:type (ex-data error)))
+        (fail! (str "expected typed corruption rejection: " label))))
+    (when-not (= before (inventory root)) (fail! "control recovery changed protocol bytes"))
+    (println "ok independent fresh-process Jolt control" label)))
+
+(defn- valid-main! [args]
   (when-not (= 6 (count args))
     (fail! "usage: FIXTURE_ROOT DESCRIPTOR SOURCE_ARCHIVE CORE_WHEEL LIBCHDB HEADER"))
   (reset! failures 0)
@@ -255,7 +348,10 @@
         opened (durable/open-reader!
                 {:namespace-backend store
                  :object-id (get-in descriptor [:fixture :object_id])})
-        actual (try (observed opened) (finally (reader/close! opened)))
+        actual (try
+                 (when (get-in descriptor [:fixture :manifest :base])
+                   (require-rows! opened [[1 true "snowman ☃"] [2 false "question ?"] [3 true "comma,quote"]]))
+                 (observed opened) (finally (reader/close! opened)))
         after (validate-descriptor! descriptor fixture-root source-archive core-wheel
                                     native-library native-header)]
     (check "hosted fixture exchange uses the already-qualified cached Jolt"
@@ -269,6 +365,8 @@
     (check "Python writer aggregate survives Jolt WAL recovery" actual
            (require-aggregate! (get-in descriptor [:fixture :expected]) actual))
     (check "read-only recovery preserves every logical object byte" before after)
+    (when (get-in descriptor [:fixture :manifest :base])
+      (checkpoint-controls! fixture-root descriptor [source-archive core-wheel native-library native-header]))
     (doseq [[label mutant]
             [["source commit mutant is rejected"
               (assoc-in descriptor [:source :commit] (str "0" (subs expected-source 1)))]
@@ -278,10 +376,12 @@
               (assoc-in descriptor [:fixture :inventory_sha256] (apply str (repeat 64 "0")))]
              ["engine pin mutant is rejected"
               (assoc-in descriptor [:jolt_native :expected_engine_version] "26.7.2-rc.2")]]]
-      (check label true
-             (boolean (rejected #(validate-descriptor!
-                                  mutant fixture-root source-archive core-wheel
-                                  native-library native-header)))))
+      (let [called? (atom false)
+            error (with-redefs [durable/open-reader! (fn [& _] (reset! called? true) (fail! "reader unexpectedly opened"))]
+                    (rejected #(validate-descriptor!
+                                 mutant fixture-root source-archive core-wheel
+                                 native-library native-header)))]
+        (check label [::invalid-fixture false] [(:type (ex-data error)) @called?])))
     (check "aggregate mutant is rejected after real recovery"
            true
            (boolean (rejected #(require-aggregate! (assoc actual :n "4") actual)))))
@@ -289,3 +389,12 @@
     (println "all Python-writer logical fixture checks passed")
     (throw (ex-info (str @failures " Python-writer fixture checks failed")
                     {:failures @failures}))))
+
+(defn -main [& args]
+  (if (= 7 (count args))
+    (let [label (last args)]
+      (when-not (contains? #{"base-only" "missing-base" "corrupt-base" "truncated-base" "missing-wal" "corrupt-wal"} label)
+        (fail! "unknown control"))
+      (apply validate-provenance! (json/read-str (slurp (second args)) :key-fn keyword) (first args) (take 4 (drop 2 args)))
+      (run-control! (first args) label))
+    (valid-main! args)))

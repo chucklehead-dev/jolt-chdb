@@ -69,10 +69,13 @@ def inventory(root):
 
 
 def main(argv):
-    if len(argv) != 7:
-        fail("usage: SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL LIBCHDB HEADER OUTPUT_DIR")
+    if len(argv) not in (7, 8):
+        fail("usage: SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL LIBCHDB HEADER OUTPUT_DIR [wal|checkpoint]")
+    kind = argv[7] if len(argv) == 8 else "wal"
+    if kind not in ("wal", "checkpoint"):
+        fail("unknown fixture kind")
     source_root, source_archive, core_wheel, native_library, native_header, output = map(
-        pathlib.Path, argv[1:]
+        pathlib.Path, argv[1:7]
     )
     source_root = source_root.resolve()
     output = output.resolve()
@@ -116,10 +119,22 @@ def main(argv):
     obj.execute(
         "INSERT INTO events VALUES "
         "(1, true, 'snowman ☃'), "
-        "(2, false, 'question ?'), "
-        "(3, true, 'comma,quote')"
+        "(2, false, 'question ?')" +
+        (", (3, true, 'comma,quote')" if kind == "wal" else "")
     )
     published = obj.flush()
+    folded_wal = published
+    base_only = None
+    if kind == "checkpoint":
+        base_key = obj.checkpoint()
+        if make_backend("local:" + str(provider_root), OBJECT_ID).get(folded_wal) is None:
+            fail("folded WAL exclusion control was not established")
+        if obj.seq != 2 or obj.wal or obj.base.key != base_key:
+            fail("checkpoint did not fold the initial WAL")
+        snapshot_backend = make_backend("local:" + str(provider_root), OBJECT_ID)
+        base_only = snapshot_backend.get("head.json")
+        obj.execute("INSERT INTO events VALUES (3, true, 'comma,quote')")
+        published = obj.flush()
     obj.close()
 
     reader = namespace.open(OBJECT_ID, read_only=True)
@@ -146,8 +161,10 @@ def main(argv):
         and head.get("engine", {}).get("min_reader") == CORE_VERSION
         and head.get("lease", {}).get("owner") is None
         and manifest.get("db") == DATABASE
-        and manifest.get("base") is None
-        and manifest.get("seq") == 1
+        and (manifest.get("base") is None if kind == "wal" else
+             manifest.get("base", {}).get("key") == base_key)
+        and head.get("engine", {}).get("backup_format") == 1
+        and manifest.get("seq") == (1 if kind == "wal" else 3)
         and len(manifest.get("wal", [])) == 1
         and manifest["wal"][0].get("key") == published
     ):
@@ -159,6 +176,8 @@ def main(argv):
         b"must-not-be-exported"
     )
     logical_keys = ["head.json"] + [entry["key"] for entry in manifest["wal"]]
+    if kind == "checkpoint":
+        logical_keys.append(manifest["base"]["key"])
     fixture_object = output / "fixture-store" / OBJECT_ID
     for key in logical_keys:
         source = provider_root / OBJECT_ID / key
@@ -168,14 +187,23 @@ def main(argv):
     logical_inventory = inventory(fixture_object)
     if [entry["key"] for entry in logical_inventory] != sorted(logical_keys):
         fail("logical fixture contains a provider-private or unreferenced object")
-    wal_id = next(entry for entry in logical_inventory if entry["key"] == published)
-    wal_ref = manifest["wal"][0]
-    if wal_id["bytes"] != wal_ref["size"] or wal_id["sha256"] != wal_ref["sha256"]:
-        fail("published WAL bytes differ from the head reference")
+    for ref in manifest["wal"] + ([manifest["base"]] if kind == "checkpoint" else []):
+        actual = next(entry for entry in logical_inventory if entry["key"] == ref["key"])
+        if actual["bytes"] != ref["size"] or actual["sha256"] != ref["sha256"]:
+            fail("published object bytes differ from the head reference")
+    if base_only is not None:
+        snapshot = output / "base-only-store" / OBJECT_ID
+        snapshot.mkdir(parents=True)
+        (snapshot / "head.json").write_bytes(base_only)
+        target = snapshot / base_key
+        target.parent.mkdir(parents=True)
+        shutil.copyfile(fixture_object / base_key, target)
 
     provider_inventory = inventory(provider_root / OBJECT_ID)
     excluded = sorted(set(entry["key"] for entry in provider_inventory) - set(logical_keys))
-    if excluded != ["head.json.lock", "unreferenced-provider.canary"]:
+    expected_excluded = sorted(["head.json.lock", "unreferenced-provider.canary"] +
+                               ([folded_wal] if kind == "checkpoint" else []))
+    if excluded != expected_excluded:
         fail(f"unexpected Python provider-private inventory: {excluded!r}")
 
     descriptor = {

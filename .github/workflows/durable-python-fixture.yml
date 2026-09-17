@@ -110,3 +110,29 @@ jobs:
             "$(command -v jolt)" \
             "$QUALIFICATION_ROOT/native/libchdb.so" \
             "$QUALIFICATION_ROOT/native/chdb.h"
+
+      - name: Run Python checkpoint and suffix WAL to fresh Jolt readers
+        env:
+          JOLT_GATEBOOT_BUILD_DIR: ${{ runner.temp }}/jolt-gateboot
+        run: |
+          set -euo pipefail
+          bash scripts/verify-durable-python-writer-fixture.sh \
+            "$RUNNER_TEMP/python-checkpoint-output" \
+            "$QUALIFICATION_ROOT/source-extract/chdb-66643e5" \
+            "$QUALIFICATION_ROOT/chdb-source.tar" "$CORE_WHEEL" \
+            "$QUALIFICATION_ROOT/site" "$(command -v jolt)" \
+            "$QUALIFICATION_ROOT/native/libchdb.so" \
+            "$QUALIFICATION_ROOT/native/chdb.h" checkpoint
+
+      - name: Run Jolt checkpoint and suffix WAL to Python readers
+        env:
+          JOLT_GATEBOOT_BUILD_DIR: ${{ runner.temp }}/jolt-gateboot
+        run: |
+          set -euo pipefail
+          bash scripts/verify-durable-jolt-writer-fixture.sh \
+            "$RUNNER_TEMP/jolt-checkpoint-output" \
+            "$QUALIFICATION_ROOT/source-extract/chdb-66643e5" \
+            "$QUALIFICATION_ROOT/chdb-source.tar" "$CORE_WHEEL" \
+            "$QUALIFICATION_ROOT/site" "$(command -v jolt)" \
+            "$QUALIFICATION_ROOT/native/libchdb.so" \
+            "$QUALIFICATION_ROOT/native/chdb.h" checkpoint
