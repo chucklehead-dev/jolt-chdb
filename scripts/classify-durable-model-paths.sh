@@ -25,7 +25,8 @@ is_exhaustive_input() {
     scripts/generate-native-process-lifecycle-itf.sh | \
     scripts/durable-head-itf-commands.jq | \
     scripts/durable-head-itf-coverage.jq | \
-    scripts/classify-durable-model-paths.sh)
+    scripts/classify-durable-model-paths.sh | \
+    scripts/fingerprint-durable-model-inputs.sh)
       return 0
       ;;
     *)
@@ -118,6 +119,35 @@ case "$mode" in
     while IFS= read -r -d '' path; do
       paths+=("$path")
     done < "$diff_file"
+    # Refine only edits to the three established literate sources. Unknown
+    # inputs, renames/deletions and checker/workflow changes stay conservative.
+    literate_only=false
+    saw_literate=false
+    if (( ${#paths[@]} > 0 )); then
+      literate_only=true
+      for path in "${paths[@]}"; do
+        case "$path" in
+          formal/quint/durable-head-cas.md | \
+          formal/quint/durable-writer-lifecycle.md | \
+          formal/quint/native-process-lifecycle.md) saw_literate=true ;;
+          README.md | CHANGELOG.md) ;;
+          *) literate_only=false ;;
+        esac
+      done
+    fi
+    if [[ "$literate_only" == true && "$saw_literate" == true ]]; then
+      helper="$default_repo/scripts/fingerprint-durable-model-inputs.sh"
+      if base_fingerprint=$(bash "$helper" "$repo_root" "$diff_base" 2>/dev/null) && \
+         head_fingerprint=$(bash "$helper" "$repo_root" "$head" 2>/dev/null) && \
+         [[ "$base_fingerprint" =~ ^[a-f0-9]{64}$ && "$head_fingerprint" =~ ^[a-f0-9]{64}$ ]]; then
+        if [[ "$base_fingerprint" == "$head_fingerprint" ]]; then
+          emit_decision false effective-model-inputs-identical "${#paths[@]}"
+          exit 0
+        fi
+      fi
+      emit_decision true effective-model-inputs-changed-or-unavailable "${#paths[@]}"
+      exit 0
+    fi
     classify_paths "${paths[@]}"
     ;;
   *)
