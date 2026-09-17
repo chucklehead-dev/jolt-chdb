@@ -1349,6 +1349,114 @@
           (reset! fault false)
           (writer/close! writer))))))
 
+(defn- landed-checkpoint-response-lost-store [delegate]
+  ;; Used only for one real checkpoint commit, after ordinary acquisition.
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (let [result (backend/replace-if-match! delegate key bytes etag)]
+        (if (= :replaced (:status result)) {:status :ambiguous} result)))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
+(defn- run-checkpoint-public-retry-checks! []
+  ;; Model native operations, real memory backend/control CAS and reconciliation;
+  ;; reachable "abc" references do not qualify native backup recoverability.
+  (doseq [[cut label] [[:confirmed "confirmed-checkpoint-cleanup-error-then-empty-flush"]
+                     [:pre-cas "pre-cas-primary-error-then-flush-retry"]
+                     [:post-cas "post-cas-lost-response-then-public-flush"]
+                     [:reconciled "reconciled-cas-then-cleanup-error"]]]
+    (let [calls (atom []) close-count (atom 0) fault (atom true)
+          commits (atom []) deletions (atom 0) publications (atom 0)
+          primary (ex-info "controlled retry primary" {:type ::retry-primary})
+          cleanup (ex-info "controlled retry cleanup" {:type ::retry-cleanup})
+          base (model-checkpoint-operations calls close-count)
+          operations
+          (assoc base
+                 :publish-checkpoint!
+                 (fn [store token path]
+                   (swap! publications inc)
+                   ((:publish-checkpoint! base) store token path))
+                 :commit-reference!
+                 (fn [store token request]
+                   (when (and @fault (= cut :pre-cas)) (throw primary))
+                   (let [commit-store (if (and @fault (= cut :reconciled))
+                                        (landed-checkpoint-response-lost-store store)
+                                        store)
+                         result (control/commit-reference!
+                                 commit-store token
+                                 (assoc request :engine-metadata
+                                        {:version (:engine-version base-options)
+                                         :backup-format (:backup-format base-options)
+                                         :min-reader (:min-reader base-options)}))]
+                     (swap! commits conj (:status result))
+                     (when (and @fault (= cut :post-cas)) (throw primary))
+                     result))
+                 :delete-checkpoint!
+                 (fn [_] (swap! deletions inc)
+                   (when @fault (throw cleanup))))
+          {:keys [store writer]} (new-writer calls close-count operations)]
+      (try
+        (writer/execute! writer "INSERT INTO t VALUES (1)")
+        (writer/sql! writer "INSERT INTO t VALUES (?)" [2])
+        (let [head-before (stored-head-bytes store)
+              pending-before @(:wal-state writer)
+              error (try (writer/flush! writer) nil (catch Throwable e e))
+              confirmed? (contains? #{:confirmed :reconciled} cut)
+              first-head (stored-head-bytes store)
+              first-calls @calls]
+          (check (str label " returns exact error, not a success ACK")
+                 true (identical? (if confirmed? cleanup primary) error))
+          (check (str label " observes first HEAD sequence independently")
+                 (if (= cut :pre-cas) 0 1)
+                 (get-in (:head (control/read-head! store)) ["manifest" "seq"]))
+          (when (= cut :pre-cas)
+            (check (str label " preserves pre-CAS HEAD bytes") head-before first-head))
+          (check (str label " clears pending only after confirmed control return")
+                 true (if confirmed?
+                        (= {:lines [] :byte-count 0 :checkpoint-required? false}
+                           @(:wal-state writer))
+                        (= pending-before @(:wal-state writer))))
+          (check (str label " deletion attempted once") 1 @deletions)
+          (when (= cut :reconciled)
+            (check (str label " actually reconciles landed backend CAS")
+                   [:reconciled] @commits))
+          (reset! fault false)
+          (let [result (writer/flush! writer)
+                final-head (:head (control/read-head! store))]
+            (check (str label " next public flush has the documented result")
+                   (if confirmed? :empty :committed) (:status result))
+            (check (str label " next HEAD sequence is not falsely deduplicated")
+                   (if (= cut :post-cas) 2 1)
+                   (get-in final-head ["manifest" "seq"]))
+            (check (str label " retains verified model checkpoint reference and empty manifest WAL")
+                   [true []]
+                   [(boolean (get-in final-head ["manifest" "base"]))
+                    (get-in final-head ["manifest" "wal"])])
+            (check (str label " independently reaches model checkpoint bytes")
+                   "abc"
+                   (String. (backend/get-bytes
+                             store (get-in final-head ["manifest" "base" "key"]))
+                            "UTF-8"))
+            (check (str label " next flush clears covered pending state")
+                   [0 false]
+                   ((juxt :pending-statements :checkpoint-required?) (writer/status writer)))
+            (check (str label " does not replay local application mutations")
+                   first-calls @calls)
+            (check (str label " creates and deletes only required archives")
+                   (if confirmed? [1 1] [2 2]) [@publications @deletions])
+            (when confirmed?
+              (check (str label " empty retry leaves HEAD bytes unchanged")
+                     first-head (stored-head-bytes store)))))
+        (finally
+          (reset! fault false)
+          (writer/close! writer))))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-statement-size-fastpath-checks!)
@@ -1356,6 +1464,7 @@
     (if supported?
       (do
         (run-checkpoint-cleanup-precedence-checks!)
+        (run-checkpoint-public-retry-checks!)
         (run-deterministic-checks!)
         (run-stateful-property!))
       (do
