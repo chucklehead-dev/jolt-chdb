@@ -15,6 +15,7 @@ on:
       - formal/durable-head-cas*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
+      - scripts/fingerprint-durable-model-inputs.sh
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
@@ -38,6 +39,7 @@ on:
       - formal/durable-head-cas*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
+      - scripts/fingerprint-durable-model-inputs.sh
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
       - scripts/generate-durable-head-itf.sh
@@ -70,7 +72,14 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Test model-input path classification
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - name: Install pinned effective-input tangler
+        run: go install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
+      - name: Test effective model-input classification
+        # Same pinned extractor for both isolated base/head data exports.
+        # No Quint/Jolt/solver is executed by this decision tier.
         run: test/durable-model-path-classifier.sh
       - name: Classify the exact base and head
         id: decision

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Skip exhaustive Durable checks for known literate-prose-only edits only when
+  exact base/head effective models and checker/tool/corpus inventories match.
+  Preserve fast and manual gates; missing/unknown inputs or extraction failures
+  select exhaustive checks. No invariants, bounds or mutant checks are removed.
+
 - Clarify checkpoint cleanup error/flush retry semantics and qualify public
   retries with model-native operations and real memory-backend CAS; document
   the lifecycle model's omitted per-checkpoint exception boundary (#113).

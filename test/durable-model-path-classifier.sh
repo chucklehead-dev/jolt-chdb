@@ -162,6 +162,93 @@ check_reason "non-repository boundary reports checked Git failure" \
   diff-command-failed "$fixture_root/not-a-repo" \
   --diff "$root_commit" "$fast_commit"
 
+# Full real source inventory, isolated Git history and pinned extraction only.
+# No exported script, Quint evaluator or solver is executed from this fixture.
+effective_repo="$fixture_root/effective"
+mkdir -p "$effective_repo"
+git archive HEAD formal scripts .github/workflows/durable-head-quint.yml | \
+  tar -x -C "$effective_repo"
+git -C "$effective_repo" init -q
+git -C "$effective_repo" config user.name "model classifier test"
+git -C "$effective_repo" config user.email "model-classifier@example.invalid"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m effective-base
+effective_base=$(git -C "$effective_repo" rev-parse HEAD)
+printf '\nProse-only extraction control.\n' >> "$effective_repo/formal/quint/durable-writer-lifecycle.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m prose-only
+prose_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_reason "prose-only effective inputs skip exhaustive" \
+  effective-model-inputs-identical "$effective_repo" --diff "$effective_base" "$prose_head"
+check_output "prose-only decision is explicitly false" false "$effective_repo" \
+  --diff "$effective_base" "$prose_head"
+printf 'Neutral changelog entry.\n' > "$effective_repo/CHANGELOG.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m prose-plus-changelog
+prose_changelog_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_reason "prose plus changelog keeps effective-input skip" \
+  effective-model-inputs-identical "$effective_repo" --diff "$effective_base" "$prose_changelog_head"
+sed -i 's/module durableHeadCasCorrected/module durableHeadCasChanged/' \
+  "$effective_repo/formal/quint/durable-head-cas.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m changed-extracted-model
+model_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "changed extracted model requests exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$model_head"
+printf '\n```quint target/formal/quint/unknown.qnt +=\nmodule unknown {}\n```\n' \
+  >> "$effective_repo/formal/quint/durable-head-cas.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m unknown-extraction-output
+unknown_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "unknown output fails closed before extraction" true "$effective_repo" \
+  --diff "$model_head" "$unknown_head"
+check "fingerprinter changes require exhaustive" true --paths \
+  scripts/fingerprint-durable-model-inputs.sh
+git -C "$effective_repo" checkout -q "$prose_head"
+printf 'Only prose; no lifecycle code outputs.\n' > \
+  "$effective_repo/formal/quint/durable-writer-lifecycle.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m missing-extracted-inventory
+missing_output_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "missing extracted output selects exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$missing_output_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+git -C "$effective_repo" rm -q formal/quint/durable-writer-lifecycle.md
+git -C "$effective_repo" commit -q -m missing-literate-source
+missing_source_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "missing literate source selects exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$missing_source_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+sed -i 's/--max-steps 6/--max-steps 5/g' \
+  "$effective_repo/scripts/check-durable-head-quint.sh"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m changed-checker-bound
+checker_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "changed checker bound selects exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$checker_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+printf '\ncorpus mutation\n' >> "$effective_repo/formal/quint/traces/corrected-mbt.itf.json"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m changed-corpus
+corpus_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "changed checked corpus selects exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$corpus_head"
+bad_tools="$fixture_root/bad-tools"
+mkdir "$bad_tools"
+printf '#!/bin/sh\nprintf "tool-version-mismatch\\n"\n' > "$bad_tools/go"
+chmod 755 "$bad_tools/go"
+PATH="$bad_tools:$PATH" check_output "tangler metadata mismatch selects exhaustive" \
+  true "$effective_repo" --diff "$effective_base" "$prose_head"
+# Fault stub reaches the extraction boundary after a synthetic metadata pass.
+# It is not presented as a real pinned extractor or successful extraction.
+failed_extractor="$fixture_root/failed-extractor"
+mkdir "$failed_extractor"
+printf '#!/bin/sh\nprintf "\\tmod github.com/driusan/lmt v0.0.0-20210421124901-62fe18f2f6a6 fixture\\n"\n' > "$failed_extractor/go"
+printf '#!/bin/sh\nexit 17\n' > "$failed_extractor/lmt"
+chmod 755 "$failed_extractor/go" "$failed_extractor/lmt"
+PATH="$failed_extractor:$PATH" check_output "extractor command failure selects exhaustive" \
+  true "$effective_repo" --diff "$effective_base" "$prose_head"
+
 if (( failures > 0 )); then
   echo "$failures classifier checks failed" >&2
   exit 1
