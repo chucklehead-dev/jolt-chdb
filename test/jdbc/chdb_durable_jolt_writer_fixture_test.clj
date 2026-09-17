@@ -59,9 +59,14 @@
   key)
 
 (defn -main [& args]
-  (when-not (= 1 (count args)) (fail! "usage: OUTPUT_DIR"))
+  (when-not (<= 1 (count args) 2) (fail! "usage: OUTPUT_DIR [wal|checkpoint]"))
   (verify-close-precedence!)
-  (let [root (.toAbsolutePath (Paths/get (first args) (make-array String 0)))
+  (let [kind (or (second args) "wal")
+        _ (when-not (contains? #{"wal" "checkpoint"} kind) (fail! "unknown fixture kind"))
+        checkpoint? (= kind "checkpoint")
+        base-head (atom nil)
+        folded-wal (atom nil)
+        root (.toAbsolutePath (Paths/get (first args) (make-array String 0)))
         provider (.resolve root "jolt-local-provider")
         scratch (.resolve root "scratch")
         object-id "jolt-writer"
@@ -81,9 +86,22 @@
           (writer/execute! opened
                          "CREATE TABLE events (n Int64, ok Bool, label String) ENGINE=MergeTree ORDER BY n")
           (writer/execute! opened
-                         "INSERT INTO events VALUES (1, true, 'snowman ☃'), (2, false, 'question ?'), (3, true, 'comma,quote')")
+                         (str "INSERT INTO events VALUES (1, true, 'snowman ☃'), (2, false, 'question ?')"
+                              (when-not checkpoint? ", (3, true, 'comma,quote')")))
           (when-not (= :committed (:status (writer/flush! opened)))
-            (fail! "WAL flush did not commit")))
+            (fail! "WAL flush did not commit"))
+          (when checkpoint?
+            (reset! folded-wal (get-in (:head (control/read-head-read-only! store)) ["manifest" "wal" 0 "key"]))
+            (when-not (= :committed (:status (writer/checkpoint! opened)))
+              (fail! "checkpoint did not commit"))
+            (reset! base-head (:head (control/read-head-read-only! store)))
+            (when-not (and (= 2 (get-in @base-head ["manifest" "seq"]))
+                           (map? (get-in @base-head ["manifest" "base"]))
+                           (empty? (get-in @base-head ["manifest" "wal"])))
+              (fail! "checkpoint did not fold the initial WAL"))
+            (writer/execute! opened "INSERT INTO events VALUES (3, true, 'comma,quote')")
+            (when-not (= :committed (:status (writer/flush! opened)))
+              (fail! "suffix WAL flush did not commit"))))
         #(writer/close! opened))
       (backend/put-bytes-if-absent! store "unreferenced-provider.canary"
                                     (.getBytes "must-not-be-exported" "UTF-8"))
@@ -94,8 +112,11 @@
                        (= "26.7.3" (get-in head ["engine" "min_reader"]))
                        (nil? (get-in head ["lease" "owner"]))
                        (= "fixture" (get manifest "db"))
-                       (nil? (get manifest "base"))
-                       (= 1 (get manifest "seq")) (= 1 (count wal)))
+                       (= 1 (get-in head ["engine" "backup_format"]))
+                       (if checkpoint?
+                         (= (get manifest "base") (get-in @base-head ["manifest" "base"]))
+                         (nil? (get manifest "base")))
+                       (= (if checkpoint? 3 1) (get manifest "seq")) (= 1 (count wal)))
           (fail! "unexpected released WAL-only head"))
         (let [entries
               (mapv
@@ -108,12 +129,22 @@
                    (Files/write target bytes empty-options)
                    {:key key :bytes (alength bytes)
                     :sha256 (digest/sha256-file target)}))
-               (sort (cons "head.json" (map #(get % "key") wal))))]
+               (sort (concat ["head.json"] (map #(get % "key") wal)
+                             (when checkpoint? [(get-in manifest ["base" "key"])]))))]
+          (when checkpoint?
+            (let [snapshot (.resolve root (str "base-only-store/" object-id))
+                  key (safe-key! (get-in manifest ["base" "key"]))
+                  target (.resolve snapshot key)]
+              (Files/createDirectories (.getParent target) empty-attributes)
+              (Files/write target (backend/get-bytes store key) empty-options)
+              (spit (str (.resolve snapshot "head.json")) (json/write-str @base-head))))
           (when-not (backend/get-bytes store "unreferenced-provider.canary")
             (fail! "canary control was not established"))
+          (when (and checkpoint? (not (backend/get-bytes store @folded-wal)))
+            (fail! "folded WAL exclusion control was not established"))
           (spit (str (.resolve root "fixture.json"))
                 (json/write-str {:schema_version 1 :object_id object-id
                                  :engine "26.7.3" :database "fixture"
                                  :inventory entries
-                                 :excluded ["unreferenced-provider.canary"]}))
-          (println "exported released Jolt WAL-only logical object; canary excluded"))))))
+                                 :excluded (cond-> ["unreferenced-provider.canary"] checkpoint? (conj @folded-wal))}))
+          (println "exported released Jolt logical object" kind "; canary and obsolete objects excluded"))))))

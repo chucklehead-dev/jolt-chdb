@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 8 ]]; then
-  echo "usage: $0 OUTPUT_DIR SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL CORE_SITE JOLT_BIN LIBCHDB HEADER" >&2
+if [[ $# -ne 8 && $# -ne 9 ]]; then
+  echo "usage: $0 OUTPUT_DIR SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL CORE_SITE JOLT_BIN LIBCHDB HEADER [wal|checkpoint]" >&2
   exit 2
 fi
 
@@ -14,6 +14,8 @@ core_site=$(realpath "$5")
 jolt_bin=$(realpath "$6")
 libchdb=$(realpath "$7")
 header=$(realpath "$8")
+kind=${9:-wal}
+[[ "$kind" == wal || "$kind" == checkpoint ]] || exit 2
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
 jolt_command=("$jolt_bin")
 
@@ -35,10 +37,23 @@ fi
 mkdir -p "$output"
 
 env PYTHONPATH="$source_root:$core_site" \
+  timeout --signal=TERM --kill-after=5s 90s \
   python3 "$repo_root/scripts/generate-durable-python-writer-fixture.py" \
-  "$source_root" "$source_archive" "$core_wheel" "$libchdb" "$header" "$output"
+  "$source_root" "$source_archive" "$core_wheel" "$libchdb" "$header" "$output" "$kind"
 
 env JOLT_CHDB_LIB="$libchdb" \
   "${jolt_command[@]}" -Srepro -M:durable-python-writer-fixture-test \
   "$output/fixture-store" "$output/fixture.json" "$source_archive" \
   "$core_wheel" "$libchdb" "$header"
+
+if [[ "$kind" == checkpoint ]]; then
+  for label in base-only missing-base corrupt-base truncated-base missing-wal corrupt-wal; do
+    control_root="$output/controls/$label"
+    [[ "$label" != base-only ]] || control_root="$output/base-only-store"
+    env JOLT_CHDB_LIB="$libchdb" \
+      timeout --signal=TERM --kill-after=5s 90s \
+      "${jolt_command[@]}" -Srepro -M:durable-python-writer-fixture-test \
+      "$control_root" "$output/fixture.json" "$source_archive" \
+      "$core_wheel" "$libchdb" "$header" "$label"
+  done
+fi

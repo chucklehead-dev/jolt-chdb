@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -ne 8 ]]; then
-  echo 'usage: OUTPUT_DIR SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL CORE_SITE JOLT_BIN LIBCHDB HEADER' >&2
+if [[ $# -ne 8 && $# -ne 9 ]]; then
+  echo 'usage: OUTPUT_DIR SOURCE_ROOT SOURCE_ARCHIVE CORE_WHEEL CORE_SITE JOLT_BIN LIBCHDB HEADER [wal|checkpoint]' >&2
   exit 2
 fi
 output=$(realpath -m "$1")
@@ -12,6 +12,8 @@ core_site=$(realpath "$5")
 jolt_bin=$(realpath "$6")
 libchdb=$(realpath "$7")
 header=$(realpath "$8")
+kind=${9:-wal}
+[[ "$kind" == wal || "$kind" == checkpoint ]] || exit 2
 repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
 [[ ! -e "$output" ]] || { echo 'output directory must be absent' >&2; exit 2; }
 for artifact in "$source_archive" "$core_wheel" "$jolt_bin" "$libchdb" "$header"; do
@@ -32,7 +34,7 @@ fi
 cd "$repo_root"
 env JOLT_CHDB_LIB="$libchdb" \
   timeout --signal=TERM --kill-after=5s 90s \
-  "${jolt_command[@]}" -Srepro -M:durable-jolt-writer-fixture-test "$output"
+  "${jolt_command[@]}" -Srepro -M:durable-jolt-writer-fixture-test "$output" "$kind"
 env PYTHONPATH="$source_root:$core_site" \
   timeout --signal=TERM --kill-after=5s 90s \
   python3 "$repo_root/scripts/read-durable-jolt-writer-fixture.py" \

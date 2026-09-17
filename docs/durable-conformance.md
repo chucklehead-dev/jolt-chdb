@@ -44,6 +44,30 @@ gate, then runs bounded Hegel properties. Four causal comparator mutants prove
 the corpus distinguishes lexical rc ordering, reversed release/prerelease
 precedence, unknown-suffix prerelease treatment, and fixed three-part parsing.
 
+## Native checkpoint exchange
+
+The Python fixture workflow also runs a separate checkpoint-plus-WAL case in
+each direction using the same pinned Linux core26.7.3 artifacts. The writer
+flushes two typed rows, creates a full backup through its public checkpoint API,
+then adds and flushes a third row. Independent readers must recover exactly two
+rows from the base-only snapshot and all three from the base plus live suffix
+WAL. Backup format1, sequence transitions1/2/3 and each referenced object's own
+size and SHA-256 are checked; separately generated archives need not be equal.
+
+Missing, same-length altered and truncated base objects, plus missing and
+same-length altered suffix WAL, must produce the consumer's explicit corruption
+category. Every successful or failed readonly recovery preserves the logical
+protocol-file inventory. Jolt cases run in separate processes with empty scratch
+because closing a snapshot does not release its process-wide native storage
+lifetime. Export excludes provider metadata, an established canary, and folded
+WAL. Jolt exports decoded protocol bytes, not local-provider envelopes.
+
+These are same-release logical-protocol fixtures, not production provider
+interchange, cross-release or cross-platform compatibility, AWS checkpoint
+recovery, throughput qualification, or complete V1 conformance. Hosted execution
+must pass before claiming native interoperability; source review alone is not
+evidence that a backup restores successfully.
+
 ## Lease-time raw-byte oracle
 
 The public writer-open boundary has a separate, offline cross-language numeric

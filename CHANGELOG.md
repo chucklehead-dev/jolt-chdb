@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add same-release 26.7.3 bidirectional native checkpoint plus suffix-WAL
+  fixture cases alongside existing WAL-only exchange. Require base-only and
+  final typed rows, missing/altered/truncated base and missing/altered WAL
+  corruption rejection, and unchanged readonly protocol inventories.
+  This does not qualify other releases, platforms, providers or performance.
+
 - Add a serial, pinned Jolt-writer to Python-reader logical WAL fixture gate,
   complementing Python-writer to Jolt-reader coverage. Check exact rows,
   aggregates, unchanged protocol bytes, and corrupt/missing WAL controls;
