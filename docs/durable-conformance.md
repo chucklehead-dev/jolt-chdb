@@ -168,6 +168,25 @@ allow-fenced-effects, and drop-read mutants each expose the intended invariant.
 
 ## Python-writer logical fixture exchange
 
+The reverse gate uses the same immutable Python source, core wheel and native
+library/header pins. A public Jolt writer creates and flushes a small object,
+closes its lease, and exports decoded `head.json` and the referenced WAL through
+the backend API. It does not copy the local provider's private envelope.
+An established unreferenced canary is excluded from the export.
+
+The independent Python reader opens those raw logical bytes read-only and checks
+exact rows and aggregates. Missing/corrupt WAL copies must fail through Python
+open; descriptor mismatch fails before opening. Logical-object inventories are
+compared before and after successful and failed reads. This same-release,
+Linux x86_64 WAL-only lane makes no checkpoint or cross-version claim.
+Its receipt records input artifacts, the Python extension and before/after
+protocol inventories; provider-private files are not protocol objects.
+
+Run `bash scripts/verify-durable-jolt-writer-fixture.sh` with the same eight
+arguments as the forward helper below, choosing a fresh absent output directory.
+For local runs set `JOLT_WRAPPER=/home/chuck/ai-src/tools/jolt-with-chez-10.4.1`.
+The workflow executes both directions serially and preserves failed fixtures.
+
 The focused Linux x86_64 fixture lane runs the upstream Python Durable writer
 from pinned chDB source commit
 `66643e5030fb73c30ac5cdd31d4c7858ea040ed0` with the checksum-pinned
