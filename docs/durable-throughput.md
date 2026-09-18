@@ -419,15 +419,17 @@ integer-character overload, which already uses Jolt's checked Scheme scanner.
 The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
-The current dependency advances to `casselc/data.json`
-`3174868a7baa06e118fb8d1201edd98c5769b335`. In addition to the run scanner
-above, that merge decodes the eight ordinary JSON escapes directly from the
-immutable String with a local cursor and constant result strings. It
-synchronizes the observable reader position before return, error, or fallback;
-Unicode, invalid escapes, escape EOF, raw astral input, and generic readers keep
-the shared decoder. Durable's validation-before-replay ordering, strict UTF-8,
-wire bytes, record order, checksums, and engine-effect vocabulary do not change,
-so the correctness models and trace schema require no transition update.
+The active dependency is `casselc/data.json`
+`97298fd8a67a6d4ee3eb1346d5e184beb9565b90`. It retains the earlier
+String-backed reader fast path for the eight ordinary JSON escapes: an immutable
+String is decoded with a local cursor and constant result strings, while reader
+position remains synchronized before return, error, or fallback. Unicode,
+invalid escapes, escape EOF, raw astral input, and generic readers keep the
+shared decoder. Durable's validation-before-replay ordering, strict UTF-8, wire
+bytes, record order, checksums, and engine-effect vocabulary do not change, so
+the correctness models and trace schema require no transition update. The newer
+pin must still be measured by the current Durable matrix; this historical reader
+diagnostic is not evidence that the active pin improves admission.
 
 A frozen one-record diagnostic over a 385,750-character WAL record containing
 40,449 simple escapes reduced full `read-str` p50 from 111.78 ms to 18.62 ms

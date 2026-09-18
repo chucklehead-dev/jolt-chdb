@@ -20,7 +20,7 @@
 
 (def ^:private expected-data-json-coordinate
   '{:git/url "https://github.com/casselc/data.json.git"
-    :git/sha "3174868a7baa06e118fb8d1201edd98c5769b335"})
+    :git/sha "97298fd8a67a6d4ee3eb1346d5e184beb9565b90"})
 
 (defn- exact-data-json-pin? [deps]
   (= expected-data-json-coordinate
@@ -317,25 +317,25 @@
                 (file-seq (java.io.File. ".github/workflows")))
         hosted-text (str action "\n" (str/join "\n" (map slurp workflow-files)))
         stale-pin (str "fd" "216943")]
-    (check "project resolves the exact merged data.json recovery fast path"
+    (check "project resolves the exact current data.json pin"
            true (exact-data-json-pin? deps))
-    (check "exact-pin contract rejects the superseded data.json revision"
+    (check "exact-pin contract rejects the stale prior data.json pin"
            false
            (exact-data-json-pin?
             (assoc-in deps
                       [:deps 'org.clojure/data.json :git/sha]
-                      "36b1902459b39487cd518c90e82d1848db3c043b")))
+                      "3174868a7baa06e118fb8d1201edd98c5769b335")))
     (check "exact-pin contract rejects a different data.json source"
            false
            (exact-data-json-pin?
             (assoc-in deps
                       [:deps 'org.clojure/data.json :git/url]
                       "https://github.com/clojure/data.json.git")))
-    (check "recovery performance documentation binds the merged reader pin"
+    (check "recovery performance documentation binds the current data.json pin"
            true
            (str/includes?
             durable-doc
-            "3174868a7baa06e118fb8d1201edd98c5769b335"))
+            "97298fd8a67a6d4ee3eb1346d5e184beb9565b90"))
     (check "local selector runner retains checked peak-RSS evidence"
            true
            (and (str/includes? durable-doc

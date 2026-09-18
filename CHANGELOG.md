@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Correct the Durable throughput pin contract and documentation to name the
+  active `casselc/data.json` revision. This restores the fail-closed benchmark
+  gate; it does not claim a new throughput result.
+
 - Update the DB and optimized data.json pins together to their merged shared
   time-provider metadata fixes. This prepares the natural dependency graph for
   fresh-process Durable benchmarking without qualification overrides; it does
