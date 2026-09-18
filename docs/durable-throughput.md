@@ -118,6 +118,25 @@ selector and run it in a fresh process. GNU `time` is external to Jolt, so save
 its stderr beside the EDN report. For example:
 
 ```sh
+JOLT_WRAPPER=/absolute/path/to/jolt-with-chez-10.4.1 \
+BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt \
+BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit \
+JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
+scripts/run-durable-throughput-selector.sh scale-1000 \
+  target/profiles/scale-1000-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+The helper refuses a dirty checkout, a non-isolated selector, missing pinned
+runtime provenance, or a reused output directory. It writes `report.edn`, a
+bounded `run.log`, GNU `time`'s `time-v.txt`, and a private persistent
+`receipts/` root for the process-isolated writer/reader handoffs; it then
+requires exactly one positive `Maximum resident set size (kbytes)` and an exit
+status of zero. Keep the whole output directory together. The helper does not
+upload artifacts or print environment values.
+
+The equivalent explicit command is:
+
+```sh
 BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt
 BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit
 

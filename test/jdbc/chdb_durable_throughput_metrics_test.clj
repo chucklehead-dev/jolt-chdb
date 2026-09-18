@@ -304,6 +304,8 @@
 
   (let [deps (edn/read-string (slurp "deps.edn"))
         durable-doc (slurp "docs/durable-throughput.md")
+        local-selector-runner
+        (slurp "scripts/run-durable-throughput-selector.sh")
         workflow (slurp ".github/workflows/durable-aws.yml")
         action (slurp ".github/actions/install-jolt-aspects/action.yml")
         benchmark (slurp "bench/jdbc/chdb_durable_throughput.clj")
@@ -334,6 +336,15 @@
            (str/includes?
             durable-doc
             "3174868a7baa06e118fb8d1201edd98c5769b335"))
+    (check "local selector runner retains checked peak-RSS evidence"
+           true
+           (and (str/includes? durable-doc
+                               "run-durable-throughput-selector.sh scale-1000")
+                (str/includes? local-selector-runner "/usr/bin/time -v")
+                (str/includes? local-selector-runner
+                               "BENCH_PERSISTENT_RECEIPT_ROOT")
+                (str/includes? local-selector-runner
+                               "check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
     (check "throughput waits for successful provider qualification"
            true
            (and (str/includes? workflow "needs: s3-provider")
