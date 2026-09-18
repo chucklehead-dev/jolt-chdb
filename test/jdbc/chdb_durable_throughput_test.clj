@@ -377,9 +377,141 @@
                :provider-kind :provider-identity-canary
                :cleanup! (fn [] nil)})))))
 
+(defn- worker-contract-checks! []
+  (let [configuration #'throughput/matched-configuration
+        local (configuration :local-posix 512)
+        aws (configuration :aws-s3 512)
+        schedule [:batch-size :batches :warmup-batches :trials :question-mark? :modes]]
+    (check "matched local and AWS use the same logical schedule"
+           (select-keys local schedule) (select-keys aws schedule))
+    (check "matched sweep reuses all four existing batch sizes"
+           [512 1000 5000 10000]
+           (mapv #(get (configuration :local-posix %) :batch-size) [512 1000 5000 10000]))
+    (check "matched selector does not claim crash-safe admission ACK"
+           :jdbc-return-not-crash-safe-ack
+           (:admission @#'throughput/measurement-boundaries))
+    (doseq [[provider size] [[:unknown 512] [:local-posix 7]]]
+      (check "unknown matched provider or batch fails closed"
+             :jdbc.chdb-durable-throughput/invalid-matched-configuration
+             (rejected-type #(configuration provider size)))))
+  (let [options {:batch-size 2 :batches 1 :warmup-batches 0 :trial 1
+                 :question-mark? false :encode-included? false}
+        descriptor {:root "/tmp/owned-benchmark-contract"
+                    :provider-kind :local-posix
+                    :object-id "bench-worker-00000000-0000-0000-0000-000000000001"}
+        token "00000000-0000-0000-0000-000000000002"
+        runtime {:scheme-version "10.4.1"}
+        request {:kind :uninstrumented :role :writer :token token
+                 :options options :descriptor descriptor :runtime-identity runtime}
+        receipt {:schema-version 1 :role :writer :token token :runtime runtime
+                 :value {} :inventory (select-keys request [:kind :options :descriptor])}
+        require-receipt #'throughput/require-worker-receipt!
+        require-scope #'throughput/require-worker-scope!
+        require-completion #'throughput/require-worker-completion!
+        require-marker #'throughput/require-worker-marker!
+        line (str ":durable-bench-worker-complete :writer " token)]
+    (check "owned worker positive receipt preserves its exact inventory"
+           receipt (require-receipt receipt :writer token request))
+    (doseq [[label altered]
+            [["cross-role" (assoc receipt :role :reader)]
+             ["wrong-trial" (assoc-in receipt [:inventory :options :trial] 2)]
+             ["wrong-descriptor" (assoc-in receipt [:inventory :descriptor :root] "/tmp/other")]
+             ["wrong-source" (assoc-in receipt [:runtime :scheme-version] "other")]]]
+      (check (str "worker rejects " label " receipt")
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #(require-receipt altered :writer token request))))
+    (check "owned worker request path scope is exact" nil
+           (require-scope request "/tmp/owned-benchmark-contract/writer-request.edn"
+                          "/tmp/owned-benchmark-contract/writer-result.edn"))
+    (check "worker rejects descriptor tampering before backend reconstruction"
+           :jdbc.chdb-durable-throughput/invalid-worker-receipt
+           (rejected-type #(require-scope (assoc-in request [:descriptor :root] "/tmp/other")
+                                         "/tmp/owned-benchmark-contract/writer-request.edn"
+                                         "/tmp/owned-benchmark-contract/writer-result.edn")))
+    (check "exact worker completion marker is accepted" nil
+           (require-marker [line] :writer token))
+    (doseq [lines [[] [line line]]]
+      (check "missing/duplicate completion is not qualified"
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #(require-marker lines :writer token))))
+    (check "ordinary settled exit zero permits the next worker" nil
+           (require-completion {:exit 0} {:exit 0}))
+    (doseq [[initial settled] [[nil nil] [nil {:exit 0}] [{:exit 7} {:exit 7}]
+                              [{:exit 7} {:exit 0}]]]
+      (check "timeout/unconfirmed/nonzero primary cannot qualify a later receipt"
+             :jdbc.chdb-durable-throughput/worker-failed
+             (rejected-type #(require-completion initial settled))))
+    (check "late zero exit does not replace the failed initial-wait primary"
+           {:type :jdbc.chdb-durable-throughput/worker-failed
+            :terminal? true :primary :wait-failed}
+           (try (require-completion nil {:exit 0}) nil
+                (catch Throwable error (ex-data error))))
+    (with-redefs [clojure.core/slurp (fn [_] (str (pr-str receipt) "\n" (pr-str receipt)))]
+      (check "duplicate result forms cannot hide behind one stdout marker"
+             :jdbc.chdb-durable-throughput/invalid-worker-receipt
+             (rejected-type #( #'throughput/read-owned-edn! :controlled-path))))
+    (check "nonserializable custom provider remains explicitly unsupported"
+           :jdbc.chdb-durable-throughput/nonserializable-provider
+           (rejected-type #( #'throughput/provider-descriptor!
+                             {:backend-context! (fn [_] nil)} "/tmp/owned")))))
+
+(defn- orchestration-contract-checks! []
+  ;; Real orchestration, mocked native subprocess only. Keep this unique owned
+  ;; persistent fixture and its child directories; never broad-delete evidence.
+  (let [parent (java.io.File. "target/profiles/worker-orchestration-contracts")
+        _ (.mkdirs parent)
+        owned (java.io.File/createTempFile "orchestration-" "" parent)
+        _ (when-not (and (.delete owned) (.mkdirs owned))
+            (throw (ex-info "cannot create orchestration fixture" {})))
+        options {:batch-size 2 :batches 1 :warmup-batches 0 :trial 1
+                 :question-mark? false :encode-included? false}
+        calls (atom [])
+        handoff {:result {:batches 1 :ingest-ms 1} :expected {:n 2}}
+        runtime {:scheme-version "10.4.1"}
+        shared {#'throughput/persistent-evidence-root! (fn [] owned)
+                #'throughput/runtime-metadata (fn [] runtime)}]
+    (with-redefs-fn
+      (assoc shared #'throughput/run-worker!
+             (fn [root role request]
+               (swap! calls conj {:root (.getAbsolutePath root) :role role :request request})
+               {:runtime runtime :value (case role :writer handoff
+                                              :reader {:recovery {:result {:n 2}}})}))
+      (fn []
+        (#'throughput/owned-trial! :uninstrumented options)
+        (check "actual owned-trial launches writer then independent reader"
+               [:writer :reader] (mapv :role @calls))
+        (let [[writer reader] @calls]
+          (check "actual writer and reader retain one parent-owned store descriptor"
+                 (get-in writer [:request :descriptor]) (get-in reader [:request :descriptor]))
+          (check "actual writer and reader retain the same bounded options"
+                 options (get-in reader [:request :options]))
+          (check "actual reader receives the exact writer handoff"
+                 handoff (get-in reader [:request :handoff]))
+          (check "actual child roots are identical owned scope"
+                 (:root writer) (:root reader)))))
+    (doseq [failure [:nonzero :unknown]]
+      (reset! calls [])
+      (with-redefs-fn
+        (assoc shared #'throughput/run-worker!
+               (fn [_ role _]
+                 (swap! calls conj role)
+                 (#'throughput/require-worker-completion!
+                  (when (= failure :nonzero) {:exit 7})
+                  (when (= failure :nonzero) {:exit 7}))))
+        (fn []
+          (check "actual multi-trial orchestration preserves failed/unknown writer cause"
+                 :jdbc.chdb-durable-throughput/worker-failed
+                 (rejected-type #( #'throughput/run-config
+                                   (assoc options :trials 2
+                                          :modes [:durable-preencoded :durable-encode-included]))))
+          (check "actual failure prevents reader and all later trial workers"
+                 [:writer] @calls))))))
+
 (defn -main [& _]
   (reset! failures 0)
   (run-checks!)
+  (worker-contract-checks!)
+  (orchestration-contract-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " throughput checks failed")
                     {:failures @failures}))))

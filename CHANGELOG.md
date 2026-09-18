@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Update the DB and optimized data.json pins together to their merged shared
+  time-provider metadata fixes. This prepares the natural dependency graph for
+  fresh-process Durable benchmarking without qualification overrides; it does
+  not establish native delivery, recovery correctness or throughput results.
+
+- Prepare matched local/AWS Durable benchmark selectors for batch sizes 512,
+  1,000, 5,000 and 10,000 using the existing logical workload and schedule.
+  Isolate writer and snapshot reader in separate native processes and retain
+  persistent child receipts. Label admission separately from persisted flush
+  and aggregate readback; this does not qualify typed-value equivalence,
+  crash-safe per-admission ACK, tail performance, or BB/JVM native support.
+
 - Include native-lifecycle ITF generator changes in both automatic Durable
   model workflow triggers, and check trigger/input closure with removal controls
   without running a solver. Unchanged exhaustive-input skips are preserved (#123).
