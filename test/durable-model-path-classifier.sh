@@ -3,6 +3,115 @@ set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 classifier="$repo_root/scripts/classify-durable-model-paths.sh"
+check_trigger_closure() {
+  # Source-only: no YAML dependency, tangler, runtime or solver is invoked.
+  python3 - "$repo_root" <<'PY'
+import fnmatch
+import pathlib
+import re
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+workflow = (root / ".github/workflows/durable-head-quint.yml").read_text()
+classifier = (root / "scripts/classify-durable-model-paths.sh").read_text()
+fingerprinter = (root / "scripts/fingerprint-durable-model-inputs.sh").read_text()
+def classifier_helpers(source):
+    definitions = list(re.finditer(r"^is_exhaustive_input\(\)\s*\{", source, re.M))
+    functions = list(re.finditer(r"^is_exhaustive_input\(\)\s*\{\n(.*?)^\}\s*$",
+                                source, re.M | re.S))
+    assert len(definitions) == len(functions) == 1, "missing/duplicate model-input function"
+    function = functions[0]
+    body = function[1]
+    inventory = re.findall(r"scripts/[A-Za-z0-9_./-]+\.(?:sh|jq)(?=\s|\||\)|$)", body)
+    assert inventory, "empty classifier model-helper input inventory"
+    assert body.count("scripts/") == len(inventory), "unknown model-helper inventory syntax"
+    return set(inventory), function
+
+classifier_inventory, function = classifier_helpers(classifier)
+fingerprint_inventory = set(re.findall(r'"(scripts/[A-Za-z0-9_./-]+\.(?:sh|jq))"',
+                                      fingerprinter))
+assert fingerprint_inventory, "empty fingerprint model-helper inventory"
+helpers = classifier_inventory | fingerprint_inventory
+# Reorder the actual function after every other definition without changing it.
+reordered = classifier[:function.start()] + classifier[function.end():] + "\n" + function[0]
+assert classifier_helpers(reordered)[0] == classifier_inventory, "function order changes inventory"
+assert not re.findall(r"scripts/[a-z0-9-]+\.(?:sh|jq)",
+                      reordered.split("emit_decision()", 1)[0]), "old-order RED control not reached"
+print("ok classifier definition reorder preserves inventory; old order oracle loses it")
+for label, source in (("missing", classifier[:function.start()] + classifier[function.end():]),
+                      ("empty", "is_exhaustive_input() {\n  return 1\n}\n")):
+    try:
+        classifier_helpers(source)
+    except AssertionError:
+        print(f"ok {label} classifier inventory rejected independently of fingerprinter")
+    else:
+        raise AssertionError(f"{label} classifier inventory accepted")
+
+def triggers(source):
+    result = {}
+    event = None
+    paths = False
+    for line in source.splitlines():
+        match = re.fullmatch(r"  (pull_request|push):", line)
+        if match:
+            event = match[1]
+            result[event] = []
+            paths = False
+        elif re.match(r"  [a-z_]+:", line):
+            event = None
+        elif event and line == "    paths:":
+            paths = True
+        elif paths and line.startswith("      - "):
+            result[event].append(line[8:])
+        elif paths and line and not line.startswith("      "):
+            paths = False
+    assert set(result) == {"pull_request", "push"}, "missing automatic event"
+    assert all(result.values()), "empty automatic path inventory"
+    return result
+
+def missing(paths, inputs):
+    return sorted(path for path in inputs
+                  if not any(fnmatch.fnmatchcase(path, pattern) for pattern in paths))
+
+paths = triggers(workflow)
+sentinel = "scripts/source_only_future_helper.sh"
+assert sentinel not in fingerprint_inventory, "sentinel overlaps fingerprint inventory"
+clause = "    scripts/check-durable-head-quint.sh | \\\n"
+assert function[1].count(clause) == 1, "missing/duplicate sentinel case-pattern anchor"
+sentinel_body = function[1].replace(clause, "    " + sentinel + " | \\\n" + clause, 1)
+sentinel_source = classifier[:function.start(1)] + sentinel_body + classifier[function.end(1):]
+subprocess.run(["bash", "-n"], input=sentinel_source, text=True,
+               capture_output=True, timeout=5, check=True)
+print("ok classifier-only sentinel is a valid future case-pattern mutation")
+sentinel_inventory = classifier_helpers(sentinel_source)[0]
+assert sentinel in sentinel_inventory, "classifier-only sentinel not extracted"
+fast = {"deps.edn", "src/jdbc/chdb/durable.clj",
+        "src/jdbc/chdb/durable/writer.clj", "test/support/durable_fixture.clj",
+        "test/fixtures/durable/python-live-fractional-seconds.json",
+        "test/jdbc/chdb_durable_throughput_test.clj",
+        ".github/actions/install-jolt-aspects/action.yml"}
+for event, patterns in paths.items():
+    absent = missing(patterns, helpers | fast)
+    assert not absent, f"{event} trigger misses declared inputs: {absent}"
+    print(f"ok {event} declared model helpers and known fast paths trigger")
+    assert missing(patterns, sentinel_inventory | fingerprint_inventory) == [sentinel], \
+        f"{event} classifier-only helper missing trigger is hidden"
+    print(f"ok {event} classifier-only underscore helper missing trigger is rejected")
+    # Causal test: independently remove the previously omitted helper from
+    # each event. Component-only classifier tests cannot catch this drift.
+    helper = "scripts/generate-native-process-lifecycle-itf.sh"
+    mutant = [pattern for pattern in patterns if pattern != helper]
+    assert missing(mutant, {helper}) == [helper], f"{event} removal is hidden"
+    print(f"ok {event} missing lifecycle helper trigger is rejected")
+PY
+}
+if [[ ${1:-} == --trigger-closure-only && $# == 1 ]]; then
+  check_trigger_closure
+  exit
+fi
+[[ $# == 0 ]] || { echo "usage: $0 [--trigger-closure-only]" >&2; exit 2; }
+check_trigger_closure
 failures=0
 fixture_root=$(mktemp -d)
 cleanup() { rm -rf -- "$fixture_root"; }
