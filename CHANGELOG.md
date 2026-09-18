@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Repin the exact hosted Durable compiler provenance to `casselc/jolt`
+  `bf8a5dde` (`jolt v0.8.6-599-gbf8a5dde`), including the shared installer,
+  guarded workflows, compatibility fixture, and fail-closed provenance
+  controls. This is a compiler/provenance update only; it makes no throughput
+  claim.
+
 - Correct the Durable throughput pin contract and documentation to name the
   active `casselc/data.json` revision. This restores the fail-closed benchmark
   gate; it does not claim a new throughput result.

@@ -9,8 +9,8 @@
   :release-commit "f3041a0e32ba0db1b92bd69b8ecb7b40f8b2e115"
   :compiler
   {:line "integration/aspects"
-   :commit "120643d6bc322800a700e870de5c8087ad6085fa"
-   :version "0.8.6-97-g120643d6"}}
+   :commit "bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95"
+   :version "0.8.6-599-gbf8a5dde"}}
  :babashka
  {:tag "v1.13.220"
   :tag-commit "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"

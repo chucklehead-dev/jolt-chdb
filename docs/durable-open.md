@@ -157,7 +157,7 @@ compatibility. A generated writer instance is UUIDv4; protocol ordering comes
 from the lease generation, not UUID sorting.
 
 Durable runtime and recovery currently require `casselc/jolt`
-`integration/aspects` commit `120643d6`, or a later Jolt release containing
+`integration/aspects` commit `bf8a5dde`, or a later Jolt release containing
 upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
 base driver's Jolt 0.8.6 floor. Reader and writer opens functionally verify both
 valid multibyte decoding and malformed-input rejection before storage or native
