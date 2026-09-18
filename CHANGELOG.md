@@ -14,6 +14,10 @@
   and aggregate readback; this does not qualify typed-value equivalence,
   crash-safe per-admission ACK, tail performance, or BB/JVM native support.
 
+- Include native-lifecycle ITF generator changes in both automatic Durable
+  model workflow triggers, and check trigger/input closure with removal controls
+  without running a solver. Unchanged exhaustive-input skips are preserved (#123).
+
 - Add same-release 26.7.3 bidirectional native checkpoint plus suffix-WAL
   fixture cases alongside existing WAL-only exchange. Require base-only and
   final typed rows, missing/altered/truncated base and missing/altered WAL
