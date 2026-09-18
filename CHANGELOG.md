@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Prepare matched local/AWS Durable benchmark selectors for batch sizes 512,
+  1,000, 5,000 and 10,000 using the existing logical workload and schedule.
+  Isolate writer and snapshot reader in separate native processes and retain
+  persistent child receipts. Label admission separately from persisted flush
+  and aggregate readback; this does not qualify typed-value equivalence,
+  crash-safe per-admission ACK, tail performance, or BB/JVM native support.
+
 - Add same-release 26.7.3 bidirectional native checkpoint plus suffix-WAL
   fixture cases alongside existing WAL-only exchange. Require base-only and
   final typed rows, missing/altered/truncated base and missing/altered WAL
