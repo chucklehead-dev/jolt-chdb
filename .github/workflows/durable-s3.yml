@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-120643d6
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-120643d6
-      PINNED_JOLT_SOURCE_SHA: 120643d6bc322800a700e870de5c8087ad6085fa
-      PINNED_JOLT_VERSION: jolt v0.8.6-97-g120643d6
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-bf8a5dde
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-bf8a5dde
+      PINNED_JOLT_SOURCE_SHA: bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95
+      PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
       MINIO_IMAGE: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     steps:
       - uses: actions/checkout@v4
