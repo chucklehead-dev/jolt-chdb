@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a separate, fail-closed Jolt-only Durable recovery A/B/B/A harness for
+  future exact `data.json` source comparisons. It fixes the current
+  52,224-row/3-segment fixture, requires clean condition checkouts and one
+  resolved canonical provider root per condition, and reports only two
+  directional observations. It makes no p99, Rust, S3, or general-throughput
+  qualification claim.
+
 - Repin the exact hosted Durable compiler provenance to `casselc/jolt`
   `bf8a5dde` (`jolt v0.8.6-599-gbf8a5dde`), including the shared installer,
   guarded workflows, compatibility fixture, and fail-closed provenance

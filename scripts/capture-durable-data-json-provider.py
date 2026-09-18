@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Capture one canonical resolved data.json provider without trusting a pin."""
+import hashlib, json, os, pathlib, subprocess, sys
+
+def fail(message): raise SystemExit("data.json provider capture failed: " + message)
+def ident(path):
+    data = path.read_bytes()
+    return {"file_name": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--verify":
+        value=load=json.loads(pathlib.Path(sys.argv[2]).read_text())
+        root=pathlib.Path(value.get("root", ""))
+        if not root.is_dir() or subprocess.check_output(["git","-C",str(root),"status","--porcelain"],text=True):
+            fail("resolved data.json provider root is not clean")
+        actual=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
+        if actual != value.get("sha"): fail("resolved data.json provider SHA changed")
+        namespace=root/"src/main/clojure/clojure/data/json.cljc"
+        if not namespace.is_file() or ident(namespace) != value.get("namespace"):
+            fail("resolved data.json provider namespace identity changed")
+        return
+    if len(sys.argv) != 5:
+        fail("usage: capture-durable-data-json-provider.py CHECKOUT JOLT_BIN EXPECTED_SHA OUTPUT")
+    checkout, jolt, expected, output = map(pathlib.Path, sys.argv[1:])
+    # expected is deliberately kept as text below; pathlib only supplied a safe argument boundary.
+    expected = sys.argv[3]
+    if not checkout.is_dir() or not jolt.is_file() or len(expected) != 40 or any(c not in "0123456789abcdef" for c in expected):
+        fail("checkout, executable, or expected full source SHA is invalid")
+    try:
+        classpath = subprocess.check_output([str(jolt), "-Srepro", "-Spath"], cwd=checkout, text=True)
+    except subprocess.CalledProcessError as error:
+        fail("Jolt -Srepro -Spath failed: " + str(error.returncode))
+    candidates = []
+    for text in classpath.strip().split(os.pathsep):
+        entry = pathlib.Path(text).resolve()
+        namespace = entry / "clojure" / "data" / "json.cljc"
+        if namespace.is_file() and entry.name == "clojure" and entry.parent.name == "main" and entry.parent.parent.name == "src":
+            root = entry.parent.parent.parent
+            try:
+                actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            except subprocess.CalledProcessError:
+                fail("candidate data.json provider is not a Git checkout")
+            candidates.append((root, namespace, actual))
+    if len(candidates) != 1:
+        fail("resolved classpath does not contain exactly one canonical data.json provider/root")
+    root, namespace, actual = candidates[0]
+    if actual != expected:
+        fail("resolved data.json provider SHA differs from caller assertion")
+    if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True):
+        fail("resolved data.json provider root is not clean")
+    output.write_text(json.dumps({"sha": actual, "root": str(root), "namespace": ident(namespace)}, sort_keys=True) + "\n")
+
+if __name__ == "__main__": main()
