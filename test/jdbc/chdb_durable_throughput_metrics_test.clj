@@ -342,6 +342,8 @@
                                "run-durable-throughput-selector.sh scale-1000")
                 (str/includes? local-selector-runner "/usr/bin/time -v")
                 (str/includes? local-selector-runner
+                               "BENCH_PERSISTENT_RECEIPT_ROOT")
+                (str/includes? local-selector-runner
                                "check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
     (check "throughput waits for successful provider qualification"
            true

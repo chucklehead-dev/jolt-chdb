@@ -50,6 +50,10 @@ mkdir "$output_dir"
 report="$output_dir/report.edn"
 log="$output_dir/run.log"
 timing="$output_dir/time-v.txt"
+receipt_root="$output_dir/receipts"
+mkdir "$receipt_root"
+receipt_root=$(cd "$receipt_root" && pwd -P)
+export BENCH_PERSISTENT_RECEIPT_ROOT="$receipt_root"
 
 export BENCH_JOLT_VERSION
 BENCH_JOLT_VERSION=$("$JOLT_WRAPPER" "$BENCH_JOLT_BIN" --version)

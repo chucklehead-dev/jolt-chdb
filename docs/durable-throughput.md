@@ -128,10 +128,11 @@ scripts/run-durable-throughput-selector.sh scale-1000 \
 
 The helper refuses a dirty checkout, a non-isolated selector, missing pinned
 runtime provenance, or a reused output directory. It writes `report.edn`, a
-bounded `run.log`, and GNU `time`'s `time-v.txt`; it then requires exactly one
-positive `Maximum resident set size (kbytes)` and an exit status of zero. Keep
-those three files together. The helper does not upload artifacts or print
-environment values.
+bounded `run.log`, GNU `time`'s `time-v.txt`, and a private persistent
+`receipts/` root for the process-isolated writer/reader handoffs; it then
+requires exactly one positive `Maximum resident set size (kbytes)` and an exit
+status of zero. Keep the whole output directory together. The helper does not
+upload artifacts or print environment values.
 
 The equivalent explicit command is:
 
