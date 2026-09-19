@@ -4,6 +4,7 @@
   Maps deliberately retain JSON string keys so fields unknown to this V1
   reader survive a decode/update/encode cycle unchanged."
   (:require [clojure.data.json :as json]
+            [jdbc.chdb.durable.digest :as digest]
             [clojure.string :as str]
             [jdbc.chdb.durable.time-domain :as time-domain]))
 
@@ -432,3 +433,33 @@
     (when (> (alength bytes) max-head-bytes)
       (limit! "head.json exceeds the 1 MiB limit" []))
     bytes))
+
+(defn- normalized-json-value [value]
+  (cond
+    (map? value) (into (sorted-map)
+                        (map (fn [[key child]]
+                               [key (normalized-json-value child)]))
+                        value)
+    (vector? value) (mapv normalized-json-value value)
+    :else value))
+
+(defn normalized-bytes
+  "Return a canonical, read-only-compatible JSON representation of a decoded
+  Durable V1 head. This intentionally accepts unknown writer features: a
+  snapshot reader may pin the head it can safely read without becoming a writer."
+  [document]
+  (validate! document :read-only)
+  (let [text (try
+               (json/write-str (normalized-json-value document))
+               (catch Throwable _
+                 (corrupt! "head.json could not be normalized" [])))
+        bytes (.getBytes text "UTF-8")]
+    (when (> (alength bytes) max-head-bytes)
+      (limit! "head.json exceeds the 1 MiB limit" []))
+    bytes))
+
+(defn normalized-sha256
+  "Return a lowercase digest for a caller-supplied decoded, normalized head.
+  It never reads object storage or exposes a stored head."
+  [document]
+  (digest/sha256-bytes (normalized-bytes document)))

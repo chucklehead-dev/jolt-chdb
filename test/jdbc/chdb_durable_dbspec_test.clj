@@ -70,11 +70,47 @@
 
   (let [namespace (backend/memory-backend)
         spec (durable/snapshot-dbspec
-              {:namespace-backend namespace :object-id "primary"})]
+              {:namespace-backend namespace :object-id "primary"
+               :expected-normalized-head-sha256
+               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})]
     (check "snapshot constructor selects one read-only JDBC snapshot"
-           ["chdb-durable" true namespace "primary"]
+           ["chdb-durable" true namespace "primary"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
            [(:vendor spec) (:read-only? spec)
-            (:namespace-backend spec) (:object-id spec)]))
+            (:namespace-backend spec) (:object-id spec)
+            (:expected-normalized-head-sha256 spec)]))
+
+  (doseq [[label expected]
+          [["explicit nil" nil]
+           ["uppercase" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]
+           ["short" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+           ["non-string" 42]]]
+    (check (str "snapshot rejects invalid expected normalized head " label)
+           ::durable/invalid-options
+           (error-type
+            (rejected
+             #(durable/snapshot-dbspec
+               {:backend (backend/memory-backend)
+                :expected-normalized-head-sha256 expected})))))
+
+  (let [secret "digest-value-must-not-escape"
+        error (rejected
+               #(durable/snapshot-dbspec
+                 {:backend (backend/memory-backend)
+                  :expected-normalized-head-sha256 secret}))
+        public (pr-str [(ex-message error) (ex-data error)])]
+    (check "invalid snapshot digest diagnostics omit caller value"
+           false (.contains public secret)))
+
+  (check "writer rejects snapshot-only expected normalized head option"
+         ::durable/invalid-options
+         (error-type
+          (rejected
+           #(durable/writer-dbspec
+             {:backend (backend/memory-backend)
+              :owner "owner" :database "default"
+              :expected-normalized-head-sha256
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}))))
 
   (let [scoped (backend/memory-backend)]
     (check "already object-scoped backends remain an explicit advanced shape"
@@ -204,6 +240,22 @@
              (error-type (rejected #(jdbc/connection invalid-mode)))))
     (check "invalid JDBC maps open no storage or native lifecycle"
            0 @opens))
+
+  (let [storage (backend/memory-backend)
+        expected "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        opened (atom [])]
+    (with-redefs [durable/open-reader! #(swap! opened conj %)]
+      (driver/open-handle
+       durable/durable-driver
+       {:vendor "chdb-durable" :backend storage :read-only? true
+        :expected-normalized-head-sha256 expected})
+      (driver/open-handle
+       durable/durable-driver
+       {:vendor "chdb-durable" :backend storage :read-only? true}))
+    (check "JDBC forwards a validated snapshot head pin to its own reader"
+           [expected false]
+           [(:expected-normalized-head-sha256 (first @opened))
+            (contains? (second @opened) :expected-normalized-head-sha256)]))
 
   (let [storage (backend/memory-backend)
         input {:vendor "chdb-durable" :backend storage
