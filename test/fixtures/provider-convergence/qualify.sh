@@ -5,14 +5,17 @@ fixture_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 workspace_root=$(CDPATH= cd -- "$fixture_root/../../.." && pwd)
 jolt_wrapper=${JOLT_WRAPPER:-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1}
 jolt_bin=${JOLT_BIN:-jolt}
-provider_sha=8c55d9e273f7d625b5c0eb8000755c51a8faacfe
+# Keep this exact reviewed provider identity coupled to the root deps.edn pin.
+# 9e8c82 extends the prior paired-metadata revision with the nil-native-handle
+# construction guard required by the Durable observation boundary.
+provider_sha=9e8c82a59ec63a36e86a758ff39ca9c5a9c3d165
 provider_tree_prefix=$(printf '%.7s' "$provider_sha")
 work=$(mktemp -d "${TMPDIR:-/tmp}/jolt-chdb-provider-convergence.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 # Dependency resolution and compilation caches are run-scoped. In particular,
 # a cpcache created while deps.edn selected cdc6931 must not answer a later
-# request for the paired metadata repair at 8c55d9e.
+# request for the reviewed nil-native-handle guard at 9e8c82a.
 mkdir -p "$work/jolt-cache" "$work/jolt-gitlibs"
 jolt_cmd() {
   env JOLT_CACHE_DIR="$work/jolt-cache" JOLT_GITLIBS_DIR="$work/jolt-gitlibs" \
