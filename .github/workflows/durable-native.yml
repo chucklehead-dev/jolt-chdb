@@ -9,10 +9,25 @@ on:
       - deps.edn
       - resources/jdbc/chdb/abi.edn
       - scripts/qualify-durable-native.sh
+      - scripts/check-native-process-lifecycle.sh
+      - scripts/check-native-typed-process-exit.sh
+      - scripts/generate-native-process-lifecycle-itf.sh
+      - test/fixtures/native-process-typed-exit/**
+      - test/support/native-qualification-cleanup-controls.sh
       - src/jdbc/chdb/abi.clj
       - src/jdbc/chdb/native.clj
+      - src/jdbc/chdb.clj
+      - src/jdbc/chdb/durable.clj
+      - src/jdbc/chdb/durable/**
       - test/jdbc/chdb_abi_test.clj
       - test/jdbc/chdb_durable_native_test.clj
+      - test/jdbc/chdb_native_lifecycle_test.clj
+      - test/jdbc/chdb_native_process_test.clj
+      - formal/quint/native-process-lifecycle.md
+      - formal/quint/traces/native-process-lifecycle.itf.json
+      - formal/quint/traces/native-process-terminal.itf.json
+      - formal/quint/traces/native-process-options.itf.json
+      - docs/native-lifecycle.md
 
 permissions:
   contents: read
@@ -28,6 +43,60 @@ jobs:
       PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
     steps:
       - uses: actions/checkout@v4
+      - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
+        uses: ./.github/actions/install-jolt-aspects
+      - name: Verify pinned Jolt provenance
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
+      - name: Run pinned upstream and Jolt Durable ABI oracles
+        run: bash scripts/qualify-durable-native.sh "$RUNNER_TEMP/chdb-durable"
+
+  macos-x86-64:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-bf8a5dde
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-bf8a5dde
+      PINNED_JOLT_SOURCE_SHA: bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95
+      PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify expected macOS Intel runner
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = x86_64
+      - name: Install GNU timeout for native child-process qualification
+        run: brew install coreutils
+      - name: Install the pinned Jolt aspect compiler
+        id: pinned-jolt
+        uses: ./.github/actions/install-jolt-aspects
+      - name: Verify pinned Jolt provenance
+        run: |
+          test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
+          test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
+          test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
+      - name: Run pinned upstream and Jolt Durable ABI oracles
+        run: bash scripts/qualify-durable-native.sh "$RUNNER_TEMP/chdb-durable"
+
+  macos-arm64:
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-bf8a5dde
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-bf8a5dde
+      PINNED_JOLT_SOURCE_SHA: bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95
+      PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify expected macOS ARM runner
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+      - name: Install GNU timeout for native child-process qualification
+        run: brew install coreutils
       - name: Install the pinned Jolt aspect compiler
         id: pinned-jolt
         uses: ./.github/actions/install-jolt-aspects

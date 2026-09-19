@@ -94,7 +94,7 @@ cleanup() {
   if [[ "$completion" == true && "$status" == 0 &&
         "$process_root" == "$qualification_root"/process-lifecycle.* &&
         -d "$process_root" && ! -L "$process_root" ]]; then
-    rm -rf -- "$process_root"
+    rm -rf "$process_root"
   fi
 }
 trap cleanup EXIT

@@ -12,6 +12,13 @@
   `97298fd` comparison or a p99, Rust-relative, S3, admission, or
   general-throughput qualification.
 
+- Add macOS Intel and ARM64 native Durable qualification lanes for the existing
+  process-lifetime anchor, host-signal, fresh-process, and typed process-exit
+  probes. Make the pinned compiler install and native typed-exit timeout
+  boundary runner-portable, and include lifecycle code, scripts, fixtures,
+  model traces, and documentation in the native workflow trigger set. Hosted
+  macOS results remain the required qualification evidence for #103.
+
 - Preserve an ambiguous Durable WAL observation across later mutation admission
   and WAL confirmation; only a validated checkpoint can clear that uncertainty.
   Add a literate, bounded Quint lifecycle projection model for recovered,
