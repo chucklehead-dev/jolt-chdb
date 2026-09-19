@@ -316,7 +316,8 @@
       (fn []
         (let [handle (native/open! ":memory:")
               close-error (ex-info "uncertain public close" {:stage :close})
-              close-attempts (atom 0)]
+              close-attempts (atom 0)
+              hook (first @(:shutdown-hooks runtime))]
           (with-redefs-fn
             {#'native/chdb-close-conn
              (fn [owner]
@@ -354,7 +355,21 @@
                    [1 3 1 {:phase :anchored :path ":memory:"
                            :references 1 :anchored? true}]
                    [@(:boots runtime) @(:connects runtime)
-                    (count @(:closes runtime)) (native/active-storage)]))))))
+                    (count @(:closes runtime)) (native/active-storage)]))
+          ;; The hook does not wait for an orderly reference count after host
+          ;; teardown has started. It releases its own anchor exactly once,
+          ;; while leaving the failed public owner's conservative bookkeeping
+          ;; intact. This is intentionally outside the orderly Quint trace.
+          (hook)
+          (hook)
+          (let [before-connects @(:connects runtime)
+                open-error (rejected #(native/open! ":memory:"))]
+            (check "forced teardown after failed public close releases only anchor"
+                   [2 {:phase :exit-closed :path ":memory:"
+                       :references 1 :anchored? false}
+                    ::native/process-exiting before-connects]
+                   [(count @(:closes runtime)) (native/active-storage)
+                    (:type (ex-data open-error)) @(:connects runtime)]))))))
 
   (let [runtime (fake-native [])]
     (with-fake-native

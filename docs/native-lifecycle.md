@@ -47,8 +47,12 @@ public handle closed before calling its native destructor. If that call throws,
 the handle cannot be retried: the C call may have partially or fully released
 its owner. The driver retains that public reference in process state and keeps
 the anchor/path claim; a later same-path open is still admitted without a new
-engine bootstrap, but neither it nor orderly exit is evidence that the failed
-owner was released. A different path remains rejected for the process.
+engine bootstrap. The shutdown hook nevertheless claims and closes the hidden
+anchor if host teardown begins while that uncertain reference remains. That is
+forced host teardown, not the orderly-exit contract: it supplies no evidence
+that the failed owner was released, and the driver makes no delivery, recovery,
+or native-cleanup guarantee for it. A different path remains rejected for the
+process.
 
 Bootstrap options are part of the claim. Reopening the same physical path with
 a different `:backups-allowed-path` is rejected instead of pretending that the
@@ -81,9 +85,12 @@ The anchor hook serializes its native close with public-owner closes, while
 ordinary query and export operations retain their existing path and throughput.
 The process-exit regression uses a later observer hook to prove that typed
 ClickHouse export/readback, checkpoint, and explicit application close all
-complete before the anchor reaches `ExitClosed`. Forced termination and
-applications that leave public owners live remain outside this orderly-exit
-guarantee.
+complete before the anchor reaches `ExitClosed`. That orderly proof has a
+strict `references == 0` precondition. The implementation also runs the hook
+during host teardown when a failed public destructor left an uncertain
+reference; that forced teardown is intentionally outside the proof/model and
+does not refine it. Forced termination and applications that leave public
+owners live likewise remain outside the orderly-exit guarantee.
 
 Host signal handlers remain host-owned. Before any native bootstrap,
 `jolt-chdb` calls `chdb_set_signal_handlers_enabled(0)` exactly once. The Linux

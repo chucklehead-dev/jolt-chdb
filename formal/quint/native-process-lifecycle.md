@@ -34,8 +34,13 @@ lifecycle terminal. A terminal lifecycle rejects every later open.
 The host-exit transition is intentionally narrower than the Durable protocol:
 it represents an orderly process exit after every public owner has closed. It
 requires the retained anchor to be claimed and closed exactly once before the
-host tears down native libraries. Leaked public connections and OS-forced
-termination remain host concerns outside this state machine.
+host tears down native libraries. The executable hook also claims the anchor
+if host teardown starts while an uncertain public reference remains, including
+after a throwing public destructor. That forced-teardown behavior is expressly
+outside this state machine: `processExit` keeps `references == 0`, and no ITF
+trace or runtime refinement claim maps a positive-reference hook invocation to
+an orderly exit. It establishes neither release of that public owner nor any
+Durable delivery or recovery property.
 
 A throwing public destructor is likewise outside the successful
 `closePublic` transition: its native effect is unknowable, so the executable
@@ -230,8 +235,9 @@ module nativeProcessLifecycle {
 
   action processExit: bool = all {
     // This host-lifecycle transition models only an orderly exit after logical
-    // last close. refs > 0 means a leaked public owner; forced teardown and its
-    // cleanup ordering are deliberately outside the Durable protocol model.
+    // last close. The runtime hook also tears down its anchor if host shutdown
+    // finds refs > 0, but that forced path is deliberately outside this model
+    // and has no refinement/delivery/recovery claim.
     not(lifecycle.hostExitStarted),
     lifecycle.anchored,
     lifecycle.references == 0,
