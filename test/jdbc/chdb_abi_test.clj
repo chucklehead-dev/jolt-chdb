@@ -116,6 +116,15 @@
 (def ^:private yaml-run-block-header-pattern
   #"^[ ]*(?:-[ \t]+)?run[ \t]*:[ \t]*[|>][1-9+-]{0,2}(?:[ \t]+#.*)?[ \t]*$")
 
+(def ^:private cache-action-ref
+  "actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830")
+
+(def ^:private cache-action-mapping-comment
+  "# actions/cache@v4.3.0 -> 0057852bfaa89a56745cba8c7296529d2fc39830")
+
+(def ^:private cache-action-use-pattern
+  #"^[ \t]*uses:[ \t]*(actions/cache@[0-9a-f]{40})[ \t]*(?:#.*)?[ \t]*$")
+
 (def ^:private expected-hosted-jolt-workflow-paths
   #{".github/workflows/tests.yml"
     ".github/workflows/durable-native.yml"
@@ -129,6 +138,18 @@
        (filter #(.isFile %))
        (filter #(re-find #"\.ya?ml$" (.getName %)))
        (mapv (fn [file] [(.getPath file) (slurp file)]))))
+
+(defn- action-cache-use-mappings [action]
+  (->> (partition 2 1 (str/split-lines action))
+       (keep (fn [[comment use]]
+               (when-let [[_ ref] (re-matches cache-action-use-pattern use)]
+                 {:comment (str/trim comment) :ref ref})))
+       vec))
+
+(defn- pinned-cache-action-uses? [action]
+  (= [{:comment cache-action-mapping-comment :ref cache-action-ref}
+      {:comment cache-action-mapping-comment :ref cache-action-ref}]
+     (action-cache-use-mappings action)))
 
 (defn- yaml-space-indent [line]
   (count (take-while #(= \space %) line)))
@@ -357,6 +378,17 @@
            (:jolt/min-version deps) (get-in pins [:jolt :version]))
     (check "hosted Jolt compiler agrees with the compatibility manifest"
            true (hosted-jolt-pin-matches? pins jolt-action jolt-workflows))
+    (check "composite action maps exactly two cache v4.3.0 uses to its immutable pin"
+           [{:comment cache-action-mapping-comment :ref cache-action-ref}
+            {:comment cache-action-mapping-comment :ref cache-action-ref}]
+           (action-cache-use-mappings jolt-action))
+    (check "one cache action revision drift turns the guard red"
+           false
+           (pinned-cache-action-uses?
+            (str/replace-first jolt-action
+                               cache-action-ref
+                               (str "actions/cache@"
+                                    (apply str (repeat 40 "0"))))))
     (check "discovered hosted compiler consumers are exactly the guarded set"
            expected-hosted-jolt-workflow-paths (set jolt-workflow-paths))
     (check "discovery accepts valid quoted and spaced YAML uses scalars"
