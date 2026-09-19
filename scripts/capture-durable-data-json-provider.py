@@ -7,6 +7,20 @@ def ident(path):
     data = path.read_bytes()
     return {"file_name": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
+def provider_root_is_clean(root):
+    """Accept a clean provider root and its one harness-owned marker only.
+
+    The A/B/B/A harness may leave ``.jolt-git-ok`` at a provider checkout's
+    root as a local liveness marker.  Porcelain v1 with NUL termination keeps
+    that exceptional admission unambiguous: do not accept quoting, a nested
+    name, another untracked file, a tracked modification, or a rename's
+    second pathname record.
+    """
+    status = subprocess.check_output(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "-z"]
+    )
+    return status in (b"", b"?? .jolt-git-ok\0")
+
 def canonical_namespace(root):
     """Return the one supported data.json source path below a provider root.
 
@@ -25,7 +39,7 @@ def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--verify":
         value=load=json.loads(pathlib.Path(sys.argv[2]).read_text())
         root=pathlib.Path(value.get("root", ""))
-        if not root.is_dir() or subprocess.check_output(["git","-C",str(root),"status","--porcelain"],text=True):
+        if not root.is_dir() or not provider_root_is_clean(root):
             fail("resolved data.json provider root is not clean")
         actual=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
         if actual != value.get("sha"): fail("resolved data.json provider SHA changed")
@@ -62,7 +76,7 @@ def main():
     root, namespace, actual = candidates[0]
     if actual != expected:
         fail("resolved data.json provider SHA differs from caller assertion")
-    if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True):
+    if not provider_root_is_clean(root):
         fail("resolved data.json provider root is not clean")
     output.write_text(json.dumps({"sha": actual, "root": str(root), "namespace": ident(namespace)}, sort_keys=True) + "\n")
 

@@ -103,6 +103,8 @@ class AbbaSummaryTest(unittest.TestCase):
     return subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
  def provider_capture(self,checkout,fake,expected,out,paths):
     return subprocess.run(["python3",str(CAPTURE),str(checkout),str(fake),expected,str(out)],text=True,capture_output=True,env={"PROVIDER_PATHS":os.pathsep.join(map(str,paths))})
+ def verify_provider_capture(self,out):
+    return subprocess.run(["python3",str(CAPTURE),"--verify",str(out)],text=True,capture_output=True)
  def test_provider_capture_accepts_exactly_one_canonical_clj_or_cljc(self):
     for extension in (".clj",".cljc"):
       with self.subTest(extension=extension),tempfile.TemporaryDirectory() as d:
@@ -112,8 +114,18 @@ class AbbaSummaryTest(unittest.TestCase):
        out=root/"out.json"; result=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
        self.assertEqual(0,result.returncode,result.stderr)
        captured=json.loads(out.read_text()); self.assertEqual("json"+extension,captured["namespace"]["file_name"])
-       verify=subprocess.run(["python3",str(CAPTURE),"--verify",str(out)],text=True,capture_output=True)
+       verify=self.verify_provider_capture(out)
        self.assertEqual(0,verify.returncode,verify.stderr)
+ def test_provider_capture_and_verify_accept_the_one_root_liveness_marker(self):
+    with tempfile.TemporaryDirectory() as d:
+      root=pathlib.Path(d); provider=root/"provider"; expected=self.make_provider(provider,".cljc")
+      checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+      fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+      (provider/".jolt-git-ok").write_text("harness-owned liveness marker\\n")
+      out=root/"out.json"; result=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
+      self.assertEqual(0,result.returncode,result.stderr)
+      verify=self.verify_provider_capture(out)
+      self.assertEqual(0,verify.returncode,verify.stderr)
  def test_provider_capture_and_verify_reject_both_canonical_namespace_forms_in_one_root(self):
     with tempfile.TemporaryDirectory() as d:
       root=pathlib.Path(d); provider=root/"provider"
@@ -147,6 +159,29 @@ class AbbaSummaryTest(unittest.TestCase):
        result=self.provider_capture(checkout,fake,expected,out,paths)
        self.assertNotEqual(0,result.returncode)
        self.assertIn("exactly one canonical" if case in ("absent","duplicate","other-path") else "not clean",result.stderr)
+ def test_provider_capture_and_verify_reject_every_marker_variation_and_other_dirt(self):
+    cases=(
+      ("ordinary", "untracked"),
+      ("marker-suffix", ".jolt-git-ok-extra"),
+      ("marker-prefix", "x.jolt-git-ok"),
+      ("nested-marker", "nested/.jolt-git-ok"),
+      ("nested-marker-like", "nested/.jolt-git-ok-extra"),
+    )
+    for name,relative in cases:
+      with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+       root=pathlib.Path(d); provider=root/"provider"; expected=self.make_provider(provider,".cljc")
+       checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+       marker=provider/relative; marker.parent.mkdir(parents=True,exist_ok=True); marker.write_text("not the admitted marker\\n")
+       out=root/"out.json"; captured=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
+       self.assertNotEqual(0,captured.returncode); self.assertIn("not clean",captured.stderr)
+       # Capture first while clean, then prove --verify applies the same exact
+       # porcelain-v1 admission rule to the persisted provider root.
+       marker.unlink(); captured=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
+       self.assertEqual(0,captured.returncode,captured.stderr)
+       marker.parent.mkdir(parents=True,exist_ok=True); marker.write_text("not the admitted marker\\n")
+       verify=self.verify_provider_capture(out)
+       self.assertNotEqual(0,verify.returncode); self.assertIn("not clean",verify.stderr)
  def test_reresolved_provider_root_swap_has_a_distinct_capture(self):
     with tempfile.TemporaryDirectory() as d:
       root=pathlib.Path(d); provider1=root/"provider1"; provider2=root/"provider2"
