@@ -9,8 +9,8 @@
     },
     "runner_script": {
       "file_name": "profile-durable-release-runtime-abba.py",
-      "bytes": 12988,
-      "sha256": "42054f5537d3a4e899c23f48d5da0410b82ec86b38fbe5fd9bf193366b81acea"
+      "bytes": 20579,
+      "sha256": "9b75739ca54528dd8407fc4a972df8d1b20fff724126666acd0fe61482aec94f"
     },
     "data_json": {
       "source_sha": "97298fd8a67a6d4ee3eb1346d5e184beb9565b90",
