@@ -9,6 +9,14 @@
   native/public ownership boundaries. This remains observation-only: it makes
   no delivery, timing, object-store freshness, or native-persistence claim.
 
+- Add a declarative Durable exhaustive-obligation inventory and opt-in timing/
+  peak-RSS runner. It pins the existing 13 corrected Apalache invocations
+  (24 positive properties) and 20 independent counterexample/ITF controls;
+  a lightweight causal validator rejects any removed or altered row. The
+  established checker, model bounds, classifier, fast gates, and CI behavior
+  remain unchanged. This records a measurement baseline; it does not claim a
+  shorter exhaustive runtime or change its timeout margin (#80).
+
 - Qualify the native public-close failure boundary: a failed destructor marks
   that public handle unavailable, is never retried, retains the conservative
   process reference, and cannot permit a second native engine bootstrap.
