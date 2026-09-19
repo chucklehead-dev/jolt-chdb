@@ -19,6 +19,32 @@
 (def head-key "head.json")
 (def ^:private default-commit-attempts 4)
 
+(def ^:private phase-observe-labels
+  #{:wal-immutable-put :wal-immutable-verify :wal-head-cas})
+
+(defn- observed-phase
+  "Run `f` with an optional best-effort, scalar-only diagnostic event.
+
+  This seam intentionally never exposes references, provider keys, bytes, or
+  exceptions, and observer failure never changes the Durable protocol path."
+  [observe! phase bytes f]
+  (if (and observe! (contains? phase-observe-labels phase))
+    (let [started (System/nanoTime)]
+      (try
+        (let [value (f)]
+          (try (observe! {:phase phase :status :complete :calls 1
+                          :nanos (max 0 (- (System/nanoTime) started))
+                          :bytes (max 0 (or bytes 0))})
+               (catch Throwable _))
+          value)
+        (catch Throwable primary
+          (try (observe! {:phase phase :status :failed :calls 1
+                          :nanos (max 0 (- (System/nanoTime) started))
+                          :bytes (max 0 (or bytes 0))})
+               (catch Throwable _))
+          (throw primary))))
+    (f)))
+
 (def forced-live-takeover-event
   "Stable, redacted event name returned after a forced live-lease takeover."
   :durable/forced-live-takeover)
@@ -554,7 +580,10 @@
   ([store token bytes options]
    (when-not (bytes? bytes)
      (fail! ::invalid-options "WAL publication requires a byte array"))
-   (let [snapshot (or (read-head! store)
+   (let [observe! (:phase-observe! options)
+         _ (when (and (some? observe!) (not (fn? observe!)))
+             (fail! ::invalid-options "phase-observe! must be a function"))
+         snapshot (or (read-head! store)
                       (fail! ::lease-fenced "The Durable head no longer exists"))
          current (:head snapshot)
          generation (checked-token-generation token current)
@@ -567,11 +596,14 @@
                                  (unique-object-token) ".jsonl")
                       "size" (alength bytes)
                       "sha256" digest}
-           result (backend/put-bytes-if-absent!
-                   store (get reference "key") bytes)]
+           result (observed-phase observe! :wal-immutable-put (alength bytes)
+                                #(backend/put-bytes-if-absent!
+                                  store (get reference "key") bytes))]
        {:status (reconcile-publication!
                  (:status result)
-                 #(verify-byte-reference! store reference)
+                 #(observed-phase observe! :wal-immutable-verify
+                                  (get reference "size")
+                                  #(verify-byte-reference! store reference))
                  false options)
         :reference reference
         :etag (:etag result)}))))
@@ -751,7 +783,7 @@
 
 (defn- commit-reference-attempt!
   [store token kind reference engine-metadata
-   {:keys [phase snapshot] :as state}]
+   {:keys [phase snapshot phase-observe!] :as state}]
   (if (= :reconcile phase)
     (if-let [latest (reread store)]
       (let [{:keys [next-seq]} (:transition state)
@@ -774,8 +806,9 @@
         {canonical :head bytes :bytes} (encoded-head desired)
         landed? #(reference-landed? kind reference next-seq
                                     engine-metadata %)
-        result (backend/replace-if-match!
-                store head-key bytes (:etag snapshot))]
+        result (observed-phase phase-observe! :wal-head-cas (alength bytes)
+                               #(backend/replace-if-match!
+                                 store head-key bytes (:etag snapshot)))]
     (case (:status result)
       :replaced
       {:status :done
@@ -785,6 +818,7 @@
       :ambiguous
       {:status :retry
        :state {:phase :reconcile
+               :phase-observe! phase-observe!
                :transition {:next-seq next-seq}}}
 
       :precondition-failed
@@ -801,7 +835,8 @@
                    :head (:head latest) :etag (:etag latest) :token token}}
 
           :else {:status :retry
-                 :state {:phase :cas :snapshot latest}}))
+                 :state {:phase :cas :snapshot latest
+                         :phase-observe! phase-observe!}}))
 
       (fail! ::backend-contract
              "The Durable backend returned an unsupported CAS result")))))
@@ -825,14 +860,20 @@
   (when-not (fn? verify-reference!)
     (fail! ::invalid-options "verify-reference! must be callable"))
   (positive-attempts! max-attempts)
+  (when (and (some? (:phase-observe! options))
+             (not (fn? (:phase-observe! options))))
+    (fail! ::invalid-options "phase-observe! must be a function"))
   ;; Reject an already-stale owner and a non-current reference before touching
   ;; the immutable object. Verification may block, so it deliberately happens
   ;; without locally excluding the writer's heartbeat.
-  (let [initial (or (read-head! store)
+  (let [observe! (when (= :wal kind) (:phase-observe! options))
+        initial (or (read-head! store)
                     (fail! ::lease-fenced "The Durable head no longer exists"))
         initial-current (assert-owned! (:head initial) token)]
     (reference-transition initial-current token kind reference engine-metadata)
-    (when-not (verify-reference! store reference)
+    (when-not (observed-phase observe! :wal-immutable-verify
+                              (get reference "size")
+                              #(verify-reference! store reference))
       (fail! ::object-unverified
              "The immutable Durable object could not be verified"))
     ;; A heartbeat may change only the lease expiry while verification is in
@@ -843,6 +884,7 @@
      (retry/run!
       (retry-budget! (assoc options :max-attempts max-attempts))
       {:phase :cas
+       :phase-observe! observe!
        :snapshot (or (read-head! store)
                      (fail! ::lease-fenced
                             "The Durable head no longer exists"))}

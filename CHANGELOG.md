@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in, best-effort scalar-only Durable writer phase observer for WAL
+  preparation, append/join, immutable publication/verification, and head CAS.
+  Observer failures cannot alter protocol outcomes and events omit SQL,
+  payloads, object references, backend identities, and exceptions. This is
+  diagnostic attribution only; it makes no throughput claim.
+
 - Add an opt-in `stage-512` Durable benchmark selector for one fresh,
   instrumented 512x100 local preencoded trial. It preserves the separate
   uninstrumented scale selector and its peak-RSS interpretation, redacts raw

@@ -98,6 +98,9 @@
   (let [observe! (:recovery-phase! operations)]
     (when (and (some? observe!) (not (fn? observe!)))
       (fail! ::invalid-options "recovery-phase! must be a function")))
+  (let [observe! (:writer-phase! operations)]
+    (when (and (some? observe!) (not (fn? observe!)))
+      (fail! ::invalid-options "writer-phase! must be a function")))
   operations)
 
 (defn- nonblank-string! [value label]
@@ -1049,7 +1052,8 @@
                          (fn [store token commit-options]
                            (control/commit-reference!
                             store token
-                            (cond-> (merge commit-options retry-options)
+                            (cond-> (assoc (merge commit-options retry-options)
+                                           :phase-observe! (:writer-phase! operations))
                               (= :checkpoint (:kind commit-options))
                               (assoc :engine-metadata
                                      {:version running-version

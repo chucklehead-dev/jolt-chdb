@@ -295,6 +295,48 @@
 
 (defn- run-deterministic-checks! []
   (println "Durable V1 serialized writer operations")
+  (let [events (atom [])
+        {:keys [writer]} (new-writer
+                          (atom []) (atom 0)
+                          (assoc (fake-operations (atom []) (atom 0))
+                                 :writer-phase! #(swap! events conj %)))]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (42)")
+      (writer/flush! writer)
+      (check "writer phase observer preserves ordered scalar WAL/control stages"
+             [:wal-prepare :wal-append :wal-join :wal-immutable-put
+              :wal-immutable-verify :wal-head-cas]
+             (mapv :phase @events))
+      (check "writer phase observer excludes SQL and backend identity"
+             true
+             (every? #(and (= #{:phase :status :calls :nanos :bytes} (set (keys %)))
+                            (contains? #{:complete :failed} (:status %))
+                            (integer? (:nanos %)) (not (neg? (:nanos %)))
+                            (integer? (:bytes %)) (not (neg? (:bytes %))))
+                     @events))
+      (finally (writer/close! writer))))
+  (let [events (atom [])
+        {:keys [writer]} (new-writer
+                          (atom []) (atom 0)
+                          (assoc (fake-operations (atom []) (atom 0))
+                                 :writer-phase! (fn [_] (throw (ex-info "observer" {})))))]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (43)")
+      (check "throwing writer phase observer does not change execution"
+             :committed (:status (writer/flush! writer)))
+      (finally (writer/close! writer))))
+  (let [events (atom [])
+        failing (assoc (fake-operations (atom []) (atom 0))
+                       :execute-native! (fn [_ _ _] (throw (ex-info "native" {})))
+                       :writer-phase! #(swap! events conj %))
+        {:keys [writer]} (new-writer (atom []) (atom 0) failing)]
+    (try
+      (check "native failure retains no later writer WAL phase"
+             nil (try (writer/execute! writer "INSERT INTO t VALUES (44)") nil
+                      (catch Throwable _ nil)))
+      (check "native failure emits prepare but never append"
+             [:wal-prepare] (mapv :phase @events))
+      (finally (writer/close! writer))))
   (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
         prepared (chdb/prepare-query sql [])
         quoted-sql "SELECT '?'"
