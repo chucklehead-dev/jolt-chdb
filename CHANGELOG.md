@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Qualify the native public-close failure boundary: a failed destructor marks
+  that public handle unavailable, is never retried, retains the conservative
+  process reference, and cannot permit a second native engine bootstrap.
+
 - Add a separate, fail-closed release-runtime Durable recovery A'/B'/A/B/B/A
   verifier. Receipt-only invocation now reports structural consistency only;
   it cannot claim release provenance. Provenance invocation requires a reviewed
