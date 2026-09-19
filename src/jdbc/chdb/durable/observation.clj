@@ -67,7 +67,14 @@
   (swap! observation
          (fn [state]
            (if (= :available (:availability state))
-             (assoc state :state :pending :view-current? false)
+             ;; A later native mutation cannot make an earlier ambiguous WAL
+             ;; provable. Keep the conservative status until a checkpoint
+             ;; covers the complete native state.
+             (assoc state
+                    :state (if (= :unconfirmed (:state state))
+                             :unconfirmed
+                             :pending)
+                    :view-current? false)
              state)))
   nil)
 

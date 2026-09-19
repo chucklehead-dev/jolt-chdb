@@ -249,6 +249,12 @@
       (check "subsequent canonical WAL retains earlier uncertainty"
              :unconfirmed (:state (writer/persistence-observation durable-writer)))
       (writer/execute! durable-writer "INSERT INTO t VALUES (2)")
+      (check "a later admitted mutation cannot downgrade ambiguous evidence"
+             :unconfirmed (:state (writer/persistence-observation durable-writer)))
+      (writer/flush! durable-writer)
+      (check "a later canonical WAL still cannot clear earlier ambiguity"
+             :unconfirmed (:state (writer/persistence-observation durable-writer)))
+      (writer/execute! durable-writer "INSERT INTO t VALUES (3)")
       (writer/checkpoint! durable-writer)
       (check "canonical checkpoint is the only operation that clears ambiguity"
              [:confirmed :checkpoint true]
