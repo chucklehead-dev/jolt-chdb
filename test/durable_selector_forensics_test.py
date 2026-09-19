@@ -16,6 +16,20 @@ SELECTOR = ROOT / "scripts" / "run-durable-throughput-selector.sh"
 DIAGNOSE = ROOT / "scripts" / "diagnose-durable-throughput-selector.sh"
 
 
+def strace_usable() -> bool:
+    """PATH presence is insufficient under ptrace-restricted containers."""
+    if not shutil.which("strace"):
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = pathlib.Path(tmp) / "probe"
+        return subprocess.run(
+            ["strace", "-qq", "-e", "trace=none", "-o", str(probe), "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode == 0
+
+
 class DurableSelectorForensicsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -135,7 +149,7 @@ class DurableSelectorForensicsTest(unittest.TestCase):
         self.assertNotIn("not-loaded", inventory)
         self.assertNotIn(sentinel, events + inventory)
 
-    @unittest.skipUnless(shutil.which("strace"), "real strace is unavailable on this runner")
+    @unittest.skipUnless(strace_usable(), "real strace cannot trace a child on this runner")
     def test_trace_enabled_branch_does_not_serialize_credential_sentinel(self) -> None:
         root = pathlib.Path(self.tmp.name)
         output = root / "trace-output"
@@ -161,21 +175,122 @@ class DurableSelectorForensicsTest(unittest.TestCase):
         self.assertIn("strace-enabled", retained)
         self.assertNotIn(sentinel, retained)
 
-    @unittest.skipIf(shutil.which("strace"), "covered by the real strace trace test")
-    def test_requested_strace_fails_closed_when_unavailable(self) -> None:
+    def test_requested_strace_fails_closed_when_unavailable_or_unusable(self) -> None:
         root = pathlib.Path(self.tmp.name)
         output = root / "required-trace-output"
+        fake_bin = root / "fake-bin"
+        fake_bin.mkdir()
+        fake_strace = fake_bin / "strace"
+        fake_strace.write_text("#!/usr/bin/env bash\nexit 1\n")
+        fake_strace.chmod(0o755)
         result = subprocess.run(
             [str(self.diagnose), "scale-512", str(output)],
             cwd=self.repo,
-            env=self.env | {"DURABLE_SELECTOR_FORENSICS_STRACE": "1"},
+            env=self.env | {
+                "DURABLE_SELECTOR_FORENSICS_STRACE": "1",
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            },
             text=True,
             capture_output=True,
         )
         self.assertEqual(result.returncode, 2)
         forensic = pathlib.Path(f"{output}.launch-forensics")
         self.assertIn("launcher-started", (forensic / "launcher.events").read_text())
+        self.assertIn("strace-unusable", (forensic / "launcher.events").read_text())
         self.assertFalse(output.exists())
+        self.assertFalse((forensic / "strace-usability-probe").exists())
+
+    def test_auto_strace_unusable_falls_back_without_probe_or_secrets(self) -> None:
+        root = pathlib.Path(self.tmp.name)
+        output = root / "auto-unusable-output"
+        fake_bin = root / "fake-bin"
+        fake_bin.mkdir()
+        fake_strace = fake_bin / "strace"
+        fake_strace.write_text("#!/usr/bin/env bash\nexit 1\n")
+        fake_strace.chmod(0o755)
+        sentinel = "credential-sentinel-must-not-be-serialized"
+        result = subprocess.run(
+            [str(self.diagnose), "scale-512", str(output)],
+            cwd=self.repo,
+            env=self.env | {
+                "DURABLE_SELECTOR_FORENSICS_STRACE": "auto",
+                "CREDENTIAL_SENTINEL": sentinel,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            },
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        forensic = pathlib.Path(f"{output}.launch-forensics")
+        launcher = (forensic / "launcher.events").read_text()
+        selector = (forensic / "selector.events").read_text()
+        self.assertIn("strace-unusable", launcher)
+        self.assertIn("strace-unusable-fallback", launcher)
+        self.assertIn("selector-started", selector)
+        self.assertFalse((forensic / "strace-usability-probe").exists())
+        self.assertNotIn(sentinel, launcher + selector)
+
+    @unittest.skipUnless(
+        shutil.which("strace") and not strace_usable(),
+        "requires strace on PATH with ptrace denied",
+    )
+    def test_real_unusable_strace_auto_falls_back_to_selector_lifecycle(self) -> None:
+        root = pathlib.Path(self.tmp.name)
+        output = root / "real-auto-unusable-output"
+        sentinel = "credential-sentinel-must-not-be-serialized"
+        result = subprocess.run(
+            [str(self.diagnose), "scale-512", str(output)],
+            cwd=self.repo,
+            env=self.env | {
+                "DURABLE_SELECTOR_FORENSICS_STRACE": "auto",
+                "CREDENTIAL_SENTINEL": sentinel,
+            },
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        forensic = pathlib.Path(f"{output}.launch-forensics")
+        launcher = (forensic / "launcher.events").read_text()
+        selector = (forensic / "selector.events").read_text()
+        inventory = (forensic / "output-inventory.txt").read_text()
+        self.assertIn("strace-unusable", launcher)
+        self.assertIn("strace-unusable-fallback", launcher)
+        self.assertIn("selector-child-started pid=", launcher)
+        self.assertIn("selector-child-returned status=", launcher)
+        self.assertIn("selector-started", selector)
+        self.assertIn("time-child-returned status=17", selector)
+        self.assertFalse((forensic / "strace-usability-probe").exists())
+        self.assertEqual(list(forensic.glob("execve.*")), [])
+        self.assertNotIn(sentinel, launcher + selector + inventory)
+
+    @unittest.skipUnless(
+        shutil.which("strace") and not strace_usable(),
+        "requires strace on PATH with ptrace denied",
+    )
+    def test_real_unusable_strace_explicit_fails_before_selector_output(self) -> None:
+        root = pathlib.Path(self.tmp.name)
+        output = root / "real-explicit-unusable-output"
+        sentinel = "credential-sentinel-must-not-be-serialized"
+        result = subprocess.run(
+            [str(self.diagnose), "scale-512", str(output)],
+            cwd=self.repo,
+            env=self.env | {
+                "DURABLE_SELECTOR_FORENSICS_STRACE": "1",
+                "CREDENTIAL_SENTINEL": sentinel,
+            },
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        forensic = pathlib.Path(f"{output}.launch-forensics")
+        launcher = (forensic / "launcher.events").read_text()
+        self.assertIn("launcher-started", launcher)
+        self.assertIn("strace-unusable", launcher)
+        self.assertFalse(output.exists())
+        self.assertFalse((forensic / "selector.events").exists())
+        self.assertFalse((forensic / "strace-usability-probe").exists())
+        self.assertEqual(list(forensic.glob("execve.*")), [])
+        self.assertNotIn(sentinel, launcher + result.stdout + result.stderr)
 
     def test_launcher_signal_retires_selector_and_timed_workload(self) -> None:
         root = pathlib.Path(self.tmp.name)
