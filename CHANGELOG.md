@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a separate, fail-closed release-runtime Durable recovery A'/B'/A/B/B/A
+  receipt verifier. It binds each named Jolt release condition to the invoked
+  binary's bytes, SHA-256 and exact version banner; GitHub tag/ref, release
+  asset, checksum-sidecar and extracted-member receipts; and one unchanged
+  chDB/data.json/provider/fixture/native identity across six fresh process
+  receipts. Checked-in 0.8.6 and 0.8.9 provenance values are test fixtures
+  only. The receipt establishes release-reference plus archive-integrity
+  provenance, not a signed source/build chain, artifact attestation,
+  reproducibility, percentile, S3, or general-throughput qualification.
+
 - Correct the Durable data.json A/B/B/A summary to compare runtime binary,
   version, source, and revision across conditions while validating each
   dependency-sensitive `-Sdescribe` receipt against its own condition. Separate
