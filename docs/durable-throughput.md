@@ -62,6 +62,30 @@ The persisted rate amortizes one flush across the reported number of batches.
 It is not a claim of per-batch durability. Single-row inserts and remote
 per-batch flushes are separate ceilings and cannot qualify the primary target.
 
+## Release-runtime recovery comparison
+
+`profiles/durable-release-runtime-abba.json` is the separate, manually run
+recovery comparison for the released Jolt 0.8.6 and 0.8.9 binaries. It uses
+the A'/B'/A/B/B/A order and reports recovery evidence only; it does not
+qualify admission throughput, p99, S3, or equivalence to the Rust library.
+
+The launcher requires three offline seeds: Cargo's registry/git payload,
+Jolt's compilation cache, and Jolt's gitlibs tree. The checked-in profile
+contains a recursive path-and-content digest for each. In particular, the
+gitlibs digest is not treated as sufficient by itself: the launcher also finds
+exactly one reviewed `data.json` source revision and `json.clj` identity inside
+that tree. It copies verified seeds beneath the output's `verified-inputs/`
+directory, remounts that directory read-only, and makes fresh writable cache
+and gitlibs copies for each runtime condition. Thus a changed seed or an
+ambient `JOLT_CACHE_DIR`/`JOLT_GITLIBS_DIR` fails before a release result is
+issued.
+
+All normal-run Cargo, Jolt, and harness child processes execute without a
+network namespace and receive `TMPDIR`, `TEMP`, and `TMP` pointing at the
+chosen output's `tmp/` directory. The output directory must therefore be a
+private, writable location with sufficient space for the fixture, native build
+target, receipts, and temporary files.
+
 ## Running a local probe
 
 Use the workspace's pinned Chez wrapper, the repository-pinned standalone Jolt

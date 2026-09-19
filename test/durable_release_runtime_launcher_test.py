@@ -49,6 +49,22 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
             self.assertGreater(material_bind, bind)
             self.assertEqual(["cargo", "build"], command[command.index("--") + 1:])
 
+    def test_sandbox_environment_uses_an_output_contained_temp_for_every_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "output"
+            output.mkdir()
+            with mock.patch.dict(os.environ, {"TMPDIR": "/ambient/tmp", "TEMP": "/ambient/temp",
+                                              "TMP": "/ambient/TMP"}, clear=False):
+                env = LAUNCHER.sandbox_environment(output, {"JOLT_CACHE_DIR": str(output / "cache")})
+            expected = str((output / "tmp").resolve())
+            self.assertTrue((output / "tmp").is_dir())
+            self.assertEqual(expected, env["TMPDIR"])
+            self.assertEqual(expected, env["TEMP"])
+            self.assertEqual(expected, env["TMP"])
+            self.assertEqual(str(output / "cache"), env["JOLT_CACHE_DIR"])
+            command = LAUNCHER.offline_command("/usr/bin/bwrap", ["jolt", "--version"], [output])
+            self.assertEqual(str(output.resolve()), command[command.index("--bind") + 1])
+
     def test_raw_receipt_rejects_relabelled_measured_slot_as_prime(self):
         value = {
             "schema_version": 1, "run_id": "run", "schedule_ordinal": 3,
@@ -101,6 +117,7 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
             "CARGO_REGISTRIES_PRIVATE_TOKEN": "must-not-leak", "CARGO_HOME": "/ambient/cargo",
             "CARGO_TARGET_DIR": "/ambient/target", "RUSTFLAGS": "-Ctarget-cpu=native",
             "RUSTC_WRAPPER": "/tmp/wrapper", "JOLT_CACHE_DIR": "/ambient/jolt",
+            "JOLT_GITLIBS_DIR": "/ambient/gitlibs", "TMPDIR": "/ambient/tmp",
             "AWS_SECRET_ACCESS_KEY": "must-not-leak",
         }, clear=True):
             env = LAUNCHER.execution_environment({"HOME": "/isolated/home", "CARGO_HOME": "/isolated/cargo"})
@@ -112,6 +129,8 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
         self.assertNotIn("RUSTFLAGS", env)
         self.assertNotIn("RUSTC_WRAPPER", env)
         self.assertNotIn("JOLT_CACHE_DIR", env)
+        self.assertNotIn("JOLT_GITLIBS_DIR", env)
+        self.assertNotIn("TMPDIR", env)
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
 
     def test_profile_binds_both_control_scripts(self):
@@ -175,6 +194,39 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
             self.assertEqual(str(copied), env["CARGO_HOME"])
             self.assertNotEqual("/ambient/cargo", env["CARGO_HOME"])
             self.assertEqual("true", env["CARGO_NET_OFFLINE"])
+            self.assertEqual(str((root / "tmp").resolve()), env["TMPDIR"])
+
+    def test_jolt_seed_is_digest_bound_snapshotted_and_provider_resolved_without_ambient_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            cache, gitlibs, material = root / "cache", root / "gitlibs", root / "material"
+            (cache / "compiled").mkdir(parents=True)
+            (cache / "compiled" / "unit.so").write_bytes(b"compiled cache")
+            sha = "a" * 40
+            namespace_path = gitlibs / "https___example.invalid_data.json.git" / sha / "src/main/clojure/clojure/data/json.clj"
+            namespace_path.parent.mkdir(parents=True)
+            namespace_path.write_bytes(b"(ns clojure.data.json)")
+            namespace = LAUNCHER.identity(namespace_path)
+            profile = {"fixed": {"jolt_cache": LAUNCHER.dependency_seed_identity(cache, "Jolt cache"),
+                                  "jolt_gitlibs": LAUNCHER.dependency_seed_identity(gitlibs, "Jolt gitlibs"),
+                                  "data_json": {"source_sha": sha, "namespace": namespace},
+                                  "provider": {"source_sha": sha, "namespace": namespace}}}
+            self.assertEqual(profile["fixed"]["jolt_cache"],
+                             LAUNCHER.verify_dependency_seed(cache, profile["fixed"]["jolt_cache"], "Jolt cache"))
+            self.assertTrue(LAUNCHER.verify_resolved_provider_seed(gitlibs, profile))
+            material.mkdir()
+            copied_cache = LAUNCHER.snapshot_dependency_seed(cache, material, "jolt-cache-seed",
+                                                              profile["fixed"]["jolt_cache"], "Jolt cache")
+            copied_gitlibs = LAUNCHER.snapshot_dependency_seed(gitlibs, material, "jolt-gitlibs-seed",
+                                                                profile["fixed"]["jolt_gitlibs"], "Jolt gitlibs")
+            self.assertEqual(profile["fixed"]["jolt_cache"], LAUNCHER.dependency_seed_identity(copied_cache, "Jolt cache"))
+            self.assertTrue(LAUNCHER.verify_resolved_provider_seed(copied_gitlibs, profile))
+            (cache / "compiled" / "unit.so").write_bytes(b"mutated")
+            with self.assertRaisesRegex(SystemExit, "Jolt cache seed differs"):
+                LAUNCHER.verify_dependency_seed(cache, profile["fixed"]["jolt_cache"], "Jolt cache")
+            (namespace_path).write_bytes(b"mutated provider")
+            with self.assertRaisesRegex(SystemExit, "Jolt gitlibs seed differs"):
+                LAUNCHER.verify_dependency_seed(gitlibs, profile["fixed"]["jolt_gitlibs"], "Jolt gitlibs")
 
 
 if __name__ == "__main__":

@@ -107,6 +107,67 @@ def verify_cargo_home_seed(seed, expected):
     return actual
 
 
+def dependency_seed_identity(path, label):
+    """Return a path-sensitive digest for a real, offline dependency tree.
+
+    Unlike a plain directory existence check, this commits every directory and
+    regular file name, byte count, and byte digest.  Symlinks and special files
+    are rejected: copying either would make the profile describe one tree while
+    a later sandbox resolves a different object through it.
+    """
+    path = pathlib.Path(path)
+    if not path.is_dir() or path.is_symlink():
+        fail(f"required real {label} seed is missing: {path}")
+    records, files, total = [], 0, 0
+    for root, directories, names in os.walk(path, followlinks=False):
+        root_path = pathlib.Path(root)
+        directories.sort(); names.sort()
+        for directory in directories:
+            entry = root_path / directory
+            if entry.is_symlink() or not entry.is_dir():
+                fail(f"{label} seed contains a non-real directory: {entry}")
+            records.append({"path": entry.relative_to(path).as_posix(), "kind": "directory"})
+        for name in names:
+            entry = root_path / name
+            if entry.is_symlink() or not entry.is_file():
+                fail(f"{label} seed contains a non-regular file: {entry}")
+            data = entry.read_bytes()
+            files += 1; total += len(data)
+            records.append({"path": entry.relative_to(path).as_posix(), "kind": "file",
+                            "bytes": len(data), "sha256": digest(data)})
+    return {"files": files, "bytes": total, "sha256": digest(canonical(records))}
+
+
+def verify_dependency_seed(seed, expected, label):
+    actual = dependency_seed_identity(seed, label)
+    if actual != expected:
+        fail(f"supplied {label} seed differs from reviewed production profile")
+    return actual
+
+
+def resolved_provider_roots(gitlibs_seed, source_sha, namespace):
+    """Find the one immutable gitlib root that supplies the reviewed provider."""
+    seed = pathlib.Path(gitlibs_seed)
+    matches = []
+    for candidate in seed.rglob(source_sha):
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        namespace_path = candidate / "src/main/clojure/clojure/data/json.clj"
+        if namespace_path.is_file() and not namespace_path.is_symlink() and identity(namespace_path) == namespace:
+            matches.append(candidate)
+    return matches
+
+
+def verify_resolved_provider_seed(gitlibs_seed, profile):
+    """Bind the actual offline provider source, not just a cache directory name."""
+    for label in ("data_json", "provider"):
+        expected = profile["fixed"][label]
+        matches = resolved_provider_roots(gitlibs_seed, expected["source_sha"], expected["namespace"])
+        if len(matches) != 1:
+            fail(f"{label} provider is not resolved exactly once from the reviewed gitlibs seed")
+    return True
+
+
 def git(checkout, *args):
     try:
         return subprocess.check_output(["git", "-C", str(checkout), *args], text=True,
@@ -215,9 +276,9 @@ def verify_inputs(verify, profile, args):
         sidecar = getattr(args, condition.lower() + "_sidecar")
         verify.verify_release_artifacts("condition " + condition, binary, archive, sidecar,
                                        profile["conditions"][condition])
-    for seed in (args.cache_seed, args.gitlibs_seed):
-        if not pathlib.Path(seed).is_dir() or pathlib.Path(seed).is_symlink():
-            fail("cache seeds must be supplied real directories; this runner downloads nothing")
+    verify_dependency_seed(args.cache_seed, profile["fixed"]["jolt_cache"], "Jolt cache")
+    verify_dependency_seed(args.gitlibs_seed, profile["fixed"]["jolt_gitlibs"], "Jolt gitlibs")
+    verify_resolved_provider_seed(args.gitlibs_seed, profile)
     verify_cargo_home_seed(args.cargo_home_seed, profile["fixed"]["cargo_home"])
 
 
@@ -304,6 +365,16 @@ def snapshot_cargo_home(seed, material, expected):
     return cargo_home
 
 
+def snapshot_dependency_seed(seed, material, name, expected, label):
+    """Copy a profile-bound seed before remounting it read-only in Bubblewrap."""
+    verify_dependency_seed(seed, expected, label)
+    copied = material / name
+    shutil.copytree(seed, copied, symlinks=False)
+    if dependency_seed_identity(copied, label) != expected:
+        fail(f"verified {label} seed changed while being copied")
+    return copied
+
+
 def snapshot_control(profile_path, material, profile):
     """Clone the verified control checkout for all post-snapshot verification.
 
@@ -346,15 +417,33 @@ def execution_environment(overrides):
     unrelated variables are deliberately omitted and benchmark-specific values
     are supplied solely by ``overrides``.
     """
-    allowed = ("PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "RUSTUP_HOME")
+    allowed = ("PATH", "LANG", "LC_ALL", "TZ", "RUSTUP_HOME")
     env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
     env.update(overrides)
     return env
 
 
+def sandbox_environment(output, overrides=None):
+    """Give every sandboxed child a caller-output-only temporary directory."""
+    output = pathlib.Path(output).resolve()
+    temp = output / "tmp"
+    temp.mkdir(exist_ok=True)
+    try:
+        temp.relative_to(output)
+    except ValueError:
+        fail("sandbox temporary directory escapes output")
+    values = {"TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp)}
+    if overrides:
+        values.update(overrides)
+    env = execution_environment(values)
+    if any(env[name] != str(temp) for name in ("TMPDIR", "TEMP", "TMP")):
+        fail("sandbox temporary environment is not output-contained")
+    return env
+
+
 def cargo_build_environment(output, cargo_home, native_dir, libchdb, native_header, reports, rust_target):
     """Use only the snapshotted Cargo home; ambient CARGO_HOME is never inherited."""
-    return execution_environment({
+    return sandbox_environment(output, {
         "CARGO_NET_OFFLINE": "true", "CARGO_HOME": str(cargo_home),
         "CHDB_LIB_DIR": str(native_dir), "CHDB_INCLUDE_DIR": str(native_header.parent),
         "BENCH_NATIVE_LIBRARY": str(libchdb), "BENCH_NATIVE_HEADER": str(native_header),
@@ -397,11 +486,17 @@ def snapshot_verified_inputs(args, profile, output, verify, source):
         conditions[condition] = {"binary": copied_binary, "archive": copied_archive,
                                  "sidecar": copied_sidecar}
     cargo_home = snapshot_cargo_home(args.cargo_home_seed, material, profile["fixed"]["cargo_home"])
+    cache_seed = snapshot_dependency_seed(args.cache_seed, material, "jolt-cache-seed",
+                                          profile["fixed"]["jolt_cache"], "Jolt cache")
+    gitlibs_seed = snapshot_dependency_seed(args.gitlibs_seed, material, "jolt-gitlibs-seed",
+                                            profile["fixed"]["jolt_gitlibs"], "Jolt gitlibs")
+    verify_resolved_provider_seed(gitlibs_seed, profile)
     source_snapshot = snapshot_source(source, material, profile["fixed"]["chdb"]["source_sha"],
                                       profile["fixed"]["chdb"]["source_tree"])
     control = snapshot_control(args.profile, material, profile)
     return {"library": copied_library, "header": copied_header, "native_dir": native_dir,
             "source": source_snapshot, "cargo_home": cargo_home,
+            "cache_seed": cache_seed, "gitlibs_seed": gitlibs_seed,
             "conditions": conditions, "control": control}
 
 
@@ -412,13 +507,13 @@ def run(command, env=None, cwd=None):
         fail(f"subprocess failed: {error}")
 
 
-def verify_harness(source, reports, sandbox=None, output=None, material=None):
+def verify_harness(source, reports, sandbox=None, output=None, material=None, env=None):
     command = ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"),
                "--verify-state", str(source), str(reports)]
     if sandbox is None:
         run(command, env=execution_environment({}))
     else:
-        run_offline(sandbox, command, [output], [material], env=execution_environment({}), cwd=source)
+        run_offline(sandbox, command, [output], [material], env=env or sandbox_environment(output), cwd=source)
 
 
 def raw_receipt(raw, expected_ordinal, expected_phase, expected_trial):
@@ -502,6 +597,7 @@ def main():
         print("PASS release-runtime Durable A'/B'/A/B/B/A preflight (no fixture or reader executed)")
         return
     output = clean_output(args.output)
+    sandbox_env = sandbox_environment(output)
     sandbox = require_offline_sandbox()
     material = snapshot_verified_inputs(args, profile, output, verify, source)
     source = material["source"]
@@ -509,8 +605,8 @@ def main():
     reports.mkdir()
     run_offline(sandbox, ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"), str(source),
                           str(reports), "release-runtime-abba", "5", "512", "2", "100"],
-                [output], [material], env=execution_environment({}), cwd=source)
-    verify_harness(source, reports, sandbox, output, material)
+                [output], [material], env=sandbox_env, cwd=source)
+    verify_harness(source, reports, sandbox, output, material, sandbox_env)
     native_dir = material["native_dir"]
     libchdb, native_header = material["library"], material["header"]
     rust_target = output / "rust-target"
@@ -550,11 +646,11 @@ def main():
                         source_phase, source_trial, source_report_name, receipt_name) in enumerate(SCHEDULE):
         cache, gitlibs = output / ("cache-" + condition), output / ("gitlibs-" + condition)
         if not cache.exists():
-            copy_seed(args.cache_seed, cache); copy_seed(args.gitlibs_seed, gitlibs)
+            copy_seed(material["cache_seed"], cache); copy_seed(material["gitlibs_seed"], gitlibs)
         binary = material["conditions"][condition]["binary"]
         describe = raw_dir / (condition + "-describe.edn")
         runtime = profile["conditions"][condition]
-        env = execution_environment({
+        env = sandbox_environment(output, {
             "JOLT_CACHE_DIR": str(cache), "JOLT_GITLIBS_DIR": str(gitlibs), "BENCH_JOLT_BIN": str(binary),
             "BENCH_JOLT_SOURCE_SHA_ASSERTED": runtime["release"]["tag_commit"],
             "BENCH_JOLT_EXECUTABLE_REVISION": runtime["release"]["tag_commit"][:8],
@@ -569,14 +665,14 @@ def main():
                                                 [output], [material]), check=True, env=env, cwd=source, stdout=handle)
             except (OSError, subprocess.CalledProcessError) as error:
                 fail(f"Jolt describe failed: {error}")
-        verify_harness(source, reports, sandbox, output, material)
+        verify_harness(source, reports, sandbox, output, material, sandbox_env)
         raw = raw_dir / str(outer_ordinal) / source_report_name
         raw.parent.mkdir(parents=True, exist_ok=True)
         run_offline(sandbox, [str(WRAPPER), str(binary), "-Srepro", "-M:durable-cross-binding-recovery", str(fixture),
                               "release-runtime-abba", str(reports / "fixture.json"), str(reports / "run-manifest.json"),
                               str(source_ordinal), str(raw)],
                     [output], [material], env=env, cwd=source)
-        verify_harness(source, reports, sandbox, output, material)
+        verify_harness(source, reports, sandbox, output, material, sandbox_env)
         measured = raw_receipt(raw, source_ordinal, source_phase, source_trial)
         verify_observed_runtime(measured, runtime, profile["fixed"]["native"], binary,
                                 libchdb, native_header)

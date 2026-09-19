@@ -9,13 +9,13 @@
     },
     "runner_script": {
       "file_name": "profile-durable-release-runtime-abba.py",
-      "bytes": 33930,
-      "sha256": "e65690d1df4655da2bddd9541ee26e96430e272301fed07edb222f847b3f3447"
+      "bytes": 38518,
+      "sha256": "5f20b403c2d27bdc46bc10e3883adb42e5f589c03b2723f1c3bd52a8c2f2e560"
     },
     "verifier_script": {
       "file_name": "verify-durable-release-runtime-abba.py",
-      "bytes": 32439,
-      "sha256": "a105b8d7921044e4decb0ff492d24e5376602ac524e6c91915e61d537e250461"
+      "bytes": 32601,
+      "sha256": "47ee75fb95145bc4729b17817dafe2f6b8554edd12d6f0e0e1a5559a9e6dffb9"
     },
     "data_json": {
       "source_sha": "97298fd8a67a6d4ee3eb1346d5e184beb9565b90",
@@ -59,6 +59,16 @@
       "files": 12203,
       "bytes": 388886100,
       "sha256": "c006004a054537ccd319bdd60722127b9a8a215de8fca352b849e519c18e7c8f"
+    },
+    "jolt_cache": {
+      "files": 125,
+      "bytes": 8924760,
+      "sha256": "e2535ac1354a9dc73cdfa537961540c02498910288ab8f15fe7679c774d14f84"
+    },
+    "jolt_gitlibs": {
+      "files": 120,
+      "bytes": 1403232,
+      "sha256": "c6afc78c39b581e0935059affb90c3f2e80d1b0cc5698434ee3788d0f7ffdb48"
     }
   },
   "conditions": {

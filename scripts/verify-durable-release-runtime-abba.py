@@ -191,7 +191,7 @@ def identity(label, value):
     return value
 
 
-STATIC_FIXED_KEYS = {"chdb", "runner_script", "verifier_script", "data_json", "provider", "workload", "native", "cargo_home"}
+STATIC_FIXED_KEYS = {"chdb", "runner_script", "verifier_script", "data_json", "provider", "workload", "native", "cargo_home", "jolt_cache", "jolt_gitlibs"}
 
 
 def directory_identity(label, value):
@@ -226,6 +226,8 @@ def static_fixed_identity(value, label="fixed workload profile"):
     identity("fixed native library", value["native"]["library"])
     identity("fixed native header", value["native"]["header"])
     directory_identity("fixed Cargo home", value["cargo_home"])
+    directory_identity("fixed Jolt cache", value["jolt_cache"])
+    directory_identity("fixed Jolt gitlibs", value["jolt_gitlibs"])
     return value
 
 
