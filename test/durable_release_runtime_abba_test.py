@@ -63,6 +63,7 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
         return {
             "chdb": {"source_sha": "a" * 40, "source_tree": "b" * 40},
             "runner_script": ident("run-release-abba.sh", "c"),
+            "verifier_script": ident("verify-release-abba.py", "8"),
             "data_json": {"source_sha": "d" * 40, "namespace": ident("json.cljc", "e")},
             "provider": {"source_sha": "f" * 40, "namespace": ident("provider.json", "1")},
             "workload": {"rows": 52224, "segments": 3, "generator": ident("generate.clj", "2")},
@@ -178,7 +179,7 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
         return binary, archive, sidecar, expected
 
     def profile(self, path, manifest):
-        static_keys = ("chdb", "runner_script", "data_json", "provider", "workload", "native", "cargo_home")
+        static_keys = ("chdb", "runner_script", "verifier_script", "data_json", "provider", "workload", "native", "cargo_home")
         value = {"schema_version": 1,
                  "purpose": "reviewed release-runtime Durable profile selected before execution",
                  "assurance_claim": ASSURANCE,

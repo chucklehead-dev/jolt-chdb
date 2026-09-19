@@ -126,18 +126,63 @@ def write(path, value):
     pathlib.Path(path).write_text(json.dumps(value, sort_keys=True) + "\n")
 
 
-def release_module():
+def control_paths(profile_path):
+    """Return the immutable, checked-in control inputs this runner may execute.
+
+    The profile is the policy root for both Python programs.  Do not import the
+    verifier until its byte identity and Git checkout status have been checked
+    against that profile: importing a mutable verifier would make the final
+    receipt claim self-referential.
+    """
+    profile = pathlib.Path(profile_path).resolve()
+    try:
+        relative = profile.relative_to(ROOT)
+    except ValueError:
+        fail("reviewed production profile must be checked into this repository")
+    return profile, relative, pathlib.Path(__file__).resolve(), VERIFY_PATH.resolve()
+
+
+def checked_in_clean(paths):
+    """Require each control input to be a clean, tracked file at this HEAD."""
+    relative = []
+    for path in paths:
+        path = pathlib.Path(path)
+        if not path.is_file() or path.is_symlink():
+            fail(f"release-runtime control is not a regular file: {path}")
+        try:
+            relative.append(path.relative_to(ROOT).as_posix())
+        except ValueError:
+            fail("release-runtime control is not checked into this repository")
+    if git(ROOT, "status", "--porcelain"):
+        fail("release-runtime control checkout has index or working-tree dirt")
+    for name in relative:
+        git(ROOT, "ls-files", "--error-unmatch", "--", name)
+        if git(ROOT, "diff", "--name-only", "HEAD", "--", name):
+            fail("release-runtime control differs from HEAD")
+    return relative
+
+
+def release_module(verifier_path):
     import importlib.util
-    spec = importlib.util.spec_from_file_location("release_runtime_abba_verify", VERIFY_PATH)
+    spec = importlib.util.spec_from_file_location("release_runtime_abba_verify", verifier_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 def profile_and_source(profile_path, source_checkout):
-    verify = release_module()
-    profile_path = pathlib.Path(profile_path).resolve()
+    profile_path, _, runner, verifier = control_paths(profile_path)
     profile = load(profile_path)
+    fixed = profile.get("fixed") if isinstance(profile, dict) else None
+    if not isinstance(fixed, dict):
+        fail("reviewed production profile fixed control is missing")
+    if identity(runner) != fixed.get("runner_script"):
+        fail("runner script identity differs from reviewed production profile")
+    if identity(verifier) != fixed.get("verifier_script"):
+        fail("verifier script identity differs from reviewed production profile")
+    checked_in_clean((profile_path, runner, verifier))
+    # Only now is code from the verifier control path imported.
+    verify = release_module(verifier)
     verify.exact("reviewed production profile", profile,
                  {"schema_version", "purpose", "assurance_claim", "fixed", "conditions"})
     if profile["schema_version"] != 1 or profile["purpose"] != "reviewed release-runtime Durable profile selected before execution":
@@ -146,8 +191,6 @@ def profile_and_source(profile_path, source_checkout):
     verify.exact("reviewed production profile conditions", profile["conditions"], {"A", "B"})
     verify.runtime_identity("profile condition A", profile["conditions"]["A"], "A")
     verify.runtime_identity("profile condition B", profile["conditions"]["B"], "B")
-    if identity(__file__) != profile["fixed"]["runner_script"]:
-        fail("runner script identity differs from reviewed production profile")
     source = pathlib.Path(source_checkout).resolve()
     claimed = profile["fixed"]["chdb"]
     if git(source, "status", "--porcelain"):
@@ -261,15 +304,63 @@ def snapshot_cargo_home(seed, material, expected):
     return cargo_home
 
 
+def snapshot_control(profile_path, material, profile):
+    """Clone the verified control checkout for all post-snapshot verification.
+
+    The benchmark's source snapshot intentionally names the older reviewed
+    durable tree.  The profile, launcher and verifier instead live in this
+    control checkout.  Cloning it commits the final verifier to the same clean
+    HEAD as the profile, then Bubblewrap remounts it read-only.
+    """
+    profile_path, profile_relative, runner, verifier = control_paths(profile_path)
+    control = material / "control"
+    control_head, control_tree = git(ROOT, "rev-parse", "HEAD"), git(ROOT, "rev-parse", "HEAD^{tree}")
+    try:
+        subprocess.run(["git", "clone", "--no-local", "--no-checkout", str(ROOT), str(control)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(control), "checkout", "--detach", control_head],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"cannot snapshot release-runtime control checkout: {error}")
+    checked_in_clean((profile_path, runner, verifier))
+    if git(ROOT, "rev-parse", "HEAD") != control_head or git(ROOT, "rev-parse", "HEAD^{tree}") != control_tree:
+        fail("release-runtime control checkout changed while creating immutable snapshot")
+    snap_profile, snap_runner, snap_verifier = (control / profile_relative,
+                                                 control / "scripts" / runner.name,
+                                                 control / "scripts" / verifier.name)
+    if (git(control, "status", "--porcelain") or git(control, "rev-parse", "HEAD") != control_head or
+            git(control, "rev-parse", "HEAD^{tree}") != control_tree):
+        fail("immutable release-runtime control snapshot differs from Git provenance")
+    if (identity(snap_profile) != identity(profile_path) or identity(snap_runner) != profile["fixed"]["runner_script"] or
+            identity(snap_verifier) != profile["fixed"]["verifier_script"]):
+        fail("immutable release-runtime control snapshot differs from reviewed profile")
+    return {"root": control, "profile": snap_profile, "verifier": snap_verifier}
+
+
+def execution_environment(overrides):
+    """Construct a minimal process environment with no ambient credentials.
+
+    PATH locates reviewed local tools; locale/TZ make output deterministic; a
+    caller's RUSTUP_HOME is needed only for the locally installed Rust toolchain.
+    Cargo configuration, tokens, wrappers, flags, JOLT overrides, and all
+    unrelated variables are deliberately omitted and benchmark-specific values
+    are supplied solely by ``overrides``.
+    """
+    allowed = ("PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "RUSTUP_HOME")
+    env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
+    env.update(overrides)
+    return env
+
+
 def cargo_build_environment(output, cargo_home, native_dir, libchdb, native_header, reports, rust_target):
     """Use only the snapshotted Cargo home; ambient CARGO_HOME is never inherited."""
-    env = dict(os.environ)
-    env.pop("CARGO_HOME", None)
-    env.update(CARGO_NET_OFFLINE="true", CARGO_HOME=str(cargo_home), CHDB_LIB_DIR=str(native_dir),
-               CHDB_INCLUDE_DIR=str(native_header.parent), BENCH_NATIVE_LIBRARY=str(libchdb),
-               BENCH_NATIVE_HEADER=str(native_header), BENCH_HARNESS_STATE_FILE=str(reports / "harness-state.json"),
-               CARGO_TARGET_DIR=str(rust_target), HOME=str(output / "home"))
-    return env
+    return execution_environment({
+        "CARGO_NET_OFFLINE": "true", "CARGO_HOME": str(cargo_home),
+        "CHDB_LIB_DIR": str(native_dir), "CHDB_INCLUDE_DIR": str(native_header.parent),
+        "BENCH_NATIVE_LIBRARY": str(libchdb), "BENCH_NATIVE_HEADER": str(native_header),
+        "BENCH_HARNESS_STATE_FILE": str(reports / "harness-state.json"),
+        "CARGO_TARGET_DIR": str(rust_target), "HOME": str(output / "home"),
+    })
 
 
 def snapshot_verified_inputs(args, profile, output, verify, source):
@@ -308,9 +399,10 @@ def snapshot_verified_inputs(args, profile, output, verify, source):
     cargo_home = snapshot_cargo_home(args.cargo_home_seed, material, profile["fixed"]["cargo_home"])
     source_snapshot = snapshot_source(source, material, profile["fixed"]["chdb"]["source_sha"],
                                       profile["fixed"]["chdb"]["source_tree"])
+    control = snapshot_control(args.profile, material, profile)
     return {"library": copied_library, "header": copied_header, "native_dir": native_dir,
             "source": source_snapshot, "cargo_home": cargo_home,
-            "conditions": conditions}
+            "conditions": conditions, "control": control}
 
 
 def run(command, env=None, cwd=None):
@@ -324,9 +416,9 @@ def verify_harness(source, reports, sandbox=None, output=None, material=None):
     command = ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"),
                "--verify-state", str(source), str(reports)]
     if sandbox is None:
-        run(command)
+        run(command, env=execution_environment({}))
     else:
-        run_offline(sandbox, command, [output], [material], cwd=source)
+        run_offline(sandbox, command, [output], [material], env=execution_environment({}), cwd=source)
 
 
 def raw_receipt(raw, expected_ordinal, expected_phase, expected_trial):
@@ -417,7 +509,7 @@ def main():
     reports.mkdir()
     run_offline(sandbox, ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"), str(source),
                           str(reports), "release-runtime-abba", "5", "512", "2", "100"],
-                [output], [material], cwd=source)
+                [output], [material], env=execution_environment({}), cwd=source)
     verify_harness(source, reports, sandbox, output, material)
     native_dir = material["native_dir"]
     libchdb, native_header = material["library"], material["header"]
@@ -442,6 +534,11 @@ def main():
         fail("generated fixture differs from reviewed workload shape")
     receipt_dir, raw_dir = output / "receipts", output / "raw"
     receipt_dir.mkdir(); raw_dir.mkdir(); (receipt_dir / "raw").mkdir()
+    profile_path = material["control"]["profile"]
+    verifier_path = material["control"]["verifier"]
+    # The snapshotted verifier owns all post-snapshot identity and receipt
+    # checks; it is never reloaded from the mutable control checkout.
+    verify = release_module(verifier_path)
     provenance = verify.checked_in_profile_provenance(profile_path)
     manifest = {"schema_version": 1, "mode": "release-runtime-abba", "assurance_claim": verify.ASSURANCE,
                 "fixed": fixed, "conditions": profile["conditions"], "schedule": verify.SCHEDULE,
@@ -457,12 +554,15 @@ def main():
         binary = material["conditions"][condition]["binary"]
         describe = raw_dir / (condition + "-describe.edn")
         runtime = profile["conditions"][condition]
-        env = dict(os.environ, JOLT_CACHE_DIR=str(cache), JOLT_GITLIBS_DIR=str(gitlibs),
-                   BENCH_JOLT_BIN=str(binary), BENCH_JOLT_SOURCE_SHA_ASSERTED=runtime["release"]["tag_commit"],
-                   BENCH_JOLT_EXECUTABLE_REVISION=runtime["release"]["tag_commit"][:8], BENCH_JOLT_VERSION=runtime["version"],
-                   BENCH_JOLT_DESCRIBE=str(describe), BENCH_NATIVE_LIBRARY=str(libchdb),
-                   BENCH_NATIVE_HEADER=str(native_header), BENCH_HARNESS_STATE_FILE=str(reports / "harness-state.json"),
-                   JOLT_CHDB_LIB=str(libchdb), LD_LIBRARY_PATH=str(native_dir), HOME=str(output / "home"))
+        env = execution_environment({
+            "JOLT_CACHE_DIR": str(cache), "JOLT_GITLIBS_DIR": str(gitlibs), "BENCH_JOLT_BIN": str(binary),
+            "BENCH_JOLT_SOURCE_SHA_ASSERTED": runtime["release"]["tag_commit"],
+            "BENCH_JOLT_EXECUTABLE_REVISION": runtime["release"]["tag_commit"][:8],
+            "BENCH_JOLT_VERSION": runtime["version"], "BENCH_JOLT_DESCRIBE": str(describe),
+            "BENCH_NATIVE_LIBRARY": str(libchdb), "BENCH_NATIVE_HEADER": str(native_header),
+            "BENCH_HARNESS_STATE_FILE": str(reports / "harness-state.json"), "JOLT_CHDB_LIB": str(libchdb),
+            "LD_LIBRARY_PATH": str(native_dir), "HOME": str(output / "home"),
+        })
         with describe.open("w") as handle:
             try:
                 subprocess.run(offline_command(sandbox, [str(WRAPPER), str(binary), "-Srepro", "-Sdescribe"],
@@ -508,11 +608,11 @@ def main():
         verify.verify_release_artifacts("final snapshotted condition " + condition,
                                        copied["binary"], copied["archive"], copied["sidecar"],
                                        profile["conditions"][condition])
-    run(["python3", str(VERIFY_PATH), str(receipt_dir), str(profile_path),
+    run(["python3", str(verifier_path), str(receipt_dir), str(profile_path),
          str(material["conditions"]["A"]["binary"]), str(material["conditions"]["A"]["archive"]),
          str(material["conditions"]["A"]["sidecar"]), str(material["conditions"]["B"]["binary"]),
          str(material["conditions"]["B"]["archive"]), str(material["conditions"]["B"]["sidecar"]),
-         "--sandbox-bwrap", sandbox])
+         "--sandbox-bwrap", sandbox], env=execution_environment({}))
     print("PASS release-runtime Durable A'/B'/A/B/B/A run: " + str(receipt_dir))
 
 

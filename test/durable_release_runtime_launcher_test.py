@@ -86,12 +86,52 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
     def test_launcher_hardens_cargo_and_bindgen_header_selection(self):
         text = LAUNCHER_PATH.read_text()
         self.assertIn('"--offline", "--release"', text)
-        self.assertIn('CARGO_NET_OFFLINE="true"', text)
-        self.assertIn('CHDB_INCLUDE_DIR=str(native_header.parent)', text)
+        self.assertIn('"CARGO_NET_OFFLINE": "true"', text)
+        self.assertIn('"CHDB_INCLUDE_DIR": str(native_header.parent)', text)
         self.assertIn('header.name != "chdb.h"', text)
         self.assertIn("snapshot_verified_inputs", text)
         self.assertIn("snapshot_source", text)
+        self.assertIn("snapshot_control", text)
+        self.assertIn('"verifier_script"', text)
         self.assertIn("[output], [material]", text)
+
+    def test_execution_environment_drops_ambient_credentials_wrappers_and_flags(self):
+        with mock.patch.dict(os.environ, {
+            "PATH": "/reviewed/bin", "LANG": "C.UTF-8", "RUSTUP_HOME": "/toolchain",
+            "CARGO_REGISTRIES_PRIVATE_TOKEN": "must-not-leak", "CARGO_HOME": "/ambient/cargo",
+            "CARGO_TARGET_DIR": "/ambient/target", "RUSTFLAGS": "-Ctarget-cpu=native",
+            "RUSTC_WRAPPER": "/tmp/wrapper", "JOLT_CACHE_DIR": "/ambient/jolt",
+            "AWS_SECRET_ACCESS_KEY": "must-not-leak",
+        }, clear=True):
+            env = LAUNCHER.execution_environment({"HOME": "/isolated/home", "CARGO_HOME": "/isolated/cargo"})
+        self.assertEqual("/reviewed/bin", env["PATH"])
+        self.assertEqual("/toolchain", env["RUSTUP_HOME"])
+        self.assertEqual("/isolated/cargo", env["CARGO_HOME"])
+        self.assertNotIn("CARGO_REGISTRIES_PRIVATE_TOKEN", env)
+        self.assertNotIn("CARGO_TARGET_DIR", env)
+        self.assertNotIn("RUSTFLAGS", env)
+        self.assertNotIn("RUSTC_WRAPPER", env)
+        self.assertNotIn("JOLT_CACHE_DIR", env)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+
+    def test_profile_binds_both_control_scripts(self):
+        profile = json.loads((ROOT / "profiles/durable-release-runtime-abba.json").read_text())
+        self.assertEqual(LAUNCHER.identity(LAUNCHER_PATH), profile["fixed"]["runner_script"])
+        self.assertEqual(LAUNCHER.identity(LAUNCHER.VERIFY_PATH), profile["fixed"]["verifier_script"])
+
+    def test_profile_and_source_rejects_a_replaced_verifier_before_import(self):
+        profile_path = ROOT / "profiles/durable-release-runtime-abba.json"
+        original_identity = LAUNCHER.identity
+
+        def replaced_identity(path):
+            value = original_identity(path)
+            if pathlib.Path(path).resolve() == LAUNCHER.VERIFY_PATH.resolve():
+                value = dict(value, sha256="0" * 64)
+            return value
+
+        with mock.patch.object(LAUNCHER, "identity", side_effect=replaced_identity):
+            with self.assertRaisesRegex(SystemExit, "verifier script identity differs"):
+                LAUNCHER.profile_and_source(profile_path, ROOT)
 
     def test_git_aware_snapshot_is_exact_and_rejects_the_wrong_source_tree(self):
         with tempfile.TemporaryDirectory() as directory:

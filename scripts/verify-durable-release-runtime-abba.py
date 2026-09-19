@@ -191,7 +191,7 @@ def identity(label, value):
     return value
 
 
-STATIC_FIXED_KEYS = {"chdb", "runner_script", "data_json", "provider", "workload", "native", "cargo_home"}
+STATIC_FIXED_KEYS = {"chdb", "runner_script", "verifier_script", "data_json", "provider", "workload", "native", "cargo_home"}
 
 
 def directory_identity(label, value):
@@ -209,6 +209,7 @@ def static_fixed_identity(value, label="fixed workload profile"):
     sha("fixed chDB source SHA", value["chdb"]["source_sha"], GIT_SHA)
     sha("fixed chDB source tree", value["chdb"]["source_tree"], GIT_SHA)
     identity("fixed runner script", value["runner_script"])
+    identity("fixed verifier script", value["verifier_script"])
     exact("fixed data.json", value["data_json"], {"source_sha", "namespace"})
     sha("fixed data.json source SHA", value["data_json"]["source_sha"], GIT_SHA)
     identity("fixed data.json namespace", value["data_json"]["namespace"])
