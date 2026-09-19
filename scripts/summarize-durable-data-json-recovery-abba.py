@@ -134,9 +134,16 @@ def validate_manifest(reports):
     # A and B intentionally vary only the resolved data.json provider and
     # their clean source checkouts.  The compiler and native engine cannot
     # drift between conditions without making the directional result useless.
-    for field in ("jolt", "native"):
-        if manifest["conditions"]["A"][field] != manifest["conditions"]["B"][field]:
-            fail(f"condition compiler/native identity differs: {field}")
+    a, b = (manifest["conditions"][c] for c in ("A", "B"))
+    for field in ("version", "source_sha", "executable", "executable_revision"):
+        if a["jolt"][field] != b["jolt"][field]:
+            fail(f"condition compiler/native identity differs: jolt.{field}")
+    # Sdescribe records dependency-resolution context, including the isolated
+    # gitlibs directory. Its receipt therefore belongs to one condition, not
+    # to the common runtime identity. validate_condition requires it and
+    # validate_report still compares the complete receipt to that condition.
+    if a["native"] != b["native"]:
+        fail("condition compiler/native identity differs: native")
     if manifest["schedule"] != schedule():
         fail("schedule is not exact A-prime/B-prime/A/B/B/A order")
     unsigned = dict(manifest); claimed = unsigned.pop("run_id")

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Correct the Durable data.json A/B/B/A summary to compare runtime binary,
+  version, source, and revision across conditions while validating each
+  dependency-sensitive `-Sdescribe` receipt against its own condition. Separate
+  cache paths no longer invalidate a completed comparison; missing or changed
+  receipts and actual runtime drift still fail closed.
+
 - Add an opt-in, best-effort scalar-only Durable writer phase observer for WAL
   preparation, append/join, immutable publication/verification, and head CAS.
   Observer failures cannot alter protocol outcomes and events omit SQL,
