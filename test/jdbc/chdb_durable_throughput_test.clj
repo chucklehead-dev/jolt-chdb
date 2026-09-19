@@ -43,6 +43,7 @@
         successful-flush? #'throughput/successful-flush?
         timed-operations #'throughput/timed-operations
         stage-report #'throughput/stage-report
+        redact-batch-samples #'throughput/redact-batch-samples
         recovery-phase-recorder #'cross-binding/recovery-phase-recorder
         checked-phase-source-sha!
         #'cross-binding/checked-phase-source-sha!
@@ -238,6 +239,15 @@
             (latency-summary
              (:jdbc.chdb-durable-throughput/batch-latency-samples
               {:jdbc.chdb-durable-throughput/batch-latency-samples [10 20]}))))
+    (check "retained worker values redact batch samples without changing aggregates"
+           [{:result {:batch-latency {:count 2}}}
+            {:batch-latency {:count 2}}]
+           [(redact-batch-samples
+             {:result {:batch-latency {:count 2}
+                       :jdbc.chdb-durable-throughput/batch-latency-samples [10 20]}})
+            (redact-batch-samples
+             {:batch-latency {:count 2}
+              :jdbc.chdb-durable-throughput/batch-latency-samples [10 20]})])
     (check "clean complete qualification provenance is accepted"
            nil
            (provenance! :qualification clean-runtime))

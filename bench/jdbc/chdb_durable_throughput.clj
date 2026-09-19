@@ -1322,6 +1322,18 @@
       (throw (ex-info "invalid owned benchmark worker scope" {:type ::invalid-worker-receipt}))))
   nil)
 
+(defn- redact-batch-samples [value]
+  ;; Batch samples are needed only by the parent while it computes the final
+  ;; summary. Worker receipts and reader requests are retained evidence, so
+  ;; they must not retain that raw series after its aggregate has been formed.
+  (if (contains? value :result)
+    (update value :result dissoc ::batch-latency-samples)
+    (dissoc value ::batch-latency-samples)))
+
+(defn- redact-worker-receipt! [root role receipt]
+  (spit (File. root (str (name role) "-result.edn"))
+        (str (pr-str (update receipt :value redact-batch-samples)) "\n")))
+
 (defn- run-worker! [root role request]
   (let [executable (System/getenv "BENCH_JOLT_BIN")
         executable-file (when executable (File. executable))
@@ -1452,11 +1464,15 @@
                  :runtime-identity (runtime-identity (runtime-metadata))}]
     (if (= kind :native)
       (let [receipt (run-worker! root :native request)]
+        (redact-worker-receipt! root :native receipt)
         (assoc (:value receipt) :worker-evidence (.getAbsolutePath root)
                :worker-runtime {:native (:runtime receipt)}))
       (let [writer-receipt (run-worker! root :writer request)
             handoff (:value writer-receipt)
-            reader-receipt (run-worker! root :reader (assoc request :handoff handoff))]
+            reader-handoff (redact-batch-samples handoff)
+            _ (redact-worker-receipt! root :writer writer-receipt)
+            reader-receipt (run-worker! root :reader
+                                        (assoc request :handoff reader-handoff))]
         (assoc (cond-> (merge (:result handoff) (:value reader-receipt))
                  (= kind :diagnostic)
                  (update :phases into
@@ -1492,7 +1508,9 @@
                                 :encode-included? false))
                         :ordinary-native-preencoded
                         (owned-trial! :native (assoc configuration :trial trial)))]
-                  (*progress!* :uninstrumented-trial
+                  (*progress!* (if (:instrumented? configuration)
+                                 :instrumented-trial
+                                 :uninstrumented-trial)
                                (select-keys
                                 result
                                 [:trial :provider-kind :provider-region
