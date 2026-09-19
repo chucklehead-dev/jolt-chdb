@@ -232,6 +232,12 @@
     (check "one hundred samples can qualify p99"
            true
            (:p99-qualification? (latency-summary (range 100))))
+    (check "instrumented result samples remain available for summary before redaction"
+           2
+           (:count
+            (latency-summary
+             (:jdbc.chdb-durable-throughput/batch-latency-samples
+              {:jdbc.chdb-durable-throughput/batch-latency-samples [10 20]}))))
     (check "clean complete qualification provenance is accepted"
            nil
            (provenance! :qualification clean-runtime))

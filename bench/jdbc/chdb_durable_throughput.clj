@@ -787,6 +787,7 @@
                       :batch-size batch-size :batches batches
                       :question-mark-every-row? question-mark?
                       :batch-latency (latency-summary samples-nanos)
+                      ::batch-latency-samples samples-nanos
                       :ingest-ms (ms ingest-nanos)
                       :ingest-rows-per-second
                       (/ (double (* batch-size batches 1000000000)) ingest-nanos)
