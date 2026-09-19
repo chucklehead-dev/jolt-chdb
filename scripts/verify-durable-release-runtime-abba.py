@@ -12,6 +12,8 @@ attestation, reproducibility, tail-latency, S3, or general-throughput claim.
 """
 import hashlib
 import json
+import math
+import os
 import pathlib
 import re
 import stat
@@ -32,8 +34,15 @@ SCHEDULE = [
     {"ordinal": 4, "phase": "measured", "condition": "B", "runtime_condition": "B", "receipt_file": "B-2.json"},
     {"ordinal": 5, "phase": "measured", "condition": "A", "runtime_condition": "A", "receipt_file": "A-2.json"},
 ]
+RAW_SOURCE_SCHEDULE = {
+    0: (1, "prime", None), 1: (1, "prime", None),
+    2: (3, "measured", 1), 3: (4, "measured", 2),
+    4: (7, "measured", 3), 5: (8, "measured", 4),
+}
 RECEIPT_FILES = {entry["receipt_file"] for entry in SCHEDULE}
-RECEIPT_DIRECTORY_FILES = RECEIPT_FILES | {"run-manifest.json"}
+RAW_DIRECTORY = "raw"
+SUMMARY_FILE = "summary.json"
+RECEIPT_DIRECTORY_FILES = RECEIPT_FILES | {"run-manifest.json", SUMMARY_FILE, RAW_DIRECTORY}
 
 
 def fail(message):
@@ -128,7 +137,7 @@ def profile_provenance(value, label="production profile provenance"):
 
 
 def validate_receipt_directory(receipts):
-    """Require the manifest plus exactly the six scheduled regular receipts."""
+    """Require the manifest, summary, and six named outer/raw receipts."""
     if receipts.is_symlink() or not receipts.is_dir():
         fail("receipt directory is not a real directory")
     try:
@@ -143,7 +152,17 @@ def validate_receipt_directory(receipts):
             mode = entry.lstat().st_mode
         except OSError as error:
             fail(f"cannot inspect receipt entry {entry.name}: {error}")
-        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        if entry.name == RAW_DIRECTORY:
+            if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+                fail("raw receipt corpus must be a real directory")
+            raw_names = {item.name for item in entry.iterdir()}
+            if raw_names != RECEIPT_FILES:
+                fail("raw receipt corpus entry set is not exact")
+            for raw in entry.iterdir():
+                raw_mode = raw.lstat().st_mode
+                if stat.S_ISLNK(raw_mode) or not stat.S_ISREG(raw_mode):
+                    fail("raw receipt corpus entries must be regular named files")
+        elif stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
             fail("receipt directory entries must be regular named files")
 
 
@@ -172,7 +191,16 @@ def identity(label, value):
     return value
 
 
-STATIC_FIXED_KEYS = {"chdb", "runner_script", "data_json", "provider", "workload", "native"}
+STATIC_FIXED_KEYS = {"chdb", "runner_script", "verifier_script", "data_json", "provider", "workload", "native", "cargo_home", "jolt_cache", "jolt_gitlibs"}
+
+
+def directory_identity(label, value):
+    """Validate the checked-in digest of an immutable dependency seed."""
+    exact(label, value, {"files", "bytes", "sha256"})
+    positive(f"{label} files", value["files"])
+    positive(f"{label} bytes", value["bytes"])
+    sha(f"{label} SHA-256", value["sha256"])
+    return value
 
 
 def static_fixed_identity(value, label="fixed workload profile"):
@@ -181,6 +209,7 @@ def static_fixed_identity(value, label="fixed workload profile"):
     sha("fixed chDB source SHA", value["chdb"]["source_sha"], GIT_SHA)
     sha("fixed chDB source tree", value["chdb"]["source_tree"], GIT_SHA)
     identity("fixed runner script", value["runner_script"])
+    identity("fixed verifier script", value["verifier_script"])
     exact("fixed data.json", value["data_json"], {"source_sha", "namespace"})
     sha("fixed data.json source SHA", value["data_json"]["source_sha"], GIT_SHA)
     identity("fixed data.json namespace", value["data_json"]["namespace"])
@@ -196,6 +225,9 @@ def static_fixed_identity(value, label="fixed workload profile"):
         fail("fixed native version is missing")
     identity("fixed native library", value["native"]["library"])
     identity("fixed native header", value["native"]["header"])
+    directory_identity("fixed Cargo home", value["cargo_home"])
+    directory_identity("fixed Jolt cache", value["jolt_cache"])
+    directory_identity("fixed Jolt gitlibs", value["jolt_gitlibs"])
     return value
 
 
@@ -244,10 +276,12 @@ def runtime_identity(label, value, condition):
         fail(f"{label} release sidecar content differs")
     member = value["member"]
     exact(label + " extracted member", member, {"path", "identity"})
-    if member["path"] != "jolt":
+    member_path = pathlib.PurePosixPath(member["path"])
+    if (not member["path"] or member_path.is_absolute() or
+            ".." in member_path.parts or member_path.name != "jolt"):
         fail(f"{label} extracted member path differs")
     member_identity = identity(label + " extracted member identity", member["identity"])
-    if member_identity["file_name"] != member["path"]:
+    if member_identity["file_name"] != member_path.name:
         fail(f"{label} extracted member file name differs")
     if member_identity != value["binary"]:
         fail(f"{label} invoked binary differs from declared extracted member")
@@ -335,7 +369,7 @@ def validate_production_profile(path, manifest):
 
 def validate_receipt(receipts, manifest, entry):
     receipt = load(receipts / entry["receipt_file"])
-    receipt_keys = {"schema_version", "run_id", "schedule_ordinal", "phase", "condition", "runtime_condition", "fixed", "runtime", "execution", "receipt_id"}
+    receipt_keys = {"schema_version", "run_id", "schedule_ordinal", "phase", "condition", "runtime_condition", "fixed", "runtime", "execution", "raw_receipt", "receipt_id"}
     if "profile_provenance" in manifest:
         receipt_keys.add("profile_provenance")
     exact("run receipt", receipt, receipt_keys)
@@ -362,30 +396,158 @@ def validate_receipt(receipts, manifest, entry):
         fail("run receipt clock order differs")
     if receipt["execution"]["outcome"] != "pass":
         fail("run receipt outcome differs")
+    raw = validate_raw_receipt(receipts / RAW_DIRECTORY / entry["receipt_file"], entry, manifest)
+    if {"process_id": raw["process_id"], "started_epoch_ms": raw["process_started_epoch_ms"],
+        "finished_epoch_ms": raw["process_finished_epoch_ms"]} != {
+            "process_id": receipt["execution"]["process_id"],
+            "started_epoch_ms": receipt["execution"]["started_epoch_ms"],
+            "finished_epoch_ms": receipt["execution"]["finished_epoch_ms"]}:
+        fail("run receipt execution does not bind raw reader process")
+    exact("run receipt raw evidence", receipt["raw_receipt"], {"path", "identity", "measurement"})
+    if receipt["raw_receipt"]["path"] != RAW_DIRECTORY + "/" + entry["receipt_file"]:
+        fail("run receipt raw evidence path differs")
+    if receipt["raw_receipt"]["identity"] != file_identity(receipts / RAW_DIRECTORY / entry["receipt_file"]):
+        fail("run receipt raw evidence identity differs")
+    if receipt["raw_receipt"]["measurement"] != raw_measurement(raw):
+        fail("run receipt raw evidence measurement differs")
     unsigned = dict(receipt)
     claimed = unsigned.pop("receipt_id")
     sha("run receipt ID", claimed)
     if digest(canonical(unsigned)) != claimed:
         fail("run receipt ID differs from content")
+    return receipt
 
 
-def verify_binary(label, path, expected):
+def file_identity(path):
+    path = pathlib.Path(path)
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        fail(f"cannot read raw receipt {path}: {error}")
+    return {"file_name": path.name, "bytes": len(data), "sha256": digest(data)}
+
+
+def validate_raw_receipt(path, entry, manifest):
+    raw = load(path)
+    exact("raw Jolt reader receipt", raw,
+          {"schema_version", "run_id", "schedule_ordinal", "phase", "runtime", "trial",
+           "process_id", "process_started_epoch_ms", "process_finished_epoch_ms", "cache_condition",
+           "fixture", "recovery"})
+    if raw["schema_version"] != 1:
+        fail("raw Jolt reader receipt schema differs")
+    if (raw["schedule_ordinal"], raw["phase"], raw["trial"]) != RAW_SOURCE_SCHEDULE[entry["ordinal"]]:
+        fail("raw Jolt reader source schedule differs")
+    positive("raw Jolt reader process ID", raw["process_id"])
+    positive("raw Jolt reader start", raw["process_started_epoch_ms"])
+    positive("raw Jolt reader finish", raw["process_finished_epoch_ms"])
+    if raw["process_finished_epoch_ms"] < raw["process_started_epoch_ms"]:
+        fail("raw Jolt reader clock order differs")
+    if not isinstance(raw["fixture"], dict) or not isinstance(raw["fixture"].get("recovered_rows"), int):
+        fail("raw Jolt reader recovered row count is missing")
+    positive("raw Jolt reader recovered rows", raw["fixture"]["recovered_rows"])
+    if (raw["fixture"].get("inventory_sha256") != manifest["fixed"]["fixture"]["inventory_sha256"] or
+            raw["fixture"]["recovered_rows"] != manifest["fixed"]["fixture"]["rows"]):
+        fail("raw Jolt reader fixture differs from run manifest")
+    exact("raw Jolt reader recovery", raw["recovery"],
+          {"elapsed_ns", "rows_per_second", "expected", "actual", "inventory_unchanged"})
+    positive("raw Jolt reader elapsed", raw["recovery"]["elapsed_ns"])
+    rate = raw["recovery"]["rows_per_second"]
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate):
+        fail("raw Jolt reader rows-per-second is invalid")
+    expected_rate = raw["fixture"]["recovered_rows"] * 1e9 / raw["recovery"]["elapsed_ns"]
+    if not math.isclose(rate, expected_rate, rel_tol=1e-12, abs_tol=1e-9):
+        fail("raw Jolt reader rows-per-second does not recompute")
+    if raw["recovery"]["expected"] != raw["recovery"]["actual"] or raw["recovery"]["inventory_unchanged"] is not True:
+        fail("raw Jolt reader recovery reconciliation differs")
+    if digest(canonical(raw["recovery"]["expected"])) != manifest["fixed"]["fixture"]["expected_sha256"]:
+        fail("raw Jolt reader expected aggregate differs from run manifest")
+    return raw
+
+
+def raw_measurement(raw):
+    return {"elapsed_ns": raw["recovery"]["elapsed_ns"],
+            "rows_per_second": raw["recovery"]["rows_per_second"],
+            "recovered_rows": raw["fixture"]["recovered_rows"]}
+
+
+def expected_summary(manifest, receipts):
+    raw_entries = []
+    by_condition = {"A": [], "B": []}
+    for entry in SCHEDULE:
+        receipt = load(receipts / entry["receipt_file"])
+        evidence = receipt["raw_receipt"]
+        raw_entries.append({"receipt_file": entry["receipt_file"], "path": evidence["path"],
+                            "identity": evidence["identity"], "measurement": evidence["measurement"]})
+        if entry["phase"] == "measured":
+            by_condition[entry["runtime_condition"]].append(evidence["measurement"])
+    conditions = {}
+    for condition, values in by_condition.items():
+        if len(values) != 2:
+            fail("summary measured observation count differs")
+        conditions[condition] = {
+            "measurements": values,
+            "mean_elapsed_ns": sum(value["elapsed_ns"] for value in values) / len(values),
+            "mean_rows_per_second": sum(value["rows_per_second"] for value in values) / len(values),
+        }
+    return {"schema_version": 1, "run_id": manifest["run_id"], "raw_receipts": raw_entries,
+            "conditions": conditions,
+            "directional": {
+                "A_elapsed_over_B": conditions["A"]["mean_elapsed_ns"] / conditions["B"]["mean_elapsed_ns"],
+                "A_rows_per_second_over_B": conditions["A"]["mean_rows_per_second"] / conditions["B"]["mean_rows_per_second"],
+            }}
+
+
+def validate_summary(receipts, manifest):
+    summary = load(receipts / SUMMARY_FILE)
+    exact("final release-runtime summary", summary,
+          {"schema_version", "run_id", "raw_receipts", "conditions", "directional", "summary_id"})
+    expected = expected_summary(manifest, receipts)
+    for key in expected:
+        if summary[key] != expected[key]:
+            fail("final release-runtime summary statistics or raw evidence differs")
+    unsigned = dict(summary)
+    claimed = unsigned.pop("summary_id")
+    sha("final release-runtime summary ID", claimed)
+    if digest(canonical(unsigned)) != claimed:
+        fail("final release-runtime summary ID differs from content")
+    return summary
+
+
+def sandboxed_version_command(sandbox, path):
+    if sandbox is None:
+        return None
+    sandbox = pathlib.Path(sandbox)
+    if not sandbox.is_file() or not os.access(sandbox, os.X_OK):
+        fail("Bubblewrap sandbox executable is unavailable")
+    return [str(sandbox), "--unshare-net", "--die-with-parent", "--new-session",
+            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--", str(path), "--version"]
+
+
+def verify_binary(label, path, expected, sandbox=None):
     path = pathlib.Path(path)
     if not path.is_file():
         fail(f"{label} binary is missing")
     actual = {"file_name": path.name, "bytes": path.stat().st_size,
               "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-    if actual != expected["binary"]:
+    # Archive-member identity includes its canonical member name (``jolt``),
+    # while a caller may retain that verified member under a versioned local
+    # filename such as ``jolt-0.8.6``.  The executable bytes and banner are the
+    # identity relevant to what is invoked; the path basename is not.
+    if {key: actual[key] for key in ("bytes", "sha256")} != {
+            key: expected["binary"][key] for key in ("bytes", "sha256")}:
         fail(f"{label} invoked binary identity differs from receipt")
+    command = sandboxed_version_command(sandbox, path)
+    if command is None:
+        return
     try:
-        banner = subprocess.check_output([str(path), "--version"], text=True, stderr=subprocess.STDOUT).strip()
+        banner = subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
     except (OSError, subprocess.CalledProcessError) as error:
         fail(f"{label} binary cannot report version: {error}")
     if banner != expected["version"]:
         fail(f"{label} invoked binary version differs from receipt")
 
 
-def verify_release_artifacts(label, binary_path, archive_path, sidecar_path, expected):
+def verify_release_artifacts(label, binary_path, archive_path, sidecar_path, expected, sandbox=None):
     """Verify the downloaded archive, checksum sidecar, and extracted member.
 
     This checks the actual bytes passed by the caller.  It deliberately does
@@ -419,20 +581,25 @@ def verify_release_artifacts(label, binary_path, archive_path, sidecar_path, exp
             member_bytes = stream.read()
     except (OSError, tarfile.TarError) as error:
         fail(f"{label} release archive cannot be read: {error}")
-    actual_member = {"file_name": expected["member"]["path"], "bytes": len(member_bytes),
+    actual_member = {"file_name": pathlib.PurePosixPath(expected["member"]["path"]).name, "bytes": len(member_bytes),
                      "sha256": hashlib.sha256(member_bytes).hexdigest()}
     if actual_member != expected["member"]["identity"]:
         fail(f"{label} release archive declared executable member identity differs from reviewed production profile")
     binary = pathlib.Path(binary_path)
     if not binary.is_file() or binary.read_bytes() != member_bytes:
         fail(f"{label} invoked binary differs from actual declared release archive member")
-    verify_binary(label, binary, expected)
+    verify_binary(label, binary, expected, sandbox)
 
 
 def main():
-    if len(sys.argv) not in (2, 9):
+    argv = sys.argv[1:]
+    sandbox = None
+    if len(argv) >= 2 and argv[-2] == "--sandbox-bwrap":
+        sandbox = argv[-1]
+        argv = argv[:-2]
+    if len(argv) not in (1, 8):
         fail("usage: verify-durable-release-runtime-abba.py RECEIPT_DIR [PROFILE_ANCHOR A_BINARY A_ARCHIVE A_SIDECAR B_BINARY B_ARCHIVE B_SIDECAR]")
-    receipts = pathlib.Path(sys.argv[1])
+    receipts = pathlib.Path(argv[0])
     validate_receipt_directory(receipts)
     manifest = validate_manifest(receipts)
     seen_pids = set()
@@ -442,10 +609,13 @@ def main():
         if value in seen_pids:
             fail("run receipt process ID is not fresh")
         seen_pids.add(value)
-    if len(sys.argv) == 9:
-        validate_production_profile(sys.argv[2], manifest)
-        verify_release_artifacts("condition A", sys.argv[3], sys.argv[4], sys.argv[5], manifest["conditions"]["A"])
-        verify_release_artifacts("condition B", sys.argv[6], sys.argv[7], sys.argv[8], manifest["conditions"]["B"])
+    validate_summary(receipts, manifest)
+    if len(argv) == 8:
+        if sandbox is None:
+            fail("release-provenance verification requires --sandbox-bwrap for release binary banner checks")
+        validate_production_profile(argv[1], manifest)
+        verify_release_artifacts("condition A", argv[2], argv[3], argv[4], manifest["conditions"]["A"], sandbox)
+        verify_release_artifacts("condition B", argv[5], argv[6], argv[7], manifest["conditions"]["B"], sandbox)
         print("PASS anchored release-provenance Durable A'/B'/A/B/B/A verification")
     else:
         print("PASS structural-consistency Durable A'/B'/A/B/B/A receipt verification (not release provenance)")

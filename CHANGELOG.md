@@ -16,6 +16,13 @@
   version banner. It establishes release-reference plus archive-integrity
   provenance, not a signed source/build chain, artifact attestation,
   reproducibility, percentile, S3, or general-throughput qualification.
+  The normal launcher additionally binds caller-supplied Jolt cache and
+  gitlibs seed trees by recursive content/path digest, checks the one resolved
+  data.json/provider source and namespace from the gitlibs seed, snapshots
+  both under read-only verified inputs, and only then creates fresh writable
+  per-condition caches. Every sandboxed Cargo, Jolt, and harness process uses
+  an output-contained `TMPDIR`/`TEMP`/`TMP`; ambient dependency and temporary
+  paths cannot participate.
 
 - Correct the Durable data.json A/B/B/A summary to compare runtime binary,
   version, source, and revision across conditions while validating each
