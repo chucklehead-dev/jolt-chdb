@@ -2,9 +2,9 @@
  :jolt/min-version "0.8.6"
  :deps {jolt-lang/db
         {:git/url "https://github.com/casselc/db.git"
-         ;; Pair the DB and JSON metadata fixes so both select the same
-         ;; canonical time coordinate and maintained fork provider.
-         :git/sha "8c55d9e273f7d625b5c0eb8000755c51a8faacfe"}
+         ;; The pure Durable observation boundary requires this read-only
+         ;; JDBC context lookup; keep it on the maintained fork provider.
+         :git/sha "bde1c83f6a4e17aabcc7882e2df227a225a639fe"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
          :git/sha "97298fd8a67a6d4ee3eb1346d5e184beb9565b90"}

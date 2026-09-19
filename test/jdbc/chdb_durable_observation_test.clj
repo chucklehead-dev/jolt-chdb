@@ -8,7 +8,9 @@
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-open-test-support :as open-support]
             [jdbc.chdb-durable-writer-test-support :as writer-support]
-            [jdbc.core :as jdbc]))
+            [jdbc.core :as jdbc]
+            [jdbc.proto :as proto]
+            [jolt.host :as host]))
 
 (def failures (atom 0))
 
@@ -101,8 +103,16 @@
                           :operations operations})]
     (try
       (reset! storage-calls [])
+      (reset! calls [])
+      ;; Durable correctly advertises no SQL transaction support, so no public
+      ;; API can leave it pending. This controlled shim-state probe instead
+      ;; proves the observation boundary does not invoke the old generic
+      ;; driver-context path, which would issue native BEGIN here.
+      (host/ref-put! (proto/connection connection) :tx-pending true)
       (let [initial (durable/persistence-observation connection)]
         (check "JDBC observation is a zero-I/O projection" [] @storage-calls)
+        (check "JDBC observation never starts a deferred native transaction"
+               [] @calls)
         (check "JDBC writer starts with recovered evidence"
                [:writer :recovered true :recovered 0 :unavailable]
                ((juxt :role :state :view-current? :confirmed-boundary
@@ -110,7 +120,10 @@
         (check "JDBC projection does not leak private state"
                #{:availability :role :state :view-current? :confirmed-boundary
                  :confirmed-sequence :last-successful-persistence}
-               (set (keys initial))))
+               (set (keys initial)))
+        ;; Restore the controlled negative state before exercising ordinary
+        ;; Durable writer operations below.
+        (host/ref-put! (proto/connection connection) :tx-pending false))
       (check "empty flush is not a persistence success"
              :empty (:status (durable/flush! connection)))
       (check "empty flush preserves recovered observation"
@@ -147,6 +160,55 @@
       (finally (reader/close! reader)))
     (check "closed reader observation is unavailable"
            {:availability :unavailable} (reader/persistence-observation reader))))
+
+(defn- forced-teardown-observation-checks! []
+  ;; A terminal worker failure owns cleanup without a public close caller. Make
+  ;; native cleanup wait at a deterministic point and observe during that wait:
+  ;; unavailable must be published before any potentially blocking teardown.
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store writer-support/base-options)
+        native-close-entered (promise)
+        release-native-close (promise)
+        terminal (ex-info "writer worker failed" {:type ::writer-worker-failed})
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :private-writer-handle
+          :database "private-db" :recovered-document (:head acquired)
+          :operations
+          (assoc (writer-support/fake-operations (atom []) (atom 0))
+                 :take-request! (fn [_] (throw terminal))
+                 :close-native! (fn [_]
+                                  (deliver native-close-entered true)
+                                  @release-native-close))})]
+    @native-close-entered
+    (check "forced writer teardown makes observation unavailable before native close"
+           {:availability :unavailable}
+           (writer/persistence-observation durable-writer))
+    (deliver release-native-close true)
+    (check "forced writer teardown retains its terminal failure"
+           true (error? #(writer/close! durable-writer))))
+  (let [recovered (:head (control/acquire! (backend/memory-backend)
+                                           writer-support/base-options))
+        native-close-entered (promise)
+        release-native-close (promise)
+        terminal (ex-info "reader worker failed" {:type ::reader-worker-failed})
+        durable-reader
+        (reader/start!
+         {:handle :private-reader-handle :database "private-db"
+          :recovered-document recovered
+          :operations
+          {:take-request! (fn [_] (throw terminal))
+           :close-native! (fn [_]
+                            (deliver native-close-entered true)
+                            @release-native-close)
+           :cleanup-scratch! (fn [] nil)}})]
+    @native-close-entered
+    (check "forced reader teardown makes observation unavailable before native close"
+           {:availability :unavailable}
+           (reader/persistence-observation durable-reader))
+    (deliver release-native-close true)
+    (check "forced reader teardown retains its terminal failure"
+           true (error? #(reader/close! durable-reader)))))
 
 (defn- writer-error-transition-checks! []
   (let [store (backend/memory-backend)
@@ -218,6 +280,7 @@
   (reader-observation-checks!)
   (with-redefs [writer/require-wal-byte-writer-capability! (constantly true)]
     (jdbc-observation-checks!)
+    (forced-teardown-observation-checks!)
     (writer-error-transition-checks!)
     (writer-fence-check!))
   (when-not (zero? @failures)

@@ -452,7 +452,11 @@
   ;; stable caller-visible cause; cleanup is still attempted in full.
   (locking (:admission-lock writer)
     (when (= :open @(:lifecycle writer))
-      (reset! (:lifecycle writer) :closing)))
+      (reset! (:lifecycle writer) :closing))
+    ;; Forced terminal cleanup may block in flush, heartbeat join, release, or
+    ;; native close. Its in-memory evidence becomes unavailable at teardown
+    ;; entry, not after those best-effort operations complete.
+    (observation/unavailable! (:persistence-observation writer)))
   (try
     (call-with-backend-context writer #(do-close! writer))
     (catch Throwable _))

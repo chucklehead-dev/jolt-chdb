@@ -67,7 +67,10 @@
 (defn- terminate-worker! [reader terminal]
   (locking (:admission-lock reader)
     (when (= :open @(:lifecycle reader))
-      (reset! (:lifecycle reader) :closing)))
+      (reset! (:lifecycle reader) :closing))
+    ;; A forced worker teardown can block in native close or scratch cleanup;
+    ;; observers must not see stale recovery evidence during that interval.
+    (observation/unavailable! (:persistence-observation reader)))
   (try
     (execute-request! reader {:op :close})
     (catch Throwable _))

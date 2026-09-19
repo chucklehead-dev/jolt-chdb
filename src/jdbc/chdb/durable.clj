@@ -1094,7 +1094,7 @@
   (shim/extension-operation
    #(let [shim-connection (proto/connection connection)
           {:keys [handle]}
-          (shim/driver-context shim-connection :chdb-durable)]
+          (shim/read-only-driver-context shim-connection :chdb-durable)]
       (if (reader/reader? handle)
         (reader/persistence-observation handle)
         (writer/persistence-observation handle)))))
