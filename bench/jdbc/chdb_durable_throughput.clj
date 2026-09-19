@@ -783,6 +783,7 @@
                       :mode (if encode-included?
                               :durable-encode-included
                               :durable-preencoded)
+                      :instrumented? true
                       :measured-rows (* batch-size batches)
                       :batch-size batch-size :batches batches
                       :question-mark-every-row? question-mark?
