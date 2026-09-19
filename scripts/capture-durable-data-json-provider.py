@@ -17,7 +17,8 @@ def provider_root_is_clean(root):
     second pathname record.
     """
     status = subprocess.check_output(
-        ["git", "-C", str(root), "status", "--porcelain=v1", "-z"]
+        ["git", "-C", str(root), "status", "--porcelain=v1", "-z",
+         "--untracked-files=all", "--ignored"]
     )
     return status in (b"", b"?? .jolt-git-ok\0")
 

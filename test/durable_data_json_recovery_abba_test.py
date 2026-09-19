@@ -101,6 +101,11 @@ class AbbaSummaryTest(unittest.TestCase):
     subprocess.run(["git","-C",str(root),"add","."],check=True)
     subprocess.run(["git","-C",str(root),"-c","user.name=x","-c","user.email=x@y","commit","-qm","provider"],check=True)
     return subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
+ def commit_provider_file(self,provider,relative,contents):
+    path=provider/relative; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(contents)
+    subprocess.run(["git","-C",str(provider),"add",str(relative)],check=True)
+    subprocess.run(["git","-C",str(provider),"-c","user.name=x","-c","user.email=x@y","commit","-qm","provider fixture"],check=True)
+    return subprocess.check_output(["git","-C",str(provider),"rev-parse","HEAD"],text=True).strip()
  def provider_capture(self,checkout,fake,expected,out,paths):
     return subprocess.run(["python3",str(CAPTURE),str(checkout),str(fake),expected,str(out)],text=True,capture_output=True,env={"PROVIDER_PATHS":os.pathsep.join(map(str,paths))})
  def verify_provider_capture(self,out):
@@ -122,6 +127,11 @@ class AbbaSummaryTest(unittest.TestCase):
       checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
       (provider/".jolt-git-ok").write_text("harness-owned liveness marker\\n")
+      # The resolver marker is an untracked entry, even when ignored paths are
+      # requested.  Keep that representation exact rather than admitting an
+      # ignored file with the same pathname.
+      marker_status=subprocess.check_output(["git","-C",str(provider),"status","--porcelain=v1","-z","--untracked-files=all","--ignored"])
+      self.assertEqual(b"?? .jolt-git-ok\0",marker_status)
       out=root/"out.json"; result=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
       self.assertEqual(0,result.returncode,result.stderr)
       verify=self.verify_provider_capture(out)
@@ -180,6 +190,36 @@ class AbbaSummaryTest(unittest.TestCase):
        marker.unlink(); captured=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
        self.assertEqual(0,captured.returncode,captured.stderr)
        marker.parent.mkdir(parents=True,exist_ok=True); marker.write_text("not the admitted marker\\n")
+       verify=self.verify_provider_capture(out)
+       self.assertNotEqual(0,verify.returncode); self.assertIn("not clean",verify.stderr)
+ def test_provider_capture_and_verify_reject_ignored_and_tracked_dirt(self):
+    cases=(
+      ("ordinary-ignored", "ignored-root", False),
+      ("nested-ignored", "nested/ignored-child", False),
+      ("tracked-modified", "tracked.txt", False),
+      ("tracked-staged", "tracked.txt", True),
+      ("tracked-deleted", "tracked.txt", None),
+    )
+    for name,relative,staged in cases:
+      with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+       root=pathlib.Path(d); provider=root/"provider"; self.make_provider(provider,".cljc")
+       expected=self.commit_provider_file(provider,".gitignore","ignored-root\\nnested/\\n")
+       expected=self.commit_provider_file(provider,"tracked.txt","tracked baseline\\n")
+       checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+       out=root/"out.json"; paths=[provider/"src/main/clojure"]
+       # Establish a clean persisted capture first; the subsequent assertion
+       # proves that --verify has the same closed admission rule as capture.
+       clean=self.provider_capture(checkout,fake,expected,out,paths)
+       self.assertEqual(0,clean.returncode,clean.stderr)
+       dirty=provider/relative
+       if staged is None:
+        dirty.unlink()
+       else:
+        dirty.parent.mkdir(parents=True,exist_ok=True); dirty.write_text("dirty\\n")
+        if staged: subprocess.run(["git","-C",str(provider),"add",str(relative)],check=True)
+       captured=self.provider_capture(checkout,fake,expected,out,paths)
+       self.assertNotEqual(0,captured.returncode); self.assertIn("not clean",captured.stderr)
        verify=self.verify_provider_capture(out)
        self.assertNotEqual(0,verify.returncode); self.assertIn("not clean",verify.stderr)
  def test_reresolved_provider_root_swap_has_a_distinct_capture(self):
