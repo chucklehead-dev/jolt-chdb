@@ -43,6 +43,7 @@
         successful-flush? #'throughput/successful-flush?
         timed-operations #'throughput/timed-operations
         stage-report #'throughput/stage-report
+        redact-batch-samples #'throughput/redact-batch-samples
         recovery-phase-recorder #'cross-binding/recovery-phase-recorder
         checked-phase-source-sha!
         #'cross-binding/checked-phase-source-sha!
@@ -74,6 +75,11 @@
                      [(:selector config) (:batch-size config)
                       (:batches config)]))
                  [:scale-512 :scale-1000 :scale-5000 :scale-10000]))
+    (check "stage selector is one diagnostic-only 512-row Durable-preencoded trial"
+           [:stage-512 512 100 1 true [:durable-preencoded]]
+           (let [config (first (profile-configs :stage-512))]
+             [(:selector config) (:batch-size config) (:batches config)
+              (:trials config) (:instrumented? config) (:modes config)]))
     (check "staged recovery selectors are bounded 512-row fresh-process workloads"
            [[:recovery-512-10 512 10 0 1 [:durable-preencoded]]
             [:recovery-512-25 512 25 0 1 [:durable-preencoded]]
@@ -227,6 +233,21 @@
     (check "one hundred samples can qualify p99"
            true
            (:p99-qualification? (latency-summary (range 100))))
+    (check "instrumented result samples remain available for summary before redaction"
+           2
+           (:count
+            (latency-summary
+             (:jdbc.chdb-durable-throughput/batch-latency-samples
+              {:jdbc.chdb-durable-throughput/batch-latency-samples [10 20]}))))
+    (check "retained worker values redact batch samples without changing aggregates"
+           [{:result {:batch-latency {:count 2}}}
+            {:batch-latency {:count 2}}]
+           [(redact-batch-samples
+             {:result {:batch-latency {:count 2}
+                       :jdbc.chdb-durable-throughput/batch-latency-samples [10 20]}})
+            (redact-batch-samples
+             {:batch-latency {:count 2}
+              :jdbc.chdb-durable-throughput/batch-latency-samples [10 20]})])
     (check "clean complete qualification provenance is accepted"
            nil
            (provenance! :qualification clean-runtime))

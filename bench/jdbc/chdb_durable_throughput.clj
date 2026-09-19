@@ -783,10 +783,12 @@
                       :mode (if encode-included?
                               :durable-encode-included
                               :durable-preencoded)
+                      :instrumented? true
                       :measured-rows (* batch-size batches)
                       :batch-size batch-size :batches batches
                       :question-mark-every-row? question-mark?
                       :batch-latency (latency-summary samples-nanos)
+                      ::batch-latency-samples samples-nanos
                       :ingest-ms (ms ingest-nanos)
                       :ingest-rows-per-second
                       (/ (double (* batch-size batches 1000000000)) ingest-nanos)
@@ -1041,6 +1043,7 @@
     :matched-local-512 :matched-local-1000 :matched-local-5000 :matched-local-10000
     :matched-aws-512 :matched-aws-1000 :matched-aws-5000 :matched-aws-10000
     :scale-512 :scale-1000 :scale-5000 :scale-10000
+    :stage-512
     :recovery-512-10 :recovery-512-25 :recovery-512-50})
 
 (def ^:private scale-configurations
@@ -1104,6 +1107,7 @@
 (defn- isolated-selector-profile? [profile]
   (or (contains? matched-profiles profile)
       (contains? scale-profile-batch-size profile)
+      (= :stage-512 profile)
       (contains? recovery-profile-batches profile)))
 
 (defn- validate-profile-configs! [profile configurations]
@@ -1164,6 +1168,14 @@
 
       (contains? scale-profile-batch-size profile)
       [(scale-configuration (get scale-profile-batch-size profile))]
+
+      (= :stage-512 profile)
+      [(assoc (scale-configuration 512)
+              :label :stage-512
+              :selector :stage-512
+              :trials 1
+              :instrumented? true
+              :modes [:durable-preencoded])]
 
       (contains? recovery-profile-batches profile)
       [(recovery-configuration (get recovery-profile-batches profile))]
@@ -1310,6 +1322,18 @@
       (throw (ex-info "invalid owned benchmark worker scope" {:type ::invalid-worker-receipt}))))
   nil)
 
+(defn- redact-batch-samples [value]
+  ;; Batch samples are needed only by the parent while it computes the final
+  ;; summary. Worker receipts and reader requests are retained evidence, so
+  ;; they must not retain that raw series after its aggregate has been formed.
+  (if (contains? value :result)
+    (update value :result dissoc ::batch-latency-samples)
+    (dissoc value ::batch-latency-samples)))
+
+(defn- redact-worker-receipt! [root role receipt]
+  (spit (File. root (str (name role) "-result.edn"))
+        (str (pr-str (update receipt :value redact-batch-samples)) "\n")))
+
 (defn- run-worker! [root role request]
   (let [executable (System/getenv "BENCH_JOLT_BIN")
         executable-file (when executable (File. executable))
@@ -1440,11 +1464,15 @@
                  :runtime-identity (runtime-identity (runtime-metadata))}]
     (if (= kind :native)
       (let [receipt (run-worker! root :native request)]
+        (redact-worker-receipt! root :native receipt)
         (assoc (:value receipt) :worker-evidence (.getAbsolutePath root)
                :worker-runtime {:native (:runtime receipt)}))
       (let [writer-receipt (run-worker! root :writer request)
             handoff (:value writer-receipt)
-            reader-receipt (run-worker! root :reader (assoc request :handoff handoff))]
+            reader-handoff (redact-batch-samples handoff)
+            _ (redact-worker-receipt! root :writer writer-receipt)
+            reader-receipt (run-worker! root :reader
+                                        (assoc request :handoff reader-handoff))]
         (assoc (cond-> (merge (:result handoff) (:value reader-receipt))
                  (= kind :diagnostic)
                  (update :phases into
@@ -1473,12 +1501,16 @@
                          (assoc configuration :trial trial
                                 :encode-included? true))
                         :durable-preencoded
-                        (owned-trial! :uninstrumented
+                        (owned-trial! (if (:instrumented? configuration)
+                                        :instrumented
+                                        :uninstrumented)
                          (assoc configuration :trial trial
                                 :encode-included? false))
                         :ordinary-native-preencoded
                         (owned-trial! :native (assoc configuration :trial trial)))]
-                  (*progress!* :uninstrumented-trial
+                  (*progress!* (if (:instrumented? configuration)
+                                 :instrumented-trial
+                                 :uninstrumented-trial)
                                (select-keys
                                 result
                                 [:trial :provider-kind :provider-region
@@ -1525,13 +1557,16 @@
         instrumentation-contract (instrumentation-contract!)
         smoke? (= profile :smoke)
         probe? (= profile :probe)
+        stage-selector? (= profile :stage-512)
         isolated-selector? (or (isolated-selector-profile? profile)
                                (= :s3-curve profile))]
     (let [runtime (runtime-metadata)
           _ (require-qualification-provenance! profile runtime)
           _ (*progress!* :started {:runtime runtime :profile profile})
           configuration-results (mapv run-config configs)
-          _ (*progress!* :uninstrumented-complete
+          _ (*progress!* (if stage-selector?
+                           :instrumented-complete
+                           :uninstrumented-complete)
                          {:configurations
                           (mapv #(select-keys % [:configuration :summaries])
                                 configuration-results)})
@@ -1570,7 +1605,9 @@
      :supplementary-controls
      (if isolated-selector?
        {:status :not-run
-        :reason :preserve-selector-process-attribution-for-peak-rss}
+        :reason (if stage-selector?
+                  :stage-selector-is-diagnostic-only
+                  :preserve-selector-process-attribution-for-peak-rss)}
        {:status :included})
      :isolated-stages isolated
      :instrumented-control instrumented
