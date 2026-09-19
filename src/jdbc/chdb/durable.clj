@@ -10,6 +10,7 @@
             [jdbc.chdb.durable.compatibility :as compatibility]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.digest :as digest]
+            [jdbc.chdb.durable.head :as head]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.retry :as retry]
@@ -80,7 +81,10 @@
          :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
          :retry-initial-backoff-ms :retry-max-backoff-ms]))
 
-(def ^:private snapshot-dbspec-keys common-dbspec-keys)
+(def ^:private snapshot-dbspec-keys
+  (conj common-dbspec-keys :expected-normalized-head-sha256))
+
+(def ^:private normalized-head-sha256-pattern #"[0-9a-f]{64}")
 
 (def ^:private private-directory-attributes
   (into-array
@@ -226,11 +230,31 @@
     (fail! ::invalid-options "force? must be boolean"))
   spec)
 
+(defn- validate-expected-normalized-head-sha256! [options]
+  (when (contains? options :expected-normalized-head-sha256)
+    (when-not (and (string? (:expected-normalized-head-sha256 options))
+                   (re-matches normalized-head-sha256-pattern
+                               (:expected-normalized-head-sha256 options)))
+      ;; A direct reader open has the same fail-closed public contract as the
+      ;; dbspec constructor, including explicit nil rejection.
+      (fail! ::invalid-options
+             "expected-normalized-head-sha256 must be lowercase SHA-256")))
+  options)
+
 (defn- validate-snapshot-dbspec! [spec]
   (reject-unknown-dbspec-keys! spec snapshot-dbspec-keys)
   (when-not (true? (:read-only? spec))
     (fail! ::invalid-options "A snapshot dbspec must be read-only"))
-  (validate-common-dbspec! spec))
+  (validate-common-dbspec! spec)
+  (validate-expected-normalized-head-sha256! spec))
+
+(defn normalized-head-sha256
+  "Return the normalized lowercase SHA-256 for a caller-supplied decoded head.
+
+  This is a pure helper for constructing a snapshot pin. It does not read
+  object storage and it cannot disclose a stored head, ETag, or reference."
+  [document]
+  (head/normalized-sha256 document))
 
 (defn writer-dbspec
   "Return a validated ordinary JDBC dbspec for one Durable writer.
@@ -867,6 +891,7 @@
   [{:keys [scratch-parent operations]
     :or {scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
+  (validate-expected-normalized-head-sha256! options)
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
   (let [store (resolve-store! options)
@@ -885,6 +910,13 @@
             document (:head snapshot)
             scratch (atom nil)
             handle (atom nil)]
+        (when (contains? options :expected-normalized-head-sha256)
+          ;; This pin is checked against the sole read-only snapshot before any
+          ;; scratch, native, download, or recovery side effect.
+          (when-not (= (:expected-normalized-head-sha256 options)
+                       (normalized-head-sha256 document))
+            (fail! ::snapshot-head-mismatch
+                   "The Durable snapshot head does not match its expected digest")))
         (check-engine-compatibility! document (:native-version capability))
         (try
           (reset! scratch ((:create-scratch! operations) scratch-parent))
@@ -1148,12 +1180,17 @@
        :schema-sql nil})
     (open-handle [_ spec]
       (let [spec (normalize-jdbc-dbspec! spec)
-            common {:store (:backend spec)
-                    :namespace-backend (:namespace-backend spec)
-                    :object-id (:object-id spec)
-                    :scratch-parent (or (:scratch-parent spec)
-                                        (System/getProperty "java.io.tmpdir"))
-                    :operations (:operations spec)}]
+            common (cond-> {:store (:backend spec)
+                            :namespace-backend (:namespace-backend spec)
+                            :object-id (:object-id spec)
+                            :scratch-parent (or (:scratch-parent spec)
+                                                (System/getProperty "java.io.tmpdir"))
+                            :operations (:operations spec)}
+                     ;; `contains?` distinguishes an omitted optional pin from
+                     ;; an explicit nil, which the snapshot constructor rejects.
+                     (contains? spec :expected-normalized-head-sha256)
+                     (assoc :expected-normalized-head-sha256
+                            (:expected-normalized-head-sha256 spec)))]
         (if (:read-only? spec)
           (open-reader! common)
           (open-writer!

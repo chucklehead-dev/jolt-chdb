@@ -590,7 +590,11 @@
                      (not= -1 (.indexOf reshaped-text
                                               "\n        \"backup_format\""))))
     (replace-head-bytes! store reshaped)
-    (let [opened (durable/open-reader! {:store store :operations operations})]
+    (let [opened
+          (durable/open-reader!
+           {:store store :operations operations
+            :expected-normalized-head-sha256
+            (durable/normalized-head-sha256 document)})]
       (try
         (check "sorted and internally indented head supports public read-only recovery"
                ["INSERT INTO t VALUES (1)"]
@@ -601,6 +605,101 @@
         (finally (reader/close! opened))))
     (check "reshaped public reader closes and removes scratch"
            [1 1] [@close-count @cleanup-count])))
+
+(defn- run-snapshot-head-guard-checks! []
+  (println "Durable snapshot normalized-head guard")
+  (let [store (prepared-wal-store)
+        document (:head (control/read-head! store))
+        expected (durable/normalized-head-sha256 document)
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        opened (durable/open-reader!
+                {:store store
+                 :expected-normalized-head-sha256 expected
+                 :operations (support/fake-open-operations
+                              calls (atom [0M]) close-count cleanup-count)})]
+    (try
+      (check "matching normalized snapshot head proceeds to recovery"
+             true (boolean (some #(= :execute (first %)) @calls)))
+      (finally
+        (reader/close! opened)))
+    (check "matching snapshot head closes its recovered reader"
+           [1 1] [@close-count @cleanup-count]))
+
+  ;; This creates a later lease generation while leaving the manifest sequence
+  ;; unchanged. A guard must pin the whole normalized head, not only manifest
+  ;; contents, or this causal mutant would incorrectly be admitted.
+  (let [store (prepared-wal-store)
+        before (:head (control/read-head! store))
+        expected (durable/normalized-head-sha256 before)
+        acquired (control/acquire!
+                  store (assoc initial-options
+                               :owner "later-guard-writer"
+                               :instance "later-guard-instance"
+                               :now 200M :expires-at 300M))
+        _ (control/release! store (:token acquired))
+        after (:head (control/read-head! store))
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        downloads (atom 0)
+        error
+        (with-redefs-fn
+          {(private-var 'download-reference!)
+           (fn [& _] (swap! downloads inc))}
+          (fn []
+            (try
+              (durable/open-reader!
+               {:store store :expected-normalized-head-sha256 expected
+                :operations (support/fake-open-operations
+                             calls (atom [0M]) close-count cleanup-count)})
+              nil
+              (catch Throwable failure failure))))
+        public (pr-str [(ex-message error) (ex-data error)])]
+    (check "later lease generation keeps the same manifest sequence mutant"
+           [(get-in before ["manifest" "seq"])
+            false]
+           [(get-in after ["manifest" "seq"])
+            (= before after)])
+    (check "later lease generation mismatches the normalized snapshot pin"
+           ::durable/snapshot-head-mismatch (error-type #(throw error)))
+    (check "mismatched snapshot head starts no scratch, native, download, or recovery"
+           [[] 0 0 0] [@calls @close-count @cleanup-count @downloads])
+    (check "snapshot mismatch diagnostics disclose no expected or stored values"
+           false
+           (or (.contains public expected)
+               (.contains public "head.json")
+               (.contains public "etag")
+               (.contains public "reference")
+               (.contains public "root"))))
+
+  (check "direct reader rejects an explicitly nil snapshot digest before storage"
+         ::durable/invalid-options
+         (error-type
+          #(durable/open-reader! {:expected-normalized-head-sha256 nil})))
+
+  (let [store (prepared-wal-store)
+        document (:head (control/read-head! store))
+        future-writer-document
+        (assoc-in document ["protocol" "writer_features"] ["future-writer-feature"])
+        _ (replace-head-bytes!
+           store (.getBytes (json/write-str future-writer-document) "UTF-8"))
+        calls (atom [])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        opened
+        (durable/open-reader!
+         {:store store
+          :expected-normalized-head-sha256
+          (durable/normalized-head-sha256 future-writer-document)
+          :operations (support/fake-open-operations
+                       calls (atom [0M]) close-count cleanup-count)})]
+    (try
+      (check "normalized snapshot pin remains read-only-compatible with unknown writer features"
+             true (boolean (some #(= :execute (first %)) @calls)))
+      (finally
+        (reader/close! opened)))))
 
 (defn- run-reference-conformance! []
   (println "Durable public-open reference verification")
@@ -704,6 +803,7 @@
 (defn- run-deterministic-checks! []
   (println "Durable V1 public writer open and recovery")
   (run-json-shape-conformance!)
+  (run-snapshot-head-guard-checks!)
   (run-reference-conformance!)
   (run-renewal-failure-conformance!)
   (check "release precedence orders release after its prerelease"

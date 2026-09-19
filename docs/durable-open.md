@@ -178,6 +178,18 @@ driver applies the same validation to handwritten maps for fail-closed
 compatibility. A generated writer instance is UUIDv4; protocol ordering comes
 from the lease generation, not UUID sorting.
 
+Snapshots may additionally specify an optional
+`:expected-normalized-head-sha256` in `snapshot-dbspec`. It is exactly 64
+lowercase hexadecimal SHA-256 characters. The reader reads and validates its
+one read-only head snapshot, normalizes that decoded document with recursively
+sorted JSON object keys, and compares the digest before creating scratch space,
+opening native chDB, downloading an object, or starting recovery. A mismatch
+fails categorically as `:jdbc.chdb.durable/snapshot-head-mismatch`; public
+diagnostics deliberately omit both digests and all stored-object metadata.
+Use `jdbc.chdb.durable/normalized-head-sha256` only on a decoded head already
+supplied by your application to construct such a pin. This is a snapshot
+identity guard, not a freshness, lease, or external-reader guarantee.
+
 Durable runtime and recovery currently require `casselc/jolt`
 `integration/aspects` commit `bf8a5dde`, or a later Jolt release containing
 upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
