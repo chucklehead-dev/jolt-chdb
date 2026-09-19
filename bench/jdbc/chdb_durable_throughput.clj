@@ -1172,6 +1172,7 @@
               :label :stage-512
               :selector :stage-512
               :trials 1
+              :instrumented? true
               :modes [:durable-preencoded])]
 
       (contains? recovery-profile-batches profile)
@@ -1482,7 +1483,9 @@
                          (assoc configuration :trial trial
                                 :encode-included? true))
                         :durable-preencoded
-                        (owned-trial! :uninstrumented
+                        (owned-trial! (if (:instrumented? configuration)
+                                        :instrumented
+                                        :uninstrumented)
                          (assoc configuration :trial trial
                                 :encode-included? false))
                         :ordinary-native-preencoded
