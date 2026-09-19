@@ -147,6 +147,28 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
         write_json(path, value)
         return value
 
+    def commit_profile(self, root, manifest):
+        subprocess.check_call(["git", "init", "-q", str(root)])
+        profile = root / "profiles" / "release-runtime.json"
+        profile.parent.mkdir()
+        self.profile(profile, manifest)
+        subprocess.check_call(["git", "-C", str(root), "add", "--", profile.relative_to(root).as_posix()])
+        subprocess.check_call(["git", "-C", str(root), "-c", "user.name=Test", "-c",
+                               "user.email=test@example.invalid", "commit", "-q", "-m", "profile"])
+        return profile
+
+    def bind_profile_provenance(self, receipts, manifest, profile):
+        provenance = VERIFY_MODULE.checked_in_profile_provenance(profile)
+        manifest["profile_provenance"] = provenance
+        self.rebind_manifest(receipts, manifest)
+        for entry in SCHEDULE:
+            path = receipts / entry["receipt_file"]
+            receipt = json.loads(path.read_text())
+            receipt["run_id"] = manifest["run_id"]
+            receipt["profile_provenance"] = copy.deepcopy(provenance)
+            self.rebind_receipt(path, receipt)
+        return provenance
+
     def test_official_release_research_fixture_is_exact_and_limited(self):
         fixture = json.loads(OFFICIAL.read_text())
         self.assertEqual("test fixture only; this is not a completed qualification receipt", fixture["purpose"])
@@ -216,7 +238,8 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
 
     def test_self_consistent_mutated_receipts_are_not_anchored_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
-            receipts, a, b = self.corpus(pathlib.Path(directory))
+            root = pathlib.Path(directory)
+            receipts, a, b = self.corpus(root)
             manifest = json.loads((receipts / "run-manifest.json").read_text())
             original_manifest = copy.deepcopy(manifest)
             runtime = manifest["conditions"]["A"]
@@ -244,16 +267,16 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             self.assertEqual(0, structural.returncode, structural.stderr)
             original_root = VERIFY_MODULE.ROOT
             try:
-                VERIFY_MODULE.ROOT = pathlib.Path(directory)
-                profile = pathlib.Path(directory) / "profile.json"
-                self.profile(profile, original_manifest)
+                VERIFY_MODULE.ROOT = root
+                profile = self.commit_profile(root, original_manifest)
+                self.bind_profile_provenance(receipts, manifest, profile)
                 with self.assertRaisesRegex(SystemExit, "reviewed production profile"):
                     VERIFY_MODULE.validate_production_profile(profile, manifest)
             finally:
                 VERIFY_MODULE.ROOT = original_root
 
     def test_rejects_duplicate_processes_stray_files_and_manifest_schedule_tamper(self):
-        for mutation in ("duplicate-process", "stray-file", "schedule"):
+        for mutation in ("duplicate-process", "stray-file", "nested-directory", "schedule"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 receipts, _, _ = self.corpus(pathlib.Path(directory))
                 if mutation == "duplicate-process":
@@ -263,6 +286,8 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
                     self.rebind_receipt(path, receipt)
                 elif mutation == "stray-file":
                     (receipts / "extra.json").write_text("{}\n")
+                elif mutation == "nested-directory":
+                    (receipts / "nested").mkdir()
                 else:
                     path = receipts / "run-manifest.json"
                     manifest = json.loads(path.read_text())
@@ -271,9 +296,97 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
                 result = self.verify(receipts)
                 self.assertNotEqual(0, result.returncode)
                 expected = {"duplicate-process": "process ID is not fresh",
-                            "stray-file": "receipt file set is not exact",
+                            "stray-file": "receipt directory entry set is not exact",
+                            "nested-directory": "receipt directory entry set is not exact",
                             "schedule": "schedule is not exact"}[mutation]
                 self.assertIn(expected, result.stderr)
+
+    def test_rejects_symlinked_expected_receipt_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipts, _, _ = self.corpus(pathlib.Path(directory))
+            target = receipts / "A-1.json"
+            target.unlink()
+            try:
+                target.symlink_to(receipts / "B-1.json")
+            except (NotImplementedError, OSError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+            result = self.verify(receipts)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("entries must be regular named files", result.stderr)
+
+    def test_anchored_profile_requires_clean_tracked_head_blob_and_matches_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            original_root = VERIFY_MODULE.ROOT
+            try:
+                VERIFY_MODULE.ROOT = root
+                receipts, _, _ = self.corpus(root)
+                manifest = json.loads((receipts / "run-manifest.json").read_text())
+                profile = self.commit_profile(root, manifest)
+                provenance = self.bind_profile_provenance(receipts, manifest, profile)
+                VERIFY_MODULE.validate_production_profile(profile, manifest)
+                self.assertEqual("profiles/release-runtime.json", provenance["path"])
+                self.assertRegex(provenance["blob_sha"], r"^[0-9a-f]{40}$")
+                self.assertRegex(provenance["head_sha"], r"^[0-9a-f]{40}$")
+                self.assertRegex(provenance["tree_sha"], r"^[0-9a-f]{40}$")
+                result = self.verify(receipts)
+                self.assertEqual(0, result.returncode, result.stderr)
+            finally:
+                VERIFY_MODULE.ROOT = original_root
+
+    def test_anchored_profile_rejects_untracked_worktree_and_index_dirt(self):
+        for mutation in ("untracked", "worktree", "index"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                original_root = VERIFY_MODULE.ROOT
+                try:
+                    VERIFY_MODULE.ROOT = root
+                    receipts, _, _ = self.corpus(root)
+                    manifest = json.loads((receipts / "run-manifest.json").read_text())
+                    profile = self.commit_profile(root, manifest)
+                    self.bind_profile_provenance(receipts, manifest, profile)
+                    if mutation == "untracked":
+                        candidate = root / "profiles" / "untracked.json"
+                        candidate.write_text(profile.read_text())
+                        expected = "profile is not tracked"
+                    else:
+                        candidate = profile
+                        candidate.write_text(profile.read_text() + "\n")
+                        if mutation == "index":
+                            subprocess.check_call(["git", "-C", str(root), "add", "--",
+                                                   candidate.relative_to(root).as_posix()])
+                        expected = "index or working-tree dirt"
+                    with self.assertRaisesRegex(SystemExit, expected):
+                        VERIFY_MODULE.validate_production_profile(candidate, manifest)
+                finally:
+                    VERIFY_MODULE.ROOT = original_root
+
+    def test_anchored_profile_rejects_manifest_or_receipt_provenance_drift(self):
+        for mutation in ("manifest", "receipt"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                original_root = VERIFY_MODULE.ROOT
+                try:
+                    VERIFY_MODULE.ROOT = root
+                    receipts, _, _ = self.corpus(root)
+                    manifest = json.loads((receipts / "run-manifest.json").read_text())
+                    profile = self.commit_profile(root, manifest)
+                    self.bind_profile_provenance(receipts, manifest, profile)
+                    if mutation == "manifest":
+                        manifest["profile_provenance"]["tree_sha"] = "0" * 40
+                        self.rebind_manifest(receipts, manifest)
+                        with self.assertRaisesRegex(SystemExit, "Git provenance differs"):
+                            VERIFY_MODULE.validate_production_profile(profile, manifest)
+                    else:
+                        path = receipts / "A-1.json"
+                        receipt = json.loads(path.read_text())
+                        receipt["profile_provenance"]["head_sha"] = "0" * 40
+                        self.rebind_receipt(path, receipt)
+                        result = self.verify(receipts)
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertIn("production profile provenance differs", result.stderr)
+                finally:
+                    VERIFY_MODULE.ROOT = original_root
 
     def test_anchored_mode_rejects_profile_outside_repository(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -289,8 +402,12 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             original_root = VERIFY_MODULE.ROOT
             try:
                 VERIFY_MODULE.ROOT = pathlib.Path(directory)
+                manifest = {"profile_provenance": {"path": "missing-profile.json",
+                                                    "blob_sha": "0" * 40,
+                                                    "head_sha": "0" * 40,
+                                                    "tree_sha": "0" * 40}}
                 with self.assertRaisesRegex(SystemExit, "production profile is missing"):
-                    VERIFY_MODULE.validate_production_profile(pathlib.Path(directory) / "missing-profile.json", {})
+                    VERIFY_MODULE.validate_production_profile(pathlib.Path(directory) / "missing-profile.json", manifest)
             finally:
                 VERIFY_MODULE.ROOT = original_root
 
@@ -310,7 +427,7 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
                     path.unlink()
                 result = self.verify(receipts)
                 self.assertNotEqual(0, result.returncode)
-                self.assertIn("fixed chDB/data.json/provider/fixture/native identity differs" if mutation == "fixed" else ("condition differs from schedule" if mutation == "schedule" else "cannot read"), result.stderr)
+                self.assertIn("fixed chDB/data.json/provider/fixture/native identity differs" if mutation == "fixed" else ("condition differs from schedule" if mutation == "schedule" else "receipt directory entry set is not exact"), result.stderr)
 
 
 if __name__ == "__main__":

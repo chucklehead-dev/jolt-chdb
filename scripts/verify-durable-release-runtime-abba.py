@@ -14,6 +14,7 @@ import hashlib
 import json
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -31,6 +32,8 @@ SCHEDULE = [
     {"ordinal": 4, "phase": "measured", "condition": "B", "runtime_condition": "B", "receipt_file": "B-2.json"},
     {"ordinal": 5, "phase": "measured", "condition": "A", "runtime_condition": "A", "receipt_file": "A-2.json"},
 ]
+RECEIPT_FILES = {entry["receipt_file"] for entry in SCHEDULE}
+RECEIPT_DIRECTORY_FILES = RECEIPT_FILES | {"run-manifest.json"}
 
 
 def fail(message):
@@ -50,6 +53,98 @@ def load(path):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         fail(f"cannot read {path}: {error}")
+
+
+def git_output(args, message):
+    """Return one exact Git command's stdout or fail without weakening proof."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(ROOT), *args], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"cannot establish reviewed production profile Git identity: {message}: {error}")
+
+
+def checked_in_profile_provenance(path):
+    """Return the HEAD-bound identity of an unchanged tracked profile.
+
+    The profile must name an immutable blob in the current checkout's HEAD.
+    ``status --porcelain -z`` is deliberately consumed as NUL-delimited bytes:
+    a pathname can contain whitespace, newlines, or a rename's second pathname,
+    but any record for this path means either index or worktree dirt and is
+    rejected before its bytes are used as evidence.
+    """
+    supplied_profile = pathlib.Path(path).absolute()
+    if supplied_profile.is_symlink():
+        fail("reviewed production profile must be a regular checked-in file")
+    profile = supplied_profile.resolve()
+    if profile.is_symlink():
+        fail("reviewed production profile must be a regular checked-in file")
+    try:
+        relative = profile.relative_to(ROOT)
+    except ValueError:
+        fail("reviewed production profile must be checked into this repository")
+    if not profile.is_file():
+        fail("reviewed production profile is missing")
+    relative_name = relative.as_posix()
+
+    # --error-unmatch rejects both untracked and ignored-but-present files.
+    git_output(["ls-files", "--error-unmatch", "--", relative_name],
+               "profile is not tracked")
+    try:
+        porcelain = subprocess.check_output(
+            ["git", "-C", str(ROOT), "status", "--porcelain=v1", "-z",
+             "--untracked-files=all", "--", relative_name],
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"cannot establish reviewed production profile Git identity: profile status: {error}")
+    # Splitting rather than line parsing keeps v1 rename/copy records and unusual
+    # names fail-closed.  We do not need to interpret X/Y: any record is dirt.
+    if any(record for record in porcelain.split(b"\0")):
+        fail("reviewed production profile has index or working-tree dirt")
+
+    head = git_output(["rev-parse", "--verify", "HEAD^{commit}"], "HEAD is unavailable")
+    tree = git_output(["rev-parse", "--verify", "HEAD^{tree}"], "HEAD tree is unavailable")
+    blob = git_output(["rev-parse", "--verify", f"HEAD:{relative_name}"],
+                      "profile blob is absent from HEAD")
+    for label, value in (("profile HEAD", head), ("profile tree", tree),
+                         ("profile blob", blob)):
+        sha(label, value, re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}"))
+    return {"path": relative_name, "blob_sha": blob, "head_sha": head, "tree_sha": tree}
+
+
+def profile_provenance(value, label="production profile provenance"):
+    exact(label, value, {"path", "blob_sha", "head_sha", "tree_sha"})
+    if (not isinstance(value["path"], str) or not value["path"] or
+            pathlib.PurePosixPath(value["path"]).is_absolute() or
+            ".." in pathlib.PurePosixPath(value["path"]).parts):
+        fail(f"{label} path is invalid")
+    object_sha = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+    sha(label + " blob SHA", value["blob_sha"], object_sha)
+    sha(label + " HEAD SHA", value["head_sha"], object_sha)
+    sha(label + " tree SHA", value["tree_sha"], object_sha)
+    return value
+
+
+def validate_receipt_directory(receipts):
+    """Require the manifest plus exactly the six scheduled regular receipts."""
+    if receipts.is_symlink() or not receipts.is_dir():
+        fail("receipt directory is not a real directory")
+    try:
+        entries = list(receipts.iterdir())
+    except OSError as error:
+        fail(f"cannot inspect receipt directory: {error}")
+    names = {entry.name for entry in entries}
+    if names != RECEIPT_DIRECTORY_FILES:
+        fail("receipt directory entry set is not exact")
+    for entry in entries:
+        try:
+            mode = entry.lstat().st_mode
+        except OSError as error:
+            fail(f"cannot inspect receipt entry {entry.name}: {error}")
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            fail("receipt directory entries must be regular named files")
 
 
 def exact(label, value, keys):
@@ -163,7 +258,10 @@ def runtime_identity(label, value, condition):
 
 def validate_manifest(receipts):
     manifest = load(receipts / "run-manifest.json")
-    exact("run manifest", manifest, {"schema_version", "mode", "assurance_claim", "fixed", "conditions", "schedule", "run_id"})
+    manifest_keys = {"schema_version", "mode", "assurance_claim", "fixed", "conditions", "schedule", "run_id"}
+    if "profile_provenance" in manifest:
+        manifest_keys.add("profile_provenance")
+    exact("run manifest", manifest, manifest_keys)
     if manifest["schema_version"] != 1 or manifest["mode"] != "release-runtime-abba":
         fail("run manifest schema or mode differs")
     if manifest["assurance_claim"] != ASSURANCE:
@@ -181,6 +279,8 @@ def validate_manifest(receipts):
     sha("run manifest ID", claimed)
     if digest(canonical(unsigned)) != claimed:
         fail("run manifest ID differs from content")
+    if "profile_provenance" in manifest:
+        profile_provenance(manifest["profile_provenance"], "run manifest production profile provenance")
     return manifest
 
 
@@ -194,15 +294,24 @@ def validate_production_profile(path, manifest):
     generated fixture inventory is deliberately not in that profile: it is
     unique to a run and all six receipts bind to it through the manifest.
     """
-    profile = pathlib.Path(path).resolve()
+    supplied_profile = pathlib.Path(path).absolute()
+    if supplied_profile.is_symlink():
+        fail("reviewed production profile must be a regular checked-in file")
+    profile = supplied_profile.resolve()
     try:
         relative = profile.relative_to(ROOT)
     except ValueError:
         fail("reviewed production profile must be checked into this repository")
     if relative.parts[:2] == ("test", "fixtures"):
         fail("synthetic test fixture cannot be used as a production profile")
-    if not profile.is_file():
-        fail("reviewed production profile is missing")
+    if "profile_provenance" not in manifest:
+        fail("run manifest is missing production profile provenance")
+    expected_provenance = profile_provenance(
+        manifest["profile_provenance"], "run manifest production profile provenance"
+    )
+    actual_provenance = checked_in_profile_provenance(profile)
+    if actual_provenance != expected_provenance:
+        fail("reviewed production profile Git provenance differs from manifest")
     value = load(profile)
     exact("reviewed production profile", value,
           {"schema_version", "purpose", "assurance_claim", "fixed", "conditions"})
@@ -226,7 +335,10 @@ def validate_production_profile(path, manifest):
 
 def validate_receipt(receipts, manifest, entry):
     receipt = load(receipts / entry["receipt_file"])
-    exact("run receipt", receipt, {"schema_version", "run_id", "schedule_ordinal", "phase", "condition", "runtime_condition", "fixed", "runtime", "execution", "receipt_id"})
+    receipt_keys = {"schema_version", "run_id", "schedule_ordinal", "phase", "condition", "runtime_condition", "fixed", "runtime", "execution", "receipt_id"}
+    if "profile_provenance" in manifest:
+        receipt_keys.add("profile_provenance")
+    exact("run receipt", receipt, receipt_keys)
     if receipt["schema_version"] != 1 or receipt["run_id"] != manifest["run_id"]:
         fail("run receipt schema or manifest binding differs")
     expected_schedule = {"schedule_ordinal": entry["ordinal"], "phase": entry["phase"],
@@ -238,6 +350,10 @@ def validate_receipt(receipts, manifest, entry):
         fail("run receipt fixed chDB/data.json/provider/fixture/native identity differs")
     if receipt["runtime"] != manifest["conditions"][entry["runtime_condition"]]:
         fail("run receipt release runtime identity differs")
+    if "profile_provenance" in manifest:
+        if receipt["profile_provenance"] != manifest["profile_provenance"]:
+            fail("run receipt production profile provenance differs")
+        profile_provenance(receipt["profile_provenance"], "run receipt production profile provenance")
     exact("run receipt execution", receipt["execution"], {"process_id", "started_epoch_ms", "finished_epoch_ms", "outcome"})
     positive("run receipt process ID", receipt["execution"]["process_id"])
     positive("run receipt start", receipt["execution"]["started_epoch_ms"])
@@ -317,19 +433,15 @@ def main():
     if len(sys.argv) not in (2, 9):
         fail("usage: verify-durable-release-runtime-abba.py RECEIPT_DIR [PROFILE_ANCHOR A_BINARY A_ARCHIVE A_SIDECAR B_BINARY B_ARCHIVE B_SIDECAR]")
     receipts = pathlib.Path(sys.argv[1])
+    validate_receipt_directory(receipts)
     manifest = validate_manifest(receipts)
-    expected_files = {"run-manifest.json"}
     seen_pids = set()
     for entry in SCHEDULE:
-        expected_files.add(entry["receipt_file"])
         validate_receipt(receipts, manifest, entry)
         value = load(receipts / entry["receipt_file"])["execution"]["process_id"]
         if value in seen_pids:
             fail("run receipt process ID is not fresh")
         seen_pids.add(value)
-    actual_files = {path.name for path in receipts.iterdir() if path.is_file()}
-    if actual_files != expected_files:
-        fail("receipt file set is not exact")
     if len(sys.argv) == 9:
         validate_production_profile(sys.argv[2], manifest)
         verify_release_artifacts("condition A", sys.argv[3], sys.argv[4], sys.argv[5], manifest["conditions"]["A"])
