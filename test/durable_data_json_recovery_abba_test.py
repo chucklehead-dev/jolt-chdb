@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Focused non-native contract tests for the data.json recovery A/B/B/A harness."""
-import hashlib, json, pathlib, subprocess, tempfile, unittest
+import hashlib, json, os, pathlib, subprocess, tempfile, unittest
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SUMMARY=ROOT/"scripts/summarize-durable-data-json-recovery-abba.py"
@@ -92,6 +92,46 @@ class AbbaSummaryTest(unittest.TestCase):
       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nif [[ $* == *-Spath* ]]; then printf '%s\\n' /tmp/no-provider; else exit 1; fi\n"); fake.chmod(0o755)
       out=root/"out.json"; result=subprocess.run(["python3",str(CAPTURE),str(checkout),str(fake),"a"*40,str(out)],text=True,capture_output=True)
       self.assertNotEqual(0,result.returncode); self.assertIn("exactly one canonical",result.stderr)
+ def make_provider(self,root,extension=".cljc",extra=()):
+    namespace=root/"src/main/clojure/clojure/data"; namespace.mkdir(parents=True)
+    (namespace/("json"+extension)).write_text("(ns clojure.data.json)\n")
+    for relative in extra:
+      path=root/relative; path.parent.mkdir(parents=True,exist_ok=True); path.write_text("(ns clojure.data.json)\n")
+    subprocess.run(["git","init","-q",str(root)],check=True)
+    subprocess.run(["git","-C",str(root),"add","."],check=True)
+    subprocess.run(["git","-C",str(root),"-c","user.name=x","-c","user.email=x@y","commit","-qm","provider"],check=True)
+    return subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
+ def provider_capture(self,checkout,fake,expected,out,paths):
+    return subprocess.run(["python3",str(CAPTURE),str(checkout),str(fake),expected,str(out)],text=True,capture_output=True,env={"PROVIDER_PATHS":os.pathsep.join(map(str,paths))})
+ def test_provider_capture_accepts_exactly_one_canonical_clj_or_cljc(self):
+    for extension in (".clj",".cljc"):
+      with self.subTest(extension=extension),tempfile.TemporaryDirectory() as d:
+       root=pathlib.Path(d); provider=root/"provider"; expected=self.make_provider(provider,extension)
+       checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+       out=root/"out.json"; result=self.provider_capture(checkout,fake,expected,out,[provider/"src/main/clojure"])
+       self.assertEqual(0,result.returncode,result.stderr)
+       captured=json.loads(out.read_text()); self.assertEqual("json"+extension,captured["namespace"]["file_name"])
+       verify=subprocess.run(["python3",str(CAPTURE),"--verify",str(out)],text=True,capture_output=True)
+       self.assertEqual(0,verify.returncode,verify.stderr)
+ def test_provider_capture_rejects_absent_duplicate_dirty_and_other_paths(self):
+    cases=("absent","duplicate","dirty","other-path")
+    for case in cases:
+      with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+       root=pathlib.Path(d); checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+       fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+       out=root/"out.json"; paths=[]; expected="a"*40
+       if case=="absent":
+        provider=root/"provider"; provider.mkdir(); subprocess.run(["git","init","-q",str(provider)],check=True); paths=[provider/"src/main/clojure"]
+       elif case=="duplicate":
+        first=root/"first"; second=root/"second"; expected=self.make_provider(first,".clj"); self.make_provider(second,".cljc"); paths=[first/"src/main/clojure",second/"src/main/clojure"]
+       elif case=="dirty":
+        provider=root/"provider"; expected=self.make_provider(provider,".clj"); (provider/"untracked").write_text("dirty\n"); paths=[provider/"src/main/clojure"]
+       else:
+        provider=root/"provider"; expected=self.make_provider(provider,".clj"); wrong=provider/"other/clojure/data"; wrong.mkdir(parents=True); (wrong/"json.clj").write_text("(ns clojure.data.json)\n"); paths=[provider/"other"]
+       result=self.provider_capture(checkout,fake,expected,out,paths)
+       self.assertNotEqual(0,result.returncode)
+       self.assertIn("exactly one canonical" if case in ("absent","duplicate","other-path") else "not clean",result.stderr)
  def test_reresolved_provider_root_swap_has_a_distinct_capture(self):
     with tempfile.TemporaryDirectory() as d:
       root=pathlib.Path(d); provider1=root/"provider1"; provider2=root/"provider2"
