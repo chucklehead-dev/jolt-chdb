@@ -134,6 +134,46 @@ requires exactly one positive `Maximum resident set size (kbytes)` and an exit
 status of zero. Keep the whole output directory together. The helper does not
 upload artifacts or print environment values.
 
+### Diagnosing a selector that does not complete
+
+If a local selector leaves an empty log, timing file, or no receipt, use the
+separate diagnostic launcher from a persistent terminal. It delegates the
+same one-selector command and creates an adjacent lifecycle-only sidecar; it
+does not change the workload, selector order, or acceptance criteria and is
+not performance evidence.
+
+```sh
+JOLT_WRAPPER=/absolute/path/to/jolt-with-chez-10.4.1 \
+BENCH_JOLT_BIN=/absolute/path/to/repository-pinned/jolt \
+BENCH_JOLT_SOURCE_SHA=full-jolt-source-commit \
+JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
+scripts/diagnose-durable-throughput-selector.sh scale-1000 \
+  "$PWD/target/profiles/scale-1000-forensics"
+```
+
+The companion `scale-1000-forensics.launch-forensics/` contains selector and
+launcher phase markers, PIDs, exit/signal observations, and only
+presence/byte-count inventory for `report.edn`, `run.log`, `time-v.txt`, and
+the receipt root. The launcher itself never copies logs, receipt content, or
+environment values. When `strace` is installed, the launcher automatically
+adds an `-ff` process/signal trace. Its size is intentionally not capped: a
+truncating cap could erase the only terminal exec or signal observation. Its `execve` records include
+executable/argument paths but not environment values, so retain the sidecar as
+private local diagnostic material. Set
+`DURABLE_SELECTOR_FORENSICS_STRACE=0` to disable it or `=1` to require it.
+On a host without `strace`, the default `auto` mode records
+`strace-unavailable`; an explicit `=1` fails before the selector starts rather
+than silently claiming syscall-trace coverage.
+
+An orderly return ending at `time-child-returned` distinguishes a child error
+from failed artifact/receipt validation. A launcher or selector signal marker
+records a delivered catchable signal. If the last marker is a launch marker
+and no exit marker exists, the process was interrupted outside the shell's
+catchable lifecycle (for example `SIGKILL`, host shutdown, or a supervisor);
+that result narrows the failure boundary but does not identify the actor.
+Likewise, a process trace showing no Jolt `execve` supports a pre-exec failure,
+but cannot by itself prove why it occurred.
+
 The equivalent explicit command is:
 
 ```sh

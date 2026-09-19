@@ -19,6 +19,66 @@ esac
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+# This selector is also used as the workload beneath the opt-in forensic
+# launcher. Keep the normal path behavior unchanged: lifecycle markers are
+# emitted only when a caller supplies a fresh, private directory. They are
+# launch diagnostics, not benchmark evidence.
+forensics_dir=${DURABLE_SELECTOR_FORENSICS_DIR:-}
+forensics_events=
+forensics_enabled=false
+timed_pid=
+if [[ -n "$forensics_dir" ]]; then
+  [[ "$forensics_dir" = /* && -d "$forensics_dir" && ! -L "$forensics_dir" ]] || {
+    echo "forensics directory must be an existing absolute non-symlink directory" >&2
+    exit 2
+  }
+  forensics_events="$forensics_dir/selector.events"
+  [[ ! -e "$forensics_events" ]] || {
+    echo "forensics event file must not already exist" >&2
+    exit 2
+  }
+  : > "$forensics_events"
+  forensics_enabled=true
+  forensic_event() {
+    # No environment or command arguments are recorded: those can contain
+    # provider credentials. The event file only identifies lifecycle phase,
+    # PID, and integer exit/signal state.
+    printf '%s pid=%s phase=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" \
+      >> "$forensics_events"
+  }
+  forensic_exit() {
+    local code=$?
+    trap - EXIT
+    forensic_event "selector-exit status=$code"
+    exit "$code"
+  }
+  forensic_signal() {
+    local signal=$1
+    forensic_event "selector-signal signal=$signal"
+    # The diagnostic child is a separate session. Forward a catchable signal
+    # to its whole group, then reap its session leader before recording the
+    # selector's terminal signal status. The ordinary selector path never
+    # backgrounds a process and does not use this machinery.
+    if [[ -n "$timed_pid" ]]; then
+      forensic_event "time-child-signal-forwarded signal=$signal pid=$timed_pid"
+      kill -"$signal" -- "-$timed_pid" 2>/dev/null || true
+      local child_status
+      if wait "$timed_pid"; then
+        child_status=0
+      else
+        child_status=$?
+      fi
+      forensic_event "time-child-reaped status=$child_status"
+    fi
+    exit $((128 + signal))
+  }
+  trap forensic_exit EXIT
+  trap 'forensic_signal 1' HUP
+  trap 'forensic_signal 2' INT
+  trap 'forensic_signal 15' TERM
+  forensic_event "selector-started"
+fi
+
 for required in JOLT_WRAPPER BENCH_JOLT_BIN BENCH_JOLT_SOURCE_SHA JOLT_CHDB_LIB; do
   if [[ -z ${!required:-} ]]; then
     echo "missing required benchmark provenance" >&2
@@ -66,13 +126,35 @@ BENCH_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 cd "$repo_root"
 set +e
-LC_ALL=C /usr/bin/time -v -o "$timing" \
-  "$JOLT_WRAPPER" "$BENCH_JOLT_BIN" -M:durable-throughput "$selector" "$report" \
-  >"$log" 2>&1
-run_status=$?
+if "$forensics_enabled"; then
+  command -v setsid >/dev/null 2>&1 || {
+    echo "setsid is required for forensic signal forwarding" >&2
+    exit 2
+  }
+  forensic_event "jolt-command-about-to-start"
+  LC_ALL=C setsid /usr/bin/time -v -o "$timing" \
+    "$JOLT_WRAPPER" "$BENCH_JOLT_BIN" -M:durable-throughput "$selector" "$report" \
+    >"$log" 2>&1 &
+  timed_pid=$!
+  forensic_event "time-child-session-started pid=$timed_pid"
+  wait "$timed_pid"
+  run_status=$?
+  forensic_event "time-child-returned status=$run_status"
+else
+  LC_ALL=C /usr/bin/time -v -o "$timing" \
+    "$JOLT_WRAPPER" "$BENCH_JOLT_BIN" -M:durable-throughput "$selector" "$report" \
+    >"$log" 2>&1
+  run_status=$?
+fi
 set -e
 
+if "$forensics_enabled"; then
+  forensic_event "artifact-validation-about-to-start"
+fi
 scripts/check-durable-throughput-artifacts.sh "$report" "$log" "$timing"
+if "$forensics_enabled"; then
+  forensic_event "artifact-validation-passed"
+fi
 test "$run_status" -eq 0
 
 echo "Durable throughput selector completed; retain $output_dir as one evidence unit"
