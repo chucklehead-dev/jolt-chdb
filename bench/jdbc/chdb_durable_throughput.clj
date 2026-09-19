@@ -1564,7 +1564,9 @@
           _ (require-qualification-provenance! profile runtime)
           _ (*progress!* :started {:runtime runtime :profile profile})
           configuration-results (mapv run-config configs)
-          _ (*progress!* :uninstrumented-complete
+          _ (*progress!* (if stage-selector?
+                           :instrumented-complete
+                           :uninstrumented-complete)
                          {:configurations
                           (mapv #(select-keys % [:configuration :summaries])
                                 configuration-results)})
