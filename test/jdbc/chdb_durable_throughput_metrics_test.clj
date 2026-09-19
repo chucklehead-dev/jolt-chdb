@@ -306,6 +306,8 @@
         durable-doc (slurp "docs/durable-throughput.md")
         local-selector-runner
         (slurp "scripts/run-durable-throughput-selector.sh")
+        local-selector-forensics
+        (slurp "scripts/diagnose-durable-throughput-selector.sh")
         workflow (slurp ".github/workflows/durable-aws.yml")
         action (slurp ".github/actions/install-jolt-aspects/action.yml")
         benchmark (slurp "bench/jdbc/chdb_durable_throughput.clj")
@@ -345,6 +347,18 @@
                                "BENCH_PERSISTENT_RECEIPT_ROOT")
                 (str/includes? local-selector-runner
                                "check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
+    (check "opt-in launch forensics preserve selector and receipt boundaries"
+           true
+           (and (str/includes? durable-doc
+                               "diagnose-durable-throughput-selector.sh scale-1000")
+                (str/includes? durable-doc
+                               "not performance evidence")
+                (str/includes? local-selector-runner
+                               "DURABLE_SELECTOR_FORENSICS_DIR")
+                (str/includes? local-selector-forensics
+                               "DURABLE_SELECTOR_FORENSICS_STRACE")
+                (str/includes? local-selector-forensics
+                               "output-inventory.txt")))
     (check "throughput waits for successful provider qualification"
            true
            (and (str/includes? workflow "needs: s3-provider")
