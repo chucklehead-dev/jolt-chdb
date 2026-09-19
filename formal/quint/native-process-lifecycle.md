@@ -37,6 +37,13 @@ requires the retained anchor to be claimed and closed exactly once before the
 host tears down native libraries. Leaked public connections and OS-forced
 termination remain host concerns outside this state machine.
 
+A throwing public destructor is likewise outside the successful
+`closePublic` transition: its native effect is unknowable, so the executable
+wrapper closes that handle to callers, never retries its destructor, and keeps
+its conservative reference. It is treated like a leaked public owner for the
+purpose of the orderly-exit precondition. The focused fake-native regression
+checks that boundary; this model must not turn it into a successful release.
+
 The five constants below are executable negative controls. They cover dropping
 the anchor, accepting a different path, retrying after uncertain bootstrap
 failure, replacing the successful bootstrap's option identity, and skipping

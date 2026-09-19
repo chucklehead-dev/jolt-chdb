@@ -42,6 +42,14 @@ otherwise cross the unsafe last-close boundary. Once an anchor exists, failure
 to create a public connection leaves the anchor and path claim intact so a
 same-path retry is safe.
 
+Public close has the same at-most-once ownership rule. The driver marks a
+public handle closed before calling its native destructor. If that call throws,
+the handle cannot be retried: the C call may have partially or fully released
+its owner. The driver retains that public reference in process state and keeps
+the anchor/path claim; a later same-path open is still admitted without a new
+engine bootstrap, but neither it nor orderly exit is evidence that the failed
+owner was released. A different path remains rejected for the process.
+
 Bootstrap options are part of the claim. Reopening the same physical path with
 a different `:backups-allowed-path` is rejected instead of pretending that the
 already-running engine adopted a new global configuration.

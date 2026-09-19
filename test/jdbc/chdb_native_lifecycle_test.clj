@@ -315,6 +315,52 @@
       runtime
       (fn []
         (let [handle (native/open! ":memory:")
+              close-error (ex-info "uncertain public close" {:stage :close})
+              close-attempts (atom 0)]
+          (with-redefs-fn
+            {#'native/chdb-close-conn
+             (fn [owner]
+               ;; The first owner is the retained anchor; the second is this
+               ;; public handle. A destructor error cannot establish whether
+               ;; that public owner was released, so a second destructor call
+               ;; would be an unsafe retry.
+               (if (= 2 (:owner owner))
+                 (do
+                   (swap! close-attempts inc)
+                   (throw close-error))
+                 ((:close runtime) owner)))}
+            (fn []
+              (let [error (rejected #(native/close! handle))
+                    second-close (native/close! handle)
+                    closed-error
+                    (rejected #(native/with-live-handle handle identity))]
+                (check "public close failure preserves its exact throwable"
+                       close-error error)
+                (check "failed public close marks its handle unavailable"
+                       true (:db.chdb/closed (ex-data closed-error)))
+                (check "failed public close never retries its destructor"
+                       [nil 1] [second-close @close-attempts])
+                (check "failed public close retains an uncertain reference"
+                       {:phase :anchored :path ":memory:"
+                        :references 1 :anchored? true}
+                       (native/active-storage)))))
+          ;; The retained anchor prevents a failed public close from crossing
+          ;; the unsafe last-close boundary. A later same-path public owner is
+          ;; therefore still permitted, but it cannot erase the uncertain
+          ;; reference from the failed owner.
+          (let [retry (native/open! ":memory:")]
+            (native/close! retry)
+            (check "same-path retry after public close failure keeps one boot"
+                   [1 3 1 {:phase :anchored :path ":memory:"
+                           :references 1 :anchored? true}]
+                   [@(:boots runtime) @(:connects runtime)
+                    (count @(:closes runtime)) (native/active-storage)]))))))
+
+  (let [runtime (fake-native [])]
+    (with-fake-native
+      runtime
+      (fn []
+        (let [handle (native/open! ":memory:")
               hook (first @(:shutdown-hooks runtime))
               anchor-close-attempts (atom 0)]
           (native/close! handle)
