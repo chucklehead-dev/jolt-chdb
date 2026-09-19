@@ -148,6 +148,28 @@ mutation. Oscope uses `checkpoint!` after its sole schema owner has
 applied migrations and before ingress, then uses `flush!` before acknowledging
 each accepted OTLP batch.
 
+## Bounded persistence observation
+
+`jdbc.chdb.durable/persistence-observation` is a zero-I/O, closed projection
+for an *open* Durable JDBC connection. It is intended for an embedded consumer
+that needs to avoid calling a view current merely because a connection or
+worker is live. It returns only role, a conservative state, a Boolean
+`view-current?`, and scalar/enum recovered or confirmed boundaries. It never
+returns a backend, head/ETag, reference, dbspec, path, credentials, SQL/WAL
+payload, error, or native handle. Closed and non-Durable JDBC connections are
+rejected at the extension boundary.
+
+A writer becomes `pending` before a native mutation. Only an exact canonical
+`committed` or `reconciled` WAL/checkpoint control result establishes a new
+witness. An empty flush is not success. A definite persistence failure leaves
+the state pending; an unprovable control outcome makes it `unconfirmed`. A
+later WAL does not remove that uncertainty, because it cannot prove whether an
+earlier WAL landed. Only a confirmed checkpoint can do so. A reader begins at
+`snapshot` with `view-current? false`; its recovery is not an object-store-head
+freshness claim. Fencing, close, and forced worker teardown become
+`{:availability :unavailable}`. The projection makes no delivery, timing,
+query-planner, object-store, or external-reader freshness guarantee.
+
 Applications should normally build JDBC maps with
 `jdbc.chdb.durable/writer-dbspec` and `snapshot-dbspec`. These data-only
 constructors select the existing driver and validate storage identity, role,

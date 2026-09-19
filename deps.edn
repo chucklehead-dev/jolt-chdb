@@ -85,6 +85,9 @@
            :durable-open-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-open-test"]}
+           :durable-observation-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-observation-test"]}
            :durable-wal-stream-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
