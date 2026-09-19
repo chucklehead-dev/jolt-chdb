@@ -55,21 +55,56 @@
                  (openssl-failure!))
                (apply str (map byte->hex (ffi/read-array output-buffer 32)))))
            (finally
+             (evp-md-ctx-free context)))))
+
+     (defn- sha256-bytes-jolt [bytes]
+       (let [context (evp-md-ctx-new)]
+         (when (ffi/null? context)
+           (openssl-failure!))
+         (try
+           (with-open [arena (ffi/confined-arena)]
+             (let [input-buffer (ffi/alloc arena (alength bytes))
+                   output-buffer (ffi/alloc arena 32)
+                   output-length (ffi/alloc arena :uint)]
+               (when-not (= 1 (evp-digest-init context (evp-sha256) ffi/null))
+                 (openssl-failure!))
+               (ffi/write-array input-buffer bytes 0 (alength bytes))
+               (when-not (= 1 (evp-digest-update context input-buffer
+                                                  (alength bytes)))
+                 (openssl-failure!))
+               (when-not (= 1 (evp-digest-final
+                               context output-buffer output-length))
+                 (openssl-failure!))
+               (when-not (= 32 (ffi/read output-length :uint))
+                 (openssl-failure!))
+               (apply str (map byte->hex (ffi/read-array output-buffer 32)))))
+           (finally
              (evp-md-ctx-free context)))))))
 
 #?(:clj
-   (defn- sha256-file-jvm [path]
-     (let [digest (MessageDigest/getInstance "SHA-256")
-           buffer (byte-array chunk-bytes)]
-       (with-open [input (FileInputStream. (.toFile ^Path path))]
-         (loop []
-           (let [n (.read input buffer)]
-             (when (pos? n)
-               (.update digest (if (= n (alength buffer))
-                                 buffer
-                                 (Arrays/copyOf buffer n)))
-               (recur)))))
-       (apply str (map byte->hex (.digest digest))))))
+   (do
+     (defn- sha256-bytes-jvm [bytes]
+       (apply str (map byte->hex
+                       (.digest (MessageDigest/getInstance "SHA-256") bytes))))
+
+     (defn- sha256-file-jvm [path]
+       (let [digest (MessageDigest/getInstance "SHA-256")
+             buffer (byte-array chunk-bytes)]
+         (with-open [input (FileInputStream. (.toFile ^Path path))]
+           (loop []
+             (let [n (.read input buffer)]
+               (when (pos? n)
+                 (.update digest (if (= n (alength buffer))
+                                   buffer
+                                   (Arrays/copyOf buffer n)))
+                 (recur))))
+           (apply str (map byte->hex (.digest digest))))))))
+
+(defn sha256-bytes
+  "Return a lowercase SHA-256 digest for caller-supplied bytes."
+  [bytes]
+  #?(:jolt (sha256-bytes-jolt bytes)
+     :clj (sha256-bytes-jvm bytes)))
 
 (defn sha256-file
   "Return a lowercase SHA-256 digest without retaining payload-sized state."
