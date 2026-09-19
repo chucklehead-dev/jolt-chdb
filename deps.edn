@@ -4,7 +4,7 @@
         {:git/url "https://github.com/casselc/db.git"
          ;; The pure Durable observation boundary requires this read-only
          ;; JDBC context lookup; keep it on the maintained fork provider.
-         :git/sha "bde1c83f6a4e17aabcc7882e2df227a225a639fe"}
+         :git/sha "2ae7d22a32e08f168e50f73e2a18fd638335e7cf"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
          :git/sha "97298fd8a67a6d4ee3eb1346d5e184beb9565b90"}
