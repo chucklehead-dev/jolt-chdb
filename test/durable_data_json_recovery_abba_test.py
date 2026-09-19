@@ -114,6 +114,21 @@ class AbbaSummaryTest(unittest.TestCase):
        captured=json.loads(out.read_text()); self.assertEqual("json"+extension,captured["namespace"]["file_name"])
        verify=subprocess.run(["python3",str(CAPTURE),"--verify",str(out)],text=True,capture_output=True)
        self.assertEqual(0,verify.returncode,verify.stderr)
+ def test_provider_capture_and_verify_reject_both_canonical_namespace_forms_in_one_root(self):
+    with tempfile.TemporaryDirectory() as d:
+      root=pathlib.Path(d); provider=root/"provider"
+      expected=self.make_provider(provider,".clj",("src/main/clojure/clojure/data/json.cljc",))
+      checkout=root/"checkout"; checkout.mkdir(); subprocess.run(["git","init","-q",str(checkout)],check=True)
+      fake=root/"jolt"; fake.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"${PROVIDER_PATHS}\"\n"); fake.chmod(0o755)
+      out=root/"out.json"; path=provider/"src/main/clojure"
+      captured=self.provider_capture(checkout,fake,expected,out,[path])
+      self.assertNotEqual(0,captured.returncode)
+      self.assertIn("exactly one canonical",captured.stderr)
+      namespace=provider/"src/main/clojure/clojure/data/json.clj"
+      out.write_text(json.dumps({"sha":expected,"root":str(provider),"namespace":{"file_name":namespace.name,"bytes":len(namespace.read_bytes()),"sha256":hashlib.sha256(namespace.read_bytes()).hexdigest()}},sort_keys=True)+"\n")
+      verify=subprocess.run(["python3",str(CAPTURE),"--verify",str(out)],text=True,capture_output=True)
+      self.assertNotEqual(0,verify.returncode)
+      self.assertIn("namespace identity changed",verify.stderr)
  def test_provider_capture_rejects_absent_duplicate_dirty_and_other_paths(self):
     cases=("absent","duplicate","dirty","other-path")
     for case in cases:
