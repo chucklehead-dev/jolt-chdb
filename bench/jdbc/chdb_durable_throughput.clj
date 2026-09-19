@@ -1041,6 +1041,7 @@
     :matched-local-512 :matched-local-1000 :matched-local-5000 :matched-local-10000
     :matched-aws-512 :matched-aws-1000 :matched-aws-5000 :matched-aws-10000
     :scale-512 :scale-1000 :scale-5000 :scale-10000
+    :stage-512
     :recovery-512-10 :recovery-512-25 :recovery-512-50})
 
 (def ^:private scale-configurations
@@ -1104,6 +1105,7 @@
 (defn- isolated-selector-profile? [profile]
   (or (contains? matched-profiles profile)
       (contains? scale-profile-batch-size profile)
+      (= :stage-512 profile)
       (contains? recovery-profile-batches profile)))
 
 (defn- validate-profile-configs! [profile configurations]
@@ -1164,6 +1166,13 @@
 
       (contains? scale-profile-batch-size profile)
       [(scale-configuration (get scale-profile-batch-size profile))]
+
+      (= :stage-512 profile)
+      [(assoc (scale-configuration 512)
+              :label :stage-512
+              :selector :stage-512
+              :trials 1
+              :modes [:durable-preencoded])]
 
       (contains? recovery-profile-batches profile)
       [(recovery-configuration (get recovery-profile-batches profile))]
@@ -1525,6 +1534,7 @@
         instrumentation-contract (instrumentation-contract!)
         smoke? (= profile :smoke)
         probe? (= profile :probe)
+        stage-selector? (= profile :stage-512)
         isolated-selector? (or (isolated-selector-profile? profile)
                                (= :s3-curve profile))]
     (let [runtime (runtime-metadata)
@@ -1570,7 +1580,9 @@
      :supplementary-controls
      (if isolated-selector?
        {:status :not-run
-        :reason :preserve-selector-process-attribution-for-peak-rss}
+        :reason (if stage-selector?
+                  :stage-selector-is-diagnostic-only
+                  :preserve-selector-process-attribution-for-peak-rss)}
        {:status :included})
      :isolated-stages isolated
      :instrumented-control instrumented

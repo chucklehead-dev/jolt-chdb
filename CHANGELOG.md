@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an opt-in `stage-512` Durable benchmark selector for one fresh,
+  instrumented 512x100 local preencoded trial. It preserves the separate
+  uninstrumented scale selector and its peak-RSS interpretation, reports
+  stage totals only, and makes no throughput or tail-latency claim.
+
 - Add a separate, fail-closed Jolt-only Durable recovery A/B/B/A harness for
   future exact `data.json` source comparisons. It fixes the current
   52,224-row/3-segment fixture, requires clean condition checkouts and one

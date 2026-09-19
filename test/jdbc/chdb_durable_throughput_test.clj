@@ -74,6 +74,11 @@
                      [(:selector config) (:batch-size config)
                       (:batches config)]))
                  [:scale-512 :scale-1000 :scale-5000 :scale-10000]))
+    (check "stage selector is one diagnostic-only 512-row Durable-preencoded trial"
+           [:stage-512 512 100 1 [:durable-preencoded]]
+           (let [config (first (profile-configs :stage-512))]
+             [(:selector config) (:batch-size config) (:batches config)
+              (:trials config) (:modes config)]))
     (check "staged recovery selectors are bounded 512-row fresh-process workloads"
            [[:recovery-512-10 512 10 0 1 [:durable-preencoded]]
             [:recovery-512-25 512 25 0 1 [:durable-preencoded]]
