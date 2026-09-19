@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Focused non-native contract tests for the data.json recovery A/B/B/A harness."""
-import hashlib, json, os, pathlib, subprocess, tempfile, unittest
+import copy, hashlib, json, os, pathlib, subprocess, tempfile, unittest
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 SUMMARY=ROOT/"scripts/summarize-durable-data-json-recovery-abba.py"
@@ -25,7 +25,10 @@ class AbbaSummaryTest(unittest.TestCase):
     common={"jolt":{"version":"jolt v0.8.6-1-g12345678","source_sha":"12345678"+"1"*32,"executable":identity("jolt",1,"2"),"executable_revision":"12345678","describe":identity("describe",1,"d")},"native":{"library":identity("libchdb.so",1,"3"),"header":identity("chdb.h",1,"4"),"version":"26.7.3"},"cache_scope":"condition-scoped-isolated-after-prime","harness":state}
     conditions={}
     for c,s in (("A","5"),("B","6")):
-      conditions[c]={"condition":c,"checkout":{"root":"/tmp/"+c,"head":"7"*40,"tree":"8"*40},"data_json":{"sha":s*40,"root":"/tmp/data-"+c,"namespace":identity("json.cljc",1,"9")},**common}
+      conditions[c]={"condition":c,"checkout":{"root":"/tmp/"+c,"head":"7"*40,"tree":"8"*40},"data_json":{"sha":s*40,"root":"/tmp/data-"+c,"namespace":identity("json.cljc",1,"9")},**copy.deepcopy(common)}
+      # Real runs retain separately named receipts with condition-scoped
+      # gitlibs directories, even though the runtime binary is identical.
+      conditions[c]["jolt"]["describe"]=identity(c+"-sdescribe.edn",301,s)
     aggregate={"n":"52224","flags":"1","severity_sum":"2","body_bytes":"3","question_bodies":"4","min_trace":"a","max_trace":"z","min_span":"b","max_span":"y"}
     manifest={"schema_version":1,"fixture":{"rows":52224,"segments":3,"description":"current 52,224-row/3-segment fixture","inventory_sha256":"a"*64,"expected":aggregate,"expected_sha256":sha(canonical(aggregate))},"conditions":conditions,"schedule":schedule()}
     manifest["run_id"]=sha(canonical(manifest)); self.write(r/"run-manifest.json",manifest)
@@ -57,6 +60,42 @@ class AbbaSummaryTest(unittest.TestCase):
       for report in r.glob("[AB]-*.json"):
        x=json.loads(report.read_text()); x["run_id"]=m["run_id"]; self.write(report,x)
       result,_=self.run_summary(r); self.assertNotEqual(0,result.returncode); self.assertIn("compiler/native identity differs",result.stderr)
+ def rebind_manifest(self,r,m):
+    m["run_id"]=sha(canonical({k:v for k,v in m.items() if k!="run_id"}))
+    self.write(r/"run-manifest.json",m)
+    for report in r.glob("[AB]-*.json"):
+      x=json.loads(report.read_text()); x["run_id"]=m["run_id"]
+      x["provenance"]=m["conditions"][x["condition"]]
+      self.write(report,x)
+ def test_rejects_each_runtime_identity_change_with_consistent_receipts(self):
+    mutations={
+      "executable":lambda j:j["executable"].update(sha256="0"*64),
+      "version":lambda j:j.update(version="jolt v0.8.9-1-g12345678"),
+      "source_sha":lambda j:j.update(source_sha="12345678"+"0"*32),
+      "revision":lambda j:j.update(executable_revision="123456781",version="jolt v0.8.6-1-g123456781"),
+    }
+    for name,mutate in mutations.items():
+      with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+        r=self.corpus(pathlib.Path(d)); m=json.loads((r/"run-manifest.json").read_text())
+        mutate(m["conditions"]["B"]["jolt"]); self.rebind_manifest(r,m)
+        result,_=self.run_summary(r)
+        self.assertNotEqual(0,result.returncode)
+        self.assertIn("compiler/native identity differs",result.stderr)
+ def test_rejects_missing_or_cross_condition_describe_receipt(self):
+    for case in ("missing-manifest","missing-report","wrong-condition","changed-digest"):
+      with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+        r=self.corpus(pathlib.Path(d)); m=json.loads((r/"run-manifest.json").read_text())
+        if case=="missing-manifest":
+          del m["conditions"]["B"]["jolt"]["describe"]; self.rebind_manifest(r,m)
+        else:
+          p=r/"B-1.json"; x=json.loads(p.read_text()); j=x["provenance"]["jolt"]
+          if case=="missing-report": del j["describe"]
+          elif case=="wrong-condition": j["describe"]=m["conditions"]["A"]["jolt"]["describe"]
+          else: j["describe"]["sha256"]="0"*64
+          self.write(p,x)
+        result,_=self.run_summary(r)
+        self.assertNotEqual(0,result.returncode)
+        self.assertIn("missing or unknown fields" if case.startswith("missing") else "provenance differs from its prepared condition",result.stderr)
  def test_rejects_fixture_expected_aggregate_mutation(self):
     with tempfile.TemporaryDirectory() as d:
       r=self.corpus(pathlib.Path(d)); p=r/"A-1.json"; v=json.loads(p.read_text()); v["recovery"]["expected"]["flags"]="different"; v["recovery"]["actual"]["flags"]="different"; self.write(p,v)
