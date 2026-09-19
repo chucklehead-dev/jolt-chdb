@@ -91,6 +91,54 @@
         (Files/deleteIfExists alias)
         (delete-tree! root)))))
 
+(defn- check-public-writer-phase-observer-forwarding! []
+  ;; Exercise the public composition seam without a real native writer or the
+  ;; OutputStreamWriter capability probe.  `open-writer!` replaces the raw
+  ;; writer commit operation, so this catches a regression where its wrapper
+  ;; drops the observer needed by control's verify/head-CAS phases.
+  (let [store (backend/memory-backend)
+        calls (atom [])
+        clocks (atom [1000M 1001M 1002M])
+        close-count (atom 0)
+        cleanup-count (atom 0)
+        phases (atom [])
+        forwarded (atom [])
+        observe! #(swap! phases conj %)
+        operations
+        (assoc (support/fake-open-operations calls clocks close-count cleanup-count)
+               :writer-phase! observe!)]
+    (with-redefs-fn
+      {#'writer/require-wal-byte-writer-capability! (constantly true)
+       (private-var 'require-strict-utf8-decoder-capability!) (constantly true)
+       #'control/commit-reference!
+       (fn [_ _ options]
+         (swap! forwarded conj (:phase-observe! options))
+         ;; These are the control-owned phases whose visibility depends on
+         ;; public open forwarding the hook.
+         ((:phase-observe! options)
+          {:phase :wal-immutable-verify :status :complete
+           :calls 1 :nanos 1 :bytes 2})
+         ((:phase-observe! options)
+          {:phase :wal-head-cas :status :complete
+           :calls 1 :nanos 1 :bytes 0})
+         {:status :committed})}
+      (fn []
+        (let [opened
+              (durable/open-writer!
+               {:store store :owner "phase-writer" :instance "phase-instance"
+                :database "phase-db" :lease-ttl-ms 100M
+                :operations operations})]
+          (try
+            ((:commit-reference! (:operations opened))
+             store (:token opened) {:kind :wal :reference {"key" "ignored"}})
+            (check "public writer commit wrapper forwards the exact phase observer"
+                   true (identical? observe! (first @forwarded)))
+            (check "public writer commit wrapper exposes control verify and CAS phases"
+                   [:wal-immutable-verify :wal-head-cas]
+                   (mapv :phase @phases))
+            (finally
+              (writer/close! opened))))))))
+
 (defn- prepare-raw-wal-store! [store payload]
   (let [token (:token (control/acquire! store initial-options))
         publication (control/publish-wal-bytes! store token payload)]
@@ -1070,6 +1118,7 @@
 (defn run-checks! []
   (reset! failures 0)
   (check-canonical-scratch-cleanup!)
+  (check-public-writer-phase-observer-forwarding!)
   (with-redefs [native/active-storage
                 (fn [] {:phase :anchored :path ":memory:"
                         :references 0 :anchored? true})]

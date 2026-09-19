@@ -88,6 +88,33 @@
 (def ^:private output-stream-writer-ranged-append-capable?
   (delay (probe-output-stream-writer-ranged-append)))
 
+(def ^:private writer-phase-labels
+  #{:wal-prepare :wal-append :wal-join})
+
+(defn- observed-writer-phase
+  "Run `f` while optionally emitting a closed-vocabulary scalar timing event.
+
+  The observer is deliberately best-effort: it cannot change writer control
+  flow, and it receives neither SQL/WAL payloads nor backend identities."
+  [observe! phase bytes f]
+  (if (and observe! (contains? writer-phase-labels phase))
+    (let [started (System/nanoTime)]
+      (try
+        (let [value (f)]
+          (try (observe! {:phase phase :status :complete :calls 1
+                          :nanos (max 0 (- (System/nanoTime) started))
+                          :bytes (max 0 (or bytes 0))})
+               (catch Throwable _))
+          value)
+        (catch Throwable primary
+          (try (observe! {:phase phase :status :failed :calls 1
+                          :nanos (max 0 (- (System/nanoTime) started))
+                          :bytes (max 0 (or bytes 0))})
+               (catch Throwable _))
+          (throw primary))))
+    ;; Keep the ordinary production path free of clock reads.
+    (f)))
+
 (defn require-wal-byte-writer-capability!
   "Fail before Durable writer effects when UTF-8 streaming is not byte-exact."
   []
@@ -193,13 +220,16 @@
     (fail! ::limit-exceeded "Durable SQL statement exceeds 64 MiB")))
 
 (defn- prepare-wal-line! [writer sql]
-  (validate-statement-size! sql)
-  (let [line (wal-line sql)
-          next-segment-bytes (+ (:byte-count @(:wal-state writer))
-                                (alength line))]
-    (when (> next-segment-bytes max-wal-segment-bytes)
-      (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
-    line))
+  (observed-writer-phase
+   (:writer-phase! (:operations writer)) :wal-prepare 0
+   #(do
+      (validate-statement-size! sql)
+      (let [line (wal-line sql)
+            next-segment-bytes (+ (:byte-count @(:wal-state writer))
+                                  (alength line))]
+        (when (> next-segment-bytes max-wal-segment-bytes)
+          (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
+        line))))
 
 (defn- prepare-execution! [writer sql params]
   (let [operations (:operations writer)
@@ -222,7 +252,9 @@
     ;; statement enters V1 WAL; a bound mutation instead requires a full
     ;; checkpoint because V1 has no typed-parameter WAL record.
     (if line
-      (append-wal! writer line)
+      (observed-writer-phase
+       (:writer-phase! (:operations writer)) :wal-append (alength line)
+       #(append-wal! writer line))
       (require-checkpoint! writer))
     result))
 
@@ -278,7 +310,9 @@
       {:status :empty}
 
       :else
-      (let [payload (joined-wal writer)
+      (let [payload (observed-writer-phase
+                     (:writer-phase! (:operations writer)) :wal-join byte-count
+                     #(joined-wal writer))
             committed
             (let [publication ((:publish-wal! (:operations writer))
                                (:store writer) (:token writer) payload)]
@@ -516,7 +550,9 @@
                              (chdb/execute-any handle sql params))
           :publish-wal!
           (fn [store token payload]
-            (control/publish-wal-bytes! store token payload retry-options))
+            (control/publish-wal-bytes!
+             store token payload
+             (assoc retry-options :phase-observe! (:writer-phase! configured-operations))))
           :publish-checkpoint!
           (fn [store token path]
             (control/publish-checkpoint-file!
@@ -530,7 +566,8 @@
           (fn [store token options]
             (control/commit-reference!
              store token
-             (cond-> (merge options retry-options)
+             (cond-> (assoc (merge options retry-options)
+                            :phase-observe! (:writer-phase! configured-operations))
                (= :checkpoint (:kind options))
                (assoc :engine-metadata engine-metadata))))
           :verify-checkpoint-reference! control/verify-file-reference!
@@ -565,6 +602,9 @@
                    :close-native! :cleanup-scratch!}]
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "writer operations must be functions"))
+    (when (and (some? (:writer-phase! operations))
+               (not (fn? (:writer-phase! operations))))
+      (fail! ::invalid-options "writer-phase! must be a function"))
     (let [worker (owned-thread/completion)
           heartbeat (when lease-expiry (owned-thread/completion))
           writer (->DurableWriter

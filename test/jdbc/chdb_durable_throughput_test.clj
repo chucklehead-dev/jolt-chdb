@@ -333,6 +333,25 @@
              {:calls 2 :total-ms 0.00004 :bytes 60 :mean-ms 0.00002
               :statuses {:complete 1 :failed 1}}
              (:wal-json-parse (stage-report metrics))))
+    (let [metrics (atom {})
+          ordinary-operations (timed-operations metrics)
+          stage-operations (timed-operations metrics true)
+          observe! (:writer-phase! stage-operations)]
+      (observe! {:phase :wal-prepare :status :complete
+                 :calls 1 :nanos 10 :bytes 0})
+      (observe! {:phase :wal-head-cas :status :complete
+                 :calls 1 :nanos 30 :bytes 40})
+      (check "writer phase hook is stage-selector-only and remains scalar"
+             [false true false
+              {:calls 1 :total-ms 0.00001 :bytes 0 :mean-ms 0.00001
+               :statuses {:complete 1}}
+              {:calls 1 :total-ms 0.00003 :bytes 40 :mean-ms 0.00003
+               :statuses {:complete 1}}]
+             [(contains? ordinary-operations :writer-phase!)
+              (fn? observe!)
+              (contains? stage-operations :publish-wal!)
+              (:wal-prepare (stage-report metrics))
+              (:wal-head-cas (stage-report metrics))]))
     (let [{:keys [metrics observe!]} (recovery-phase-recorder)]
       (observe! {:phase :wal-lf-scan :status :complete
                  :calls 1 :nanos 11 :bytes 12})
