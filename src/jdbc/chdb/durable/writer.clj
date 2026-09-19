@@ -8,6 +8,7 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.observation :as observation]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
@@ -27,7 +28,7 @@
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
      wal-state lease-state heartbeat-stop backend-context retry-options
-     operations worker heartbeat])
+     operations worker heartbeat persistence-observation])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -37,8 +38,10 @@
     (backend/call-with-operation-context (:backend-context writer) f)
     (catch Throwable error
       (if (= ::backend/operation-stopped (:type (ex-data error)))
-        (fail! ::control/lease-fenced
-               "The Durable writer cannot prove a live lease")
+        (do
+          (observation/unavailable! (:persistence-observation writer))
+          (fail! ::control/lease-fenced
+                 "The Durable writer cannot prove a live lease"))
         (throw error)))))
 
 (defn- require-string! [value label]
@@ -53,7 +56,9 @@
 
 (defn- fence-invalid-time! [lease-state]
   (when lease-state
-    (swap! lease-state assoc :fenced? true))
+    (swap! lease-state assoc :fenced? true)
+    (when-let [persistence-observation (:persistence-observation @lease-state)]
+      (observation/unavailable! persistence-observation)))
   (fail! ::control/lease-fenced
          "The Durable writer cannot prove a live lease"))
 
@@ -162,16 +167,18 @@
           now (sample-now-ms! lease-state (:now-ms (:operations writer)))]
       (when (or fenced? (>= now expires-at))
         (swap! lease-state assoc :fenced? true)
+        (observation/unavailable! (:persistence-observation writer))
         (fail! ::control/lease-fenced
                "The Durable writer cannot prove a live lease")))))
 
-(defn- retry-stopped? [lease-state now-ms]
+(defn- retry-stopped? [lease-state now-ms persistence-observation]
   (when lease-state
     (let [{:keys [expires-at fenced?]} @lease-state
           stopped? (or fenced?
                        (>= (sample-now-ms! lease-state now-ms) expires-at))]
       (when stopped?
-        (swap! lease-state assoc :fenced? true))
+        (swap! lease-state assoc :fenced? true)
+        (observation/unavailable! persistence-observation))
       stopped?)))
 
 (defn- do-query! [writer sql params]
@@ -247,6 +254,9 @@
        #((:execute-native! operations) (:handle writer) sql params)})))
 
 (defn- execute-admitted! [writer execute! line]
+  ;; Make the public projection conservative before the native mutation. A
+  ;; native exception does not in general prove that no mutation happened.
+  (observation/pending! (:persistence-observation writer))
   (let [result (execute!)]
     ;; Local failure must not create recovery state. An exact materialized
     ;; statement enters V1 WAL; a bound mutation instead requires a full
@@ -299,6 +309,17 @@
 
 (declare do-checkpoint!)
 
+(defn- commit-ambiguous? [error]
+  (loop [current error]
+    (when current
+      (or (= ::control/commit-ambiguous (:type (ex-data current)))
+          (recur (.getCause current))))))
+
+(defn- record-publication! [writer kind reference result]
+  (observation/confirmed! (:persistence-observation writer)
+                          kind reference result)
+  result)
+
 (defn- do-flush! [writer]
   (assert-writable! writer)
   (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
@@ -313,18 +334,27 @@
       (let [payload (observed-writer-phase
                      (:writer-phase! (:operations writer)) :wal-join byte-count
                      #(joined-wal writer))
-            committed
-            (let [publication ((:publish-wal! (:operations writer))
-                               (:store writer) (:token writer) payload)]
-              ((:commit-reference! (:operations writer))
-               (:store writer) (:token writer)
-               {:kind :wal
-                :reference (:reference publication)
-                :verify-reference! control/verify-byte-reference!}))]
+            [publication committed]
+            (try
+              (let [publication ((:publish-wal! (:operations writer))
+                                 (:store writer) (:token writer) payload)
+                    committed ((:commit-reference! (:operations writer))
+                               (:store writer) (:token writer)
+                               {:kind :wal
+                                :reference (:reference publication)
+                                :verify-reference! control/verify-byte-reference!})]
+                [publication committed])
+              (catch Throwable error
+                ;; Definite errors leave recovery work pending. Only an
+                ;; explicit unprovable control outcome poisons it, and a later
+                ;; WAL is intentionally unable to erase that uncertainty.
+                (when (commit-ambiguous? error)
+                  (observation/unconfirmed! (:persistence-observation writer)))
+                (throw error)))]
         ;; Retain the complete pending buffer on every failure. Only a confirmed
         ;; or reconciled head commit proves that replay can recover these writes.
         (clear-wal! writer)
-        committed))))
+        (record-publication! writer :wal (:reference publication) committed)))))
 
 (defn- do-checkpoint! [writer]
   (assert-writable! writer)
@@ -334,19 +364,26 @@
               (:handle writer) (:database writer))
         outcome
         (try
-          (let [committed
-                (let [publication ((:publish-checkpoint! (:operations writer))
-                                   (:store writer) (:token writer) path)]
-                  ((:commit-reference! (:operations writer))
-                   (:store writer) (:token writer)
-                   {:kind :checkpoint
-                    :reference (:reference publication)
-                    :verify-reference!
-                    (:verify-checkpoint-reference! (:operations writer))}))]
+          (let [[publication committed]
+                (try
+                  (let [publication ((:publish-checkpoint! (:operations writer))
+                                     (:store writer) (:token writer) path)
+                        committed ((:commit-reference! (:operations writer))
+                                   (:store writer) (:token writer)
+                                   {:kind :checkpoint
+                                    :reference (:reference publication)
+                                    :verify-reference!
+                                    (:verify-checkpoint-reference! (:operations writer))})]
+                    [publication committed])
+                  (catch Throwable error
+                    (when (commit-ambiguous? error)
+                      (observation/unconfirmed! (:persistence-observation writer)))
+                    (throw error)))]
             ;; The full backup contains every local mutation. Pending statement WAL
             ;; becomes redundant only after the checkpoint head CAS is proved.
             (clear-wal! writer)
-            {:result committed})
+            {:result (record-publication! writer :checkpoint
+                                          (:reference publication) committed)})
           (catch Throwable error {:primary error}))
         cleanup-error
         (try
@@ -370,17 +407,22 @@
    attempts))
 
 (defn- do-close! [writer]
-  (let [error
-        (first-error
-         [#(do-flush! writer)
-          #(deliver (:heartbeat-stop writer) :stop)
-          #(when-let [heartbeat (:heartbeat writer)]
-             (owned-thread/join! heartbeat))
-          #((:release! (:operations writer)) (:store writer) (:token writer))
-          #((:close-native! (:operations writer)) (:handle writer))
-          #((:cleanup-scratch! (:operations writer)))])]
-    (when error (throw error))
-    nil))
+  (try
+    (let [error
+          (first-error
+           [#(do-flush! writer)
+            #(deliver (:heartbeat-stop writer) :stop)
+            #(when-let [heartbeat (:heartbeat writer)]
+               (owned-thread/join! heartbeat))
+            #((:release! (:operations writer)) (:store writer) (:token writer))
+            #((:close-native! (:operations writer)) (:handle writer))
+            #((:cleanup-scratch! (:operations writer)))])]
+      (when error (throw error))
+      nil)
+    (finally
+      ;; A close / forced-cleanup path never advertises current persistence,
+      ;; even if its best-effort flush established a control witness.
+      (observation/unavailable! (:persistence-observation writer)))))
 
 (defn- execute-request! [writer request]
   (call-with-backend-context
@@ -410,7 +452,11 @@
   ;; stable caller-visible cause; cleanup is still attempted in full.
   (locking (:admission-lock writer)
     (when (= :open @(:lifecycle writer))
-      (reset! (:lifecycle writer) :closing)))
+      (reset! (:lifecycle writer) :closing))
+    ;; Forced terminal cleanup may block in flush, heartbeat join, release, or
+    ;; native close. Its in-memory evidence becomes unavailable at teardown
+    ;; entry, not after those best-effort operations complete.
+    (observation/unavailable! (:persistence-observation writer)))
   (try
     (call-with-backend-context writer #(do-close! writer))
     (catch Throwable _))
@@ -420,6 +466,7 @@
         (fail-result! (:result request) terminal)
         (recur)))
     (reset! (:lifecycle writer) :closed)
+    (observation/unavailable! (:persistence-observation writer))
     (deliver (:closed-result writer) {:error terminal}))
   nil)
 
@@ -435,6 +482,7 @@
           (finally
             (when closing?
               (reset! (:lifecycle writer) :closed)
+              (observation/unavailable! (:persistence-observation writer))
               (deliver (:closed-result writer) @(:result request)))))
         (when-not closing? (recur))))
     (catch Throwable terminal
@@ -465,7 +513,9 @@
         (let [renew-now (sample-now-ms! (:lease-state writer)
                                         (:now-ms (:operations writer)))]
           (if (>= renew-now expires-at)
-            (swap! (:lease-state writer) assoc :fenced? true)
+            (do
+              (swap! (:lease-state writer) assoc :fenced? true)
+              (observation/unavailable! (:persistence-observation writer)))
             (try
               (when (and (not (realized? (:heartbeat-stop writer)))
                          (contains? #{:open :closing}
@@ -483,17 +533,22 @@
                   (if (>= (sample-now-ms! (:lease-state writer)
                                           (:now-ms (:operations writer)))
                           expires-at)
-                    (swap! (:lease-state writer) assoc :fenced? true)
+                    (do
+                      (swap! (:lease-state writer) assoc :fenced? true)
+                      (observation/unavailable! (:persistence-observation writer)))
                     (reset! (:lease-state writer)
                             {:expires-at (get-in (:head result)
                                                  ["lease" "expires_at"])
-                             :fenced? false}))))
+                             :fenced? false
+                             :persistence-observation
+                             (:persistence-observation writer)}))))
               (catch Throwable error
                 (when (or (= ::control/lease-fenced (:type (ex-data error)))
                           (>= (sample-now-ms! (:lease-state writer)
                                               (:now-ms (:operations writer)))
                               expires-at))
-                  (swap! (:lease-state writer) assoc :fenced? true))))))
+                  (swap! (:lease-state writer) assoc :fenced? true)
+                  (observation/unavailable! (:persistence-observation writer)))))))
         (when-not (:fenced? @(:lease-state writer))
           (recur))))))
 
@@ -511,7 +566,7 @@
   epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
-           engine-metadata]
+           engine-metadata recovered-document]
     :or {queue-capacity default-queue-capacity}}]
   (require-wal-byte-writer-capability!)
   (when-not store (fail! ::invalid-options "store is required"))
@@ -531,11 +586,14 @@
   (let [configured-operations operations
         now-ms (or (:now-ms configured-operations)
                    #(System/currentTimeMillis))
+        persistence-observation (observation/start :writer recovered-document)
         lease-state (when lease-expiry
-                      (atom {:expires-at lease-expiry :fenced? false}))
+                      (atom {:expires-at lease-expiry :fenced? false
+                             :persistence-observation persistence-observation}))
         retry-options (assoc (or retry-options {})
                              :stopped?
-                             #(boolean (retry-stopped? lease-state now-ms)))
+                             #(boolean (retry-stopped?
+                                        lease-state now-ms persistence-observation)))
         backend-context {:stopped? (:stopped? retry-options)}
         operations
         (merge
@@ -615,7 +673,7 @@
                          :checkpoint-required? false})
                   lease-state
                   (promise) backend-context retry-options operations
-                  worker heartbeat)]
+                  worker heartbeat persistence-observation)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat
         (owned-thread/start!
@@ -654,6 +712,7 @@
           (case @(:lifecycle writer)
             :open (do
                     (reset! (:lifecycle writer) :closing)
+                    (observation/unavailable! (:persistence-observation writer))
                     (try
                       (.put ^ArrayBlockingQueue (:queue writer) request)
                       :owner
@@ -679,3 +738,12 @@
      :pending-wal-bytes byte-count
      :pending-statements (count lines)
      :checkpoint-required? (boolean checkpoint-required?)}))
+
+(defn persistence-observation
+  "Return the closed redacted persistence projection for this writer.
+
+  The projection is intentionally not the existing operational `status`: it
+  has no queue, lease expiry, backend, head, SQL, payload, error, or handle
+  information and performs no I/O."
+  [writer]
+  (observation/projection (:persistence-observation writer)))

@@ -1,6 +1,7 @@
 (ns jdbc.chdb.durable.reader
   "Serialized query-only operations for one recovered Durable V1 snapshot."
   (:require [jdbc.chdb :as chdb]
+            [jdbc.chdb.durable.observation :as observation]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.native :as native])
@@ -9,7 +10,8 @@
 (def default-queue-capacity 64)
 
 (defrecord DurableReader
-    [handle database queue admission-lock lifecycle closed-result operations worker])
+    [handle database queue admission-lock lifecycle closed-result operations worker
+     persistence-observation])
 
 (defn reader? [value]
   (instance? DurableReader value))
@@ -65,7 +67,10 @@
 (defn- terminate-worker! [reader terminal]
   (locking (:admission-lock reader)
     (when (= :open @(:lifecycle reader))
-      (reset! (:lifecycle reader) :closing)))
+      (reset! (:lifecycle reader) :closing))
+    ;; A forced worker teardown can block in native close or scratch cleanup;
+    ;; observers must not see stale recovery evidence during that interval.
+    (observation/unavailable! (:persistence-observation reader)))
   (try
     (execute-request! reader {:op :close})
     (catch Throwable _))
@@ -75,6 +80,7 @@
         (fail-result! (:result request) terminal)
         (recur)))
     (reset! (:lifecycle reader) :closed)
+    (observation/unavailable! (:persistence-observation reader))
     (deliver (:closed-result reader) {:error terminal})))
 
 (defn- worker-loop [reader]
@@ -89,6 +95,7 @@
           (finally
             (when closing?
               (reset! (:lifecycle reader) :closed)
+              (observation/unavailable! (:persistence-observation reader))
               (deliver (:closed-result reader) @(:result request)))))
         (when-not closing? (recur))))
     (catch Throwable terminal
@@ -107,7 +114,7 @@
 
 (defn start!
   "Start a serialized reader over an already recovered immutable snapshot."
-  [{:keys [handle database queue-capacity operations]
+  [{:keys [handle database queue-capacity operations recovered-document]
     :or {queue-capacity default-queue-capacity}}]
   (when-not handle (fail! ::invalid-options "handle is required"))
   (when-not (string? database)
@@ -132,9 +139,11 @@
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "reader operations must be functions"))
     (let [worker (owned-thread/completion)
+          persistence-observation (observation/start :reader recovered-document)
           reader (->DurableReader
                   handle database (ArrayBlockingQueue. queue-capacity)
-                  (Object.) (atom :open) (promise) operations worker)]
+                  (Object.) (atom :open) (promise) operations worker
+                  persistence-observation)]
       (owned-thread/start! worker #(worker-loop reader))
       reader)))
 
@@ -153,6 +162,7 @@
             :open
             (do
               (reset! (:lifecycle reader) :closing)
+              (observation/unavailable! (:persistence-observation reader))
               (try
                 (.put ^ArrayBlockingQueue (:queue reader) request)
                 :owner
@@ -169,3 +179,8 @@
 
 (defn status [reader]
   {:lifecycle @(:lifecycle reader) :read-only? true})
+
+(defn persistence-observation
+  "Return the closed redacted persistence projection for this reader."
+  [reader]
+  (observation/projection (:persistence-observation reader)))

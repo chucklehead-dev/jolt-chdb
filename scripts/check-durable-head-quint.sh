@@ -5,6 +5,7 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 literate_spec="$repo_root/formal/quint/durable-head-cas.md"
 lifecycle_literate_spec="$repo_root/formal/quint/durable-writer-lifecycle.md"
 native_lifecycle_literate_spec="$repo_root/formal/quint/native-process-lifecycle.md"
+observation_literate_spec="$repo_root/formal/quint/durable-persistence-observation.md"
 target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
 tests="$target/durableHeadCasTest.qnt"
@@ -21,6 +22,8 @@ lifecycle_model="$target/durableWriterLifecycle.qnt"
 lifecycle_tests="$target/durableWriterLifecycleTest.qnt"
 native_lifecycle_model="$target/nativeProcessLifecycle.qnt"
 native_lifecycle_tests="$target/nativeProcessLifecycleTest.qnt"
+observation_model="$target/durablePersistenceObservation.qnt"
+observation_tests="$target/durablePersistenceObservationTest.qnt"
 native_lifecycle_trace_dir="$target/native-process-traces"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
@@ -63,6 +66,7 @@ mkdir -p "$target"
   lmt "${literate_spec#$repo_root/}"
   lmt "${lifecycle_literate_spec#$repo_root/}"
   lmt "${native_lifecycle_literate_spec#$repo_root/}"
+  lmt "${observation_literate_spec#$repo_root/}"
 )
 
 quint typecheck "$model"
@@ -79,6 +83,8 @@ quint typecheck "$lifecycle_model"
 quint typecheck "$lifecycle_tests"
 quint typecheck "$native_lifecycle_model"
 quint typecheck "$native_lifecycle_tests"
+quint typecheck "$observation_model"
+quint typecheck "$observation_tests"
 
 if [[ $mode != exhaustive ]]
 then
@@ -234,6 +240,18 @@ quint test "$native_lifecycle_tests" \
   --backend typescript \
   --verbosity 1
 
+quint test "$observation_tests" \
+  --main durablePersistenceObservationWriterTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
+quint test "$observation_tests" \
+  --main durablePersistenceObservationReaderTest \
+  --match '.*Test' \
+  --backend typescript \
+  --verbosity 1
+
 quint test "$writer_tests" \
   --main durableWriterBoundaryMutantTest \
   --match '.*Test' \
@@ -331,6 +349,45 @@ do
   fi
 done
 
+observation_writer_sample_log="$target/persistence-observation-writer-sampled.log"
+quint run "$observation_tests" \
+  --main durablePersistenceObservationWriterTest \
+  --invariants availableProjectionIsConfirmedWitness currentViewHasOwnedConfirmedWitness ambiguityNeverClaimsCurrent teardownHidesObservationBeforeNativeClose publicCloseIsNotRequiredForForcedTeardown pendingAndDefiniteFailureDoNotAdvanceWitness \
+  --witnesses noConfirmationReached walConfirmationReached ambiguityReached checkpointClearsAmbiguityReached publicCloseBeforeNativeCloseReached forcedTeardownBeforeNativeCloseReached \
+  --max-steps 5 \
+  --max-samples 1000 \
+  --backend typescript \
+  --verbosity 1 | tee "$observation_writer_sample_log"
+
+for witness in noConfirmationReached walConfirmationReached ambiguityReached \
+  checkpointClearsAmbiguityReached publicCloseBeforeNativeCloseReached \
+  forcedTeardownBeforeNativeCloseReached
+do
+  if ! grep -Eq "^${witness} was witnessed in [1-9][0-9]* trace" \
+    "$observation_writer_sample_log"
+  then
+    echo "required persistence-observation writer witness was not reached: $witness" >&2
+    exit 1
+  fi
+done
+
+observation_reader_sample_log="$target/persistence-observation-reader-sampled.log"
+quint run "$observation_tests" \
+  --main durablePersistenceObservationReaderTest \
+  --invariants availableProjectionIsConfirmedWitness readerNeverClaimsCurrentHead teardownHidesObservationBeforeNativeClose publicCloseIsNotRequiredForForcedTeardown \
+  --witnesses forcedTeardownBeforeNativeCloseReached \
+  --max-steps 3 \
+  --max-samples 500 \
+  --backend typescript \
+  --verbosity 1 | tee "$observation_reader_sample_log"
+
+if ! grep -Eq '^forcedTeardownBeforeNativeCloseReached was witnessed in [1-9][0-9]* trace' \
+  "$observation_reader_sample_log"
+then
+  echo "required persistence-observation reader witness was not reached" >&2
+  exit 1
+fi
+
 writer_sample_log="$target/writer-boundary-sampled.log"
 quint run "$writer_model" \
   --main durableWriterBoundaryCorrected \
@@ -424,6 +481,25 @@ quint verify "$lifecycle_model" \
   --main durableWriterLifecycleCorrected \
   --invariants heartbeatCoversCloseWork leaseCoversCloseFlush blockingIOLeavesHeartbeatIndependent releaseFollowsHeartbeatJoin noRenewAfterRelease \
   --max-steps 12 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+quint verify "$observation_tests" \
+  --main durablePersistenceObservationWriterTest \
+  --invariants availableProjectionIsConfirmedWitness currentViewHasOwnedConfirmedWitness ambiguityNeverClaimsCurrent teardownHidesObservationBeforeNativeClose publicCloseIsNotRequiredForForcedTeardown pendingAndDefiniteFailureDoNotAdvanceWitness \
+  --max-steps 5 \
+  --backend apalache \
+  --apalache-version 0.56.1 \
+  --verbosity 1
+
+# The reader projection has one observable lifecycle transition at this
+# abstraction boundary. Checking depth one covers both public/forced teardown
+# entry without inventing a post-native-close stutter transition.
+quint verify "$observation_tests" \
+  --main durablePersistenceObservationReaderTest \
+  --invariants availableProjectionIsConfirmedWitness readerNeverClaimsCurrentHead teardownHidesObservationBeforeNativeClose publicCloseIsNotRequiredForForcedTeardown \
+  --max-steps 1 \
   --backend apalache \
   --apalache-version 0.56.1 \
   --verbosity 1

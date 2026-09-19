@@ -893,6 +893,7 @@
                           store document operations @scratch @handle)]
             (reader/start!
              {:handle @handle :database database
+              :recovered-document document
               :operations
               (assoc operations
                      :cleanup-scratch!
@@ -1024,6 +1025,7 @@
                 (writer/start!
                  {:store store :token token :handle @handle
                   :database logical-database
+                  :recovered-document document
                   :engine-metadata
                   {:version running-version
                    :backup-format reader-backup-format
@@ -1081,6 +1083,21 @@
           {:keys [handle]}
           (shim/driver-context shim-connection :chdb-durable)]
       (if (reader/reader? handle) :reader :writer))))
+
+(defn persistence-observation
+  "Return closed, redacted persistence evidence for an open Durable JDBC
+  connection. This is a pure projection: it does no storage I/O and cannot
+  change native execution or Durable control state. It makes no delivery,
+  timing, query-planner, object-store, or external-reader freshness claim.
+  Closed and non-Durable JDBC connections fail at the extension boundary."
+  [connection]
+  (shim/extension-operation
+   #(let [shim-connection (proto/connection connection)
+          {:keys [handle]}
+          (shim/read-only-driver-context shim-connection :chdb-durable)]
+      (if (reader/reader? handle)
+        (reader/persistence-observation handle)
+        (writer/persistence-observation handle)))))
 
 (defn- jdbc-writer-handle [connection]
   (let [shim-connection (proto/connection connection)

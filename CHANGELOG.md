@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserve an ambiguous Durable WAL observation across later mutation admission
+  and WAL confirmation; only a validated checkpoint can clear that uncertainty.
+  Add a literate, bounded Quint lifecycle projection model for recovered,
+  pending, confirmed, ambiguous, public-close, forced-teardown, reader, and
+  native/public ownership boundaries. This remains observation-only: it makes
+  no delivery, timing, object-store freshness, or native-persistence claim.
+
 - Add a declarative Durable exhaustive-obligation inventory and opt-in timing/
   peak-RSS runner. It pins the existing 13 corrected Apalache invocations
   (24 positive properties) and 20 independent counterexample/ITF controls;
