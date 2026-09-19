@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add a separate, fail-closed release-runtime Durable recovery A'/B'/A/B/B/A
+  verifier. Receipt-only invocation now reports structural consistency only;
+  it cannot claim release provenance. Provenance invocation requires a reviewed
+  checked-in profile selected before execution, which pins chDB source,
+  runner-script, data.json/provider, native, workload shape, and generator
+  identities. The profile must be a clean tracked Git blob at the current
+  HEAD/tree, and its path/blob/HEAD/tree identities appear in the manifest and
+  each receipt. No production profile or completed qualification receipt is
+  committed yet. The generated fixture inventory remains per-run and all six
+  receipts must agree. Provenance mode also verifies each actual release
+  archive, checksum sidecar, declared `jolt` member, invoked binary, and
+  version banner. It establishes release-reference plus archive-integrity
+  provenance, not a signed source/build chain, artifact attestation,
+  reproducibility, percentile, S3, or general-throughput qualification.
+
 - Correct the Durable data.json A/B/B/A summary to compare runtime binary,
   version, source, and revision across conditions while validating each
   dependency-sensitive `-Sdescribe` receipt against its own condition. Separate
