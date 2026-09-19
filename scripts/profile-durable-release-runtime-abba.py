@@ -573,6 +573,20 @@ def verify_observed_runtime(measured, runtime, native, binary, library, header):
             fail("Jolt recovery observed " + label + " identity differs from reviewed profile")
 
 
+def source_reader_command(binary, fixture, source_reports, source_ordinal, raw):
+    """Build a reader invocation bound to the prepare harness's source plan.
+
+    ``receipts/run-manifest.json`` is an outer release-runtime receipt manifest,
+    not the cross-binding plan the Jolt reader validates.  Keep this derivation
+    here rather than accepting a generic manifest path so a control-side
+    receipt cannot accidentally be supplied to the source reader.
+    """
+    source_plan = pathlib.Path(source_reports) / "run-manifest.json"
+    return [str(WRAPPER), str(binary), "-Srepro", "-M:durable-cross-binding-recovery",
+            str(fixture), "release-runtime-abba", str(pathlib.Path(source_reports) / "fixture.json"),
+            str(source_plan), str(source_ordinal), str(raw)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output")
@@ -668,9 +682,7 @@ def main():
         verify_harness(source, reports, sandbox, output, material, sandbox_env)
         raw = raw_dir / str(outer_ordinal) / source_report_name
         raw.parent.mkdir(parents=True, exist_ok=True)
-        run_offline(sandbox, [str(WRAPPER), str(binary), "-Srepro", "-M:durable-cross-binding-recovery", str(fixture),
-                              "release-runtime-abba", str(reports / "fixture.json"), str(reports / "run-manifest.json"),
-                              str(source_ordinal), str(raw)],
+        run_offline(sandbox, source_reader_command(binary, fixture, reports, source_ordinal, raw),
                     [output], [material], env=env, cwd=source)
         verify_harness(source, reports, sandbox, output, material, sandbox_env)
         measured = raw_receipt(raw, source_ordinal, source_phase, source_trial)

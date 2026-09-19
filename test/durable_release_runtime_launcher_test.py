@@ -79,6 +79,19 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "selected source schedule"):
                 LAUNCHER.raw_receipt(path, 3, "prime", None)
 
+    def test_source_reader_command_uses_prepared_source_plan_not_outer_receipt_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            reports, receipts = root / "source-reports", root / "receipts"
+            reports.mkdir(); receipts.mkdir()
+            outer_manifest = receipts / "run-manifest.json"
+            outer_manifest.write_text('{"mode":"release-runtime-abba"}\n')
+            command = LAUNCHER.source_reader_command("/reviewed/jolt", root / "fixture-store",
+                                                      reports, 3, root / "raw" / "trial.json")
+            manifest_index = command.index("release-runtime-abba") + 2
+            self.assertEqual(str(reports / "run-manifest.json"), command[manifest_index])
+            self.assertNotIn(str(outer_manifest), command)
+
     def test_observed_runtime_must_match_the_snapshotted_profile_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
