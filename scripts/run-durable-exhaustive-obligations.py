@@ -10,6 +10,7 @@ import hashlib
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -21,6 +22,13 @@ REQUIRED_TOOLS = {"quint": "0.32.0", "apalache": "0.56.1"}
 REQUIRED_POSITIVE_PROPERTIES = 24
 REQUIRED_MUTANTS = 20
 REQUIRED_CORRECTED_INVOCATIONS = 13
+LMT_MODULE_VERSION = "v0.0.0-20210421124901-62fe18f2f6a6"
+LITERATE_SOURCES = (
+    "formal/quint/durable-head-cas.md",
+    "formal/quint/durable-writer-lifecycle.md",
+    "formal/quint/native-process-lifecycle.md",
+)
+MUTANT_VIOLATION_RE = re.compile(r"(?m)^\[violation\] Found an issue")
 
 
 def fail(message):
@@ -122,11 +130,37 @@ def run_command(command, log_path, time_binary):
         fail(f"cannot read timing/RSS result for {log_path.name}: {error}")
 
 
-def run_obligations(document, output, quint, time_binary, inventory_path=DEFAULT_INVENTORY):
+def require_pinned_lmt(lmt, go="go"):
+    lmt_path = shutil.which(lmt) if pathlib.Path(lmt).name == lmt else lmt
+    if not lmt_path:
+        fail("lmt is required; install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c")
+    metadata = subprocess.run([go, "version", "-m", lmt_path], cwd=ROOT, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if metadata.returncode != 0 or not re.search(
+            rf"(?m)^\s*mod\s+github\.com/driusan/lmt\s+{re.escape(LMT_MODULE_VERSION)}(?:\s|$)",
+            metadata.stdout):
+        fail("installed lmt differs from the pinned Durable tangler")
+    return lmt_path
+
+
+def tangle_literate_sources(lmt):
+    for source in LITERATE_SOURCES:
+        if not (ROOT / source).is_file():
+            fail(f"required literate source is absent: {source}")
+    for source in LITERATE_SOURCES:
+        completed = subprocess.run([lmt, source], cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, check=False)
+        if completed.returncode != 0:
+            fail(f"cannot tangle required literate source: {source}")
+
+
+def run_obligations(document, output, quint, time_binary, inventory_path=DEFAULT_INVENTORY,
+                    lmt="lmt"):
     version = subprocess.run([quint, "--version"], cwd=ROOT, text=True,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if version.returncode != 0 or version.stdout.strip() != document["tools"]["quint"]:
         fail("installed Quint version differs from the obligation inventory")
+    tangle_literate_sources(require_pinned_lmt(lmt))
     output.mkdir(parents=True, exist_ok=False)
     results = []
     for ordinal, row in enumerate(document["obligations"], start=1):
@@ -151,7 +185,7 @@ def run_obligations(document, output, quint, time_binary, inventory_path=DEFAULT
         log = log_path.read_text()
         expected = "success" if row["kind"] == "corrected" else "violation"
         if (expected == "success" and status != 0) or (
-                expected == "violation" and (status == 0 or "[violation] Found an issue" not in log)):
+                expected == "violation" and (status == 0 or not MUTANT_VIOLATION_RE.search(log))):
             fail(f"{row['kind']} obligation failed its expected outcome: {row['id']}")
         if row["itf"] is not None and not (ROOT / row["itf"]).is_file():
             fail(f"mutant did not produce required ITF: {row['id']}")
@@ -175,6 +209,7 @@ def main(argv=None):
     parser.add_argument("--inventory", type=pathlib.Path, default=DEFAULT_INVENTORY)
     parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--quint", default="quint")
+    parser.add_argument("--lmt", default="lmt")
     parser.add_argument("--time", default="/usr/bin/time")
     parser.add_argument("--check", action="store_true", help="validate only; do not invoke Quint")
     args = parser.parse_args(argv)
@@ -186,7 +221,7 @@ def main(argv=None):
         parser.error("--output is required when executing obligations")
     if args.output.exists():
         parser.error("--output must not already exist")
-    report = run_obligations(document, args.output, args.quint, args.time, args.inventory)
+    report = run_obligations(document, args.output, args.quint, args.time, args.inventory, args.lmt)
     print(f"Durable exhaustive obligations: {len(report['obligations'])} executions recorded in {args.output}")
     return 0
 

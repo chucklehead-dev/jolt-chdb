@@ -52,14 +52,60 @@ class TestDurableExhaustiveObligations(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed, removed, or added"):
             RUNNER.validate_inventory(changed)
 
-    def test_runner_records_each_inventory_row_with_fake_quint(self):
+    def write_literate_sources(self, root):
+        for source in RUNNER.LITERATE_SOURCES:
+            path = root / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# placeholder\n")
+
+    def write_fake_lmt(self, root):
+        fake = root / "lmt"
+        fake.write_text("""#!/usr/bin/env python3
+import pathlib
+import sys
+outputs = {
+    'formal/quint/durable-head-cas.md': [
+        'durableHeadCas.qnt', 'durableHeadCasTest.qnt',
+        'durablePublicationAck.qnt', 'durablePublicationAckTest.qnt',
+        'durableWriterBoundary.qnt', 'durableWriterBoundaryTest.qnt',
+        'durableLeaseTime.qnt', 'durableLeaseTimeTest.qnt',
+        'durableEngineMetadata.qnt', 'durableEngineMetadataTest.qnt'],
+    'formal/quint/durable-writer-lifecycle.md': [
+        'durableWriterLifecycle.qnt', 'durableWriterLifecycleTest.qnt'],
+    'formal/quint/native-process-lifecycle.md': [
+        'nativeProcessLifecycle.qnt', 'nativeProcessLifecycleTest.qnt']}
+for output in outputs[sys.argv[1]]:
+    path = pathlib.Path('target/formal/quint') / output
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('module placeholder {}')
+""")
+        fake.chmod(0o755)
+        return fake
+
+    def run_with_fake_tools(self, root, fake_quint, expectation=None):
+        document = self.inventory()
+        self.write_literate_sources(root)
+        fake_lmt = self.write_fake_lmt(root)
+        old_root, old_inventory, old_preflight = (
+            RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY, RUNNER.require_pinned_lmt)
+        try:
+            RUNNER.ROOT = root
+            RUNNER.DEFAULT_INVENTORY = root / "formal/quint/durable-exhaustive-obligations.json"
+            RUNNER.require_pinned_lmt = lambda lmt: str(fake_lmt)
+            if expectation is None:
+                return RUNNER.run_obligations(document, root / "report", str(fake_quint), "/usr/bin/time",
+                                               RUNNER.DEFAULT_INVENTORY, str(fake_lmt))
+            with self.assertRaisesRegex(ValueError, expectation):
+                RUNNER.run_obligations(document, root / "report", str(fake_quint), "/usr/bin/time",
+                                       RUNNER.DEFAULT_INVENTORY, str(fake_lmt))
+        finally:
+            RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY, RUNNER.require_pinned_lmt = (
+                old_root, old_inventory, old_preflight)
+
+    def test_runner_tangles_required_literate_sources_in_clean_checkout(self):
         document = self.inventory()
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for model in {row["model"] for row in document["obligations"]}:
-                path = root / model
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("module placeholder {}")
             fake = root / "quint"
             fake.write_text("""#!/usr/bin/env python3
 import pathlib
@@ -76,16 +122,11 @@ if '--out-itf' in sys.argv:
 print('checked')
 """)
             fake.chmod(0o755)
-            old_root, old_inventory = RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY
-            try:
-                RUNNER.ROOT = root
-                RUNNER.DEFAULT_INVENTORY = root / "formal/quint/durable-exhaustive-obligations.json"
-                report = RUNNER.run_obligations(document, root / "report", str(fake), "/usr/bin/time",
-                                                RUNNER.DEFAULT_INVENTORY)
-            finally:
-                RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY = old_root, old_inventory
+            self.assertFalse((root / "target").exists())
+            report = self.run_with_fake_tools(root, fake)
             self.assertEqual(33, len(report["obligations"]))
             self.assertTrue((root / "report/obligation-timings.json").is_file())
+            self.assertTrue((root / "target/formal/quint/durableHeadCas.qnt").is_file())
             self.assertEqual("success", report["obligations"][0]["outcome"])
             self.assertEqual("violation", report["obligations"][-1]["outcome"])
 
@@ -93,10 +134,6 @@ print('checked')
         document = self.inventory()
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            for model in {row["model"] for row in document["obligations"]}:
-                path = root / model
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("module placeholder {}")
             stale = root / next(row["itf"] for row in document["obligations"] if row["itf"])
             stale.parent.mkdir(parents=True, exist_ok=True)
             stale.write_text("stale witness")
@@ -112,16 +149,43 @@ if '--out-itf' in sys.argv:
 print('checked')
 """)
             fake.chmod(0o755)
-            old_root, old_inventory = RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY
-            try:
-                RUNNER.ROOT = root
-                RUNNER.DEFAULT_INVENTORY = root / "formal/quint/durable-exhaustive-obligations.json"
-                with self.assertRaisesRegex(ValueError, "did not produce required ITF"):
-                    RUNNER.run_obligations(document, root / "report", str(fake), "/usr/bin/time",
-                                           RUNNER.DEFAULT_INVENTORY)
-            finally:
-                RUNNER.ROOT, RUNNER.DEFAULT_INVENTORY = old_root, old_inventory
+            self.run_with_fake_tools(root, fake, "did not produce required ITF")
             self.assertFalse(stale.exists())
+
+    def test_runner_rejects_unanchored_mutant_violation_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            fake = root / "quint-unanchored-violation"
+            fake.write_text("""#!/usr/bin/env python3
+import pathlib
+import sys
+if sys.argv[1:] == ['--version']:
+    print('0.32.0')
+    raise SystemExit(0)
+if '--out-itf' in sys.argv:
+    path = pathlib.Path(sys.argv[sys.argv.index('--out-itf') + 1])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{}')
+    print('noise [violation] Found an issue')
+    raise SystemExit(1)
+print('checked')
+""")
+            fake.chmod(0o755)
+            self.run_with_fake_tools(root, fake, "mutant obligation failed its expected outcome")
+
+    def test_pinned_lmt_preflight_rejects_wrong_module_version(self):
+        class Completed:
+            returncode = 0
+            stdout = "mod\tgithub.com/driusan/lmt\tv0.0.0-wrong\n"
+            stderr = ""
+
+        original_run = RUNNER.subprocess.run
+        try:
+            RUNNER.subprocess.run = lambda *args, **kwargs: Completed()
+            with self.assertRaisesRegex(ValueError, "pinned Durable tangler"):
+                RUNNER.require_pinned_lmt("/tmp/lmt")
+        finally:
+            RUNNER.subprocess.run = original_run
 
 
 if __name__ == "__main__":
