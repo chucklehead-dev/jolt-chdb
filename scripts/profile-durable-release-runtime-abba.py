@@ -13,12 +13,14 @@ source checkout.
 import argparse
 import copy
 import hashlib
+import io
 import json
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -155,20 +157,44 @@ def require_offline_sandbox():
     return sandbox
 
 
-def offline_command(sandbox, command, writable_paths):
-    """Return a root-read-only Bubblewrap command with only run output writable."""
+def offline_command(sandbox, command, writable_paths, read_only_paths=()):
+    """Return a no-network command with explicit writable and immutable mounts."""
     wrapped = [sandbox, "--unshare-net", "--die-with-parent", "--new-session",
                "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"]
     for path in sorted({str(pathlib.Path(path).resolve()) for path in writable_paths}):
         wrapped.extend(["--bind", path, path])
+    # This must follow the output bind: verified inputs live below output, and
+    # a later read-only bind prevents a child from replacing them in use.
+    for path in sorted({str(pathlib.Path(path).resolve()) for path in read_only_paths}):
+        wrapped.extend(["--ro-bind", path, path])
     return [*wrapped, "--", *map(str, command)]
 
 
-def run_offline(sandbox, command, writable_paths, env=None, cwd=None):
-    run(offline_command(sandbox, command, writable_paths), env=env, cwd=cwd)
+def run_offline(sandbox, command, writable_paths, read_only_paths=(), env=None, cwd=None):
+    run(offline_command(sandbox, command, writable_paths, read_only_paths), env=env, cwd=cwd)
 
 
-def snapshot_verified_inputs(args, profile, output, verify):
+def snapshot_source(source, material, claimed):
+    """Archive the reviewed Git tree so readers never execute a mutable host checkout."""
+    source_snapshot = material / "source"
+    try:
+        archive = subprocess.check_output(["git", "-C", str(source), "archive", "--format=tar", claimed],
+                                          stderr=subprocess.DEVNULL)
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as handle:
+            members = handle.getmembers()
+            for member in members:
+                relative = pathlib.PurePosixPath(member.name)
+                if relative.is_absolute() or ".." in relative.parts or member.issym() or member.islnk():
+                    fail("reviewed source archive contains unsafe path or link")
+            handle.extractall(source_snapshot, members=members, filter="data")
+    except (OSError, subprocess.CalledProcessError, tarfile.TarError) as error:
+        fail(f"cannot snapshot reviewed source tree: {error}")
+    if git(source, "status", "--porcelain") or git(source, "rev-parse", "HEAD") != claimed:
+        fail("source checkout changed while creating immutable snapshot")
+    return source_snapshot
+
+
+def snapshot_verified_inputs(args, profile, output, verify, source):
     """Copy then re-verify every byte that a subprocess may execute or bind."""
     material = output / "verified-inputs"
     material.mkdir()
@@ -201,7 +227,9 @@ def snapshot_verified_inputs(args, profile, output, verify):
                                        profile["conditions"][condition])
         conditions[condition] = {"binary": copied_binary, "archive": copied_archive,
                                  "sidecar": copied_sidecar}
+    source_snapshot = snapshot_source(source, material, profile["fixed"]["chdb"]["source_sha"])
     return {"library": copied_library, "header": copied_header, "native_dir": native_dir,
+            "source": source_snapshot,
             "conditions": conditions}
 
 
@@ -212,9 +240,13 @@ def run(command, env=None, cwd=None):
         fail(f"subprocess failed: {error}")
 
 
-def verify_harness(source, reports):
-    run(["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"),
-         "--verify-state", str(source), str(reports)])
+def verify_harness(source, reports, sandbox=None, output=None, material=None):
+    command = ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"),
+               "--verify-state", str(source), str(reports)]
+    if sandbox is None:
+        run(command)
+    else:
+        run_offline(sandbox, command, [output], [material], cwd=source)
 
 
 def raw_receipt(raw, expected_ordinal, expected_phase, expected_trial):
@@ -228,6 +260,18 @@ def raw_receipt(raw, expected_ordinal, expected_phase, expected_trial):
             value["trial"] != expected_trial):
         fail("Jolt recovery receipt differs from selected source schedule")
     recovery = value["recovery"]
+    if set(recovery) != {"elapsed_ns", "rows_per_second", "expected", "actual", "inventory_unchanged"}:
+        fail("Jolt recovery receipt measurement schema differs")
+    rows = value["fixture"].get("recovered_rows") if isinstance(value["fixture"], dict) else None
+    if not isinstance(rows, int) or rows <= 0:
+        fail("Jolt recovery receipt recovered row count differs")
+    if not isinstance(recovery["elapsed_ns"], int) or recovery["elapsed_ns"] <= 0:
+        fail("Jolt recovery receipt elapsed measurement differs")
+    calculated_rate = rows * 1e9 / recovery["elapsed_ns"]
+    if (isinstance(recovery["rows_per_second"], bool) or
+            not isinstance(recovery["rows_per_second"], (int, float)) or
+            abs(recovery["rows_per_second"] - calculated_rate) > max(1e-9, calculated_rate * 1e-12)):
+        fail("Jolt recovery receipt rows-per-second does not recompute")
     if recovery.get("expected") != recovery.get("actual") or recovery.get("inventory_unchanged") is not True:
         fail("Jolt recovery did not reconcile the immutable fixture")
     return value
@@ -286,12 +330,14 @@ def main():
         return
     output = clean_output(args.output)
     sandbox = require_offline_sandbox()
-    material = snapshot_verified_inputs(args, profile, output, verify)
+    material = snapshot_verified_inputs(args, profile, output, verify, source)
+    source = material["source"]
     reports, fixture = output / "source-reports", output / "fixture-store"
     reports.mkdir()
-    run(["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"), str(source),
-         str(reports), "release-runtime-abba", "5", "512", "2", "100"])
-    verify_harness(source, reports)
+    run_offline(sandbox, ["python3", str(source / "scripts" / "prepare-durable-cross-binding-run.py"), str(source),
+                          str(reports), "release-runtime-abba", "5", "512", "2", "100"],
+                [output], [material], cwd=source)
+    verify_harness(source, reports, sandbox, output, material)
     native_dir = material["native_dir"]
     libchdb, native_header = material["library"], material["header"]
     rust_target = output / "rust-target"
@@ -303,11 +349,11 @@ def main():
     (output / "home").mkdir()
     run_offline(sandbox, ["cargo", "build", "--locked", "--frozen", "--offline", "--release",
                           "--manifest-path", str(source / "bench" / "rust-durable-recovery-oracle" / "Cargo.toml")],
-                [output], env=build_env, cwd=source)
+                [output], [material], env=build_env, cwd=source)
     oracle = rust_target / "release" / "jolt-chdb-rust-recovery-oracle"
     run_offline(sandbox, [str(oracle), "prepare", str(fixture), "release-runtime-abba",
                           str(reports / "run-manifest.json"), str(reports / "fixture.json")],
-                [output], env=dict(build_env, LD_LIBRARY_PATH=str(native_dir)))
+                [output], [material], env=dict(build_env, LD_LIBRARY_PATH=str(native_dir)))
     descriptor = load(reports / "fixture.json")
     fixed = copy.deepcopy(profile["fixed"])
     fixed["fixture"] = {"inventory_sha256": descriptor["inventory_sha256"],
@@ -317,7 +363,7 @@ def main():
     if fixed["fixture"]["rows"] != fixed["workload"]["rows"] or fixed["fixture"]["segments"] != fixed["workload"]["segments"]:
         fail("generated fixture differs from reviewed workload shape")
     receipt_dir, raw_dir = output / "receipts", output / "raw"
-    receipt_dir.mkdir(); raw_dir.mkdir()
+    receipt_dir.mkdir(); raw_dir.mkdir(); (receipt_dir / "raw").mkdir()
     provenance = verify.checked_in_profile_provenance(profile_path)
     manifest = {"schema_version": 1, "mode": "release-runtime-abba", "assurance_claim": verify.ASSURANCE,
                 "fixed": fixed, "conditions": profile["conditions"], "schedule": verify.SCHEDULE,
@@ -342,29 +388,40 @@ def main():
         with describe.open("w") as handle:
             try:
                 subprocess.run(offline_command(sandbox, [str(WRAPPER), str(binary), "-Srepro", "-Sdescribe"],
-                                                [output]), check=True, env=env, cwd=source, stdout=handle)
+                                                [output], [material]), check=True, env=env, cwd=source, stdout=handle)
             except (OSError, subprocess.CalledProcessError) as error:
                 fail(f"Jolt describe failed: {error}")
-        verify_harness(source, reports)
+        verify_harness(source, reports, sandbox, output, material)
         raw = raw_dir / str(outer_ordinal) / source_report_name
+        raw.parent.mkdir(parents=True, exist_ok=True)
         run_offline(sandbox, [str(WRAPPER), str(binary), "-Srepro", "-M:durable-cross-binding-recovery", str(fixture),
                               "release-runtime-abba", str(reports / "fixture.json"), str(reports / "run-manifest.json"),
                               str(source_ordinal), str(raw)],
-                    [output], env=env, cwd=source)
-        verify_harness(source, reports)
+                    [output], [material], env=env, cwd=source)
+        verify_harness(source, reports, sandbox, output, material)
         measured = raw_receipt(raw, source_ordinal, source_phase, source_trial)
         verify_observed_runtime(measured, runtime, profile["fixed"]["native"], binary,
                                 libchdb, native_header)
         if measured["process_id"] in seen:
             fail("Jolt recovery process was reused")
         seen.add(measured["process_id"])
+        copied_raw = receipt_dir / "raw" / receipt_name
+        shutil.copy2(raw, copied_raw)
+        measurement = {"elapsed_ns": measured["recovery"]["elapsed_ns"],
+                       "rows_per_second": measured["recovery"]["rows_per_second"],
+                       "recovered_rows": measured["fixture"]["recovered_rows"]}
         receipt = {"schema_version": 1, "run_id": manifest["run_id"], "schedule_ordinal": outer_ordinal,
                    "phase": phase, "condition": condition_label, "runtime_condition": condition,
                    "fixed": fixed, "runtime": runtime, "profile_provenance": provenance,
                    "execution": {"process_id": measured["process_id"], "started_epoch_ms": measured["process_started_epoch_ms"],
                                  "finished_epoch_ms": measured["process_finished_epoch_ms"], "outcome": "pass"}}
+        receipt["raw_receipt"] = {"path": "raw/" + receipt_name,
+                                  "identity": verify.file_identity(copied_raw), "measurement": measurement}
         receipt["receipt_id"] = digest(canonical(receipt))
         write(receipt_dir / receipt_name, receipt)
+    summary = verify.expected_summary(manifest, receipt_dir)
+    summary["summary_id"] = digest(canonical(summary))
+    write(receipt_dir / "summary.json", summary)
     # Recheck the profile and the immutable execution copies before issuing the
     # final claim.  The original caller paths cannot relabel what was invoked.
     verify.validate_production_profile(profile_path, load(receipt_dir / "run-manifest.json"))
@@ -376,7 +433,8 @@ def main():
     run(["python3", str(VERIFY_PATH), str(receipt_dir), str(profile_path),
          str(material["conditions"]["A"]["binary"]), str(material["conditions"]["A"]["archive"]),
          str(material["conditions"]["A"]["sidecar"]), str(material["conditions"]["B"]["binary"]),
-         str(material["conditions"]["B"]["archive"]), str(material["conditions"]["B"]["sidecar"])])
+         str(material["conditions"]["B"]["archive"]), str(material["conditions"]["B"]["sidecar"]),
+         "--sandbox-bwrap", sandbox])
     print("PASS release-runtime Durable A'/B'/A/B/B/A run: " + str(receipt_dir))
 
 

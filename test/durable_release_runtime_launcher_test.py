@@ -25,10 +25,12 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
         ]
         self.assertEqual(expected, LAUNCHER.SCHEDULE)
 
-    def test_offline_command_is_network_isolated_and_only_binds_requested_output(self):
+    def test_offline_command_is_network_isolated_and_remounts_verified_inputs_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory)
-            command = LAUNCHER.offline_command("/usr/bin/bwrap", ["cargo", "build"], [output])
+            material = output / "verified-inputs"
+            material.mkdir()
+            command = LAUNCHER.offline_command("/usr/bin/bwrap", ["cargo", "build"], [output], [material])
             self.assertEqual("/usr/bin/bwrap", command[0])
             self.assertIn("--unshare-net", command)
             self.assertIn("--ro-bind", command)
@@ -36,6 +38,12 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
             bind = command.index("--bind")
             self.assertEqual(str(output.resolve()), command[bind + 1])
             self.assertEqual(str(output.resolve()), command[bind + 2])
+            readonly = [index for index, value in enumerate(command) if value == "--ro-bind"]
+            self.assertGreaterEqual(len(readonly), 2)
+            material_bind = readonly[-1]
+            self.assertEqual(str(material.resolve()), command[material_bind + 1])
+            self.assertEqual(str(material.resolve()), command[material_bind + 2])
+            self.assertGreater(material_bind, bind)
             self.assertEqual(["cargo", "build"], command[command.index("--") + 1:])
 
     def test_raw_receipt_rejects_relabelled_measured_slot_as_prime(self):
@@ -79,6 +87,8 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
         self.assertIn('CHDB_INCLUDE_DIR=str(native_header.parent)', text)
         self.assertIn('header.name != "chdb.h"', text)
         self.assertIn("snapshot_verified_inputs", text)
+        self.assertIn("snapshot_source", text)
+        self.assertIn("[output], [material]", text)
 
 
 if __name__ == "__main__":
