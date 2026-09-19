@@ -238,6 +238,14 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "declared executable member identity differs"):
                 VERIFY_MODULE.verify_release_artifacts("test", binary, changed_archive, sidecar, expected)
 
+    def test_release_artifact_verifier_accepts_a_versioned_local_binary_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            binary, archive, sidecar, expected = self.release_artifacts(root)
+            renamed = binary.with_name("jolt-0.8.6")
+            binary.rename(renamed)
+            VERIFY_MODULE.verify_release_artifacts("test", renamed, archive, sidecar, expected)
+
     def test_self_consistent_mutated_receipts_are_not_anchored_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -377,7 +377,12 @@ def verify_binary(label, path, expected):
         fail(f"{label} binary is missing")
     actual = {"file_name": path.name, "bytes": path.stat().st_size,
               "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-    if actual != expected["binary"]:
+    # Archive-member identity includes its canonical member name (``jolt``),
+    # while a caller may retain that verified member under a versioned local
+    # filename such as ``jolt-0.8.6``.  The executable bytes and banner are the
+    # identity relevant to what is invoked; the path basename is not.
+    if {key: actual[key] for key in ("bytes", "sha256")} != {
+            key: expected["binary"][key] for key in ("bytes", "sha256")}:
         fail(f"{label} invoked binary identity differs from receipt")
     try:
         banner = subprocess.check_output([str(path), "--version"], text=True, stderr=subprocess.STDOUT).strip()
