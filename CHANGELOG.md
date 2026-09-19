@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a declarative Durable exhaustive-obligation inventory and opt-in timing/
+  peak-RSS runner. It pins the existing 13 corrected Apalache invocations
+  (24 positive properties) and 20 independent counterexample/ITF controls;
+  a lightweight causal validator rejects any removed or altered row. The
+  established checker, model bounds, classifier, fast gates, and CI behavior
+  remain unchanged. This records a measurement baseline; it does not claim a
+  shorter exhaustive runtime or change its timeout margin (#80).
+
 - Add a separate, fail-closed release-runtime Durable recovery A'/B'/A/B/B/A
   verifier. Receipt-only invocation now reports structural consistency only;
   it cannot claim release provenance. Provenance invocation requires a reviewed
