@@ -32,7 +32,7 @@
         }
       },
       "member": {
-        "path": "jolt",
+        "path": "jolt-v0.8.6-x86_64-linux/jolt",
         "identity": {
           "file_name": "jolt",
           "bytes": 23950208,
@@ -70,7 +70,7 @@
         }
       },
       "member": {
-        "path": "jolt",
+        "path": "jolt-v0.8.9-x86_64-linux/jolt",
         "identity": {
           "file_name": "jolt",
           "bytes": 25905528,

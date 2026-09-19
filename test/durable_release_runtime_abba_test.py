@@ -111,10 +111,10 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             self.rebind_receipt(receipts / entry["receipt_file"], receipt)
         return receipts, a, b
 
-    def write_archive(self, root, name, member):
+    def write_archive(self, root, name, member, member_path="jolt"):
         archive = root / name
         with tarfile.open(archive, "w:gz") as handle:
-            info = tarfile.TarInfo("jolt")
+            info = tarfile.TarInfo(member_path)
             info.mode = 0o755
             info.size = len(member)
             info.mtime = 0
@@ -124,11 +124,12 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
 
     def release_artifacts(self, root, condition="A"):
         official = json.loads(OFFICIAL.read_text())
+        expected = copy.deepcopy(official["conditions"][condition])
         binary = self.write_binary(root, "runtime", official["conditions"][condition]["version"])
-        archive = self.write_archive(root, "release.tar.gz", binary.read_bytes())
+        archive = self.write_archive(root, "release.tar.gz", binary.read_bytes(),
+                                     expected["member"]["path"])
         sidecar = root / "release.tar.gz.sha256"
         sidecar.write_text(identity(archive)["sha256"] + "  " + archive.name + "\n")
-        expected = copy.deepcopy(official["conditions"][condition])
         expected["binary"] = identity(binary)
         expected["member"]["identity"] = copy.deepcopy(expected["binary"])
         expected["release"]["asset"] = identity(archive)
@@ -227,7 +228,8 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "checksum sidecar identity differs"):
                 VERIFY_MODULE.verify_release_artifacts("test", binary, archive, sidecar, expected)
             binary, archive, sidecar, expected = self.release_artifacts(root)
-            changed_archive = self.write_archive(root, archive.name, b"different member")
+            changed_archive = self.write_archive(root, archive.name, b"different member",
+                                                 expected["member"]["path"])
             expected["release"]["asset"] = identity(changed_archive)
             sidecar.write_text(expected["release"]["asset"]["sha256"] + "  " + changed_archive.name + "\n")
             expected["release"]["sidecar"]["content"] = sidecar.read_text()

@@ -244,10 +244,12 @@ def runtime_identity(label, value, condition):
         fail(f"{label} release sidecar content differs")
     member = value["member"]
     exact(label + " extracted member", member, {"path", "identity"})
-    if member["path"] != "jolt":
+    member_path = pathlib.PurePosixPath(member["path"])
+    if (not member["path"] or member_path.is_absolute() or
+            ".." in member_path.parts or member_path.name != "jolt"):
         fail(f"{label} extracted member path differs")
     member_identity = identity(label + " extracted member identity", member["identity"])
-    if member_identity["file_name"] != member["path"]:
+    if member_identity["file_name"] != member_path.name:
         fail(f"{label} extracted member file name differs")
     if member_identity != value["binary"]:
         fail(f"{label} invoked binary differs from declared extracted member")
@@ -419,7 +421,7 @@ def verify_release_artifacts(label, binary_path, archive_path, sidecar_path, exp
             member_bytes = stream.read()
     except (OSError, tarfile.TarError) as error:
         fail(f"{label} release archive cannot be read: {error}")
-    actual_member = {"file_name": expected["member"]["path"], "bytes": len(member_bytes),
+    actual_member = {"file_name": pathlib.PurePosixPath(expected["member"]["path"]).name, "bytes": len(member_bytes),
                      "sha256": hashlib.sha256(member_bytes).hexdigest()}
     if actual_member != expected["member"]["identity"]:
         fail(f"{label} release archive declared executable member identity differs from reviewed production profile")
