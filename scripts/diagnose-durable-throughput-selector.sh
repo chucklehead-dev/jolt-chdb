@@ -77,10 +77,29 @@ trap 'on_signal 15' TERM
 event "launcher-started"
 trace_prefix="$forensics_dir/execve"
 use_strace=false
+strace_probe="$forensics_dir/strace-usability-probe"
+strace_usable() {
+  # Finding strace on PATH is not enough: containers can expose the binary
+  # while denying its PTRACE_TRACEME setup.  Probe it with no traced syscalls
+  # and discard the private probe before the actual capture.  This never
+  # executes the selector or serializes its arguments/environment.
+  local status
+  if strace -qq -e trace=none -o "$strace_probe" true >/dev/null 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f -- "$strace_probe"
+  return "$status"
+}
 case "${DURABLE_SELECTOR_FORENSICS_STRACE:-auto}" in
   auto)
     if command -v strace >/dev/null 2>&1; then
-      use_strace=true
+      if strace_usable; then
+        use_strace=true
+      else
+        event "strace-unusable"
+      fi
     fi
     ;;
   1|true|yes)
@@ -88,6 +107,11 @@ case "${DURABLE_SELECTOR_FORENSICS_STRACE:-auto}" in
       echo "strace was requested but is unavailable" >&2
       exit 2
     }
+    if ! strace_usable; then
+      event "strace-unusable"
+      echo "strace was requested but cannot trace a child" >&2
+      exit 2
+    fi
     use_strace=true
     ;;
   0|false|no)
@@ -105,7 +129,10 @@ if "$use_strace"; then
     setsid strace -ff -qq -s 256 -e trace=process,signal -o "$trace_prefix" \
     "$selector_runner" "$selector" "$output_dir" &
 else
-  if [[ ${DURABLE_SELECTOR_FORENSICS_STRACE:-auto} == auto ]]; then
+  if [[ ${DURABLE_SELECTOR_FORENSICS_STRACE:-auto} == auto ]] && \
+     command -v strace >/dev/null 2>&1; then
+    event "strace-unusable-fallback"
+  elif [[ ${DURABLE_SELECTOR_FORENSICS_STRACE:-auto} == auto ]]; then
     event "strace-unavailable"
   else
     event "strace-disabled"
