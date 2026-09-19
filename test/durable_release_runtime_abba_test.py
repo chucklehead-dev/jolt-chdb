@@ -68,6 +68,7 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
             "workload": {"rows": 52224, "segments": 3, "generator": ident("generate.clj", "2")},
             "fixture": {"inventory_sha256": "3" * 64, "rows": 52224, "segments": 3, "expected_sha256": "4" * 64},
             "native": {"version": "26.7.3", "library": ident("libchdb.so", "5"), "header": ident("chdb.h", "6")},
+            "cargo_home": {"files": 1, "bytes": 1, "sha256": "7" * 64},
         }
 
     def runtime(self, official, condition, binary):
@@ -177,7 +178,7 @@ class TestReleaseRuntimeAbba(unittest.TestCase):
         return binary, archive, sidecar, expected
 
     def profile(self, path, manifest):
-        static_keys = ("chdb", "runner_script", "data_json", "provider", "workload", "native")
+        static_keys = ("chdb", "runner_script", "data_json", "provider", "workload", "native", "cargo_home")
         value = {"schema_version": 1,
                  "purpose": "reviewed release-runtime Durable profile selected before execution",
                  "assurance_claim": ASSURANCE,

@@ -191,7 +191,16 @@ def identity(label, value):
     return value
 
 
-STATIC_FIXED_KEYS = {"chdb", "runner_script", "data_json", "provider", "workload", "native"}
+STATIC_FIXED_KEYS = {"chdb", "runner_script", "data_json", "provider", "workload", "native", "cargo_home"}
+
+
+def directory_identity(label, value):
+    """Validate the checked-in digest of an immutable dependency seed."""
+    exact(label, value, {"files", "bytes", "sha256"})
+    positive(f"{label} files", value["files"])
+    positive(f"{label} bytes", value["bytes"])
+    sha(f"{label} SHA-256", value["sha256"])
+    return value
 
 
 def static_fixed_identity(value, label="fixed workload profile"):
@@ -215,6 +224,7 @@ def static_fixed_identity(value, label="fixed workload profile"):
         fail("fixed native version is missing")
     identity("fixed native library", value["native"]["library"])
     identity("fixed native header", value["native"]["header"])
+    directory_identity("fixed Cargo home", value["cargo_home"])
     return value
 
 

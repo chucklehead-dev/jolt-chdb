@@ -2,9 +2,12 @@
 """Controls for the release-runtime launcher, without running a benchmark."""
 import importlib.util
 import json
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LAUNCHER_PATH = ROOT / "scripts" / "profile-durable-release-runtime-abba.py"
@@ -89,6 +92,49 @@ class TestReleaseRuntimeLauncher(unittest.TestCase):
         self.assertIn("snapshot_verified_inputs", text)
         self.assertIn("snapshot_source", text)
         self.assertIn("[output], [material]", text)
+
+    def test_git_aware_snapshot_is_exact_and_rejects_the_wrong_source_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source, material = root / "source", root / "material"
+            source.mkdir(); material.mkdir()
+            subprocess.check_call(["git", "init", "-q", str(source)])
+            (source / "tracked.txt").write_text("reviewed\n")
+            subprocess.check_call(["git", "-C", str(source), "add", "tracked.txt"])
+            subprocess.check_call(["git", "-C", str(source), "-c", "user.name=Test", "-c",
+                                   "user.email=test@example.invalid", "commit", "-q", "-m", "source"])
+            head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+            tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], text=True).strip()
+            snapshot = LAUNCHER.snapshot_source(source, material, head, tree)
+            self.assertTrue((snapshot / ".git").is_dir())
+            self.assertEqual(head, subprocess.check_output(["git", "-C", str(snapshot), "rev-parse", "HEAD"], text=True).strip())
+            self.assertEqual("", subprocess.check_output(["git", "-C", str(snapshot), "status", "--porcelain"], text=True))
+            with self.assertRaisesRegex(SystemExit, "source checkout changed"):
+                LAUNCHER.snapshot_source(source, root / "wrong-material", head, "0" * 40)
+
+    def test_cargo_home_seed_is_mandatory_bound_and_not_inherited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            seed, material = root / "seed", root / "material"
+            (seed / "registry").mkdir(parents=True)
+            (seed / "git").mkdir()
+            (seed / "registry" / "crate").write_bytes(b"offline crate")
+            (seed / "git" / "checkout").write_bytes(b"offline git crate")
+            expected = LAUNCHER.cargo_home_identity(seed)
+            self.assertEqual(expected, LAUNCHER.verify_cargo_home_seed(seed, expected))
+            (seed / "registry" / "crate").write_bytes(b"changed")
+            with self.assertRaisesRegex(SystemExit, "Cargo home seed differs"):
+                LAUNCHER.verify_cargo_home_seed(seed, expected)
+            (seed / "registry" / "crate").write_bytes(b"offline crate")
+            material.mkdir()
+            copied = LAUNCHER.snapshot_cargo_home(seed, material, expected)
+            self.assertEqual(expected, LAUNCHER.cargo_home_identity(copied))
+            with mock.patch.dict(os.environ, {"CARGO_HOME": "/ambient/cargo"}, clear=False):
+                env = LAUNCHER.cargo_build_environment(root, copied, root / "native", root / "libchdb.so",
+                                                       root / "chdb.h", root / "reports", root / "target")
+            self.assertEqual(str(copied), env["CARGO_HOME"])
+            self.assertNotEqual("/ambient/cargo", env["CARGO_HOME"])
+            self.assertEqual("true", env["CARGO_NET_OFFLINE"])
 
 
 if __name__ == "__main__":

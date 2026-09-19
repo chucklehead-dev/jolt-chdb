@@ -13,14 +13,12 @@ source checkout.
 import argparse
 import copy
 import hashlib
-import io
 import json
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -58,6 +56,55 @@ def identity(path):
         fail(f"required regular file is missing: {path}")
     data = path.read_bytes()
     return {"file_name": path.name, "bytes": len(data), "sha256": digest(data)}
+
+
+def cargo_home_identity(path):
+    """Digest the offline dependency portion of a Cargo home, never its tool shims.
+
+    A normal ``~/.cargo`` contains rustup-managed executable symlinks and may
+    contain credentials.  Neither belongs in an isolated dependency seed.  The
+    caller still supplies that Cargo home, but only the registry/git payload
+    (plus an optional non-secret config) is copied and mounted as CARGO_HOME.
+    """
+    path = pathlib.Path(path)
+    if not path.is_dir() or path.is_symlink():
+        fail(f"required real Cargo home is missing: {path}")
+    entries, total = [], 0
+    for name in ("registry", "git"):
+        child = path / name
+        if not child.is_dir() or child.is_symlink():
+            fail(f"Cargo home is missing required offline {name} seed: {child}")
+        # Reconstruct the actual records so the root digest commits every path,
+        # not merely two independent aggregate digests.
+        for root, directories, files in os.walk(child, followlinks=False):
+            root_path = pathlib.Path(root)
+            directories.sort(); files.sort()
+            for directory in directories:
+                if (root_path / directory).is_symlink():
+                    fail(f"Cargo home contains a symlink: {root_path / directory}")
+            for filename in files:
+                entry = root_path / filename
+                if not entry.is_file() or entry.is_symlink():
+                    fail(f"Cargo home contains a non-regular file: {entry}")
+                data = entry.read_bytes()
+                total += len(data)
+                entries.append({"path": entry.relative_to(path).as_posix(),
+                                "bytes": len(data), "sha256": digest(data)})
+    config = path / "config.toml"
+    if config.exists():
+        if not config.is_file() or config.is_symlink():
+            fail(f"Cargo home config is not a regular file: {config}")
+        data = config.read_bytes()
+        total += len(data)
+        entries.append({"path": "config.toml", "bytes": len(data), "sha256": digest(data)})
+    return {"files": len(entries), "bytes": total, "sha256": digest(canonical(entries))}
+
+
+def verify_cargo_home_seed(seed, expected):
+    actual = cargo_home_identity(seed)
+    if actual != expected:
+        fail("supplied Cargo home seed differs from reviewed production profile")
+    return actual
 
 
 def git(checkout, *args):
@@ -128,6 +175,7 @@ def verify_inputs(verify, profile, args):
     for seed in (args.cache_seed, args.gitlibs_seed):
         if not pathlib.Path(seed).is_dir() or pathlib.Path(seed).is_symlink():
             fail("cache seeds must be supplied real directories; this runner downloads nothing")
+    verify_cargo_home_seed(args.cargo_home_seed, profile["fixed"]["cargo_home"])
 
 
 def clean_output(path):
@@ -174,24 +222,54 @@ def run_offline(sandbox, command, writable_paths, read_only_paths=(), env=None, 
     run(offline_command(sandbox, command, writable_paths, read_only_paths), env=env, cwd=cwd)
 
 
-def snapshot_source(source, material, claimed):
-    """Archive the reviewed Git tree so readers never execute a mutable host checkout."""
+def snapshot_source(source, material, claimed, claimed_tree):
+    """Clone the reviewed Git tree so the read-only runner retains Git provenance.
+
+    ``prepare-durable-cross-binding-run.py`` deliberately reads HEAD, parent,
+    and tree via Git.  A plain archive makes that contract fail (or tempts a
+    future weakening).  This local, no-hardlink clone remains immutable once
+    ``verified-inputs`` is remounted read-only inside Bubblewrap.
+    """
     source_snapshot = material / "source"
     try:
-        archive = subprocess.check_output(["git", "-C", str(source), "archive", "--format=tar", claimed],
-                                          stderr=subprocess.DEVNULL)
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as handle:
-            members = handle.getmembers()
-            for member in members:
-                relative = pathlib.PurePosixPath(member.name)
-                if relative.is_absolute() or ".." in relative.parts or member.issym() or member.islnk():
-                    fail("reviewed source archive contains unsafe path or link")
-            handle.extractall(source_snapshot, members=members, filter="data")
-    except (OSError, subprocess.CalledProcessError, tarfile.TarError) as error:
+        subprocess.run(["git", "clone", "--no-local", "--no-checkout", str(source), str(source_snapshot)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(source_snapshot), "checkout", "--detach", claimed],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as error:
         fail(f"cannot snapshot reviewed source tree: {error}")
-    if git(source, "status", "--porcelain") or git(source, "rev-parse", "HEAD") != claimed:
+    if (git(source, "status", "--porcelain") or git(source, "rev-parse", "HEAD") != claimed or
+            git(source, "rev-parse", "HEAD^{tree}") != claimed_tree):
         fail("source checkout changed while creating immutable snapshot")
+    if (git(source_snapshot, "status", "--porcelain") or
+            git(source_snapshot, "rev-parse", "HEAD") != claimed or
+            git(source_snapshot, "rev-parse", "HEAD^{tree}") != claimed_tree):
+        fail("immutable source snapshot differs from reviewed Git provenance")
     return source_snapshot
+
+
+def snapshot_cargo_home(seed, material, expected):
+    cargo_home = material / "cargo-home"
+    cargo_home.mkdir()
+    seed = pathlib.Path(seed)
+    for name in ("registry", "git"):
+        shutil.copytree(seed / name, cargo_home / name, symlinks=False)
+    if (seed / "config.toml").exists():
+        shutil.copy2(seed / "config.toml", cargo_home / "config.toml")
+    if cargo_home_identity(cargo_home) != expected:
+        fail("verified Cargo home seed changed while being copied")
+    return cargo_home
+
+
+def cargo_build_environment(output, cargo_home, native_dir, libchdb, native_header, reports, rust_target):
+    """Use only the snapshotted Cargo home; ambient CARGO_HOME is never inherited."""
+    env = dict(os.environ)
+    env.pop("CARGO_HOME", None)
+    env.update(CARGO_NET_OFFLINE="true", CARGO_HOME=str(cargo_home), CHDB_LIB_DIR=str(native_dir),
+               CHDB_INCLUDE_DIR=str(native_header.parent), BENCH_NATIVE_LIBRARY=str(libchdb),
+               BENCH_NATIVE_HEADER=str(native_header), BENCH_HARNESS_STATE_FILE=str(reports / "harness-state.json"),
+               CARGO_TARGET_DIR=str(rust_target), HOME=str(output / "home"))
+    return env
 
 
 def snapshot_verified_inputs(args, profile, output, verify, source):
@@ -227,9 +305,11 @@ def snapshot_verified_inputs(args, profile, output, verify, source):
                                        profile["conditions"][condition])
         conditions[condition] = {"binary": copied_binary, "archive": copied_archive,
                                  "sidecar": copied_sidecar}
-    source_snapshot = snapshot_source(source, material, profile["fixed"]["chdb"]["source_sha"])
+    cargo_home = snapshot_cargo_home(args.cargo_home_seed, material, profile["fixed"]["cargo_home"])
+    source_snapshot = snapshot_source(source, material, profile["fixed"]["chdb"]["source_sha"],
+                                      profile["fixed"]["chdb"]["source_tree"])
     return {"library": copied_library, "header": copied_header, "native_dir": native_dir,
-            "source": source_snapshot,
+            "source": source_snapshot, "cargo_home": cargo_home,
             "conditions": conditions}
 
 
@@ -321,6 +401,7 @@ def main():
     parser.add_argument("b_sidecar")
     parser.add_argument("cache_seed")
     parser.add_argument("gitlibs_seed")
+    parser.add_argument("cargo_home_seed", help="reviewed Cargo home seed; copied and remounted read-only")
     parser.add_argument("--preflight", action="store_true")
     args = parser.parse_args()
     verify, profile_path, profile, source = profile_and_source(args.profile, args.source_checkout)
@@ -341,11 +422,8 @@ def main():
     native_dir = material["native_dir"]
     libchdb, native_header = material["library"], material["header"]
     rust_target = output / "rust-target"
-    build_env = dict(os.environ, CARGO_NET_OFFLINE="true", CHDB_LIB_DIR=str(native_dir),
-                     CHDB_INCLUDE_DIR=str(native_header.parent),
-                     BENCH_NATIVE_LIBRARY=str(libchdb), BENCH_NATIVE_HEADER=str(native_header),
-                     BENCH_HARNESS_STATE_FILE=str(reports / "harness-state.json"),
-                     CARGO_TARGET_DIR=str(rust_target), HOME=str(output / "home"))
+    build_env = cargo_build_environment(output, material["cargo_home"], native_dir, libchdb,
+                                        native_header, reports, rust_target)
     (output / "home").mkdir()
     run_offline(sandbox, ["cargo", "build", "--locked", "--frozen", "--offline", "--release",
                           "--manifest-path", str(source / "bench" / "rust-durable-recovery-oracle" / "Cargo.toml")],
