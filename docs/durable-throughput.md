@@ -240,7 +240,17 @@ measured flush, opens a fresh immutable reader, and reconciles count, trace-flag
 and severity sums, total body bytes, question-mark bodies, and min/max trace and
 span IDs. The instrumented control additionally asserts one classification,
 native execution, immutable WAL PUT, and head CAS per expected operation. It
-records only operation labels, counts, byte counts, and timings.
+records only operation labels, counts, byte counts, and timings. Its opt-in
+`stage-512` result also carries `:admission-attribution` and
+`:flush-attribution`: each has one enclosing stopwatch, fixed scalar operation
+categories, and `:writer/unattributed` as the exact residual. The categories
+are causally non-overlapping: a private bounded start/finish sequence rejects
+nested or concurrent selected seams, and the harness also fails if their total
+would exceed the enclosing timer. The residual deliberately includes queue,
+policy/lease, WAL/control, and timer work not observed at an operation seam; it
+does not identify a production hot path or change Durable behavior. No SQL,
+payload, object identity, ETag, header, provider identity, or other dynamic
+value enters either attribution map.
 
 Each recovery result includes absolute Jolt allocator observations immediately
 before fresh-reader open and immediately after successful open plus aggregate
