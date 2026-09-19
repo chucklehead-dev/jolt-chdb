@@ -3,12 +3,14 @@
 ## Unreleased
 
 - Add a separate, fail-closed release-runtime Durable recovery A'/B'/A/B/B/A
-  receipt verifier. It binds each named Jolt release condition to the invoked
-  binary's bytes, SHA-256 and exact version banner; GitHub tag/ref, release
-  asset, checksum-sidecar and extracted-member receipts; and one unchanged
-  chDB/data.json/provider/fixture/native identity across six fresh process
-  receipts. Checked-in 0.8.6 and 0.8.9 provenance values are test fixtures
-  only. The receipt establishes release-reference plus archive-integrity
+  verifier. Receipt-only invocation now reports structural consistency only;
+  it cannot claim release provenance. Provenance invocation requires a reviewed
+  checked-in profile selected before execution, which pins chDB source,
+  runner-script, data.json/provider, native, workload shape, and generator
+  identities. The generated fixture inventory remains per-run and all six
+  receipts must agree. Provenance mode also verifies each actual release
+  archive, checksum sidecar, declared `jolt` member, invoked binary, and
+  version banner. It establishes release-reference plus archive-integrity
   provenance, not a signed source/build chain, artifact attestation,
   reproducibility, percentile, S3, or general-throughput qualification.
 

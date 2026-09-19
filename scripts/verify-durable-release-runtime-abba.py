@@ -16,11 +16,13 @@ import pathlib
 import re
 import subprocess
 import sys
+import tarfile
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 GIT_SHA = re.compile(r"[0-9a-f]{40}")
 ASSURANCE = ("github-release-reference-and-archive-integrity; no signed "
              "source/build chain, artifact attestation, or reproducibility proof")
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCHEDULE = [
     {"ordinal": 0, "phase": "prime", "condition": "A'", "runtime_condition": "A", "receipt_file": "A-prime.json"},
     {"ordinal": 1, "phase": "prime", "condition": "B'", "runtime_condition": "B", "receipt_file": "B-prime.json"},
@@ -75,27 +77,44 @@ def identity(label, value):
     return value
 
 
-def fixed_identity(value):
-    exact("fixed identity", value, {"chdb", "data_json", "provider", "fixture", "native"})
+STATIC_FIXED_KEYS = {"chdb", "runner_script", "data_json", "provider", "workload", "native"}
+
+
+def static_fixed_identity(value, label="fixed workload profile"):
+    exact(label, value, STATIC_FIXED_KEYS)
     exact("fixed chDB", value["chdb"], {"source_sha", "source_tree"})
     sha("fixed chDB source SHA", value["chdb"]["source_sha"], GIT_SHA)
     sha("fixed chDB source tree", value["chdb"]["source_tree"], GIT_SHA)
+    identity("fixed runner script", value["runner_script"])
     exact("fixed data.json", value["data_json"], {"source_sha", "namespace"})
     sha("fixed data.json source SHA", value["data_json"]["source_sha"], GIT_SHA)
     identity("fixed data.json namespace", value["data_json"]["namespace"])
     exact("fixed provider", value["provider"], {"source_sha", "namespace"})
     sha("fixed provider source SHA", value["provider"]["source_sha"], GIT_SHA)
     identity("fixed provider namespace", value["provider"]["namespace"])
-    exact("fixed fixture", value["fixture"], {"inventory_sha256", "rows", "segments", "expected_sha256"})
-    sha("fixed fixture inventory", value["fixture"]["inventory_sha256"])
-    sha("fixed fixture expected aggregate", value["fixture"]["expected_sha256"])
-    positive("fixed fixture rows", value["fixture"]["rows"])
-    positive("fixed fixture segments", value["fixture"]["segments"])
+    exact("fixed workload", value["workload"], {"rows", "segments", "generator"})
+    positive("fixed workload rows", value["workload"]["rows"])
+    positive("fixed workload segments", value["workload"]["segments"])
+    identity("fixed workload generator", value["workload"]["generator"])
     exact("fixed native", value["native"], {"version", "library", "header"})
     if not isinstance(value["native"]["version"], str) or not value["native"]["version"]:
         fail("fixed native version is missing")
     identity("fixed native library", value["native"]["library"])
     identity("fixed native header", value["native"]["header"])
+    return value
+
+
+def fixed_identity(value):
+    exact("fixed identity", value, STATIC_FIXED_KEYS | {"fixture"})
+    static_fixed_identity({key: value[key] for key in STATIC_FIXED_KEYS})
+    exact("fixed fixture", value["fixture"], {"inventory_sha256", "rows", "segments", "expected_sha256"})
+    sha("fixed fixture inventory", value["fixture"]["inventory_sha256"])
+    sha("fixed fixture expected aggregate", value["fixture"]["expected_sha256"])
+    positive("fixed fixture rows", value["fixture"]["rows"])
+    positive("fixed fixture segments", value["fixture"]["segments"])
+    if (value["fixture"]["rows"] != value["workload"]["rows"] or
+            value["fixture"]["segments"] != value["workload"]["segments"]):
+        fail("generated fixture shape differs from fixed workload profile")
     return value
 
 
@@ -165,6 +184,46 @@ def validate_manifest(receipts):
     return manifest
 
 
+def validate_production_profile(path, manifest):
+    """Bind a claimed release run to a reviewed profile chosen before the run.
+
+    Receipt hashes authenticate internal consistency only: a party able to
+    rewrite every receipt can recompute them.  A release-provenance result must
+    therefore compare runtime release metadata and the invariant workload
+    profile with a checked-in profile outside the receipt directory.  The
+    generated fixture inventory is deliberately not in that profile: it is
+    unique to a run and all six receipts bind to it through the manifest.
+    """
+    profile = pathlib.Path(path).resolve()
+    try:
+        relative = profile.relative_to(ROOT)
+    except ValueError:
+        fail("reviewed production profile must be checked into this repository")
+    if relative.parts[:2] == ("test", "fixtures"):
+        fail("synthetic test fixture cannot be used as a production profile")
+    if not profile.is_file():
+        fail("reviewed production profile is missing")
+    value = load(profile)
+    exact("reviewed production profile", value,
+          {"schema_version", "purpose", "assurance_claim", "fixed", "conditions"})
+    if value["schema_version"] != 1:
+        fail("reviewed production profile schema differs")
+    if value["purpose"] != "reviewed release-runtime Durable profile selected before execution":
+        fail("reviewed production profile purpose differs")
+    if value["assurance_claim"] != ASSURANCE:
+        fail("reviewed production profile assurance claim differs")
+    static_fixed_identity(value["fixed"])
+    exact("reviewed production profile conditions", value["conditions"], {"A", "B"})
+    runtime_identity("profile condition A runtime", value["conditions"]["A"], "A")
+    runtime_identity("profile condition B runtime", value["conditions"]["B"], "B")
+    static = {key: manifest["fixed"][key] for key in STATIC_FIXED_KEYS}
+    if static != value["fixed"]:
+        fail("run fixed workload identity differs from reviewed production profile")
+    if manifest["conditions"] != value["conditions"]:
+        fail("run release runtime metadata differs from reviewed production profile")
+    return value
+
+
 def validate_receipt(receipts, manifest, entry):
     receipt = load(receipts / entry["receipt_file"])
     exact("run receipt", receipt, {"schema_version", "run_id", "schedule_ordinal", "phase", "condition", "runtime_condition", "fixed", "runtime", "execution", "receipt_id"})
@@ -210,9 +269,53 @@ def verify_binary(label, path, expected):
         fail(f"{label} invoked binary version differs from receipt")
 
 
+def verify_release_artifacts(label, binary_path, archive_path, sidecar_path, expected):
+    """Verify the downloaded archive, checksum sidecar, and extracted member.
+
+    This checks the actual bytes passed by the caller.  It deliberately does
+    not trust a receipt's description of an earlier download or extraction.
+    """
+    release = expected["release"]
+    archive = pathlib.Path(archive_path)
+    sidecar = pathlib.Path(sidecar_path)
+    if not archive.is_file():
+        fail(f"{label} release archive is missing")
+    if not sidecar.is_file():
+        fail(f"{label} release checksum sidecar is missing")
+    actual_archive = {"file_name": archive.name, "bytes": archive.stat().st_size,
+                      "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+    if actual_archive != release["asset"]:
+        fail(f"{label} release archive identity differs from reviewed production profile")
+    actual_sidecar = {"file_name": sidecar.name, "bytes": sidecar.stat().st_size,
+                      "sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest()}
+    if actual_sidecar != release["sidecar"]["identity"]:
+        fail(f"{label} release checksum sidecar identity differs from reviewed production profile")
+    if sidecar.read_text(encoding="utf-8") != release["sidecar"]["content"]:
+        fail(f"{label} release checksum sidecar content differs from reviewed production profile")
+    try:
+        with tarfile.open(archive, mode="r:gz") as handle:
+            members = [member for member in handle.getmembers() if member.name == expected["member"]["path"]]
+            if len(members) != 1 or not members[0].isfile():
+                fail(f"{label} release archive declared executable member differs")
+            stream = handle.extractfile(members[0])
+            if stream is None:
+                fail(f"{label} release archive declared executable member is unreadable")
+            member_bytes = stream.read()
+    except (OSError, tarfile.TarError) as error:
+        fail(f"{label} release archive cannot be read: {error}")
+    actual_member = {"file_name": expected["member"]["path"], "bytes": len(member_bytes),
+                     "sha256": hashlib.sha256(member_bytes).hexdigest()}
+    if actual_member != expected["member"]["identity"]:
+        fail(f"{label} release archive declared executable member identity differs from reviewed production profile")
+    binary = pathlib.Path(binary_path)
+    if not binary.is_file() or binary.read_bytes() != member_bytes:
+        fail(f"{label} invoked binary differs from actual declared release archive member")
+    verify_binary(label, binary, expected)
+
+
 def main():
-    if len(sys.argv) not in (2, 4):
-        fail("usage: verify-durable-release-runtime-abba.py RECEIPT_DIR [A_BINARY B_BINARY]")
+    if len(sys.argv) not in (2, 9):
+        fail("usage: verify-durable-release-runtime-abba.py RECEIPT_DIR [PROFILE_ANCHOR A_BINARY A_ARCHIVE A_SIDECAR B_BINARY B_ARCHIVE B_SIDECAR]")
     receipts = pathlib.Path(sys.argv[1])
     manifest = validate_manifest(receipts)
     expected_files = {"run-manifest.json"}
@@ -227,10 +330,13 @@ def main():
     actual_files = {path.name for path in receipts.iterdir() if path.is_file()}
     if actual_files != expected_files:
         fail("receipt file set is not exact")
-    if len(sys.argv) == 4:
-        verify_binary("condition A", sys.argv[2], manifest["conditions"]["A"])
-        verify_binary("condition B", sys.argv[3], manifest["conditions"]["B"])
-    print("PASS release-runtime Durable A'/B'/A/B/B/A receipt verification")
+    if len(sys.argv) == 9:
+        validate_production_profile(sys.argv[2], manifest)
+        verify_release_artifacts("condition A", sys.argv[3], sys.argv[4], sys.argv[5], manifest["conditions"]["A"])
+        verify_release_artifacts("condition B", sys.argv[6], sys.argv[7], sys.argv[8], manifest["conditions"]["B"])
+        print("PASS anchored release-provenance Durable A'/B'/A/B/B/A verification")
+    else:
+        print("PASS structural-consistency Durable A'/B'/A/B/B/A receipt verification (not release provenance)")
 
 
 if __name__ == "__main__":
