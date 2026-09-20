@@ -1,5 +1,6 @@
 (ns jdbc.chdb-durable-throughput-test
-  (:require [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
+  (:require [clojure.string :as str]
+            [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
             [jdbc.chdb-durable-throughput :as throughput]))
 
 (def failures (atom 0))
@@ -42,6 +43,9 @@
         #'throughput/maximum-serialized-row-payload-bytes
         successful-flush? #'throughput/successful-flush?
         timed-operations #'throughput/timed-operations
+        stage-metrics #'throughput/stage-metrics
+        attribution-events #'throughput/attribution-events
+        stage-values #'throughput/stage-values
         stage-report #'throughput/stage-report
         stage-attribution! #'throughput/stage-attribution!
         admission-attribution-stages @#'throughput/admission-attribution-stages
@@ -83,6 +87,18 @@
            (let [config (first (profile-configs :stage-512))]
              [(:selector config) (:batch-size config) (:batches config)
               (:trials config) (:instrumented? config) (:modes config)]))
+    (check "stage smoke keeps the real instrumented writer path bounded"
+           [:stage-smoke 32 1 1 true [:durable-preencoded]]
+           (let [config (first (profile-configs :stage-smoke))]
+             [(:selector config) (:batch-size config) (:batches config)
+              (:trials config) (:instrumented? config) (:modes config)]))
+    (let [metrics (stage-metrics)]
+      (check "stage timing keeps its private event ledger outside Jolt atom metadata"
+             []
+             @(attribution-events metrics))
+      (check "stage timing omits its private event ledger from child handoff values"
+             {}
+             (stage-values metrics)))
     (check "staged recovery selectors are bounded 512-row fresh-process workloads"
            [[:recovery-512-10 512 10 0 1 [:durable-preencoded]]
             [:recovery-512-25 512 25 0 1 [:durable-preencoded]]
@@ -532,6 +548,8 @@
         require-receipt #'throughput/require-worker-receipt!
         require-scope #'throughput/require-worker-scope!
         require-completion #'throughput/require-worker-completion!
+        require-terminal #'throughput/require-worker-terminal!
+        child-failure #'throughput/child-failure-evidence
         require-marker #'throughput/require-worker-marker!
         line (str ":durable-bench-worker-complete :writer " token)]
     (check "owned worker positive receipt preserves its exact inventory"
@@ -570,6 +588,31 @@
             :terminal? true :primary :wait-failed}
            (try (require-completion nil {:exit 0}) nil
                 (catch Throwable error (ex-data error))))
+    (let [receipt-file (java.io.File/createTempFile "throughput-child-failure-" ".edn")
+          safe {:schema-version 1 :role :writer :token token :status :failed
+                :failure {:category :controlled-worker-failure
+                          :stage :writer-trial}}
+          secret "https://secret.example/endpoint?token=never-report"]
+      (try
+        (spit receipt-file (str (pr-str safe) "\n"))
+        (let [data (try
+                     (require-terminal {:exit 7} {:exit 7} receipt-file :writer token)
+                     nil
+                     (catch Throwable error (ex-data error)))]
+          (spit receipt-file
+                (str (pr-str (assoc safe :secret secret)) "\n"))
+          (check "terminal worker failure retains only its closed writer stage"
+                 {:type :jdbc.chdb-durable-throughput/worker-failed
+                  :terminal? true :primary :nonzero-exit
+                  :failure {:category :controlled-worker-failure
+                            :stage :writer-trial}}
+                 (select-keys data [:type :terminal? :primary :failure]))
+          (check "malformed child evidence is reduced to an unclassified closed stage"
+                 {:category :unclassified-child-failure :stage :writer-trial}
+                 (child-failure receipt-file :writer token))
+          (check "worker failure evidence does not retain a secret canary"
+                 false (str/includes? (pr-str data) secret)))
+        (finally (.delete receipt-file))))
     (with-redefs [clojure.core/slurp (fn [_] (str (pr-str receipt) "\n" (pr-str receipt)))]
       (check "duplicate result forms cannot hide behind one stdout marker"
              :jdbc.chdb-durable-throughput/invalid-worker-receipt
@@ -578,6 +621,73 @@
            :jdbc.chdb-durable-throughput/nonserializable-provider
            (rejected-type #( #'throughput/provider-descriptor!
                              {:backend-context! (fn [_] nil)} "/tmp/owned")))))
+
+(defn- worker-failure-receipt-checks! []
+  ;; Mutation-level child contract: the writer branch may fail anywhere in the
+  ;; actual Durable trial, but must rethrow that same throwable after placing
+  ;; only the closed, role-derived stage in its receipt.
+  (let [root (java.io.File/createTempFile "throughput-writer-failure-" "")
+        _ (.delete root)
+        _ (.mkdirs root)
+        token "00000000-0000-0000-0000-000000000003"
+        request-file (java.io.File. root "writer-request.edn")
+        result-file (java.io.File. root "writer-result.edn")
+        descriptor {:root (.getAbsolutePath root)
+                    :provider-kind :local-posix
+                    :object-id "bench-worker-00000000-0000-0000-0000-000000000004"}
+        runtime {:scheme-version "10.4.1"}
+        request {:kind :uninstrumented :role :writer :token token
+                 :options {:batch-size 2 :batches 1 :warmup-batches 0 :trial 1
+                           :question-mark? false :encode-included? false}
+                 :descriptor descriptor :runtime-identity runtime}
+        terminal (ex-info "writer secret http://private.invalid/never-report"
+                          {:endpoint "private.invalid" :sql "INSERT secret"})]
+    (try
+      (spit request-file (str (pr-str request) "\n"))
+      (let [caught
+            (with-redefs-fn
+              {#'throughput/runtime-metadata (fn [] runtime)
+               #'throughput/reconstruct-context! (fn [_ _] {:test-context true})
+               #'throughput/durable-uninstrumented-trial (fn [_] (throw terminal))}
+              (fn []
+                (try
+                  (#'throughput/worker-main! (.getAbsolutePath request-file)
+                                             (.getAbsolutePath result-file))
+                  nil
+                  (catch Throwable error error))))
+            evidence (#'throughput/child-failure-evidence result-file :writer token)
+            retained (slurp result-file)]
+        (check "writer child rethrows its exact original throwable"
+               true (identical? terminal caught))
+        (check "writer child receipt reports only the closed writer trial stage"
+               {:category :controlled-worker-failure :stage :writer-trial}
+               evidence)
+        (check "writer child receipt excludes throwable message and exception data"
+               false
+               (or (str/includes? retained "private.invalid")
+                   (str/includes? retained "INSERT secret"))))
+      (finally
+        (.delete request-file)
+        (.delete result-file)
+        (.delete root)))))
+
+(defn- worker-launch-command-checks! []
+  ;; CI selects Jolt through JOLT_WRAPPER=/usr/bin/env while local source gates
+  ;; select the pinned Chez wrapper.  Both children must inherit that explicit
+  ;; selector; a developer-checkout path is neither portable nor provenance.
+  (let [command #'throughput/worker-command!
+        request (java.io.File. "/tmp/durable-worker-request.edn")
+        result (java.io.File. "/tmp/durable-worker-result.edn")]
+    (check "worker command uses the caller-selected absolute wrapper"
+           ["/usr/bin/env" "/bin/true" "-Srepro" "-M:durable-throughput" "--worker"
+            (.getAbsolutePath request) (.getAbsolutePath result)]
+           (command "/usr/bin/env" "/bin/true" request result))
+    (check "worker command rejects a non-absolute wrapper"
+           :jdbc.chdb-durable-throughput/missing-worker-wrapper
+           (rejected-type #(command "env" "/bin/true" request result)))
+    (check "worker command rejects a missing wrapper"
+           :jdbc.chdb-durable-throughput/missing-worker-wrapper
+           (rejected-type #(command "/definitely/not/a-wrapper" "/bin/true" request result)))))
 
 (defn- orchestration-contract-checks! []
   ;; Real orchestration, mocked native subprocess only. Keep this unique owned
@@ -635,6 +745,8 @@
   (reset! failures 0)
   (run-checks!)
   (worker-contract-checks!)
+  (worker-failure-receipt-checks!)
+  (worker-launch-command-checks!)
   (orchestration-contract-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " throughput checks failed")

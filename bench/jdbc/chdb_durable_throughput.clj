@@ -226,18 +226,23 @@
     :native-execute :backend/put-bytes-if-absent :backend/get-bytes
     :backend/get-with-etag :backend/replace-if-match})
 
+(def ^:private attribution-events-key ::attribution-events)
+
 (defn- stage-metrics []
-  ;; The aggregate remains the existing stage->scalar map. The private,
-  ;; bounded start/finish sequence is metadata on its atom so it cannot leak
-  ;; through worker receipts or report rendering.
-  (with-meta (atom {}) {::attribution-events (atom [])}))
+  ;; Jolt atoms are deliberately not IObj values, so metadata cannot be used
+  ;; as a side channel here. Keep the bounded event ledger under a private map
+  ;; key instead, and explicitly omit it from every retained/reportable view.
+  (atom {attribution-events-key (atom [])}))
 
 (defn- attribution-events [metrics]
-  (some-> metrics meta ::attribution-events))
+  (get @metrics attribution-events-key))
+
+(defn- stage-values [metrics]
+  (dissoc @metrics attribution-events-key))
 
 (defn- reset-stage-metrics! [metrics]
-  (reset! metrics {})
-  (when-let [events (attribution-events metrics)]
+  (let [events (attribution-events metrics)]
+    (reset! metrics {attribution-events-key events})
     (reset! events []))
   metrics)
 
@@ -274,7 +279,7 @@
                          :mean-ms
                          (if (zero? calls) 0.0 (ms (/ nanos calls)))}
                   statuses (assoc :statuses statuses))]))
-        @metrics))
+        (stage-values metrics)))
 
 (def ^:private admission-attribution-stages
   [[:encoding/data-json :data-json]
@@ -823,7 +828,8 @@
                        :heartbeat-interval-ms 100000
                        :operations (timed-operations
                                     metrics
-                                    (= :stage-512 (:selector options)))}]
+                                    (contains? #{:stage-512 :stage-smoke}
+                                               (:selector options)))}]
     (try
       (with-open [connection (jdbc/connection (durable/writer-dbspec configuration))]
         (jdbc/execute! connection logs-ddl)
@@ -894,13 +900,13 @@
               _ (when-not (successful-flush? flush-result)
                   (throw (ex-info "Durable measured flush did not persist"
                                   {:type ::flush-failed})))
-              stage-values @metrics
+              stage-values (stage-values metrics)
               expected-stage-calls
               (cond-> {:prepare-query batches :native-classify batches
                        :native-execute batches
                        :backend/put-bytes-if-absent 1
                        :backend/replace-if-match 1}
-                (= :stage-512 (:selector options))
+                (contains? #{:stage-512 :stage-smoke} (:selector options))
                 (assoc :wal-prepare batches
                        :wal-append batches
                        :wal-join 1
@@ -963,7 +969,11 @@
                       :payload-bytes (:payload-bytes measured)
                       :statement-bytes (:statement-bytes measured)}
                      (wal-size-observation pending measured)))))
-      {:result @trial-result :expected @expected :stage-observations @metrics}
+      ;; The bounded causality ledger is parent-local diagnostic state. A
+      ;; cross-process handoff needs only scalar stage observations for the
+      ;; reader's recovery report.
+      {:result @trial-result :expected @expected
+       :stage-observations (stage-values metrics)}
       (finally
         (cleanup!)))))
 
@@ -1202,7 +1212,7 @@
     :matched-local-512 :matched-local-1000 :matched-local-5000 :matched-local-10000
     :matched-aws-512 :matched-aws-1000 :matched-aws-5000 :matched-aws-10000
     :scale-512 :scale-1000 :scale-5000 :scale-10000
-    :stage-512
+    :stage-512 :stage-smoke
     :recovery-512-10 :recovery-512-25 :recovery-512-50})
 
 (def ^:private scale-configurations
@@ -1266,7 +1276,7 @@
 (defn- isolated-selector-profile? [profile]
   (or (contains? matched-profiles profile)
       (contains? scale-profile-batch-size profile)
-      (= :stage-512 profile)
+      (contains? #{:stage-512 :stage-smoke} profile)
       (contains? recovery-profile-batches profile)))
 
 (defn- validate-profile-configs! [profile configurations]
@@ -1335,6 +1345,13 @@
               :trials 1
               :instrumented? true
               :modes [:durable-preencoded])]
+
+      (= :stage-smoke profile)
+      [{:label :stage-smoke
+        :selector :stage-smoke
+        :batch-size 32 :batches 1 :warmup-batches 1 :trials 1
+        :instrumented? true :question-mark? false
+        :modes [:durable-preencoded]}]
 
       (contains? recovery-profile-batches profile)
       [(recovery-configuration (get recovery-profile-batches profile))]
@@ -1459,6 +1476,61 @@
                     {:type ::worker-failed :terminal? (boolean settled)
                      :primary (if initial :nonzero-exit :wait-failed)}))))
 
+(def ^:private worker-failure-stages
+  #{:worker-bootstrap :writer-trial :reader-recovery :native-trial
+    :worker-receipt})
+
+(defn- worker-stage-for-role [role]
+  (case role
+    :writer :writer-trial
+    :reader :reader-recovery
+    :native :native-trial
+    :worker-bootstrap))
+
+(defn- worker-failure-receipt? [receipt role token]
+  ;; This is deliberately a much narrower shape than a success receipt.  A
+  ;; failed child may have been interrupted in an arbitrary implementation
+  ;; layer, so its retained cross-process evidence is only a closed category
+  ;; and stage.  In particular, it must never copy an exception message,
+  ;; exception data, request path, backend descriptor, SQL, or provider state.
+  (and (map? receipt)
+       (= #{:schema-version :role :token :status :failure} (set (keys receipt)))
+       (= 1 (:schema-version receipt))
+       (= role (:role receipt))
+       (= token (:token receipt))
+       (= :failed (:status receipt))
+       (= #{:category :stage} (set (keys (:failure receipt))))
+       (= :controlled-worker-failure (get-in receipt [:failure :category]))
+       (contains? worker-failure-stages (get-in receipt [:failure :stage]))))
+
+(defn- child-failure-evidence [result-file role token]
+  ;; Treat all absent, malformed, and forged receipts identically.  The parent
+  ;; already owns the child role; it need not expose an untrusted file's
+  ;; contents to diagnose a terminal subprocess failure.
+  (try
+    (let [receipt (read-owned-edn! result-file)]
+      (if (worker-failure-receipt? receipt role token)
+        (:failure receipt)
+        {:category :unclassified-child-failure
+         :stage (worker-stage-for-role role)}))
+    (catch Throwable _
+      {:category :unclassified-child-failure
+       :stage (worker-stage-for-role role)})))
+
+(defn- require-worker-terminal! [initial settled result-file role token]
+  (try
+    (require-worker-completion! initial settled)
+    nil
+    (catch Throwable error
+      ;; Preserve the established parent-side exception category and primary
+      ;; control semantics.  The two added scalars are diagnostic evidence,
+      ;; not a serialization of the child's throwable.
+      (throw (ex-info "benchmark worker did not complete successfully"
+                      (merge (ex-data error)
+                             {:failure (child-failure-evidence
+                                        result-file role token)})
+                      error)))))
+
 (defn- require-worker-marker! [lines role token]
   (when-not (= 1 (count (filter #(= (str ":durable-bench-worker-complete " role " " token) %)
                                lines)))
@@ -1493,13 +1565,43 @@
   (spit (File. root (str (name role) "-result.edn"))
         (str (pr-str (update receipt :value redact-batch-samples)) "\n")))
 
+(defn- write-worker-failure-receipt! [result-path role token stage]
+  (try
+    (spit result-path
+          (str (pr-str {:schema-version 1
+                        :role role
+                        :token token
+                        :status :failed
+                        :failure {:category :controlled-worker-failure
+                                  :stage stage}})
+               "\n"))
+    (catch Throwable _
+      ;; The original failure remains authoritative.  The parent classifies a
+      ;; missing receipt as an unclassified terminal child failure.
+      nil)))
+
+(defn- worker-command! [wrapper executable request-file result-file]
+  ;; The outer selector already requires this absolute wrapper as part of its
+  ;; provenance contract.  Keep worker processes on that same selected Jolt
+  ;; invocation rather than embedding a workstation path: hosted CI has no
+  ;; `/home/chuck/...` checkout, and a different child runtime would invalidate
+  ;; the writer/reader identity check anyway.
+  (let [wrapper-file (when wrapper (File. wrapper))
+        executable-file (when executable (File. executable))]
+    (when-not (and wrapper-file (.isAbsolute wrapper-file)
+                   (.isFile wrapper-file) (.canExecute wrapper-file))
+      (throw (ex-info "absolute benchmark wrapper is required"
+                      {:type ::missing-worker-wrapper})))
+    (when-not (and executable-file (.isAbsolute executable-file)
+                   (.isFile executable-file) (.canExecute executable-file))
+      (throw (ex-info "absolute benchmark executable is required"
+                      {:type ::missing-worker-executable})))
+    [wrapper executable "-Srepro" "-M:durable-throughput" "--worker"
+     (.getAbsolutePath request-file) (.getAbsolutePath result-file)]))
+
 (defn- run-worker! [root role request]
-  (let [executable (System/getenv "BENCH_JOLT_BIN")
-        executable-file (when executable (File. executable))
-        _ (when-not (and executable-file (.isAbsolute executable-file)
-                          (.isFile executable-file) (.canExecute executable-file))
-            (throw (ex-info "absolute benchmark executable is required"
-                            {:type ::missing-worker-executable})))
+  (let [wrapper (System/getenv "JOLT_WRAPPER")
+        executable (System/getenv "BENCH_JOLT_BIN")
         token (str (random-uuid))
         request-file (File. root (str (name role) "-request.edn"))
         result-file (File. root (str (name role) "-result.edn"))
@@ -1507,9 +1609,7 @@
         error-file (File. root (str (name role) ".err"))
         _ (spit request-file (pr-str (assoc request :role role :token token)))
         child (process/process
-               ["/home/chuck/ai-src/tools/jolt-with-chez-10.4.1"
-                executable "-Srepro" "-M:durable-throughput" "--worker"
-                (.getAbsolutePath request-file) (.getAbsolutePath result-file)]
+               (worker-command! wrapper executable request-file result-file)
                {:out log-file :err error-file})
         initial (await-worker child 600000)
         _ (when-not initial
@@ -1521,7 +1621,7 @@
           (pr-str (select-keys (or settled {}) [:exit])))
     ;; Never continue to a reader/later trial on uncertain settlement, even
     ;; if a partial result file or a success marker exists.
-    (require-worker-completion! initial settled)
+    (require-worker-terminal! initial settled result-file role token)
     (let [receipt (read-owned-edn! result-file)]
       (require-worker-marker! (str/split-lines (slurp log-file)) role token)
       (require-worker-receipt! receipt role token request))))
@@ -1574,34 +1674,48 @@
       report (assoc :provider-metrics report)
       (:stage-observations handoff) (assoc :stages-through-recovery (stage-report metrics)))))
 
-(declare diagnostic!)
+(declare diagnostic! write-worker-failure-receipt!)
 
 (defn- worker-main! [request-path result-path]
   (let [{:keys [role token descriptor options kind] :as request}
         (read-owned-edn! request-path)
-        _ (require-worker-scope! request request-path result-path)
-        _ (when-not (= (runtime-identity (runtime-metadata)) (:runtime-identity request))
-            (throw (ex-info "benchmark worker source provenance differs"
-                            {:type ::invalid-worker-receipt})))
-        value
-        (case role
-          :writer
-          (let [context (reconstruct-context! descriptor options)]
-            (binding [*writer-role?* true *worker-descriptor* descriptor]
-              (if (= kind :diagnostic)
-                (diagnostic! (str (:root descriptor) "/diagnostic-progress.edn"))
-              ((case kind
-                 :instrumented durable-trial
-                 :uninstrumented durable-uninstrumented-trial)
-               (assoc options :backend-context! (fn [_] context))))))
-          :reader (reader-value! request)
-          :native (native-trial options)
-          (throw (ex-info "invalid benchmark worker role" {:type ::invalid-worker-role})))
-        receipt {:schema-version 1 :role role :token token :value value
-                 :inventory (select-keys request [:kind :options :descriptor])
-                 :runtime (runtime-metadata)}]
-    (spit result-path (str (pr-str receipt) "\n"))
-    (println :durable-bench-worker-complete role token)))
+        stage (atom :worker-bootstrap)]
+    (try
+      (require-worker-scope! request request-path result-path)
+      (when-not (= (runtime-identity (runtime-metadata)) (:runtime-identity request))
+        (throw (ex-info "benchmark worker source provenance differs"
+                        {:type ::invalid-worker-receipt})))
+      (let [value
+            (case role
+              :writer
+              (do
+                (reset! stage :writer-trial)
+                (let [context (reconstruct-context! descriptor options)]
+                  (binding [*writer-role?* true *worker-descriptor* descriptor]
+                    (if (= kind :diagnostic)
+                      (diagnostic! (str (:root descriptor) "/diagnostic-progress.edn"))
+                    ((case kind
+                       :instrumented durable-trial
+                       :uninstrumented durable-uninstrumented-trial)
+                     (assoc options :backend-context! (fn [_] context)))))))
+              :reader
+              (do (reset! stage :reader-recovery)
+                  (reader-value! request))
+              :native
+              (do (reset! stage :native-trial)
+                  (native-trial options))
+              (throw (ex-info "invalid benchmark worker role" {:type ::invalid-worker-role})))
+            receipt {:schema-version 1 :role role :token token :value value
+                     :inventory (select-keys request [:kind :options :descriptor])
+                     :runtime (runtime-metadata)}]
+        (reset! stage :worker-receipt)
+        (spit result-path (str (pr-str receipt) "\n"))
+        (println :durable-bench-worker-complete role token))
+      (catch Throwable error
+        (write-worker-failure-receipt! result-path role token @stage)
+        ;; Do not translate the child exception. Its original type/cause is
+        ;; still what determines the child process's control flow and exit.
+        (throw error)))))
 
 (defn- persistent-evidence-root! []
   (let [root (System/getenv "BENCH_PERSISTENT_RECEIPT_ROOT")]
@@ -1716,7 +1830,7 @@
         instrumentation-contract (instrumentation-contract!)
         smoke? (= profile :smoke)
         probe? (= profile :probe)
-        stage-selector? (= profile :stage-512)
+        stage-selector? (contains? #{:stage-512 :stage-smoke} profile)
         isolated-selector? (or (isolated-selector-profile? profile)
                                (= :s3-curve profile))]
     (let [runtime (runtime-metadata)
