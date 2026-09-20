@@ -376,6 +376,10 @@
            (mapv :function (abi/binding-specs smoke-function-ids)))
     (check "compatibility Jolt version agrees with deps.edn"
            (:jolt/min-version deps) (get-in pins [:jolt :version]))
+    (check "crypto provider uses the maintained macOS Intel OpenSSL selector"
+           {:git/url "https://github.com/casselc/jolt-crypto.git"
+            :git/sha "649c993780a0f269938c9c6afa3bae7e9709bb48"}
+           (get-in deps [:deps 'jolt-lang/jolt-crypto]))
     (check "hosted Jolt compiler agrees with the compatibility manifest"
            true (hosted-jolt-pin-matches? pins jolt-action jolt-workflows))
     (check "composite action maps exactly two cache v4.3.0 uses to its immutable pin"

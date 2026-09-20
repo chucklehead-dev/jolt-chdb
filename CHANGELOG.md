@@ -22,6 +22,11 @@
   canonical `/private/var` `backups.allowed_path` configuration while retaining
   native rejection of relative archive paths.
 
+- Repin the Jolt crypto provider to the maintained `casselc/jolt-crypto`
+  compatibility revision. Its Darwin selector includes Homebrew's Intel OpenSSL
+  path while retaining the required Jolt 0.8.6 provider surface, avoiding the
+  system `libcrypto` loader abort during hosted macOS Durable qualification.
+
 - Make native Durable qualification failures stage-aware. The added stage lines
   name only pinned public assets/oracles and phases; they are not a general
   redaction boundary, and curl/compiler/oracle/Jolt-child stderr remains under
