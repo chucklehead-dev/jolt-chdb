@@ -55,6 +55,10 @@ cat > "$root/bin/curl" <<'CURL'
 if [[ "$CASE" == fetch-fail ]]; then
   exit 22
 fi
+if [[ "$CASE" == fetch-interrupt ]]; then
+  printf '%s\n' "$PPID" > "$LEDGER/fetch-parent"
+  exec /bin/sleep 2
+fi
 while (( $# )); do
   if [[ "$1" == -o || "$1" == --output ]]; then printf mocked > "$2"; exit 0; fi
   shift
@@ -170,8 +174,33 @@ fetch_failure_control() (
   echo 'PASS qualification fetch failure names its public stage and retains no partial download'
 )
 fetch_failure_control
-expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:signal qualification:fetch-fail | sort)
+fetch_interrupt_control() (
+  set -euo pipefail
+  local ledger="$root/qualification-fetch-interrupt" status fetch_parent parent
+  mkdir -p "$ledger"
+  export CASE=fetch-interrupt CONTROL_KIND=qualification LEDGER="$ledger" TMPDIR="$ledger"
+  bash "$root/repo/scripts/qualify-durable-native.sh" "$ledger/qualification" > "$ledger/output" 2>&1 &
+  parent=$!
+  for ((i=0;i<100;i++)); do
+    [[ -f "$ledger/fetch-parent" ]] && break
+    /bin/sleep 0.02
+  done
+  [[ -f "$ledger/fetch-parent" ]]
+  fetch_parent=$(< "$ledger/fetch-parent")
+  kill -0 "$fetch_parent"
+  kill -TERM "$fetch_parent"
+  set +e
+  wait "$parent"
+  status=$?
+  set -e
+  [[ "$status" != 0 ]]
+  ! find "$ledger/qualification" -name '*.download.*' -print -quit | grep -q .
+  printf '%s\n' qualification:fetch-interrupt >> "$root/pass-receipts"
+  echo 'PASS qualification interrupt removes the in-flight partial download'
+)
+fetch_interrupt_control
+expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:signal qualification:fetch-fail qualification:fetch-interrupt | sort)
 actual=$(sort "$root/pass-receipts")
-[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 10 ]] || exit 1
+[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 11 ]] || exit 1
 echo 'PASS all shell retention controls (setup mocked; no native qualification)'
 # Retain the complete owned control ledger for review; no deletion on failure.

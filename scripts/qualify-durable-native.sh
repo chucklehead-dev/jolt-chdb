@@ -8,8 +8,9 @@ release=26.7.3
 commit=7d84d719da07184f6a49405a11b112f16925af72
 oracle_digest=56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99
 
-# Keep failure evidence useful without emitting local paths, native pointers,
-# or Durable payloads. Asset and oracle names are pinned public inputs.
+# Added stage labels use only pinned public asset/oracle names and phase names.
+# They do not filter stderr from curl, the C compiler/oracle, or Jolt children;
+# those tools remain subject to ordinary CI log handling.
 stage() {
   printf 'durable-native qualification: %s\n' "$1" >&2
 }
@@ -67,9 +68,26 @@ else
   digest_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 fi
 
-fetch_verified() {
+fetch_verified() (
   local target=$1 expected_digest=$2 source_url=$3 label=$4
   local actual_digest temporary
+  temporary=""
+
+  # This trap belongs only to the download subshell. It removes an incomplete
+  # sibling file on an interrupt without replacing the later process-fixture
+  # cleanup and signal traps.
+  cleanup_temporary() {
+    local status=$?
+    trap - EXIT HUP INT TERM
+    if [[ -n "$temporary" && -f "$temporary" && ! -L "$temporary" ]]; then
+      rm -f "$temporary"
+    fi
+    exit "$status"
+  }
+  trap cleanup_temporary EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   if [[ -f "$target" ]]; then
     stage "verify cached $label"
@@ -101,7 +119,8 @@ fetch_verified() {
     rm -f "$temporary"
     fail "could not retain verified $label"
   }
-}
+  temporary=""
+)
 
 fetch_verified "$archive" "$digest" "$release_url" "native asset $asset"
 

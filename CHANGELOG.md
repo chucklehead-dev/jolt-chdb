@@ -12,10 +12,12 @@
   `97298fd` comparison or a p99, Rust-relative, S3, admission, or
   general-throughput qualification.
 
-- Make native Durable qualification failures stage-aware without reporting
-  local paths, native pointers, or Durable data. Pinned public assets and the
-  upstream oracle now download to a temporary sibling, verify before an atomic
-  rename, and use bounded curl retries, connection timeout, and error output.
+- Make native Durable qualification failures stage-aware. The added stage lines
+  name only pinned public assets/oracles and phases; they are not a general
+  redaction boundary, and curl/compiler/oracle/Jolt-child stderr remains under
+  ordinary CI log handling. Pinned public assets and the upstream oracle now
+  download to a temporary sibling, verify before an atomic rename, and use
+  bounded curl retries, connection timeout, and error output.
 
 - Add macOS Intel and ARM64 native Durable qualification lanes for the existing
   process-lifetime anchor, host-signal, fresh-process, and typed process-exit
