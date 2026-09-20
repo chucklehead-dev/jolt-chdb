@@ -46,12 +46,12 @@ case "$(uname -s):$(uname -m)" in
   Darwin:arm64)
     asset=macos-arm64-libchdb.tar.gz
     digest=5640e50dccf711bf3dd5551333d08e43f433edf7bd94b2289f36c2539e627762
-    library=libchdb.dylib
+    library=libchdb.so
     ;;
   Darwin:x86_64)
     asset=macos-x86_64-libchdb.tar.gz
     digest=af5ded3ed3e84c31af1cd198dcf459f11d2b6aad4f6ddeccc04b8a519b0300fc
-    library=libchdb.dylib
+    library=libchdb.so
     ;;
   *)
     echo "unsupported Durable qualification platform: $(uname -s) $(uname -m)" >&2

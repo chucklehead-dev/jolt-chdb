@@ -470,6 +470,9 @@
             workflow))
     (check "compatibility native version agrees with the production selector"
            native/version (get-in pins [:native :version]))
+    (check "all pinned chDB release archives use the packaged libchdb.so name"
+           ["libchdb.so" "libchdb.so"]
+           (mapv native/library-name [:linux :darwin]))
     (check "compatibility archive digest agrees with the production selector"
            (get-in native/assets [[(:os platform) (:arch platform)] :sha256])
            (get-in pins [:native :archive-sha256

@@ -12,6 +12,11 @@
   `97298fd` comparison or a p99, Rust-relative, S3, admission, or
   general-throughput qualification.
 
+- Correct the pinned macOS chDB 26.7.3 archive filename to `libchdb.so` in the
+  installer and native qualification. Both public macOS archives retain that
+  filename, rather than using the conventional `.dylib` suffix; macOS Durable
+  setup and hosted qualification can therefore reach the verified library.
+
 - Make native Durable qualification failures stage-aware. The added stage lines
   name only pinned public assets/oracles and phases; they are not a general
   redaction boundary, and curl/compiler/oracle/Jolt-child stderr remains under

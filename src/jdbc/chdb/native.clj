@@ -25,6 +25,12 @@
   (let [value (System/getenv name)]
     (when-not (str/blank? value) value)))
 
+(defn library-name
+  "Return the filename packaged by the pinned chDB release archive.
+  chDB's macOS archives deliberately retain the ELF-style `.so` filename."
+  [_os]
+  "libchdb.so")
+
 (defn platform []
   (let [os-name (str/lower-case (or (System/getProperty "os.name") ""))
         arch-name (str/lower-case (or (System/getProperty "os.arch") ""))
@@ -39,7 +45,7 @@
     (when-not (and os arch (get assets [os arch]))
       (throw (ex-info "jolt-chdb has no native release for this platform"
                       {:os os-name :arch arch-name})))
-    {:os os :arch arch :library-name (if (= :darwin os) "libchdb.dylib" "libchdb.so")}))
+    {:os os :arch arch :library-name (library-name os)}))
 
 (defn cache-directory []
   (or (nonblank-env "JOLT_CHDB_CACHE_DIR")
