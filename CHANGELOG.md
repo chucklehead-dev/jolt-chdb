@@ -63,6 +63,12 @@
   queue, WAL, lease, publication, receipt, nor redaction behavior and makes no
   new performance claim.
 
+- Preserve the closed stage selector in isolated Durable benchmark worker
+  requests, so the real writer child enables its existing scalar WAL/control
+  observer for `stage-512` and `stage-smoke`. The worker allowlist still
+  excludes provider configuration and execution closures; this corrects
+  diagnostic completeness only and makes no throughput claim.
+
 - Add an opt-in `stage-512` Durable benchmark selector for one fresh,
   instrumented 512x100 local preencoded trial. It preserves the separate
   uninstrumented scale selector and its peak-RSS interpretation, redacts raw

@@ -23,6 +23,7 @@
 (defn run-checks! []
   (println "Durable throughput profile contracts")
   (let [profile-configs #'throughput/profile-configs
+        worker-options #'throughput/worker-options
         reduce-row-batches #'throughput/reduce-row-batches
         log-row #'throughput/log-row
         empty-expected @#'throughput/empty-expected-aggregates
@@ -92,6 +93,14 @@
            (let [config (first (profile-configs :stage-smoke))]
              [(:selector config) (:batch-size config) (:batches config)
               (:trials config) (:instrumented? config) (:modes config)]))
+    (check "isolated worker retains the non-secret stage selector and rejects execution closures"
+           {:selector :stage-512 :batch-size 512 :batches 100
+            :warmup-batches 1 :question-mark? false :encode-included? false :trial 1}
+           (worker-options {:selector :stage-512 :batch-size 512 :batches 100
+                            :warmup-batches 1 :question-mark? false
+                            :encode-included? false :trial 1
+                            :backend-context! (fn [_] :not-serializable)
+                            :modes [:durable-preencoded]}))
     (let [metrics (stage-metrics)]
       (check "stage timing keeps its private event ledger outside Jolt atom metadata"
              []
