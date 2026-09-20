@@ -221,6 +221,31 @@
                (update :nanos + nanos)
                (update :bytes + (or bytes 0))))))
 
+(def ^:private attribution-stage-keys
+  #{:data-json :exporter-materialization :prepare-query :native-classify
+    :native-execute :backend/put-bytes-if-absent :backend/get-bytes
+    :backend/get-with-etag :backend/replace-if-match})
+
+(defn- stage-metrics []
+  ;; The aggregate remains the existing stage->scalar map. The private,
+  ;; bounded start/finish sequence is metadata on its atom so it cannot leak
+  ;; through worker receipts or report rendering.
+  (with-meta (atom {}) {::attribution-events (atom [])}))
+
+(defn- attribution-events [metrics]
+  (some-> metrics meta ::attribution-events))
+
+(defn- reset-stage-metrics! [metrics]
+  (reset! metrics {})
+  (when-let [events (attribution-events metrics)]
+    (reset! events []))
+  metrics)
+
+(defn- record-attribution-event! [metrics event stage]
+  (when (contains? attribution-stage-keys stage)
+    (when-let [events (attribution-events metrics)]
+      (swap! events conj [event stage]))))
+
 (defn- record-recovery-phase!
   [metrics {:keys [phase status calls nanos bytes]}]
   (swap! metrics update phase
@@ -232,10 +257,14 @@
                (update-in [:statuses status] (fnil + 0) calls)))))
 
 (defn- timed-stage [metrics stage bytes f]
-  (let [start (System/nanoTime)
-        value (f)]
-    (record-stage! metrics stage (- (System/nanoTime) start) bytes)
-    value))
+  (record-attribution-event! metrics :start stage)
+  (try
+    (let [start (System/nanoTime)
+          value (f)]
+      (record-stage! metrics stage (- (System/nanoTime) start) bytes)
+      value)
+    (finally
+      (record-attribution-event! metrics :finish stage))))
 
 (defn- stage-report [metrics]
   (into {}
@@ -246,6 +275,98 @@
                          (if (zero? calls) 0.0 (ms (/ nanos calls)))}
                   statuses (assoc :statuses statuses))]))
         @metrics))
+
+(def ^:private admission-attribution-stages
+  [[:encoding/data-json :data-json]
+   [:encoding/materialization :exporter-materialization]
+   [:writer/prepare-query :prepare-query]
+   [:writer/native-classify :native-classify]
+   [:writer/native-execute :native-execute]])
+
+(def ^:private flush-attribution-stages
+  [[:backend/put-immutable-wal :backend/put-bytes-if-absent]
+   [:backend/verify-immutable-wal :backend/get-bytes]
+   [:backend/read-head :backend/get-with-etag]
+   [:backend/compare-and-swap-head :backend/replace-if-match]])
+
+(def ^:private attribution-limitations
+  {:admission
+   [:driver-and-queue-dispatch
+    :writer-policy-and-lease-checks
+    :wal-preparation-and-append
+    :timer-bookkeeping]
+   :flush
+   [:driver-and-queue-dispatch
+    :writer-lease-checks
+    :wal-join-and-clear
+    :publication-and-commit-control
+    :timer-bookkeeping]})
+
+(defn- stage-attribution!
+  "Build one exact, non-overlapping benchmark-only timing partition.
+
+  `total-nanos` is the enclosing admission or flush stopwatch. The listed
+  operation seams are known to execute sequentially on the writer request.
+  Their measured durations are therefore disjoint components; everything else
+  inside the enclosing stopwatch is retained as the explicit residual. This
+  stays in the benchmark harness: neither Durable operations nor their queue,
+  lease, WAL, or publication semantics gain an observer."
+  [boundary total-nanos metrics events stage-spec]
+  (when-not (and (integer? total-nanos) (not (neg? total-nanos)))
+    (throw (ex-info "invalid benchmark timing total"
+                    {:type ::invalid-stage-attribution})))
+  (when-not (seq events)
+    (throw (ex-info "benchmark stage causality evidence is missing"
+                    {:type ::invalid-stage-attribution})))
+  (let [_ (loop [remaining events active #{}]
+            (if-let [[event stage] (first remaining)]
+              (case event
+                :start
+                (if (or (not (contains? attribution-stage-keys stage))
+                        (seq active))
+                  (throw (ex-info "benchmark stages overlap or are malformed"
+                                  {:type ::invalid-stage-attribution}))
+                  (recur (next remaining) #{stage}))
+                :finish
+                (if (contains? active stage)
+                  (recur (next remaining) #{})
+                  (throw (ex-info "benchmark stage finish is malformed"
+                                  {:type ::invalid-stage-attribution})))
+                (throw (ex-info "benchmark stage event is malformed"
+                                {:type ::invalid-stage-attribution})))
+              (when (seq active)
+                (throw (ex-info "benchmark stage did not settle"
+                                {:type ::invalid-stage-attribution})))))
+        categories
+        (into (array-map)
+              (map (fn [[category stage]]
+                     [category (long (get-in metrics [stage :nanos] 0))]))
+              stage-spec)
+        _ (when (some neg? (vals categories))
+            (throw (ex-info "invalid benchmark stage duration"
+                            {:type ::invalid-stage-attribution})))
+        accounted-nanos (reduce + 0 (vals categories))
+        _ (when (> accounted-nanos total-nanos)
+            ;; A stage becoming nested/overlapping would turn a residual into
+            ;; false attribution. Fail the manual diagnostic rather than
+            ;; silently clamp the negative remainder to zero.
+            (throw (ex-info "benchmark stage durations exceed enclosing timer"
+                            {:type ::invalid-stage-attribution})))
+        unattributed-nanos (- total-nanos accounted-nanos)
+        categories (assoc categories :writer/unattributed unattributed-nanos)]
+    {:boundary boundary
+     :total-nanos total-nanos
+     :total-ms (ms total-nanos)
+     :accounted-nanos accounted-nanos
+     :unattributed-nanos unattributed-nanos
+     :partition-verified? (= total-nanos (reduce + 0 (vals categories)))
+     :causal-order-verified? true
+     :unattributed-semantics (get attribution-limitations boundary)
+     :categories
+     (into (array-map)
+           (map (fn [[category nanos]]
+                  [category {:total-nanos nanos :total-ms (ms nanos)}]))
+           categories)}))
 
 (defn- instrumented-backend [delegate metrics]
   (reify backend/ObjectBackend
@@ -690,7 +811,7 @@
            trial] :as options}]
   (let [{:keys [namespace-backend object-id provider-kind cleanup!]}
         (trial-context! options)
-        metrics (atom {})
+        metrics (stage-metrics)
         raw-store namespace-backend
         store (instrumented-backend raw-store metrics)
         expected (atom empty-expected-aggregates)
@@ -713,7 +834,7 @@
            (swap! expected accumulate-expected-batch rows question-mark?)
            (jdbc/execute! connection (:sql (encode-batch-production rows)))))
         (durable/flush! connection)
-        (reset! metrics {})
+        (reset-stage-metrics! metrics)
         (System/gc)
         (let [measured
               (reduce-row-batches
@@ -732,12 +853,18 @@
                        encoded
                        (if encode-included?
                          (let [result (encode-batch-profiled rows)]
+                           (record-attribution-event! metrics :start :data-json)
                            (record-stage! metrics :data-json
                                           (:json-nanos result)
                                           (:payload-bytes result))
+                           (record-attribution-event! metrics :finish :data-json)
+                           (record-attribution-event! metrics :start
+                                                      :exporter-materialization)
                            (record-stage! metrics :exporter-materialization
                                           (:materialize-nanos result)
                                           (:payload-bytes result))
+                           (record-attribution-event! metrics :finish
+                                                      :exporter-materialization)
                            result)
                          preencoded)
                        _ (jdbc/execute! connection (:sql encoded))
@@ -794,7 +921,15 @@
                              (get-in stage-values
                                      [:backend/put-bytes-if-absent :bytes]))
                   (throw (ex-info "published WAL byte count mismatch"
-                                  {:pending pending :stages stage-values})))]
+                                  {:pending pending :stages stage-values})))
+              admission-attribution
+              (stage-attribution! :admission ingest-nanos stage-values
+                                  @(attribution-events metrics)
+                                  admission-attribution-stages)
+              flush-attribution
+              (stage-attribution! :flush flush-nanos stage-values
+                                  @(attribution-events metrics)
+                                  flush-attribution-stages)]
             (reset! trial-result
                     (merge
                      {:trial trial
@@ -820,6 +955,11 @@
                       :flush-counters (counter-delta flush-before flush-after)
                       :pending-before-flush pending
                       :stages (stage-report metrics)
+                      ;; These exact stopwatch partitions intentionally keep
+                      ;; the residual broad rather than attributing it to an
+                      ;; unobserved Durable implementation detail.
+                      :admission-attribution admission-attribution
+                      :flush-attribution flush-attribution
                       :payload-bytes (:payload-bytes measured)
                       :statement-bytes (:statement-bytes measured)}
                      (wal-size-observation pending measured)))))

@@ -43,6 +43,9 @@
         successful-flush? #'throughput/successful-flush?
         timed-operations #'throughput/timed-operations
         stage-report #'throughput/stage-report
+        stage-attribution! #'throughput/stage-attribution!
+        admission-attribution-stages @#'throughput/admission-attribution-stages
+        flush-attribution-stages @#'throughput/flush-attribution-stages
         redact-batch-samples #'throughput/redact-batch-samples
         recovery-phase-recorder #'cross-binding/recovery-phase-recorder
         checked-phase-source-sha!
@@ -352,6 +355,87 @@
               (contains? stage-operations :publish-wal!)
               (:wal-prepare (stage-report metrics))
               (:wal-head-cas (stage-report metrics))]))
+    (let [stages {:data-json {:nanos 10}
+                  :exporter-materialization {:nanos 20}
+                  :prepare-query {:nanos 30}
+                  :native-classify {:nanos 40}
+                  :native-execute {:nanos 50}
+                  :backend/put-bytes-if-absent {:nanos 60}
+                  :backend/get-bytes {:nanos 70}
+                  :backend/get-with-etag {:nanos 80}
+                  :backend/replace-if-match {:nanos 90}}
+          admission (stage-attribution! :admission 200 stages
+                                        [[:start :data-json]
+                                         [:finish :data-json]
+                                         [:start :exporter-materialization]
+                                         [:finish :exporter-materialization]
+                                         [:start :prepare-query]
+                                         [:finish :prepare-query]
+                                         [:start :native-classify]
+                                         [:finish :native-classify]
+                                         [:start :native-execute]
+                                         [:finish :native-execute]]
+                                        admission-attribution-stages)
+          flush (stage-attribution! :flush 400 stages
+                                    [[:start :backend/put-bytes-if-absent]
+                                     [:finish :backend/put-bytes-if-absent]
+                                     [:start :backend/get-bytes]
+                                     [:finish :backend/get-bytes]
+                                     [:start :backend/get-with-etag]
+                                     [:finish :backend/get-with-etag]
+                                     [:start :backend/replace-if-match]
+                                     [:finish :backend/replace-if-match]]
+                                    flush-attribution-stages)]
+      (check "admission timing categories form an exact non-overlapping partition"
+             [200 150 50 true
+              {:encoding/data-json 10
+               :encoding/materialization 20
+               :writer/prepare-query 30
+               :writer/native-classify 40
+               :writer/native-execute 50
+               :writer/unattributed 50}]
+             [(:total-nanos admission) (:accounted-nanos admission)
+              (:unattributed-nanos admission) (:partition-verified? admission)
+              (into {}
+                    (map (fn [[category value]] [category (:total-nanos value)]))
+                    (:categories admission))])
+      (check "flush timing categories partition publication and retain residual"
+             [400 300 100 true
+              [:driver-and-queue-dispatch :writer-lease-checks
+               :wal-join-and-clear :publication-and-commit-control
+               :timer-bookkeeping]]
+             [(:total-nanos flush) (:accounted-nanos flush)
+              (:unattributed-nanos flush) (:partition-verified? flush)
+              (:unattributed-semantics flush)])
+      (check "overlapping or drifted stage timing fails instead of clamping residual"
+             :jdbc.chdb-durable-throughput/invalid-stage-attribution
+             (rejected-type
+              #(stage-attribution!
+                :admission 149 stages
+                [[:start :data-json] [:finish :data-json]
+                 [:start :exporter-materialization]
+                 [:finish :exporter-materialization]
+                 [:start :prepare-query] [:finish :prepare-query]
+                 [:start :native-classify] [:finish :native-classify]
+                 [:start :native-execute] [:finish :native-execute]]
+                admission-attribution-stages)))
+      (check "nested selected stage timing fails even with positive residual"
+             :jdbc.chdb-durable-throughput/invalid-stage-attribution
+             (rejected-type
+              #(stage-attribution!
+                :admission 300 stages
+                [[:start :data-json] [:start :prepare-query]
+                 [:finish :prepare-query] [:finish :data-json]
+                 [:start :exporter-materialization]
+                 [:finish :exporter-materialization]
+                 [:start :native-classify] [:finish :native-classify]
+                 [:start :native-execute] [:finish :native-execute]]
+                admission-attribution-stages)))
+      (check "missing causality evidence cannot qualify a timing partition"
+             :jdbc.chdb-durable-throughput/invalid-stage-attribution
+             (rejected-type
+              #(stage-attribution! :admission 200 stages []
+                                    admission-attribution-stages))))
     (let [{:keys [metrics observe!]} (recovery-phase-recorder)]
       (observe! {:phase :wal-lf-scan :status :complete
                  :calls 1 :nanos 11 :bytes 12})

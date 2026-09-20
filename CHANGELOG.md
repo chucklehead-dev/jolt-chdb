@@ -55,6 +55,14 @@
   payloads, object references, backend identities, and exceptions. This is
   diagnostic attribution only; it makes no throughput claim.
 
+- Partition the opt-in `stage-512` benchmark's enclosing Durable admission and
+  flush timers into fixed, privacy-safe operation categories plus an explicit
+  residual. The harness records a bounded causal start/finish sequence and
+  fails if selected stage durations nest, overlap, or exceed their enclosing
+  timer. This benchmark-only diagnostic changes neither Durable
+  queue, WAL, lease, publication, receipt, nor redaction behavior and makes no
+  new performance claim.
+
 - Add an opt-in `stage-512` Durable benchmark selector for one fresh,
   instrumented 512x100 local preencoded trial. It preserves the separate
   uninstrumented scale selector and its peak-RSS interpretation, redacts raw
