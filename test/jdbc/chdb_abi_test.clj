@@ -473,6 +473,11 @@
     (check "all pinned chDB release archives use the packaged libchdb.so name"
            ["libchdb.so" "libchdb.so"]
            (mapv native/library-name [:linux :darwin]))
+    (check "absolute archive aliases use the native canonical path identity"
+           (native/canonical-storage-path "/tmp/../tmp/archive.tar.gz")
+           (native/canonical-archive-path "/tmp/../tmp/archive.tar.gz"))
+    (check "relative archive paths remain relative for native rejection"
+           "archive.tar.gz" (native/canonical-archive-path "archive.tar.gz"))
     (check "compatibility archive digest agrees with the production selector"
            (get-in native/assets [[(:os platform) (:arch platform)] :sha256])
            (get-in pins [:native :archive-sha256

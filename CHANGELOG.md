@@ -17,6 +17,11 @@
   filename, rather than using the conventional `.dylib` suffix; macOS Durable
   setup and hosted qualification can therefore reach the verified library.
 
+- Canonicalize absolute native Durable backup and restore archive paths before
+  crossing the ABI. This makes a macOS `/var` scratch alias agree with the
+  canonical `/private/var` `backups.allowed_path` configuration while retaining
+  native rejection of relative archive paths.
+
 - Make native Durable qualification failures stage-aware. The added stage lines
   name only pinned public assets/oracles and phases; they are not a general
   redaction boundary, and curl/compiler/oracle/Jolt-child stderr remains under
