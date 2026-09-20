@@ -38,6 +38,11 @@ jobs:
       JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER: '1'
     steps:
       - uses: actions/checkout@v4
+        # The bounded stage-smoke selector records HEAD and its immediate
+        # parent as provenance; do not let checkout's default shallow clone
+        # silently weaken that evidence.
+        with:
+          fetch-depth: 2
       - name: Verify SHA-pinned Durable version oracle
         run: scripts/verify-durable-version-oracle.sh
       - name: Verify Durable Python Decimal time fixture
@@ -87,6 +92,21 @@ jobs:
         run: clojure -M:durable-head-depth-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
+      - name: Smoke a real isolated staged Durable writer child
+        timeout-minutes: 4
+        env:
+          JOLT_WRAPPER: /usr/bin/env
+          BENCH_JOLT_SOURCE_SHA: ${{ env.PINNED_JOLT_SOURCE_SHA }}
+        run: |
+          set -euo pipefail
+          export BENCH_JOLT_BIN="$(command -v jolt)"
+          export JOLT_CHDB_LIB="$(jolt -Srepro -e '(require (quote [jdbc.chdb.native :as native])) (println (native/library-path))' | tail -n 1)"
+          test -f "$JOLT_CHDB_LIB"
+          output="$RUNNER_TEMP/durable-stage-smoke"
+          bash scripts/run-durable-throughput-selector.sh stage-smoke "$output"
+          test -f "$output/report.edn"
+          test -f "$output/receipts"/*/writer-result.edn
+          test -f "$output/receipts"/*/reader-result.edn
       - name: Qualify ordinary JSONEachRow native insertion
         timeout-minutes: 3
         run: |
