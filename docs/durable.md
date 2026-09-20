@@ -120,9 +120,10 @@ export JOLT_CHDB_LIB=/tmp/jolt-chdb-durable/native/libchdb.so
 
 The script also runs the pinned upstream C ABI oracle and Jolt's independent
 classification, backup, restore, WAL recovery, and checkpoint recovery checks.
-Use `libchdb.dylib` instead on macOS. The ordinary `jolt -M:setup-native`
-installer selects the same release; use the qualification script when you need
-the upstream oracle and independent Durable gate as deployment evidence.
+The pinned macOS archives also package the library as `libchdb.so` (despite
+the macOS target); the ordinary `jolt -M:setup-native` installer selects that
+same filename. Use the qualification script when you need the upstream oracle
+and independent Durable gate as deployment evidence.
 
 ### Local writer
 

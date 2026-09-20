@@ -10,6 +10,16 @@ else
   jolt_command=("$@")
 fi
 
+if command -v timeout >/dev/null 2>&1; then
+  timeout_command=(timeout)
+elif command -v gtimeout >/dev/null 2>&1; then
+  # Homebrew coreutils uses the GNU command name on macOS.
+  timeout_command=(gtimeout)
+else
+  echo "native typed process-exit qualification requires GNU timeout or gtimeout" >&2
+  exit 69
+fi
+
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/jolt-chdb-typed-exit.XXXXXX")
 completion=false
 cleanup() {
@@ -17,7 +27,7 @@ cleanup() {
   if [[ "$completion" == true && "$status" == 0 &&
         "$run_root" == "${TMPDIR:-/tmp}"/jolt-chdb-typed-exit.* &&
         -d "$run_root" && ! -L "$run_root" ]]; then
-    rm -rf -- "$run_root"
+    rm -rf "$run_root"
   fi
 }
 trap cleanup EXIT
@@ -26,7 +36,7 @@ trap 'completion=false; exit 130' INT
 trap 'completion=false; exit 143' TERM
 
 set +e
-output=$(cd "$fixture_root" && timeout --signal=TERM --kill-after=5s 120s "${jolt_command[@]}" -M:run "$run_root" 2>&1)
+output=$(cd "$fixture_root" && "${timeout_command[@]}" --signal=TERM --kill-after=5s 120s "${jolt_command[@]}" -M:run "$run_root" 2>&1)
 status=$?
 set -e
 printf '%s\n' "$output"

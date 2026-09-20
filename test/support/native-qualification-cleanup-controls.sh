@@ -52,8 +52,15 @@ exec /usr/bin/timeout "${args[@]}"
 TIMEOUT
 cat > "$root/bin/curl" <<'CURL'
 #!/usr/bin/env bash
+if [[ "$CASE" == fetch-fail ]]; then
+  exit 22
+fi
+if [[ "$CASE" == fetch-interrupt ]]; then
+  printf '%s\n' "$PPID" > "$LEDGER/fetch-parent"
+  exec /bin/sleep 2
+fi
 while (( $# )); do
-  if [[ "$1" == -o ]]; then printf mocked > "$2"; exit 0; fi
+  if [[ "$1" == -o || "$1" == --output ]]; then printf mocked > "$2"; exit 0; fi
   shift
 done
 exit 1
@@ -62,8 +69,8 @@ cat > "$root/bin/sha256sum" <<'SHA'
 #!/usr/bin/env bash
 # MOCK setup checksums only; tiny files are not actual upstream artifacts.
 case "$1" in
-  *linux-x86_64-libchdb.tar.gz) echo "bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031  $1";;
-  *chdbDurableAbiTest.c) echo "56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99  $1";;
+  *linux-x86_64-libchdb.tar.gz*) echo "bc33260c32acf78eade2ac41a9115f38e00404651fa42e3bb4c419e4f011c031  $1";;
+  *chdbDurableAbiTest.c*) echo "56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99  $1";;
   *) exit 1;;
 esac
 SHA
@@ -123,6 +130,14 @@ run_case() (
   fixture=$(< "$LEDGER/root")
   if [[ "$case_name" == success ]]; then
     [[ "$status" == 0 && ! -e "$fixture" ]] || exit 1
+    if [[ "$kind" == qualification ]]; then
+      grep -Fqx 'durable-native qualification: fetch native asset linux-x86_64-libchdb.tar.gz' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: verify fetched native asset linux-x86_64-libchdb.tar.gz' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: extract native asset linux-x86_64-libchdb.tar.gz' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: compile upstream oracle chdbDurableAbiTest.c' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: run upstream oracle chdbDurableAbiTest.c' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: run Jolt Durable phase secret-read' "$LEDGER/output"
+    fi
   else
     [[ "$status" != 0 && -d "$fixture" ]] || exit 1
   fi
@@ -142,8 +157,50 @@ invoke_case() {
 }
 for case_name in success nonzero missing timeout signal kill-grace; do invoke_case typed "$case_name"; done
 for case_name in success phase-fail signal; do invoke_case qualification "$case_name"; done
-expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:signal | sort)
+fetch_failure_control() (
+  set -euo pipefail
+  local ledger="$root/qualification-fetch-fail" status
+  mkdir -p "$ledger"
+  export CASE=fetch-fail CONTROL_KIND=qualification LEDGER="$ledger" TMPDIR="$ledger"
+  set +e
+  bash "$root/repo/scripts/qualify-durable-native.sh" "$ledger/qualification" > "$ledger/output" 2>&1
+  status=$?
+  set -e
+  [[ "$status" != 0 ]]
+  grep -Fqx 'durable-native qualification: fetch native asset linux-x86_64-libchdb.tar.gz' "$ledger/output"
+  grep -Fqx 'durable-native qualification: fetch failed for native asset linux-x86_64-libchdb.tar.gz' "$ledger/output"
+  ! find "$ledger/qualification" -name '*.download.*' -print -quit | grep -q .
+  printf '%s\n' qualification:fetch-fail >> "$root/pass-receipts"
+  echo 'PASS qualification fetch failure names its public stage and retains no partial download'
+)
+fetch_failure_control
+fetch_interrupt_control() (
+  set -euo pipefail
+  local ledger="$root/qualification-fetch-interrupt" status fetch_parent parent
+  mkdir -p "$ledger"
+  export CASE=fetch-interrupt CONTROL_KIND=qualification LEDGER="$ledger" TMPDIR="$ledger"
+  bash "$root/repo/scripts/qualify-durable-native.sh" "$ledger/qualification" > "$ledger/output" 2>&1 &
+  parent=$!
+  for ((i=0;i<100;i++)); do
+    [[ -f "$ledger/fetch-parent" ]] && break
+    /bin/sleep 0.02
+  done
+  [[ -f "$ledger/fetch-parent" ]]
+  fetch_parent=$(< "$ledger/fetch-parent")
+  kill -0 "$fetch_parent"
+  kill -TERM "$fetch_parent"
+  set +e
+  wait "$parent"
+  status=$?
+  set -e
+  [[ "$status" != 0 ]]
+  ! find "$ledger/qualification" -name '*.download.*' -print -quit | grep -q .
+  printf '%s\n' qualification:fetch-interrupt >> "$root/pass-receipts"
+  echo 'PASS qualification interrupt removes the in-flight partial download'
+)
+fetch_interrupt_control
+expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:signal qualification:fetch-fail qualification:fetch-interrupt | sort)
 actual=$(sort "$root/pass-receipts")
-[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 9 ]] || exit 1
+[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 11 ]] || exit 1
 echo 'PASS all shell retention controls (setup mocked; no native qualification)'
 # Retain the complete owned control ledger for review; no deletion on failure.

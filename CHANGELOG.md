@@ -12,6 +12,35 @@
   `97298fd` comparison or a p99, Rust-relative, S3, admission, or
   general-throughput qualification.
 
+- Correct the pinned macOS chDB 26.7.3 archive filename to `libchdb.so` in the
+  installer and native qualification. Both public macOS archives retain that
+  filename, rather than using the conventional `.dylib` suffix; macOS Durable
+  setup and hosted qualification can therefore reach the verified library.
+
+- Canonicalize absolute native Durable backup and restore archive paths before
+  crossing the ABI. This makes a macOS `/var` scratch alias agree with the
+  canonical `/private/var` `backups.allowed_path` configuration while retaining
+  native rejection of relative archive paths.
+
+- Repin the Jolt crypto provider to the maintained `casselc/jolt-crypto`
+  compatibility revision. Its Darwin selector includes Homebrew's Intel OpenSSL
+  path while retaining the required Jolt 0.8.6 provider surface, avoiding the
+  system `libcrypto` loader abort during hosted macOS Durable qualification.
+
+- Make native Durable qualification failures stage-aware. The added stage lines
+  name only pinned public assets/oracles and phases; they are not a general
+  redaction boundary, and curl/compiler/oracle/Jolt-child stderr remains under
+  ordinary CI log handling. Pinned public assets and the upstream oracle now
+  download to a temporary sibling, verify before an atomic rename, and use
+  bounded curl retries, connection timeout, and error output.
+
+- Add macOS Intel and ARM64 native Durable qualification lanes for the existing
+  process-lifetime anchor, host-signal, fresh-process, and typed process-exit
+  probes. Make the pinned compiler install and native typed-exit timeout
+  boundary runner-portable, and include lifecycle code, scripts, fixtures,
+  model traces, and documentation in the native workflow trigger set. Hosted
+  macOS results remain the required qualification evidence for #103.
+
 - Preserve an ambiguous Durable WAL observation across later mutation admission
   and WAL confirmation; only a validated checkpoint can clear that uncertainty.
   Add a literate, bounded Quint lifecycle projection model for recovered,

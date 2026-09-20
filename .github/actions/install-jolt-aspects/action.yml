@@ -22,12 +22,21 @@ runs:
         key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95
 
     - name: Install compiler build dependencies
-      if: steps.cache-jolt.outputs.cache-hit != 'true'
+      if: steps.cache-jolt.outputs.cache-hit != 'true' && runner.os == 'Linux'
       shell: bash
       run: |
         set -euo pipefail
         sudo apt-get update
         sudo apt-get install -y build-essential git liblz4-dev zlib1g-dev libncurses-dev uuid-dev
+
+    - name: Install compiler build dependencies on macOS
+      if: steps.cache-jolt.outputs.cache-hit != 'true' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The Jolt launcher discovers this Homebrew prefix when linking on
+        # Darwin.
+        brew install lz4
 
     - name: Cache Chez Scheme 10.4.1
       if: steps.cache-jolt.outputs.cache-hit != 'true'
@@ -36,8 +45,8 @@ runs:
       # actions/cache@v4.3.0 -> 0057852bfaa89a56745cba8c7296529d2fc39830
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       with:
-        path: /opt/chez
-        key: chez-${{ runner.os }}-${{ env.ImageOS }}-v10.4.1-x11off-pic
+        path: ${{ runner.tool_cache }}/chez/10.4.1
+        key: chez-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-v10.4.1-x11off-pic
 
     - name: Build Chez Scheme 10.4.1
       if: steps.cache-jolt.outputs.cache-hit != 'true' && steps.cache-chez.outputs.cache-hit != 'true'
@@ -46,19 +55,21 @@ runs:
         set -euo pipefail
         git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git "$RUNNER_TEMP/chez-src"
         cd "$RUNNER_TEMP/chez-src"
-        ./configure --installprefix=/opt/chez --threads --disable-x11 CFLAGS+=-fPIC
-        make -j"$(nproc)"
-        sudo make install
-        sudo chown -R "$USER" /opt/chez
+        chez_prefix="$RUNNER_TOOL_CACHE/chez/10.4.1"
+        jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
+        ./configure --installprefix="$chez_prefix" --threads --disable-x11 CFLAGS+=-fPIC
+        make -j"$jobs"
+        make install
 
     - name: Build the exact Jolt compiler
       if: steps.cache-jolt.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
-        chmod +x /opt/chez/bin/chez
-        test "$(/opt/chez/bin/chez --version)" = "10.4.1"
+        chez_prefix="$RUNNER_TOOL_CACHE/chez/10.4.1"
+        printf '#!/bin/sh\nexec "$(dirname "$0")/scheme" "$@"\n' > "$chez_prefix/bin/chez"
+        chmod +x "$chez_prefix/bin/chez"
+        test "$("$chez_prefix/bin/chez" --version)" = "10.4.1"
 
         source_dir="$RUNNER_TEMP/jolt-aspects-source"
         git init "$source_dir"
@@ -68,7 +79,7 @@ runs:
         test "$(git -C "$source_dir" rev-parse HEAD)" = "bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95"
         git -C "$source_dir" submodule update --init --recursive --depth 1
 
-        PATH="/opt/chez/bin:$PATH" \
+        PATH="$chez_prefix/bin:$PATH" \
           JOLT_VERSION="v0.8.6-599-gbf8a5dde" \
           make -C "$source_dir" -j1 jolt-release
 

@@ -25,6 +25,12 @@
   (let [value (System/getenv name)]
     (when-not (str/blank? value) value)))
 
+(defn library-name
+  "Return the filename packaged by the pinned chDB release archive.
+  chDB's macOS archives deliberately retain the ELF-style `.so` filename."
+  [_os]
+  "libchdb.so")
+
 (defn platform []
   (let [os-name (str/lower-case (or (System/getProperty "os.name") ""))
         arch-name (str/lower-case (or (System/getProperty "os.arch") ""))
@@ -39,7 +45,7 @@
     (when-not (and os arch (get assets [os arch]))
       (throw (ex-info "jolt-chdb has no native release for this platform"
                       {:os os-name :arch arch-name})))
-    {:os os :arch arch :library-name (if (= :darwin os) "libchdb.dylib" "libchdb.so")}))
+    {:os os :arch arch :library-name (library-name os)}))
 
 (defn cache-directory []
   (or (nonblank-env "JOLT_CHDB_CACHE_DIR")
@@ -198,6 +204,19 @@
     ;; existing symlink prefixes, so the process claim follows physical path
     ;; identity instead of caller spelling.
     (.getCanonicalPath (java.io.File. path))))
+
+(defn canonical-archive-path
+  "Canonicalize an absolute native backup or restore path.
+
+  chDB compares an archive destination with `backups.allowed_path` by its
+  supplied spelling. Normalize only absolute paths so a macOS `/var` scratch
+  alias agrees with the canonical `/private/var` bootstrap option, while
+  retaining chDB's rejection of relative archive paths."
+  [path]
+  (let [file (java.io.File. path)]
+    (if (.isAbsolute file)
+      (canonical-storage-path path)
+      path)))
 
 (defn- terminal-storage-state []
   {:phase :terminal
@@ -498,9 +517,11 @@
       (let [allocated (atom [])]
         (try
           (let [database-buffer (allocated-utf8! allocated database)
-                file-buffer (allocated-utf8! allocated file-path)
+                file-buffer (allocated-utf8! allocated
+                                             (canonical-archive-path file-path))
                 base-buffer (when base-file-path
-                              (allocated-utf8! allocated base-file-path))]
+                              (allocated-utf8! allocated
+                                              (canonical-archive-path base-file-path)))]
             (consume-durable-result!
              :backup
              (chdb-backup-database-n
@@ -521,8 +542,9 @@
    (fn [connection]
      (let [allocated (atom [])]
        (try
-         (let [database-buffer (allocated-utf8! allocated database)
-               file-buffer (allocated-utf8! allocated file-path)]
+        (let [database-buffer (allocated-utf8! allocated database)
+               file-buffer (allocated-utf8! allocated
+                                            (canonical-archive-path file-path))]
            (consume-durable-result!
             :restore
             (chdb-restore-database-n

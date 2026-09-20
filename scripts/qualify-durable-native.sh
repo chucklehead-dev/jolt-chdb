@@ -8,6 +8,18 @@ release=26.7.3
 commit=7d84d719da07184f6a49405a11b112f16925af72
 oracle_digest=56257403ba7563c5a6ecbe7ab4c13ca6a3a7a81a75a314ce3d54a3e108987f99
 
+# Added stage labels use only pinned public asset/oracle names and phase names.
+# They do not filter stderr from curl, the C compiler/oracle, or Jolt children;
+# those tools remain subject to ordinary CI log handling.
+stage() {
+  printf 'durable-native qualification: %s\n' "$1" >&2
+}
+
+fail() {
+  stage "$1"
+  exit "${2:-1}"
+}
+
 if [[ "$jolt_bin" == */* ]]; then
   if [[ ! -f "$jolt_bin" || ! -x "$jolt_bin" ]]; then
     echo "JOLT_BIN must name an executable file" >&2
@@ -34,12 +46,12 @@ case "$(uname -s):$(uname -m)" in
   Darwin:arm64)
     asset=macos-arm64-libchdb.tar.gz
     digest=5640e50dccf711bf3dd5551333d08e43f433edf7bd94b2289f36c2539e627762
-    library=libchdb.dylib
+    library=libchdb.so
     ;;
   Darwin:x86_64)
     asset=macos-x86_64-libchdb.tar.gz
     digest=af5ded3ed3e84c31af1cd198dcf459f11d2b6aad4f6ddeccc04b8a519b0300fc
-    library=libchdb.dylib
+    library=libchdb.so
     ;;
   *)
     echo "unsupported Durable qualification platform: $(uname -s) $(uname -m)" >&2
@@ -56,34 +68,89 @@ else
   digest_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 fi
 
-if test ! -f "$archive" || test "$(digest_file "$archive")" != "$digest"; then
-  curl -fsSL --retry 2 --retry-all-errors -o "$archive" "$release_url"
-fi
-test "$(digest_file "$archive")" = "$digest"
+fetch_verified() (
+  local target=$1 expected_digest=$2 source_url=$3 label=$4
+  local actual_digest temporary
+  temporary=""
 
+  # This trap belongs only to the download subshell. It removes an incomplete
+  # sibling file on an interrupt without replacing the later process-fixture
+  # cleanup and signal traps.
+  cleanup_temporary() {
+    local status=$?
+    trap - EXIT HUP INT TERM
+    if [[ -n "$temporary" && -f "$temporary" && ! -L "$temporary" ]]; then
+      rm -f "$temporary"
+    fi
+    exit "$status"
+  }
+  trap cleanup_temporary EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if [[ -f "$target" ]]; then
+    stage "verify cached $label"
+    actual_digest=$(digest_file "$target") || fail "could not verify cached $label"
+    if [[ "$actual_digest" == "$expected_digest" ]]; then
+      return
+    fi
+    stage "cached $label did not verify; refetch"
+  fi
+
+  stage "fetch $label"
+  temporary=$(mktemp "$target.download.XXXXXX") || fail "could not prepare $label fetch"
+  if ! curl --fail --show-error --location \
+      --retry 2 --retry-all-errors --connect-timeout 20 --max-time 300 \
+      --output "$temporary" "$source_url"; then
+    rm -f "$temporary"
+    fail "fetch failed for $label"
+  fi
+  stage "verify fetched $label"
+  actual_digest=$(digest_file "$temporary") || {
+    rm -f "$temporary"
+    fail "could not verify fetched $label"
+  }
+  if [[ "$actual_digest" != "$expected_digest" ]]; then
+    rm -f "$temporary"
+    fail "fetched $label did not verify"
+  fi
+  mv -f "$temporary" "$target" || {
+    rm -f "$temporary"
+    fail "could not retain verified $label"
+  }
+  temporary=""
+)
+
+fetch_verified "$archive" "$digest" "$release_url" "native asset $asset"
+
+stage "extract native asset $asset"
 tar -xzf "$archive" -C "$qualification_root/native"
 library_path="$qualification_root/native/$library"
-test -f "$library_path"
+[[ -f "$library_path" ]] || fail "extracted native asset $asset is incomplete"
 
 oracle_url="https://raw.githubusercontent.com/chdb-io/chdb-core/$commit/examples/chdbDurableAbiTest.c"
 oracle_source="$qualification_root/oracle/chdbDurableAbiTest.c"
-curl -fsSL --retry 2 --retry-all-errors -o "$oracle_source" "$oracle_url"
-test "$(digest_file "$oracle_source")" = "$oracle_digest"
+fetch_verified "$oracle_source" "$oracle_digest" "$oracle_url" "upstream oracle chdbDurableAbiTest.c"
 oracle_run=$(mktemp -d "$qualification_root/oracle/run.XXXXXX")
 
 # The pinned upstream example currently produces one conservative GCC
 # format-truncation warning, so warnings remain visible but are not promoted.
+stage "compile upstream oracle chdbDurableAbiTest.c"
 cc -std=c11 -Wall -Wextra \
   -I"$qualification_root/native" "$oracle_source" \
   -L"$qualification_root/native" -Wl,-rpath,"$qualification_root/native" \
   -lchdb -o "$oracle_run/chdbDurableAbiTest"
+stage "run upstream oracle chdbDurableAbiTest.c"
 (
   cd "$oracle_run"
   ./chdbDurableAbiTest
 )
 
+stage "run Jolt native process-lifecycle probe"
 JOLT_CHDB_LIB="$library_path" \
   "$repo_root/scripts/check-native-process-lifecycle.sh" "$jolt_bin"
+stage "run Jolt typed process-exit probe"
 JOLT_CHDB_LIB="$library_path" \
   "$repo_root/scripts/check-native-typed-process-exit.sh" "$jolt_bin"
 
@@ -94,7 +161,7 @@ cleanup() {
   if [[ "$completion" == true && "$status" == 0 &&
         "$process_root" == "$qualification_root"/process-lifecycle.* &&
         -d "$process_root" && ! -L "$process_root" ]]; then
-    rm -rf -- "$process_root"
+    rm -rf "$process_root"
   fi
 }
 trap cleanup EXIT
@@ -109,6 +176,7 @@ run_phase() {
   local phase=$1
   local scratch_root="$process_root/scratch-$phase"
   mkdir -p "$scratch_root"
+  stage "run Jolt Durable phase $phase"
   JOLT_CHDB_LIB="$library_path" \
   JOLT_CHDB_NATIVE_OBJECT_ROOT="$object_root" \
   JOLT_CHDB_NATIVE_CORE_ROOT="$core_root" \

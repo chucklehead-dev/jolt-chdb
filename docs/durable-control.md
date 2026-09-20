@@ -142,7 +142,7 @@ The overlap-free interval is conservative under clock uncertainty; force
 takeover remains an explicit operator override.
 
 `verify-byte-reference!` is an in-memory verifier for bounded statement WAL
-objects. It uses the pinned `jolt-lang/jolt-crypto` MessageDigest shim on Jolt
+objects. It uses the pinned `casselc/jolt-crypto` MessageDigest shim on Jolt
 and the JDK implementation on JVM Clojure. Full checkpoint archives require a
 streaming verifier; callers must not route them through this byte-materializing
 helper.

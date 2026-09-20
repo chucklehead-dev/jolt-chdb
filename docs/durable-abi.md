@@ -34,6 +34,11 @@ cross-platform conformance claim.
 Set `JOLT_BIN=/absolute/path/to/jolt` to select an exact local Jolt executable;
 otherwise the script resolves `jolt` from `PATH`.
 
+Its added qualification-stage lines name only pinned public asset/oracle names
+and public phase names to localize a failed stage. They are not a general log
+redaction boundary: stderr from curl, the C compiler/oracle, and Jolt children
+is not filtered by this script and remains subject to ordinary CI log handling.
+
 ## Release boundary
 
 The production installer and Durable qualification are both pinned to stable
