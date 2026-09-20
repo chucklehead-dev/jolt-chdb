@@ -4,8 +4,13 @@
 
 - Repin the owned `casselc/data.json` provider to `e7f97a9`, including its
   Jolt-specialized codepoint-decoder access and String-backed reader ordinary
-  run improvements. This dependency update is functionality-qualified only;
-  no current-runtime performance result is claimed.
+  run improvements. In a current-runtime, six-fresh-slot recovery comparison,
+  the two measured `a672451` slots averaged 16,028.26 rows/s and the two
+  measured `e7f97a9` slots averaged 17,250.68 rows/s on the same 52,224-row,
+  three-segment fixture; the remaining slots were prime controls. This is a
+  directional `e7f97a9`-versus-`a672451` recovery result only, not a direct
+  `97298fd` comparison or a p99, Rust-relative, S3, admission, or
+  general-throughput qualification.
 
 - Preserve an ambiguous Durable WAL observation across later mutation admission
   and WAL confirmation; only a validated checkpoint can clear that uncertainty.
