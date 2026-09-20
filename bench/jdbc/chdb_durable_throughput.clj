@@ -1419,7 +1419,11 @@
                          :git-status (:git-status required)}))))))
 
 (defn- worker-options [options]
-  (select-keys options [:batch-size :batches :warmup-batches :question-mark?
+  ;; The selector is a bounded, non-secret execution attribute. Stage
+  ;; selectors must cross the process boundary so the real child installs its
+  ;; observation-only WAL/control phase hook; otherwise stage reports silently
+  ;; omit those child phases while claiming an instrumented profile.
+  (select-keys options [:selector :batch-size :batches :warmup-batches :question-mark?
                        :encode-included? :target-wal-bytes :trial]))
 
 (defn- provider-descriptor! [options root]
