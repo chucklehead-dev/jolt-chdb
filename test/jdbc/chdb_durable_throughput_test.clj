@@ -671,6 +671,24 @@
         (.delete result-file)
         (.delete root)))))
 
+(defn- worker-launch-command-checks! []
+  ;; CI selects Jolt through JOLT_WRAPPER=/usr/bin/env while local source gates
+  ;; select the pinned Chez wrapper.  Both children must inherit that explicit
+  ;; selector; a developer-checkout path is neither portable nor provenance.
+  (let [command #'throughput/worker-command!
+        request (java.io.File. "/tmp/durable-worker-request.edn")
+        result (java.io.File. "/tmp/durable-worker-result.edn")]
+    (check "worker command uses the caller-selected absolute wrapper"
+           ["/usr/bin/env" "/bin/true" "-Srepro" "-M:durable-throughput" "--worker"
+            (.getAbsolutePath request) (.getAbsolutePath result)]
+           (command "/usr/bin/env" "/bin/true" request result))
+    (check "worker command rejects a non-absolute wrapper"
+           :jdbc.chdb-durable-throughput/missing-worker-wrapper
+           (rejected-type #(command "env" "/bin/true" request result)))
+    (check "worker command rejects a missing wrapper"
+           :jdbc.chdb-durable-throughput/missing-worker-wrapper
+           (rejected-type #(command "/definitely/not/a-wrapper" "/bin/true" request result)))))
+
 (defn- orchestration-contract-checks! []
   ;; Real orchestration, mocked native subprocess only. Keep this unique owned
   ;; persistent fixture and its child directories; never broad-delete evidence.
@@ -728,6 +746,7 @@
   (run-checks!)
   (worker-contract-checks!)
   (worker-failure-receipt-checks!)
+  (worker-launch-command-checks!)
   (orchestration-contract-checks!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " throughput checks failed")

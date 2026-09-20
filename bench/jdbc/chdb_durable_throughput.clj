@@ -1580,13 +1580,28 @@
       ;; missing receipt as an unclassified terminal child failure.
       nil)))
 
+(defn- worker-command! [wrapper executable request-file result-file]
+  ;; The outer selector already requires this absolute wrapper as part of its
+  ;; provenance contract.  Keep worker processes on that same selected Jolt
+  ;; invocation rather than embedding a workstation path: hosted CI has no
+  ;; `/home/chuck/...` checkout, and a different child runtime would invalidate
+  ;; the writer/reader identity check anyway.
+  (let [wrapper-file (when wrapper (File. wrapper))
+        executable-file (when executable (File. executable))]
+    (when-not (and wrapper-file (.isAbsolute wrapper-file)
+                   (.isFile wrapper-file) (.canExecute wrapper-file))
+      (throw (ex-info "absolute benchmark wrapper is required"
+                      {:type ::missing-worker-wrapper})))
+    (when-not (and executable-file (.isAbsolute executable-file)
+                   (.isFile executable-file) (.canExecute executable-file))
+      (throw (ex-info "absolute benchmark executable is required"
+                      {:type ::missing-worker-executable})))
+    [wrapper executable "-Srepro" "-M:durable-throughput" "--worker"
+     (.getAbsolutePath request-file) (.getAbsolutePath result-file)]))
+
 (defn- run-worker! [root role request]
-  (let [executable (System/getenv "BENCH_JOLT_BIN")
-        executable-file (when executable (File. executable))
-        _ (when-not (and executable-file (.isAbsolute executable-file)
-                          (.isFile executable-file) (.canExecute executable-file))
-            (throw (ex-info "absolute benchmark executable is required"
-                            {:type ::missing-worker-executable})))
+  (let [wrapper (System/getenv "JOLT_WRAPPER")
+        executable (System/getenv "BENCH_JOLT_BIN")
         token (str (random-uuid))
         request-file (File. root (str (name role) "-request.edn"))
         result-file (File. root (str (name role) "-result.edn"))
@@ -1594,9 +1609,7 @@
         error-file (File. root (str (name role) ".err"))
         _ (spit request-file (pr-str (assoc request :role role :token token)))
         child (process/process
-               ["/home/chuck/ai-src/tools/jolt-with-chez-10.4.1"
-                executable "-Srepro" "-M:durable-throughput" "--worker"
-                (.getAbsolutePath request-file) (.getAbsolutePath result-file)]
+               (worker-command! wrapper executable request-file result-file)
                {:out log-file :err error-file})
         initial (await-worker child 600000)
         _ (when-not initial
