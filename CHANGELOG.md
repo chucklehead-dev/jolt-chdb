@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Repin the owned `casselc/data.json` provider to `e7f97a9`, including its
+  Jolt-specialized codepoint-decoder access and String-backed reader ordinary
+  run improvements. This dependency update is functionality-qualified only;
+  no current-runtime performance result is claimed.
+
 - Preserve an ambiguous Durable WAL observation across later mutation admission
   and WAL confirmation; only a validated checkpoint can clear that uncertainty.
   Add a literate, bounded Quint lifecycle projection model for recovered,
