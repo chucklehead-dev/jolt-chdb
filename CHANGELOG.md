@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a receipt-first acceptance gate for the Durable encoding-inclusive
+  512-row path. `qualification`, `scale-512`, and matched local/AWS 512 runs
+  now require exactly 500 p99-qualified samples with p50 at most 20.48 ms and
+  p99 at most 25.60 ms; a miss persists its bounded, redacted report and RSS
+  evidence before failing. Other batch sizes and the S3 WAL curve remain
+  non-gating. No new throughput result is claimed.
+
 - Add a separately opt-in, OIDC-only AWS S3 matched-batch qualification lane
   for the existing 512, 1,000, 5,000, and 10,000-row Durable selectors. It
   preserves the independent 512-row measured-WAL curve, exact compiler/native
