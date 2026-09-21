@@ -1056,7 +1056,11 @@
                              current-expiry)))
                 (writer/start!
                  {:store store :token token :handle @handle
-                  :database logical-database
+                 :database logical-database
+                  ;; The writer's transient WAL spool is private to this
+                  ;; recovered engine lifetime. It is not a public API and
+                  ;; does not extend scratch persistence beyond process use.
+                  :wal-spool-parent @scratch
                   :recovered-document document
                   :engine-metadata
                   {:version running-version

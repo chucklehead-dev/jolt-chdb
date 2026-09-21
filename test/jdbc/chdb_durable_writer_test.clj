@@ -125,6 +125,14 @@
         reference (first (get-in head ["manifest" "wal"]))]
     (backend/get-bytes store (get reference "key"))))
 
+(defn- empty-wal-state?
+  "Phase 2 retains only scalar counters and an optional staged-file descriptor.
+   A committed control transition must forget both before local deletion."
+  [state]
+  (= {:spool nil :byte-count 0 :statement-count 0
+      :checkpoint-required? false}
+     state))
+
 (def ^:private wal-byte-writer-unavailable-message
   (str "Durable WAL streaming requires correct "
        "OutputStreamWriter.append(CharSequence, start, end); "
@@ -327,7 +335,9 @@
       (writer/flush! writer)
       (check "writer phase observer preserves ordered scalar WAL/control stages"
              [:wal-prepare :wal-append :wal-join :wal-immutable-put
-              :wal-immutable-verify :wal-head-cas]
+              ;; File publication verifies the created immutable object and
+              ;; commit verifies it again before the head transition.
+              :wal-immutable-verify :wal-immutable-verify :wal-head-cas]
              (mapv :phase @events))
       (check "writer phase observer excludes SQL and backend identity"
              true
@@ -627,7 +637,7 @@
                   :reference {"key" "checkpoints/1-1-00000012.tar.gz"
                               "size" 3
                               "sha256" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}})
-               :publish-wal!
+               :publish-wal-file!
                (fn [_ _ _]
                  (swap! publications conj :wal)
                  (throw (ex-info "WAL must not publish" {})))
@@ -1102,10 +1112,10 @@
                (let [result (control/renew! store token expiry retry-options)]
                  (deliver heartbeat-renewed result)
                  result))
-             :publish-wal!
-             (fn [store token payload]
+             :publish-wal-file!
+             (fn [store token path]
                (swap! calls conj :publish)
-               (control/publish-wal-bytes! store token payload))
+               (control/publish-wal-file! store token path))
              :commit-reference!
              (fn [store token request]
                (swap! calls conj :commit)
@@ -1445,8 +1455,7 @@
           (check (str (name cut) " preserves the complete pending buffer before confirmation")
                  true
                  (if confirmed?
-                   (= {:lines [] :byte-count 0 :checkpoint-required? false}
-                      @(:wal-state writer))
+                   (empty-wal-state? @(:wal-state writer))
                    (= wal-before @(:wal-state writer)))))
         (finally
           ;; Disable injected failures before ordinary owned shutdown; measurements
@@ -1524,8 +1533,7 @@
             (check (str label " preserves pre-CAS HEAD bytes") head-before first-head))
           (check (str label " clears pending only after confirmed control return")
                  true (if confirmed?
-                        (= {:lines [] :byte-count 0 :checkpoint-required? false}
-                           @(:wal-state writer))
+                        (empty-wal-state? @(:wal-state writer))
                         (= pending-before @(:wal-state writer))))
           (check (str label " deletion attempted once") 1 @deletions)
           (when (= cut :reconciled)
@@ -1562,6 +1570,145 @@
           (reset! fault false)
           (writer/close! writer))))))
 
+(defn- run-file-wal-phase2-checks! []
+  (println "Durable file-WAL Phase 2 contracts")
+  (let [calls (atom [])
+        published (atom 0)
+        close-count (atom 0)
+        append-var (ns-resolve 'jdbc.chdb.durable.writer 'append-wal!)
+        {:keys [writer]} (new-writer
+                          calls close-count
+                          (assoc (fake-operations calls close-count)
+                                 :publish-wal-file!
+                                 (fn [_ _ _]
+                                   (swap! published inc)
+                                   (throw (ex-info "must not publish"
+                                                   {:type ::unexpected-publish})))))]
+    (try
+      (with-redefs-fn
+        {append-var (fn [_ _] (throw (ex-info "append failed"
+                                              {:type ::append-failed})))}
+        #(check "native success plus spool append failure requires checkpoint"
+                [::append-failed true 0 0]
+                [(error-type #(writer/execute! writer "INSERT INTO t VALUES (1)"))
+                 (:checkpoint-required? (writer/status writer))
+                 (:pending-statements (writer/status writer))
+                 @published]))
+      (check "append failure forbids WAL publication on later flush"
+             [::writer/checkpoint-unavailable 0]
+             [(error-type #(writer/flush! writer)) @published])
+      (check "append failure still follows native execution"
+             [[:analyze-execute "INSERT INTO t VALUES (1)" "default"]
+              [:execute "INSERT INTO t VALUES (1)"]]
+             @calls)
+      (finally (try (writer/close! writer) (catch Throwable _)))))
+
+  (let [calls (atom [])
+        published (atom 0)
+        close-count (atom 0)
+        seal-var (ns-resolve 'jdbc.chdb.durable.writer 'seal-wal!)
+        {:keys [writer]} (new-writer
+                          calls close-count
+                          (assoc (fake-operations calls close-count)
+                                 :publish-wal-file!
+                                 (fn [_ _ _]
+                                   (swap! published inc)
+                                   (throw (ex-info "must not publish"
+                                                   {:type ::unexpected-publish})))))]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (2)")
+      (with-redefs-fn
+        {seal-var (fn [_] (throw (ex-info "seal failed" {:type ::seal-failed})))}
+        #(check "seal failure after native execution requires checkpoint"
+                [::seal-failed true 0]
+                [(error-type #(writer/flush! writer))
+                 (:checkpoint-required? (writer/status writer)) @published]))
+      (check "seal failure forbids WAL publication on retry"
+             [::writer/checkpoint-unavailable 0]
+             [(error-type #(writer/flush! writer)) @published])
+      (finally (try (writer/close! writer) (catch Throwable _)))))
+
+  (let [calls (atom [])
+        phases (atom [])
+        close-count (atom 0)
+        fail-publication? (atom true)
+        delete-state (atom :not-called)
+        delete-var (ns-resolve 'jdbc.chdb.durable.writer 'delete-wal-spool!)
+        base-operations (fake-operations calls close-count)
+        {:keys [writer store]} (new-writer
+                                calls close-count
+                                (assoc base-operations
+                                       :writer-phase! #(swap! phases conj (:phase %))
+                                       :classify!
+                                       (fn [handle sql database]
+                                         (swap! calls conj [:classify sql database])
+                                         ((:classify! base-operations)
+                                          handle sql database))
+                                       :publish-wal-file!
+                                       (fn [store token path]
+                                         (if @fail-publication?
+                                           (throw (ex-info "put failed"
+                                                           {:type ::put-failed}))
+                                           (control/publish-wal-file!
+                                            store token path)))))]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (3)")
+      (check "immutable put failure retains the sealed spool and counters"
+             [::put-failed 1 true true]
+             (let [error (error-type #(writer/flush! writer))
+                   state @(:wal-state writer)]
+               [error (:statement-count state) (get-in state [:spool :sealed?])
+                 (java.nio.file.Files/isRegularFile
+                 (get-in state [:spool :path])
+                 (make-array java.nio.file.LinkOption 0))]))
+      (let [calls-before @calls
+            phases-before @phases]
+        (check "sealed spool rejects every mutating admission before WAL preparation, classifier, or native execution"
+               [[::writer/wal-sealed
+                 ::writer/wal-sealed
+                 ::writer/wal-sealed]
+                calls-before phases-before]
+               [[(error-type #(writer/execute! writer "INSERT INTO t VALUES (33)"))
+                 (error-type #(writer/sql! writer "INSERT INTO t VALUES (34)" []))
+                 (error-type #(writer/sql! writer "INSERT INTO t VALUES (?)" [35]))]
+                @calls @phases]))
+      (check "sealed spool retains ordinary read-only sql behavior"
+             {:sql "SELECT 1"}
+             (writer/sql! writer "SELECT 1" []))
+      (reset! fail-publication? false)
+      (with-redefs-fn
+        {delete-var
+         (fn [spool]
+           (reset! delete-state @(:wal-state writer))
+           (when-let [path (:path spool)]
+             (java.nio.file.Files/deleteIfExists path)))}
+        #(check "confirmed file WAL commit clears state before best-effort deletion"
+                [:committed true 1]
+                [(:status (writer/flush! writer))
+                 (empty-wal-state? @(:wal-state writer))
+                 (get-in (:head (control/read-head! store)) ["manifest" "seq"])]))
+      (check "spool deletion observes already-cleared state"
+             true (empty-wal-state? @delete-state))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        publication-error (ex-info "immutable put failed" {:type ::put-failed})
+        cleanup-error (ex-info "cleanup failed" {:type ::cleanup-failed})
+        {:keys [writer]} (new-writer
+                          calls close-count
+                          (assoc (fake-operations calls close-count)
+                                 :publish-wal-file! (fn [_ _ _] (throw publication-error))
+                                 :cleanup-scratch! (fn [] (throw cleanup-error))))]
+    (writer/execute! writer "INSERT INTO t VALUES (4)")
+    (check "close retains its first WAL publication error despite later cleanup"
+           true
+           (identical? publication-error
+                       (try (writer/close! writer) nil
+                            (catch Throwable error error))))
+    (check "close with a WAL failure still reaches native cleanup once"
+           1 @close-count)))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-wal-spool-allocation-checks!)
@@ -1571,6 +1718,7 @@
       (do
         (run-checkpoint-cleanup-precedence-checks!)
         (run-checkpoint-public-retry-checks!)
+        (run-file-wal-phase2-checks!)
         (run-deterministic-checks!)
         (run-stateful-property!))
       (do

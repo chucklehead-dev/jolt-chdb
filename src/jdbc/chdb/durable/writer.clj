@@ -13,8 +13,8 @@
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.native :as native])
-  (:import [java.io ByteArrayOutputStream OutputStreamWriter]
-           [java.nio.file Files Path]
+  (:import [java.io BufferedOutputStream ByteArrayOutputStream OutputStreamWriter]
+           [java.nio.file Files OpenOption Path]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util.concurrent ArrayBlockingQueue]))
 
@@ -30,7 +30,7 @@
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
      wal-state lease-state heartbeat-stop backend-context retry-options
-     operations worker heartbeat persistence-observation])
+     operations worker heartbeat persistence-observation wal-spool-parent])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -139,11 +139,9 @@
 (defn- allocate-wal-spool!
   "Allocate an empty, private staged WAL file below `scratch`.
 
-   This Phase 1 helper has no production call site: the live writer still owns
-  an in-memory vector of byte arrays.  Keeping allocation separate lets a
-   later switch make append/flush/close/deletion ownership explicit rather than
-   silently changing the existing writer state machine.  The descriptor is
-   intentionally scalar plus `Path`; it does not retain WAL bytes."
+   The descriptor deliberately contains only a path and scalar counters.  Its
+   caller owns the buffered output stream and every close/delete transition.
+   This is staging for publication, not a crash-local durability claim."
   [scratch]
   (let [parent (if (instance? Path scratch)
                  scratch
@@ -151,7 +149,17 @@
     (when-not (Files/isDirectory parent (make-array java.nio.file.LinkOption 0))
       (fail! ::invalid-options "Durable WAL spool parent must be a directory"))
     {:path (Files/createTempFile parent "wal-" ".jsonl" private-file-attributes)
-     :byte-count 0}))
+     :byte-count 0
+     :statement-count 0
+     :sealed? false}))
+
+(defn- open-wal-spool!
+  [scratch]
+  (let [spool (allocate-wal-spool! scratch)
+        output (BufferedOutputStream.
+                (Files/newOutputStream ^Path (:path spool)
+                                       (make-array OpenOption 0)))]
+    (assoc spool :output output)))
 
 (defn- wal-line [sql]
   (let [output (ByteArrayOutputStream.)
@@ -161,27 +169,73 @@
     (.flush text-output)
     (.toByteArray output)))
 
-(defn- append-wal! [writer line]
-  (swap! (:wal-state writer)
-         (fn [state]
-           (-> state
-               (update :lines conj line)
-               (update :byte-count + (alength line))))))
+(defn- ensure-open-wal-spool!
+  "Allocate the current append target before native execution.
 
-(defn- joined-wal [writer]
-  (let [{:keys [lines byte-count]} @(:wal-state writer)
-        total byte-count
-        output (byte-array total)]
-    (loop [remaining lines offset 0]
-      (when-let [line (first remaining)]
-        (let [length (alength line)]
-          (System/arraycopy line 0 output offset length)
-          (recur (next remaining) (+ offset length)))))
-    output))
+   The worker is serialized, so the state transition and subsequent native
+   call have one owner.  Allocation therefore cannot turn a successful native
+   mutation into an untracked record."
+  [writer]
+  (when-not (:spool @(:wal-state writer))
+    (swap! (:wal-state writer)
+           (fn [state]
+             (if (:spool state)
+               state
+               (assoc state :spool (open-wal-spool! (:wal-spool-parent writer)))))))
+  (:spool @(:wal-state writer)))
+
+(defn- append-wal! [writer line]
+  (let [spool (ensure-open-wal-spool! writer)]
+    (when (:sealed? spool)
+      (fail! ::wal-sealed
+             "A sealed Durable WAL spool cannot accept another statement"))
+    ;; Write first, then advance scalar counters. A write exception leaves the
+    ;; record uncounted and lets the caller require a checkpoint for the
+    ;; already-successful native mutation.
+    (.write ^BufferedOutputStream (:output spool) line)
+    (swap! (:wal-state writer)
+           (fn [state]
+             (-> state
+                 (update :byte-count + (alength line))
+                 (update :statement-count inc)
+                 (update :spool
+                         #(-> %
+                              (update :byte-count + (alength line))
+                              (update :statement-count inc))))))))
+
+(defn- seal-wal! [writer]
+  (let [spool (:spool @(:wal-state writer))]
+    (when (and spool (not (:sealed? spool)))
+      ;; A spool is only eligible for immutable publication after both buffered
+      ;; bytes and the stream close have succeeded. No fsync/crash-local
+      ;; durability property is claimed here.
+      (let [flush-error (try (.flush ^BufferedOutputStream (:output spool))
+                             nil
+                             (catch Throwable error error))
+            close-error (try (.close ^BufferedOutputStream (:output spool))
+                             nil
+                             (catch Throwable error error))]
+        (swap! (:wal-state writer) update :spool assoc :sealed? true :output nil)
+        (when-let [error (or flush-error close-error)]
+          (throw error))))
+    (:spool @(:wal-state writer))))
+
+(defn- delete-wal-spool! [spool]
+  (when-let [output (:output spool)]
+    (try (.close ^BufferedOutputStream output) (catch Throwable _)))
+  (when-let [path (:path spool)]
+    (try (Files/deleteIfExists ^Path path) (catch Throwable _)))
+  nil)
 
 (defn- clear-wal! [writer]
-  (reset! (:wal-state writer)
-          {:lines [] :byte-count 0 :checkpoint-required? false}))
+  ;; The confirmed/reconciled control transition is authoritative. Forget the
+  ;; staged state before best-effort local deletion so cleanup failure cannot
+  ;; make a committed WAL appear retryable.
+  (let [spool (:spool @(:wal-state writer))]
+    (reset! (:wal-state writer)
+            {:spool nil :byte-count 0 :statement-count 0
+             :checkpoint-required? false})
+    (delete-wal-spool! spool)))
 
 (defn- require-checkpoint! [writer]
   (swap! (:wal-state writer) assoc :checkpoint-required? true))
@@ -256,12 +310,40 @@
    (:writer-phase! (:operations writer)) :wal-prepare 0
    #(do
       (validate-statement-size! sql)
-      (let [line (wal-line sql)
+      (let [spool (ensure-open-wal-spool! writer)
+            ;; A failed immutable publication deliberately retains a sealed
+            ;; spool so a later flush can retry the same exact file.  It is
+            ;; not an append target: reject the request at admission, before
+            ;; it can reach the native mutation below.
+            _ (when (:sealed? spool)
+                (fail! ::wal-sealed
+                       "A sealed Durable WAL spool cannot accept another statement"))
+            line (wal-line sql)
             next-segment-bytes (+ (:byte-count @(:wal-state writer))
                                   (alength line))]
         (when (> next-segment-bytes max-wal-segment-bytes)
           (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
         line))))
+
+(defn- clearly-read-only-sql?
+  "Whether a request can remain on the read-only `sql!` path after WAL retry.
+
+   A sealed spool is retained only after a failed immutable publication.  The
+   writer must not execute any new mutation until that exact spool has been
+   retried or checkpointed.  This deliberately recognizes only the ordinary
+   single-statement read prefixes; ambiguous forms are conservatively refused
+   without invoking the classifier.  `query!` retains its existing behavior."
+  [^String sql]
+  (boolean (re-find #"(?is)^\s*(?:select|show|describe|desc|explain)\b" sql)))
+
+(defn- reject-sealed-wal! [writer]
+  (when (get-in @(:wal-state writer) [:spool :sealed?])
+    (fail! ::wal-sealed
+           "A sealed Durable WAL spool cannot accept another statement")))
+
+(defn- reject-sealed-wal-mutation! [writer sql]
+  (when-not (clearly-read-only-sql? sql)
+    (reject-sealed-wal! writer)))
 
 (defn- prepare-execution! [writer sql params]
   (let [operations (:operations writer)
@@ -287,15 +369,26 @@
     ;; statement enters V1 WAL; a bound mutation instead requires a full
     ;; checkpoint because V1 has no typed-parameter WAL record.
     (if line
-      (observed-writer-phase
-       (:writer-phase! (:operations writer)) :wal-append (alength line)
-       #(append-wal! writer line))
+      (try
+        (observed-writer-phase
+         (:writer-phase! (:operations writer)) :wal-append (alength line)
+         #(append-wal! writer line))
+        (catch Throwable error
+          ;; Native execution has returned, but the exact replay line is not
+          ;; proven staged. A later checkpoint is the only permitted recovery
+          ;; path; do not publish this spool as a WAL segment.
+          (require-checkpoint! writer)
+          (throw error)))
       (require-checkpoint! writer))
     result))
 
 (defn- do-execute! [writer sql]
   (assert-writable! writer)
   (require-string! sql "sql")
+  ;; Raw execute is always a mutating API. Reject retained publication work
+  ;; before even emitting a WAL-prepare timing event or validating/encoding
+  ;; a potential next record.
+  (reject-sealed-wal! writer)
   (let [line (prepare-wal-line! writer sql)]
     ((:analyze-execute! (:operations writer))
      (:handle writer) sql (:database writer))
@@ -308,6 +401,11 @@
   (require-string! sql "sql")
   (when-not (sequential? params)
     (fail! ::invalid-options "params must be sequential"))
+  ;; This occurs before placeholder preparation and native classification for
+  ;; every mutation-shaped sql! request.  It keeps the retained exact file as
+  ;; the only recovery work and does not disturb ordinary read-only sql! or
+  ;; query! requests.
+  (reject-sealed-wal-mutation! writer sql)
   (let [{:keys [classification-sql execute!]}
         (prepare-execution! writer sql params)
         analysis ((:classify! (:operations writer))
@@ -356,18 +454,26 @@
       {:status :empty}
 
       :else
-      (let [payload (observed-writer-phase
-                     (:writer-phase! (:operations writer)) :wal-join byte-count
-                     #(joined-wal writer))
+      (let [spool
+            (try
+              (observed-writer-phase
+               (:writer-phase! (:operations writer)) :wal-join byte-count
+               #(seal-wal! writer))
+              (catch Throwable error
+                ;; A native mutation is staged only if the spool has a closed,
+                ;; exact file image. A failed seal must force checkpoint and
+                ;; cannot fall through to immutable WAL publication.
+                (require-checkpoint! writer)
+                (throw error)))
             [publication committed]
             (try
-              (let [publication ((:publish-wal! (:operations writer))
-                                 (:store writer) (:token writer) payload)
+              (let [publication ((:publish-wal-file! (:operations writer))
+                                 (:store writer) (:token writer) (:path spool))
                     committed ((:commit-reference! (:operations writer))
                                (:store writer) (:token writer)
                                {:kind :wal
                                 :reference (:reference publication)
-                                :verify-reference! control/verify-byte-reference!})]
+                                :verify-reference! control/verify-file-reference!})]
                 [publication committed])
               (catch Throwable error
                 ;; Definite errors leave recovery work pending. Only an
@@ -441,6 +547,7 @@
                (owned-thread/join! heartbeat))
             #((:release! (:operations writer)) (:store writer) (:token writer))
             #((:close-native! (:operations writer)) (:handle writer))
+            #(delete-wal-spool! (:spool @(:wal-state writer)))
             #((:cleanup-scratch! (:operations writer)))])]
       (when error (throw error))
       nil)
@@ -591,7 +698,7 @@
   epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
-           engine-metadata recovered-document]
+           engine-metadata recovered-document wal-spool-parent]
     :or {queue-capacity default-queue-capacity}}]
   (require-wal-byte-writer-capability!)
   (when-not store (fail! ::invalid-options "store is required"))
@@ -608,7 +715,16 @@
     (when (> heartbeat-interval-ms (quot lease-ttl-ms 3))
       (fail! ::invalid-options
              "heartbeat-interval-ms must not exceed one third of lease-ttl-ms")))
-  (let [configured-operations operations
+  (let [wal-spool-parent (or wal-spool-parent
+                             (System/getProperty "java.io.tmpdir"))
+        _ (when-not (Files/isDirectory
+                      (if (instance? Path wal-spool-parent)
+                        wal-spool-parent
+                        (java.nio.file.Paths/get (str wal-spool-parent)
+                                                 (make-array String 0)))
+                      (make-array java.nio.file.LinkOption 0))
+            (fail! ::invalid-options "Durable WAL spool parent must be a directory"))
+        configured-operations operations
         now-ms (or (:now-ms configured-operations)
                    #(System/currentTimeMillis))
         persistence-observation (observation/start :writer recovered-document)
@@ -631,10 +747,10 @@
           :query-bytes-native! chdb/execute-query-bytes-handle
           :execute-native! (fn [handle sql params]
                              (chdb/execute-any handle sql params))
-          :publish-wal!
-          (fn [store token payload]
-            (control/publish-wal-bytes!
-             store token payload
+          :publish-wal-file!
+          (fn [store token path]
+            (control/publish-wal-file!
+             store token path
              (assoc retry-options :phase-observe! (:writer-phase! configured-operations))))
           :publish-checkpoint!
           (fn [store token path]
@@ -677,7 +793,7 @@
         required #{:analyze-query! :analyze-execute! :classification-sql!
                    :classify! :query-native!
                    :query-bytes-native!
-                   :execute-native! :publish-wal! :publish-checkpoint!
+                   :execute-native! :publish-wal-file! :publish-checkpoint!
                    :commit-reference! :verify-checkpoint-reference!
                    :create-checkpoint! :delete-checkpoint! :renew!
                    :release! :now-ms :await-heartbeat!
@@ -694,11 +810,11 @@
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) (Object.)
                   (atom :open) (promise)
-                  (atom {:lines [] :byte-count 0
+                  (atom {:spool nil :byte-count 0 :statement-count 0
                          :checkpoint-required? false})
                   lease-state
                   (promise) backend-context retry-options operations
-                  worker heartbeat persistence-observation)]
+                  worker heartbeat persistence-observation wal-spool-parent)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat
         (owned-thread/start!
@@ -756,12 +872,12 @@
         (await-result (:closed-result writer))))))
 
 (defn status [writer]
-  (let [{:keys [lines byte-count checkpoint-required?]}
+  (let [{:keys [statement-count byte-count checkpoint-required?]}
         @(:wal-state writer)]
     {:lifecycle @(:lifecycle writer)
      :writable? (not (true? (:fenced? (some-> (:lease-state writer) deref))))
      :pending-wal-bytes byte-count
-     :pending-statements (count lines)
+     :pending-statements statement-count
      :checkpoint-required? (boolean checkpoint-required?)}))
 
 (defn persistence-observation
