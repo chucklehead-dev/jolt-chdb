@@ -342,6 +342,7 @@
         quoted-sql "SELECT '?'"
         line-comment-sql "SELECT 1 -- ?\n"
         block-comment-sql "SELECT /* ? */ 1"
+        backtick-sql "SELECT `metric?name` FROM `events?table`"
         unbound-error
         (try
           (chdb/prepare-query "SELECT ?" [])
@@ -352,12 +353,23 @@
     (check "quoted question marks keep lexical placeholder behavior"
            quoted-sql
            (chdb/prepared-sql (chdb/prepare-query quoted-sql [])))
+    (check "quoted literal question marks retain the original SQL object"
+           true
+           (identical? quoted-sql
+                       (chdb/prepared-sql (chdb/prepare-query quoted-sql []))))
     (check "line-comment question marks keep lexical placeholder behavior"
            line-comment-sql
            (chdb/prepared-sql (chdb/prepare-query line-comment-sql [])))
     (check "block-comment question marks keep lexical placeholder behavior"
            block-comment-sql
            (chdb/prepared-sql (chdb/prepare-query block-comment-sql [])))
+    (check "backtick identifier question marks keep lexical placeholder behavior"
+           backtick-sql
+           (chdb/prepared-sql (chdb/prepare-query backtick-sql [])))
+    (check "backtick identifier question marks retain the original SQL object"
+           true
+           (identical? backtick-sql
+                       (chdb/prepared-sql (chdb/prepare-query backtick-sql []))))
     (check "code-position question marks still rewrite typed parameters"
            "SELECT {p1:Int64}"
            (chdb/prepared-sql (chdb/prepare-query "SELECT ?" [42])))
