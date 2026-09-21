@@ -496,16 +496,13 @@ The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
 The active dependency is `casselc/data.json`
-`97298fd8a67a6d4ee3eb1346d5e184beb9565b90`. It retains the earlier
-String-backed reader fast path for the eight ordinary JSON escapes: an immutable
-String is decoded with a local cursor and constant result strings, while reader
-position remains synchronized before return, error, or fallback. Unicode,
-invalid escapes, escape EOF, raw astral input, and generic readers keep the
-shared decoder. Durable's validation-before-replay ordering, strict UTF-8, wire
-bytes, record order, checksums, and engine-effect vocabulary do not change, so
-the correctness models and trace schema require no transition update. The newer
-pin must still be measured by the current Durable matrix; this historical reader
-diagnostic is not evidence that the active pin improves admission.
+`e7f97a9b5ecf7fa00787375fff4176a082fe9b98`. It carries the maintained
+String-backed reader ordinary-run improvements and Jolt-specialized
+codepoint-decoder access. Durable's validation-before-replay ordering, strict
+UTF-8, wire bytes, record order, checksums, and engine-effect vocabulary do not
+change, so the correctness models and trace schema require no transition
+update. The active pin must still be measured by the current Durable matrix;
+this historical reader diagnostic is not evidence that it improves admission.
 
 A frozen one-record diagnostic over a 385,750-character WAL record containing
 40,449 simple escapes reduced full `read-str` p50 from 111.78 ms to 18.62 ms
