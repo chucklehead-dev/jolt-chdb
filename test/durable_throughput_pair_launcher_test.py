@@ -33,6 +33,7 @@ class DurableThroughputPairLauncherTest(unittest.TestCase):
         (repo / "bench" / "jdbc").mkdir(parents=True)
         scripts.mkdir()
         (repo / "bench" / "jdbc" / "chdb_durable_throughput.clj").write_text(";; fixture workload\n")
+        (repo / "bench" / "jdbc" / "chdb_durable_throughput_metrics.clj").write_text(";; fixture metrics\n")
         (repo / "fixture-values").write_text(f"{name} {p50} {p99} {rate}\n")
         for source in [RUNNER, PAIR_CHECKER, SINGLE_CHECKER]:
             target = scripts / source.name
@@ -91,6 +92,15 @@ class DurableThroughputPairLauncherTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("invalid completed evidence", result.stderr)
 
+    def test_rejects_changed_final_summary_on_resume(self) -> None:
+        self.assertEqual(0, self.invoke().returncode)
+        summary = self.output / "summary.tsv"
+        summary.chmod(0o644)
+        summary.write_text(summary.read_text() + "tampered\n")
+        result = self.invoke()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("final paired summary is invalid", result.stderr)
+
     def test_rejects_untracked_and_mismatched_harnesses_before_running(self) -> None:
         (self.a / "stray").write_text("untracked\n")
         result = self.invoke()
@@ -104,6 +114,16 @@ class DurableThroughputPairLauncherTest(unittest.TestCase):
         result = self.invoke()
         self.assertNotEqual(0, result.returncode)
         self.assertIn("selector sources differ", result.stderr)
+        selector.write_text((self.a / "scripts" / "run-durable-throughput-selector.sh").read_text())
+        subprocess.run(["git", "-C", str(self.b), "add", "scripts/run-durable-throughput-selector.sh"], check=True)
+        subprocess.run(["git", "-C", str(self.b), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "restore-selector"], check=True)
+        metrics = self.b / "bench" / "jdbc" / "chdb_durable_throughput_metrics.clj"
+        metrics.write_text(";; mismatched metrics\n")
+        subprocess.run(["git", "-C", str(self.b), "add", str(metrics.relative_to(self.b))], check=True)
+        subprocess.run(["git", "-C", str(self.b), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "metrics-mismatch"], check=True)
+        result = self.invoke()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("metrics benchmark sources differ", result.stderr)
 
     def test_condition_requires_both_independent_target_passes(self) -> None:
         (self.b / "fixture-values").write_text("b 20.0 26.0 24000.0\n")

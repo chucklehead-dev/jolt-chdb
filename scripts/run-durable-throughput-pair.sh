@@ -31,24 +31,29 @@ identity() {
   [[ -z $(git -C "$repo" status --porcelain=v1 --untracked-files=all) ]] || fail "$label checkout is dirty or has untracked files"
   [[ -f "$repo/scripts/$single_selector_name" && ! -L "$repo/scripts/$single_selector_name" ]] || fail "$label selector is unavailable"
   [[ -f "$repo/bench/jdbc/chdb_durable_throughput.clj" && ! -L "$repo/bench/jdbc/chdb_durable_throughput.clj" ]] || fail "$label benchmark source is unavailable"
+  [[ -f "$repo/bench/jdbc/chdb_durable_throughput_metrics.clj" && ! -L "$repo/bench/jdbc/chdb_durable_throughput_metrics.clj" ]] || fail "$label metrics benchmark source is unavailable"
   printf '%s_head=%s\n' "$label" "$(git -C "$repo" rev-parse HEAD)"
   printf '%s_parent=%s\n' "$label" "$(git -C "$repo" rev-parse HEAD^)"
   printf '%s_tree=%s\n' "$label" "$(git -C "$repo" rev-parse HEAD^{tree})"
   printf '%s_status=clean\n' "$label"
   printf '%s_selector_sha256=%s\n' "$label" "$(sha256sum "$repo/scripts/$single_selector_name" | awk '{print $1}')"
   printf '%s_benchmark_sha256=%s\n' "$label" "$(sha256sum "$repo/bench/jdbc/chdb_durable_throughput.clj" | awk '{print $1}')"
+  printf '%s_metrics_sha256=%s\n' "$label" "$(sha256sum "$repo/bench/jdbc/chdb_durable_throughput_metrics.clj" | awk '{print $1}')"
 }
 
 require_matched_harness() {
   # A/B compares implementation source, not two accidentally divergent
   # workloads or selector launchers. There is deliberately no override.
-  local a_selector a_benchmark b_selector b_benchmark
+  local a_selector a_benchmark a_metrics b_selector b_benchmark b_metrics
   a_selector=$(sha256sum "$a_repo/scripts/$single_selector_name" | awk '{print $1}')
   b_selector=$(sha256sum "$b_repo/scripts/$single_selector_name" | awk '{print $1}')
   a_benchmark=$(sha256sum "$a_repo/bench/jdbc/chdb_durable_throughput.clj" | awk '{print $1}')
   b_benchmark=$(sha256sum "$b_repo/bench/jdbc/chdb_durable_throughput.clj" | awk '{print $1}')
+  a_metrics=$(sha256sum "$a_repo/bench/jdbc/chdb_durable_throughput_metrics.clj" | awk '{print $1}')
+  b_metrics=$(sha256sum "$b_repo/bench/jdbc/chdb_durable_throughput_metrics.clj" | awk '{print $1}')
   [[ $a_selector == "$b_selector" ]] || fail "A/B selector sources differ"
   [[ $a_benchmark == "$b_benchmark" ]] || fail "A/B benchmark sources differ"
+  [[ $a_metrics == "$b_metrics" ]] || fail "A/B metrics benchmark sources differ"
 }
 
 identity "$a_repo" A >/dev/null
@@ -221,6 +226,13 @@ run_arm B1 B "$b_repo"
 run_arm B2 B "$b_repo"
 run_arm A2 A "$a_repo"
 
+if [[ -e "$pair_root/summary.tsv" || -e "$pair_root/pair-complete.env" ]]; then
+  [[ -f "$pair_root/summary.tsv" && ! -L "$pair_root/summary.tsv" && -f "$pair_root/pair-complete.env" && ! -L "$pair_root/pair-complete.env" ]] || fail "final paired summary is partial; retain it and use a new pair root"
+  "$pair_checker" "$pair_root" >/dev/null 2>&1 || fail "final paired summary is invalid; retain it and use a new pair root"
+  cat "$pair_root/summary.tsv"
+  exit 0
+fi
+
 summary_tmp="$pair_root/.summary.$$.tmp"
 {
   printf 'record\tarm\tcondition\tlatency_samples\tp99_qualification\tp50_ms\tp99_ms\tp50_rows_per_second\tp99_rows_per_second\tpersisted_rows_per_second\tmax_rss_kbytes\tabsolute_target_p50_le_20.48ms_and_p99_le_25.60ms\n'
@@ -233,6 +245,13 @@ summary_tmp="$pair_root/.summary.$$.tmp"
 } > "$summary_tmp"
 chmod 0444 "$summary_tmp"
 mv "$summary_tmp" "$pair_root/summary.tsv"
+pair_tmp="$pair_root/.pair-complete.$$.tmp"
+{
+  printf 'schema_version=1\nschedule=A1,B1,B2,A2\nmanifest_sha256=%s\nsummary_sha256=%s\ncompleted_at=%s\n' \
+    "$manifest_sha" "$(sha256sum "$pair_root/summary.tsv" | awk '{print $1}')" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$pair_tmp"
+chmod 0444 "$pair_tmp"
+mv "$pair_tmp" "$pair_root/pair-complete.env"
 "$pair_checker" "$pair_root" >/dev/null
 cat "$pair_root/summary.tsv"
 echo "Absolute target: p50 <= 20.48 ms (25,000 rows/s) and p99 <= 25.60 ms (20,000 rows/s)"

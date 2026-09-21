@@ -25,6 +25,7 @@ fail() { echo "paired Durable throughput artifact contract failed" >&2; exit 1; 
 [[ -f "$pair_root/manifest.env" && ! -L "$pair_root/manifest.env" ]] || fail
 if ! "$arm_only"; then
   [[ -f "$pair_root/summary.tsv" && ! -L "$pair_root/summary.tsv" ]] || fail
+  [[ -f "$pair_root/pair-complete.env" && ! -L "$pair_root/pair-complete.env" ]] || fail
 fi
 
 manifest_sha=$(sha256sum "$pair_root/manifest.env" | awk '{print $1}')
@@ -41,6 +42,8 @@ for arm in "${arms[@]}"; do
   [[ -f "$marker" && ! -L "$marker" ]] || fail
   [[ $(grep -Ec '^schema_version=1$' "$marker") == 1 ]] || fail
   [[ $(grep -Ec "^arm=$arm$" "$marker") == 1 ]] || fail
+  case "$arm" in A1|A2) condition=A;; B1|B2) condition=B;; esac
+  [[ $(grep -Ec "^condition=$condition$" "$marker") == 1 ]] || fail
   [[ $(grep -Ec "^manifest_sha256=$manifest_sha$" "$marker") == 1 ]] || fail
   "$single_checker" "$output/report.edn" "$output/run.log" "$output/time-v.txt" >/dev/null || fail
   for file in report.edn run.log time-v.txt; do
@@ -50,5 +53,14 @@ for arm in "${arms[@]}"; do
     [[ $actual == "$expected" ]] || fail
   done
 done
+
+if ! "$arm_only"; then
+  pair_marker="$pair_root/pair-complete.env"
+  [[ $(grep -Ec '^schema_version=1$' "$pair_marker") == 1 ]] || fail
+  [[ $(grep -Ec '^schedule=A1,B1,B2,A2$' "$pair_marker") == 1 ]] || fail
+  [[ $(grep -Ec "^manifest_sha256=$manifest_sha$" "$pair_marker") == 1 ]] || fail
+  summary_sha=$(sha256sum "$pair_root/summary.tsv" | awk '{print $1}')
+  [[ $(grep -Ec "^summary_sha256=$summary_sha$" "$pair_marker") == 1 ]] || fail
+fi
 
 echo "Paired Durable throughput artifacts passed restart-safe validation"
