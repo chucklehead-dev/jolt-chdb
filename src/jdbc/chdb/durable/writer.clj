@@ -14,6 +14,8 @@
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.native :as native])
   (:import [java.io ByteArrayOutputStream OutputStreamWriter]
+           [java.nio.file Files Path]
+           [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util.concurrent ArrayBlockingQueue]))
 
 (def max-statement-bytes (* 64 1024 1024))
@@ -127,6 +129,29 @@
     (fail! ::wal-byte-writer-unavailable
            wal-byte-writer-unavailable-message))
   true)
+
+(def ^:private private-file-attributes
+  (into-array
+   FileAttribute
+   [(PosixFilePermissions/asFileAttribute
+     (PosixFilePermissions/fromString "rw-------"))]))
+
+(defn- allocate-wal-spool!
+  "Allocate an empty, private staged WAL file below `scratch`.
+
+   This Phase 1 helper has no production call site: the live writer still owns
+  an in-memory vector of byte arrays.  Keeping allocation separate lets a
+   later switch make append/flush/close/deletion ownership explicit rather than
+   silently changing the existing writer state machine.  The descriptor is
+   intentionally scalar plus `Path`; it does not retain WAL bytes."
+  [scratch]
+  (let [parent (if (instance? Path scratch)
+                 scratch
+                 (java.nio.file.Paths/get (str scratch) (make-array String 0)))]
+    (when-not (Files/isDirectory parent (make-array java.nio.file.LinkOption 0))
+      (fail! ::invalid-options "Durable WAL spool parent must be a directory"))
+    {:path (Files/createTempFile parent "wal-" ".jsonl" private-file-attributes)
+     :byte-count 0}))
 
 (defn- wal-line [sql]
   (let [output (ByteArrayOutputStream.)

@@ -180,6 +180,27 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- definite-file-conflict-backend
+  "Make the WAL-file create lose to a real, differently-valued object."
+  [delegate published-key]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key _]
+      (if (= control/head-key key)
+        (throw (ex-info "head must not use file publication" {}))
+        (do
+          (reset! published-key key)
+          (backend/put-bytes-if-absent!
+           delegate key (.getBytes "different" "UTF-8"))
+          {:status :precondition-failed})))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- delayed-ambiguous-publication-backend [delegate put-count]
   (let [hidden-key (atom nil)
         hidden-reads (atom 0)]
@@ -968,6 +989,54 @@
                          store token (.getBytes "abc" "UTF-8")))
                (error-type #(control/publish-wal-bytes!
                              store token (.getBytes "abc" "UTF-8")))))))
+
+  (let [wal (java.nio.file.Files/createTempFile
+             "jolt-chdb-wal-file-" ".jsonl"
+             (make-array java.nio.file.attribute.FileAttribute 0))]
+    (try
+      (java.nio.file.Files/write wal (.getBytes "abc" "UTF-8")
+                                 (make-array java.nio.file.OpenOption 0))
+      (let [delegate (backend/memory-backend)
+            token (:token (control/acquire! delegate base-options))
+            publication (control/publish-wal-file! delegate token wal)
+            reference (:reference publication)]
+        (check "file WAL publication preserves exact source bytes"
+               ["abc" 3 abc-digest]
+               [(String. (backend/get-bytes delegate (get reference "key")) "UTF-8")
+                (get reference "size")
+                (get reference "sha256")])
+        (check "file WAL publication derives an exact V1 WAL reference"
+               true
+               (boolean (re-matches #"wal/1-1-[0-9a-f]{8}\.jsonl"
+                                   (get reference "key"))))
+        (check "file WAL publication is independently file-verifiable"
+               reference (control/verify-file-reference! delegate reference)))
+      (let [delegate (backend/memory-backend)
+            published-key (atom nil)
+            store (definite-file-conflict-backend delegate published-key)
+            token (:token (control/acquire! store base-options))]
+        (check "definite existing different file WAL is rejected"
+               ::control/object-unverified
+               (error-type #(control/publish-wal-file! store token wal)))
+        (check "definite file WAL conflict verifies the real existing object"
+               "different"
+               (String. (backend/get-bytes delegate @published-key) "UTF-8")))
+      (doseq [[label mode expected]
+              [["landed ambiguous file WAL publication reconciles"
+                :land :reconciled]
+               ["conflicting ambiguous file WAL publication is rejected"
+                :conflict ::control/object-unverified]
+               ["dropped ambiguous file WAL publication stays unprovable"
+                :drop ::control/commit-ambiguous]]]
+        (let [delegate (backend/memory-backend)
+              store (ambiguous-publication-backend delegate mode)
+              token (:token (control/acquire! store base-options))]
+          (check label expected
+                 (if (= :land mode)
+                   (:status (control/publish-wal-file! store token wal))
+                   (error-type #(control/publish-wal-file! store token wal))))))
+      (finally
+        (java.nio.file.Files/deleteIfExists wal))))
 
   (let [checkpoint (java.nio.file.Files/createTempFile
                     "jolt-chdb-ambiguous-" ".tar.gz"
