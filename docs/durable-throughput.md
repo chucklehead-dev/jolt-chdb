@@ -631,6 +631,17 @@ until that admission is recorded; the post-timing maximum-row scan walks LF
 offsets in the same array without decoding, splitting, substring allocation, or
 secondary encoding, and the array never enters reports or progress output.
 
+The separate opt-in `run_matched_throughput` job is a batch-size sweep, not a
+replacement for that curve. After the same provider-semantic gate and exact
+compiler/native provenance checks, it invokes one fresh process and unique S3
+prefix for each existing selector: `matched-aws-512`, `matched-aws-1000`,
+`matched-aws-5000`, and `matched-aws-10000`. Those use the fixed matched
+schedules from the local comparison (about 50,000 measured rows per trial) and
+only the two Durable modes; ordinary-native is deliberately not a remote
+result. Each selector receives its own bounded, redaction-checked report and
+log artifact. The path is manual-only, requires the environment-protected OIDC
+role, and never reads local AWS credentials or prints them.
+
 Remote qualification should reuse the environment-protected manual OIDC lane
 and unique run prefix from `durable-aws.yml`; it must not assume local AWS
 credentials. The first curve uses the current single conditional PUT only. No
