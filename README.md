@@ -35,7 +35,7 @@ positional parameter API:
 ```
 
 Jolt 0.8.6 or newer is the base driver floor. Durable mode currently requires
-the pinned `casselc/jolt` `integration/aspects` compiler at commit `bf8a5dde`,
+the pinned `casselc/jolt` `integration/aspects` compiler at commit `57e591d4`,
 or a later release that contains upstream Jolt PR #957. That compiler supplies
 the strict `CharsetDecoder` interop used by recovery. Reader and writer opens
 functionally probe strict decoding and fail before storage or native effects if

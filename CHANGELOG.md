@@ -15,6 +15,13 @@
   pin checks, unique prefixes, and bounded redacted artifacts; no AWS run or
   throughput claim is included in this change.
 
+- Repin hosted Durable compiler provenance to merged `casselc/jolt`
+  `integration/aspects` commit `57e591d4` (banner
+  `jolt v0.8.6-37-g57e591d4`). The installer, cache namespace, guarded
+  workflows, compatibility manifest, throughput fixtures, and user-facing
+  Durable guidance now share that immutable tuple. The base driver floor
+  remains Jolt 0.8.6; this enables no new behavior by itself.
+
 - Repair the Durable throughput-metrics provenance contract and its paired
   documentation to name the actual checked-in `casselc/data.json` revision
   `e7f97a9`. The contract now rejects the immediately prior `97298fd` pin as

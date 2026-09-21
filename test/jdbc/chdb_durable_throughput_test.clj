@@ -59,9 +59,9 @@
         recovery-phase-recorder #'cross-binding/recovery-phase-recorder
         checked-phase-source-sha!
         #'cross-binding/checked-phase-source-sha!
-        clean-runtime {:jolt-version "jolt v0.8.6-599-gbf8a5dde"
+        clean-runtime {:jolt-version "jolt v0.8.6-37-g57e591d4"
                        :jolt-source-sha
-                       "bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95"
+                       "57e591d4d6481c5536858575ffc006cf5a41adbf"
                        :jolt-executable {:bytes 1 :sha256 "jolt-digest"}
                        :started-at "2026-09-11T00:00:00Z"
                        :native-library {:bytes 1 :sha256 "digest"}

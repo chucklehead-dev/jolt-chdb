@@ -54,10 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-bf8a5dde
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-bf8a5dde
-      PINNED_JOLT_SOURCE_SHA: bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95
-      PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6-aspects-57e591d4
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-57e591d4
+      PINNED_JOLT_SOURCE_SHA: 57e591d4d6481c5536858575ffc006cf5a41adbf
+      PINNED_JOLT_VERSION: jolt v0.8.6-37-g57e591d4
       JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER: '1'
     steps:
       - uses: actions/checkout@v4
