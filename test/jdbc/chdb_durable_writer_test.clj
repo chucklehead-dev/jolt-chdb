@@ -340,9 +340,13 @@
   (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
         prepared (chdb/prepare-query sql [])
         quoted-sql "SELECT '?'"
+        escaped-quote-sql "SELECT 'it\\'?'"
+        doubled-quote-sql "SELECT 'it''s ?'"
         line-comment-sql "SELECT 1 -- ?\n"
         block-comment-sql "SELECT /* ? */ 1"
+        nested-block-comment-sql "SELECT /* outer ? /* inner ? */ outer ? */ 1"
         backtick-sql "SELECT `metric?name` FROM `events?table`"
+        double-quoted-identifier-sql "SELECT 1 AS \"metric?name\""
         unbound-error
         (try
           (chdb/prepare-query "SELECT ?" [])
@@ -357,12 +361,32 @@
            true
            (identical? quoted-sql
                        (chdb/prepared-sql (chdb/prepare-query quoted-sql []))))
+    (check "escaped-quote literal question marks retain the original SQL object"
+           true
+           (identical? escaped-quote-sql
+                       (chdb/prepared-sql (chdb/prepare-query escaped-quote-sql []))))
+    (check "doubled-quote literal question marks retain the original SQL object"
+           true
+           (identical? doubled-quote-sql
+                       (chdb/prepared-sql (chdb/prepare-query doubled-quote-sql []))))
     (check "line-comment question marks keep lexical placeholder behavior"
            line-comment-sql
            (chdb/prepared-sql (chdb/prepare-query line-comment-sql [])))
+    (check "line-comment question marks retain the original SQL object"
+           true
+           (identical? line-comment-sql
+                       (chdb/prepared-sql (chdb/prepare-query line-comment-sql []))))
     (check "block-comment question marks keep lexical placeholder behavior"
            block-comment-sql
            (chdb/prepared-sql (chdb/prepare-query block-comment-sql [])))
+    (check "block-comment question marks retain the original SQL object"
+           true
+           (identical? block-comment-sql
+                       (chdb/prepared-sql (chdb/prepare-query block-comment-sql []))))
+    (check "nested block-comment question marks retain the original SQL object"
+           true
+           (identical? nested-block-comment-sql
+                       (chdb/prepared-sql (chdb/prepare-query nested-block-comment-sql []))))
     (check "backtick identifier question marks keep lexical placeholder behavior"
            backtick-sql
            (chdb/prepared-sql (chdb/prepare-query backtick-sql [])))
@@ -370,6 +394,11 @@
            true
            (identical? backtick-sql
                        (chdb/prepared-sql (chdb/prepare-query backtick-sql []))))
+    (check "double-quoted identifier question marks retain the original SQL object"
+           true
+           (identical? double-quoted-identifier-sql
+                       (chdb/prepared-sql
+                        (chdb/prepare-query double-quoted-identifier-sql []))))
     (check "code-position question marks still rewrite typed parameters"
            "SELECT {p1:Int64}"
            (chdb/prepared-sql (chdb/prepare-query "SELECT ?" [42])))
