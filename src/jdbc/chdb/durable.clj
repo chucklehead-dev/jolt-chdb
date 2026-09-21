@@ -852,44 +852,25 @@
            :jdbc.chdb.durable/startup-stage stage}
            cause))
 
-(def ^:private established-control-error-types
-  #{::head/corrupt
-    ::head/protocol-unsupported
-    ::head/limit-exceeded
-    ::head/invalid-mode
-    ::invalid-options
-    ::engine-incompatible
-    ::control/invalid-options
-    ::control/lease-held
-    ::control/lease-fenced
-    ::control/timeout
-    ::control/commit-ambiguous
-    ::control/generation-exhausted})
-
-(defn- established-control-error?
-  "True only for the closed set of established control-path public errors.
-
-  The set covers the head decoder's schema/protocol errors and the validation,
-  compatibility, retry, and lease/precondition outcomes reachable while
-  reading, acquiring, or renewing.  Backend errors—including a hostile error
-  carrying any other durable-looking type—remain stage-local failures."
-  [cause]
-  (contains? established-control-error-types (:type (ex-data cause))))
+(def ^:private closed-startup-stages
+  #{:capability :read-head :acquire-lease :create-scratch
+    :open-native :recover :renew-lease :start-writer})
 
 (defn- at-startup-stage!
   "Run one operational startup call and expose failures at `stage`.
 
-  Validation, compatibility, and precondition checks deliberately remain
-  outside this helper so their established public exceptions remain intact."
-  ([stage f]
-   (at-startup-stage! stage (constantly false) f))
-  ([stage preserve? f]
-   (try
-     (f)
-     (catch Throwable cause
-       (if (preserve? cause)
-         (throw cause)
-         (throw (startup-failed stage cause)))))))
+  The envelope is intentionally total for the operation it owns: even a
+  familiar backend/control category can carry unredacted implementation data.
+  Input validation and compatibility checks that occur *between* operational
+  calls remain outside this helper and retain their established contracts."
+  [stage f]
+  (when-not (contains? closed-startup-stages stage)
+    (throw (IllegalArgumentException.
+            (str "Unknown Durable startup stage: " stage))))
+  (try
+    (f)
+    (catch Throwable cause
+      (throw (startup-failed stage cause)))))
 
 (defn- recover-snapshot!
   "Restore exactly `document`'s manifest into an already opened private handle."
@@ -959,12 +940,12 @@
                         recovery-operation-keys)]
       (required-operation! operations key))
     (let [capability (at-startup-stage!
-                      :durable-capability
+                      :capability
                       #((:durable-capability operations)))]
       (when-not (= :supported (:status capability))
         (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
       (let [snapshot (or (at-startup-stage!
-                          :read-head established-control-error?
+                          :read-head
                           #(control/read-head-read-only! store))
                          (fail! ::not-found "The Durable object does not exist"))
             document (:head snapshot)
@@ -986,7 +967,7 @@
                           :open-native
                           #((:open-native! operations) @scratch)))
           (let [database (at-startup-stage!
-                          :recover-snapshot
+                          :recover
                           #(recover-snapshot!
                             store document operations @scratch @handle))]
             (reader/start!
@@ -1004,7 +985,14 @@
             (throw primary)))))))
 
 (defn open-writer!
-  "Acquire, recover, renew, and return a serialized Durable V1 writer."
+  "Acquire, recover, renew, and return a serialized Durable V1 writer.
+
+  Operational startup failures expose only `::startup-failed` and one closed
+  `:jdbc.chdb.durable/startup-stage` value: `:capability`, `:read-head`,
+  `:acquire-lease`, `:create-scratch`, `:open-native`, `:recover`,
+  `:renew-lease`, or `:start-writer`. The original exception is retained as
+  the cause for in-process diagnostics but its message and data are not copied
+  into the public envelope."
   [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
            heartbeat-interval-ms scratch-parent operations max-attempts
            retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms
@@ -1064,12 +1052,12 @@
               (fail! ::invalid-options
                      "The initial lease expiry lacks renewal headroom in the supported epoch range"))
           store (resolve-store! options)
-          existing (at-startup-stage! :read-head established-control-error?
+          existing (at-startup-stage! :read-head
                                       #(control/read-head! store))]
       (when existing
         (validate-comparison-domain! (:head existing) clock-skew-ms))
       (let [capability (at-startup-stage!
-                        :durable-capability
+                        :capability
                         #((:durable-capability operations)))]
         (when-not (= :supported (:status capability))
           (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
@@ -1085,7 +1073,7 @@
                :await-backoff! (:await-backoff! operations)}
               now-seconds (epoch-ms->seconds now-ms)
               acquired (at-startup-stage!
-                        :acquire-lease established-control-error?
+                        :acquire-lease
                         #(control/acquire!
                           store
                           (merge
@@ -1115,7 +1103,7 @@
                             #((:open-native! operations) @scratch)))
             (let [logical-database
                   (at-startup-stage!
-                   :recover-snapshot
+                   :recover
                    #(recover-snapshot!
                      store document operations @scratch @handle))]
               (let [renew-now (sample-epoch-milliseconds! operations)
@@ -1130,7 +1118,7 @@
                   (fail! ::control/lease-fenced
                          "The Durable writer lease expired during recovery"))
                 (at-startup-stage!
-                 :renew-lease established-control-error?
+                 :renew-lease
                  #(control/renew!
                    store token (epoch-ms->seconds renewed-expiry)
                    (assoc retry-options
@@ -1138,7 +1126,7 @@
                           #(>= (sample-epoch-milliseconds! operations)
                                current-expiry))))
                 (at-startup-stage!
-                 :writer-start
+                 :start-writer
                  #(writer/start!
                    {:store store :token token :handle @handle
                   :database logical-database

@@ -23,6 +23,13 @@
   fingerprint distinguishes prose-only edits from changed generated model
   content. This adds no exhaustive check or runtime behavior claim.
 
+- Publish a closed, redacted Durable startup failure envelope for reader and
+  writer operational phases. The envelope exposes only
+  `::jdbc.chdb.durable/startup-failed` and a closed stage keyword; its original
+  cause remains available only in-process. This covers capability, head, lease,
+  scratch, native-open, recovery, renewal, and writer-start failures without
+  exposing backend paths, owner data, payloads, or exception text (#157).
+
 - Add `execute-and-flush!` at the Durable writer and JDBC extension boundaries.
   It performs one fully materialized mutation and its confirmed/reconciled V1
   publication as a single FIFO worker request, so another shared-writer caller

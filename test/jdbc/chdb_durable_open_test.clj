@@ -156,6 +156,8 @@
            data)
     (check (str label " retains the immediate original cause")
            true (identical? cause (some-> error .getCause)))
+    (check (str label " keeps the public exception message redacted")
+           "Durable startup failed" (some-> error .getMessage))
     (check (str label " does not copy cause ex-data into the public envelope")
            false (contains? data :private-cause-data))))
 
@@ -173,18 +175,26 @@
         (fn [calls clocks close-count cleanup-count]
           (support/fake-open-operations calls clocks close-count cleanup-count))]
     (with-redefs-fn
-      {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)
-       #'writer/require-wal-byte-writer-capability! (constantly true)}
+      {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)}
       (fn []
-        (let [cause (startup-cause :durable-capability)
+        (let [cause (startup-cause :capability)
               calls (atom [])
               operations (assoc (base-reader-operations calls (atom [0M])
                                                         (atom 0) (atom 0))
                                 :durable-capability (fn [] (throw cause)))]
           (check-startup-envelope!
-           "reader capability failure" :durable-capability cause
+           "reader capability failure" :capability cause
            #(durable/open-reader! {:store (prepared-wal-store)
                                    :operations operations})))
+
+        (let [cause (startup-cause :capability)
+              operations (assoc (base-reader-operations (atom []) (atom [0M])
+                                                       (atom 0) (atom 0))
+                                :durable-capability (fn [] (throw cause)))]
+          (check-startup-envelope!
+           "writer capability failure" :capability cause
+           #(durable/open-writer!
+             (writer-open-options (backend/memory-backend) operations))))
 
         (let [cause (startup-cause :read-head)
               calls (atom [])
@@ -195,6 +205,14 @@
              #(durable/open-reader! {:store (prepared-wal-store)
                                      :operations operations}))))
 
+        (let [cause (startup-cause :read-head)
+              operations (base-reader-operations (atom []) (atom [0M]) (atom 0) (atom 0))]
+          (with-redefs [control/read-head! (fn [_] (throw cause))]
+            (check-startup-envelope!
+             "writer head read failure" :read-head cause
+             #(durable/open-writer!
+               (writer-open-options (backend/memory-backend) operations)))))
+
         (let [store (backend/memory-backend)
               _ (backend/put-bytes-if-absent!
                  store control/head-key (.getBytes "{" "UTF-8"))
@@ -203,11 +221,12 @@
                        {:store store
                         :operations (base-reader-operations
                                      (atom []) (atom [0M]) (atom 0) (atom 0))}))]
-          (check "malformed head remains the established decode error"
-                 ::head/corrupt (:type (ex-data error)))
-          (check "malformed head does not acquire a startup stage"
-                 false (contains? (ex-data error)
-                                  :jdbc.chdb.durable/startup-stage)))
+          (check "malformed head is a closed read stage failure"
+                 {:type ::durable/startup-failed
+                  :jdbc.chdb.durable/startup-stage :read-head}
+                 (ex-data error))
+          (check "malformed head retains its private decode cause in-process"
+                 ::head/corrupt (:type (some-> error .getCause ex-data))))
 
         (let [store (prepared-wal-store)
               current (backend/get-with-etag store control/head-key)
@@ -222,11 +241,13 @@
                        {:store store
                         :operations (base-reader-operations
                                      (atom []) (atom [0M]) (atom 0) (atom 0))}))]
-          (check "unsupported head protocol remains the established protocol error"
-                 ::head/protocol-unsupported (:type (ex-data error)))
-          (check "unsupported head protocol does not acquire a startup stage"
-                 false (contains? (ex-data error)
-                                  :jdbc.chdb.durable/startup-stage)))
+          (check "unsupported head protocol is a closed read stage failure"
+                 {:type ::durable/startup-failed
+                  :jdbc.chdb.durable/startup-stage :read-head}
+                 (ex-data error))
+          (check "unsupported head protocol retains its private cause in-process"
+                 ::head/protocol-unsupported
+                 (:type (some-> error .getCause ex-data))))
 
         (let [cause (startup-cause :create-scratch)
               calls (atom [])
@@ -258,7 +279,7 @@
 
         (let [cause (ex-info "private corrupt recovery failure"
                              {:type ::durable/corrupt
-                              :private-cause-data :recover-snapshot})
+                              :private-cause-data :recover})
               calls (atom [])
               close-count (atom 0)
               cleanup-count (atom 0)
@@ -266,7 +287,7 @@
                                                        close-count cleanup-count)
                                 :create-database! (fn [_ _] (throw cause)))]
           (check-startup-envelope!
-           "reader corrupt recovery failure" :recover-snapshot cause
+           "reader corrupt recovery failure" :recover cause
            #(durable/open-reader! {:store (prepared-wal-store)
                                    :operations operations}))
           (check "reader recovery failure closes native state then cleans scratch"
@@ -280,6 +301,36 @@
              "writer lease acquisition failure" :acquire-lease cause
              #(durable/open-writer!
                (writer-open-options (backend/memory-backend) operations)))))
+
+        (let [cause (startup-cause :open-native)
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              store (backend/memory-backend)
+              operations (assoc (base-reader-operations (atom []) (atom [0M])
+                                                        close-count cleanup-count)
+                                :open-native! (fn [_] (throw cause)))]
+          (check-startup-envelope!
+           "writer native open failure" :open-native cause
+           #(durable/open-writer! (writer-open-options store operations)))
+          (check "writer native open failure releases its lease and cleans scratch"
+                 [0 1 nil]
+                 [@close-count @cleanup-count
+                  (get-in (:head (control/read-head! store)) ["lease" "owner"])]))
+
+        (let [cause (startup-cause :recover)
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              store (backend/memory-backend)
+              operations (assoc (base-reader-operations (atom []) (atom [0M])
+                                                        close-count cleanup-count)
+                                :create-database! (fn [_ _] (throw cause)))]
+          (check-startup-envelope!
+           "writer recovery failure" :recover cause
+           #(durable/open-writer! (writer-open-options store operations)))
+          (check "writer recovery failure closes, releases, and cleans"
+                 [1 1 nil]
+                 [@close-count @cleanup-count
+                  (get-in (:head (control/read-head! store)) ["lease" "owner"])]))
 
         (let [operations (base-reader-operations (atom []) (atom [0M])
                                                  (atom 0) (atom 0))
@@ -295,16 +346,16 @@
                         :max-attempts 1
                         :retry-initial-backoff-ms 2
                         :retry-max-backoff-ms 1)))]
-          (check "acquire validation remains the established control error"
-                 ::control/invalid-options (:type (ex-data acquire-error)))
-          (check "acquire validation does not acquire a startup stage"
-                 false (contains? (ex-data acquire-error)
-                                  :jdbc.chdb.durable/startup-stage))
-          (check "retry validation remains the established control error"
-                 ::control/invalid-options (:type (ex-data retry-error)))
-          (check "retry validation does not acquire a startup stage"
-                 false (contains? (ex-data retry-error)
-                                  :jdbc.chdb.durable/startup-stage)))
+          (doseq [[label error]
+                  [["acquire validation" acquire-error]
+                   ["retry validation" retry-error]]]
+            (check (str label " is a closed acquire stage failure")
+                   {:type ::durable/startup-failed
+                    :jdbc.chdb.durable/startup-stage :acquire-lease}
+                   (ex-data error))
+            (check (str label " retains its private control cause in-process")
+                   ::control/invalid-options
+                   (:type (some-> error .getCause ex-data)))))
 
         (letfn [(renew-error [cause]
                   (let [operations
@@ -315,19 +366,14 @@
                        #(durable/open-writer!
                          (writer-open-options (backend/memory-backend)
                                               operations))))))]
-          (doseq [[label cause expected-type]
+          (doseq [[label cause]
                   [["lease-fenced renewal"
-                    (ex-info "lease fenced" {:type ::control/lease-fenced})
-                    ::control/lease-fenced]
+                    (ex-info "lease fenced" {:type ::control/lease-fenced})]
                    ["timeout renewal"
-                    (ex-info "renewal timed out" {:type ::control/timeout})
-                    ::control/timeout]]]
+                    (ex-info "renewal timed out" {:type ::control/timeout})]]]
             (let [error (renew-error cause)]
-              (check (str label " remains the established control error")
-                     expected-type (:type (ex-data error)))
-              (check (str label " does not acquire a startup stage")
-                     false (contains? (ex-data error)
-                                      :jdbc.chdb.durable/startup-stage)))))
+              (check-startup-envelope!
+               label :renew-lease cause #(throw error)))))
 
         (let [cause (ex-info "hostile typed backend failure"
                              {:type :jdbc.chdb.durable/hostile-backend-failure
@@ -347,7 +393,7 @@
                  [@close-count @cleanup-count
                   (get-in (:head (control/read-head! store)) ["lease" "owner"])]))
 
-        (let [cause (startup-cause :writer-start)
+        (let [cause (startup-cause :start-writer)
               calls (atom [])
               close-count (atom 0)
               cleanup-count (atom 0)
@@ -369,7 +415,7 @@
                                            (swap! ordering conj :release)
                                            (release! release-store token))]
             (check-startup-envelope!
-             "writer start failure" :writer-start cause
+             "writer start failure" :start-writer cause
              #(durable/open-writer! (writer-open-options store operations))))
           (check "writer start failure keeps close, release, cleanup ordering"
                  [:close :release :cleanup] @ordering))
@@ -770,7 +816,9 @@
           (finally (writer/close! opened))))
       (catch Throwable error
         {:capture (captured-heads head-writes)
-         :error (select-keys (ex-data error) [:type :path])}))))
+         :error (select-keys (ex-data error)
+                             [:type :path :jdbc.chdb.durable/startup-stage])
+         :cause-error (some-> error .getCause ex-data)}))))
 
 (defn- prepared-checkpoint-store []
   (let [store (backend/memory-backend)
@@ -1006,7 +1054,7 @@
             (and (= expected-shape actual-shape)
                  schema-valid?
                  (= ::durable/startup-failed (:error result))
-                 (= :recover-snapshot (:startup-stage result))
+                 (= :recover (:startup-stage result))
                  (= ::durable/corrupt (:cause-error result))
                  (empty? reached)
                  (= [1 1] [(:close-count result) (:cleanup-count result)])
@@ -1022,7 +1070,7 @@
                     " as a public recovery-stage startup failure")
                ::durable/startup-failed (:error result))
         (check (str (name mode) " preserves corrupt as the immediate recovery cause")
-               [::durable/corrupt :recover-snapshot]
+               [::durable/corrupt :recover]
                [(:cause-error result) (:startup-stage result)])
         (check (str (name mode) " " (name fault) " " (name kind)
                     " verification prevents restore or replay")
@@ -1120,9 +1168,13 @@
            [mutant-first]
            (filterv some? (get-in mutant [:capture :expires-at])))
     (check "identity mutant fails at the bounded wire lease-time category"
+           {:type ::durable/startup-failed
+            :jdbc.chdb.durable/startup-stage :renew-lease}
+           (:error mutant))
+    (check "identity mutant retains the bounded wire lease-time cause in-process"
            {:type :jdbc.chdb.durable.head/corrupt
             :path ["lease" "expires_at"]}
-           (:error mutant)))
+           (:cause-error mutant)))
 
   (let [store (prepared-released-engine-store
                {:version "26.6.0" :backup-format 0 :min-reader "26.6.0"})
