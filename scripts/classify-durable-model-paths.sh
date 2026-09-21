@@ -19,6 +19,7 @@ is_exhaustive_input() {
     formal/*.smt2 | formal/**/*.smt2 | \
     formal/quint/* | formal/quint/**/* | \
     scripts/check-durable-head-quint.sh | \
+    scripts/check-durable-file-wal-spool-quint.sh | \
     scripts/check-durable-head-itf-corpus.sh | \
     scripts/generate-durable-head-itf.sh | \
     scripts/generate-durable-engine-metadata-itf.sh | \
@@ -129,7 +130,8 @@ case "$mode" in
         case "$path" in
           formal/quint/durable-head-cas.md | \
           formal/quint/durable-writer-lifecycle.md | \
-          formal/quint/native-process-lifecycle.md) saw_literate=true ;;
+          formal/quint/native-process-lifecycle.md | \
+          formal/quint/durable-file-wal-spool.md) saw_literate=true ;;
           README.md | CHANGELOG.md) ;;
           *) literate_only=false ;;
         esac

@@ -23,6 +23,7 @@ on:
       - scripts/generate-native-process-lifecycle-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
+      - scripts/check-durable-file-wal-spool-quint.sh
       - test/durable-model-path-classifier.sh
       - deps.edn
       - src/jdbc/chdb/durable.clj
@@ -48,6 +49,7 @@ on:
       - scripts/generate-native-process-lifecycle-itf.sh
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
+      - scripts/check-durable-file-wal-spool-quint.sh
       - test/durable-model-path-classifier.sh
       - deps.edn
       - src/jdbc/chdb/durable.clj

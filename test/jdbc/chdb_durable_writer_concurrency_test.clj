@@ -135,13 +135,13 @@
                (let [result (control/renew! store token expiry retry-options)]
                  (deliver heartbeat-renewed result)
                  result))
-             :publish-wal!
-             (fn [store token payload]
+             :publish-wal-file!
+             (fn [store token path]
                (swap! calls conj :publish-begin)
                (deliver publish-entered true)
                @release-publish
                (swap! calls conj :publish-end)
-               (control/publish-wal-bytes! store token payload))
+               (control/publish-wal-file! store token path))
              :commit-reference!
              (fn [store token request]
                (swap! calls conj :commit)
@@ -511,7 +511,7 @@
         (assoc (fake-operations (atom []) (atom 0))
                :now-ms (fn [] @now)
                :await-heartbeat! (fn [stop _] @stop :stop)
-               :publish-wal!
+               :publish-wal-file!
                (fn [_ _ _]
                  (reset! observed-context (backend/operation-context))
                  (backend/operation-stopped!)))
@@ -560,7 +560,7 @@
                :now-ms (fn [] @now)
                :await-heartbeat! (fn [stop _] @stop :stop)
                :cleanup-scratch! #(swap! cleanup-count inc)
-               :publish-wal!
+               :publish-wal-file!
                (fn [_ _ _]
                  (backend/get-bytes transport-store "head.json")))
         durable-writer
@@ -638,11 +638,11 @@
          (fake-operations (atom []) close-count)
          :now-ms (fn [] 100M)
          :await-heartbeat! (fn [stop _] @stop :stop)
-         :publish-wal!
-         (fn [store token payload]
+         :publish-wal-file!
+         (fn [store token path]
            (deliver publish-entered true)
            @release-publish
-           (control/publish-wal-bytes! store token payload)))
+           (control/publish-wal-file! store token path)))
         durable-writer
         (writer/start!
          {:store store :token (:token acquired) :handle :fake-handle

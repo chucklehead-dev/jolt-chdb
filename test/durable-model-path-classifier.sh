@@ -167,6 +167,7 @@ for path in \
   formal/quint/traces/native-process-terminal.itf.json \
   formal/quint/traces/native-process-options.itf.json \
   scripts/check-durable-head-quint.sh \
+  scripts/check-durable-file-wal-spool-quint.sh \
   scripts/check-durable-head-itf-corpus.sh \
   scripts/generate-durable-head-itf.sh \
   scripts/generate-durable-engine-metadata-itf.sh \
@@ -277,6 +278,14 @@ effective_repo="$fixture_root/effective"
 mkdir -p "$effective_repo"
 git archive HEAD formal scripts .github/workflows/durable-head-quint.yml | \
   tar -x -C "$effective_repo"
+# `git archive HEAD` intentionally excludes this branch's uncommitted new
+# literate source while this self-test is run before the implementation commit.
+# Copy it explicitly so the isolated effective-input fixture represents the
+# same declared inventory the fingerprinter validates.
+cp "$repo_root/formal/quint/durable-file-wal-spool.md" \
+  "$effective_repo/formal/quint/durable-file-wal-spool.md"
+cp "$repo_root/scripts/check-durable-file-wal-spool-quint.sh" \
+  "$effective_repo/scripts/check-durable-file-wal-spool-quint.sh"
 git -C "$effective_repo" init -q
 git -C "$effective_repo" config user.name "model classifier test"
 git -C "$effective_repo" config user.email "model-classifier@example.invalid"

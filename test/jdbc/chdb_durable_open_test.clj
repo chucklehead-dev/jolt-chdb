@@ -382,7 +382,7 @@
                (fn [handle sql params]
                  (swap! execute-effects inc)
                  ((:execute-native! base-operations) handle sql params))
-               :publish-wal!
+               :publish-wal-file!
                (fn [_ _ _]
                  (swap! flush-effects inc)
                  (throw (ex-info "fenced flush reached publication"

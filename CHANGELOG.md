@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Stage pending Durable WAL segments in private, scalar-accounted files below
+  the recovered engine scratch directory. Sealed publication retries fence all
+  new mutations before preparation or native execution, while read-only SQL
+  remains available; successful head commits clear spool state before
+  best-effort local deletion. The literate Quint spool lifecycle and its
+  mutants now run in the Durable formal CI boundary. This does not claim local
+  crash durability, fsync semantics, or S3/provider qualification.
+
 - Make the Typed Clojure CI bootstrap deterministic: install the immutable
   Clojure CLI 1.12.4.1582 archive from its checksum-attested release artifact
   with bounded download retries, then assert the installed CLI provenance
