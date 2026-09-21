@@ -29,5 +29,11 @@ code=$?
 set -e
 printf '%s\n' "$code" > "$receipt/parent.exit"
 test "$code" = 0
+if [[ "$profile" == matched-local-512 || "$profile" == matched-aws-512 ]]; then
+  grep -Eq ':encoding-inclusive-512-acceptance[[:space:]]+\{:status :passed' "$receipt/result.edn" || {
+    echo "Durable encoding-inclusive 512 acceptance receipt is not passing" >&2
+    exit 1
+  }
+fi
 sha256sum -c "$receipt/source-before.sha256" > "$receipt/source-parity.stdout"
 # No cleanup or environment dump: failure stores and child scratch persist.

@@ -1257,6 +1257,67 @@
    :matched-aws-512 [:aws-s3 512] :matched-aws-1000 [:aws-s3 1000]
    :matched-aws-5000 [:aws-s3 5000] :matched-aws-10000 [:aws-s3 10000]})
 
+(def ^:private encoding-inclusive-512-acceptance-profiles
+  #{:qualification :scale-512 :matched-local-512 :matched-aws-512})
+
+(def ^:private encoding-inclusive-512-acceptance-target
+  {:sample-count 500 :p50-max-ms 20.48 :p99-max-ms 25.60})
+
+(defn- finite-number? [value]
+  (and (number? value)
+       (not (Double/isNaN (double value)))
+       (not (Double/isInfinite (double value)))))
+
+(defn encoding-inclusive-512-acceptance
+  "Pure, structured acceptance evidence for the Durable encoding-inclusive
+  512-row path.  This intentionally judges only the selected summary, never
+  raw samples or a provider descriptor.  A malformed/incomplete report is
+  not a passing result: it is explicitly `:not-qualified` so the persisted
+  receipt says why it did not establish the performance target."
+  [profile configurations]
+  (if-not (contains? encoding-inclusive-512-acceptance-profiles profile)
+    {:status :not-applicable}
+    (let [target encoding-inclusive-512-acceptance-target
+          candidates
+          (filterv (fn [{:keys [configuration summaries]}]
+                     (and (= 512 (get-in configuration [:batch-size]))
+                          (contains? summaries :durable-encode-included)))
+                   configurations)]
+      (if-not (= 1 (count candidates))
+        {:status :not-qualified :reason :missing-or-ambiguous-encoding-inclusive-512
+         :target target}
+        (let [latency (get-in (first candidates)
+                              [:summaries :durable-encode-included
+                               :batch-latency-across-trials])
+              observed (select-keys latency [:count :p99-qualification?
+                                             :p50-ms :p99-ms])
+              qualified-shape?
+              (and (= (:sample-count target) (:count latency))
+                   (true? (:p99-qualification? latency))
+                   (finite-number? (:p50-ms latency))
+                   (finite-number? (:p99-ms latency)))]
+          (cond
+            (not qualified-shape?)
+            {:status :not-qualified :reason :incomplete-latency-qualification
+             :target target :observed observed}
+
+            (and (<= (:p50-ms latency) (:p50-max-ms target))
+                 (<= (:p99-ms latency) (:p99-max-ms target)))
+            {:status :passed :target target :observed observed}
+
+            :else
+            {:status :failed :reason :latency-target-missed
+             :target target :observed observed}))))))
+
+(defn- require-encoding-inclusive-512-acceptance! [acceptance]
+  ;; Called only after the final report has been written.  The exception is a
+  ;; stable category, while the report retains the bounded numerical receipt.
+  (when (contains? #{:failed :not-qualified} (:status acceptance))
+    (throw (ex-info "Durable encoding-inclusive 512 acceptance target missed"
+                    {:type (if (= :failed (:status acceptance))
+                             ::acceptance-target-missed
+                             ::acceptance-not-qualified)}))))
+
 (defn- aws-matched-profile? [profile]
   (= :aws-s3 (first (get matched-profiles profile))))
 
@@ -2044,6 +2105,12 @@
       (finally
         (when-not *worker-descriptor* (delete-tree! root-file))))))
 
+(defn- persist-final-report-and-enforce! [output final-report acceptance]
+  ;; Keep this small ordering boundary independently testable: callers retain
+  ;; the complete bounded receipt even when the acceptance result fails.
+  (spit output (str (pr-str final-report) "\n"))
+  (require-encoding-inclusive-512-acceptance! acceptance))
+
 (defn -main [& [profile-text output worker-result]]
   (if (= profile-text "--worker")
     (try
@@ -2069,11 +2136,17 @@
                         (println (pr-str
                                   (select-keys event [:phase :epoch-ms])))))
               report (binding [*progress!* emit!] (run! profile))
-              final-report (assoc report :phase-log (:phases @progress))]
+              acceptance (encoding-inclusive-512-acceptance
+                          profile (:configurations report))
+              final-report (cond-> (assoc report :phase-log (:phases @progress))
+                             (not= :not-applicable (:status acceptance))
+                             (assoc :encoding-inclusive-512-acceptance acceptance))]
           (when (remote-s3-profile? profile)
             (provider-metrics/assert-redacted!
              final-report "" "" (evidence-canaries)))
-          (spit output (str (pr-str final-report) "\n"))
+          ;; Receipt first: an unmet gate remains inspectable, with the same
+          ;; provenance, redaction, timing, and RSS artifacts as a pass.
+          (persist-final-report-and-enforce! output final-report acceptance)
           (println (pr-str {:status :ok :profile profile :output output
                            :configurations
                            (mapv (fn [result]

@@ -258,6 +258,9 @@ jobs:
             raw_log_bytes=$(wc -c < "$raw_log")
             head -c 8388608 "$raw_log" > "$log"
             scripts/check-durable-throughput-artifacts.sh "$report" "$log"
+            if [[ "$selector" == matched-aws-512 ]]; then
+              grep -Eq ':encoding-inclusive-512-acceptance[[:space:]]+\{:status :passed' "$report"
+            fi
             test "$raw_log_bytes" -le 8388608
             test "$run_status" -eq 0
           done

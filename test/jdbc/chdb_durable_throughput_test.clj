@@ -29,6 +29,9 @@
         empty-expected @#'throughput/empty-expected-aggregates
         accumulate-expected-batch #'throughput/accumulate-expected-batch
         parse-profile! #'throughput/parse-profile!
+        acceptance #'throughput/encoding-inclusive-512-acceptance
+        persist-final-report-and-enforce!
+        #'throughput/persist-final-report-and-enforce!
         validate-profile-configs! #'throughput/validate-profile-configs!
         provenance! #'throughput/require-qualification-provenance!
         latency-summary #'throughput/latency-summary
@@ -64,6 +67,80 @@
                        :native-library {:bytes 1 :sha256 "digest"}
                        :git {:head "head" :parent "parent" :tree "tree"
                              :status "clean"}}]
+    (let [configuration
+          (fn [count p99-qualified? p50 p99]
+            {:configuration {:batch-size 512}
+             :summaries
+             {:durable-encode-included
+              {:batch-latency-across-trials
+               {:count count :p99-qualification? p99-qualified?
+                :p50-ms p50 :p99-ms p99}}}})]
+      (check "encoding-inclusive 512 acceptance is green at both boundaries"
+             :passed
+             (:status (acceptance :scale-512
+                                  [(configuration 500 true 20.48 25.60)])))
+      (check "encoding-inclusive 512 acceptance is red above either boundary"
+             :failed
+             (:status (acceptance :matched-local-512
+                                  [(configuration 500 true 20.4801 25.60)])))
+      (check "encoding-inclusive 512 acceptance is red above the p99 boundary"
+             :failed
+             (:status (acceptance :matched-aws-512
+                                  [(configuration 500 true 20.48 25.6001)])))
+      (check "encoding-inclusive 512 acceptance rejects an unqualified p99"
+             :not-qualified
+             (:status (acceptance :matched-aws-512
+                                  [(configuration 500 false 10.0 10.0)])))
+      (check "encoding-inclusive 512 acceptance requires exactly five hundred samples"
+             :not-qualified
+             (:status (acceptance :qualification
+                                  [(configuration 499 true 10.0 10.0)])))
+      (check "non-512 scale selectors remain non-gating"
+             :not-applicable
+             (:status (acceptance :scale-1000
+                                  [(configuration 1 false 99.0 99.0)]))))
+    (let [receipt (java.io.File/createTempFile "durable-acceptance-" ".edn")
+          failed {:status :failed :reason :latency-target-missed
+                  :target {:sample-count 500}
+                  :observed {:count 500 :p99-qualification? true
+                             :p50-ms 20.49 :p99-ms 25.60}}
+          failure (try
+                    (persist-final-report-and-enforce!
+                     (.getAbsolutePath receipt)
+                     {:schema-version 2
+                      :encoding-inclusive-512-acceptance failed}
+                     failed)
+                    nil
+                    (catch Throwable error error))]
+      (try
+        (check "acceptance miss fails only after its receipt is persisted"
+               :jdbc.chdb-durable-throughput/acceptance-target-missed
+               (:type (ex-data failure)))
+        (check "failed acceptance receipt retains the bounded structured result"
+               failed
+               (:encoding-inclusive-512-acceptance
+                (clojure.edn/read-string (slurp receipt))))
+        (finally (.delete receipt))))
+    (let [selector-wrapper (slurp "scripts/run-durable-throughput-selector.sh")
+          matched-wrapper (slurp "scripts/benchmark-durable-matched-provider.sh")
+          aws-workflow (slurp ".github/workflows/durable-aws.yml")]
+      (check "local 512 wrapper verifies the persisted acceptance receipt before exit"
+             true
+             (and (str/includes? selector-wrapper "selector\" == scale-512")
+                  (str/includes? selector-wrapper
+                                 ":encoding-inclusive-512-acceptance")
+                  (str/includes? selector-wrapper
+                                 "scripts/check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
+      (check "matched wrappers gate only their 512 selectors"
+             true
+             (and (str/includes? matched-wrapper "matched-local-512")
+                  (str/includes? matched-wrapper "matched-aws-512")
+                  (not (str/includes? matched-wrapper "matched-local-1000 ||"))))
+      (check "AWS matched workflow persists artifacts and checks only AWS 512 acceptance"
+             true
+             (and (str/includes? aws-workflow "scripts/check-durable-throughput-artifacts.sh \"$report\" \"$log\"")
+                  (str/includes? aws-workflow "selector\" == matched-aws-512")
+                  (str/includes? aws-workflow ":encoding-inclusive-512-acceptance"))))
     (check "scale profile fixes the requested batch sweep"
            [[512 100 5] [1000 50 5] [5000 10 5] [10000 5 5]]
            (mapv (juxt :batch-size :batches :trials)
