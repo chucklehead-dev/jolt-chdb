@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Repair the Durable throughput-metrics provenance contract and its paired
+  documentation to name the actual checked-in `casselc/data.json` revision
+  `e7f97a9`. The contract now rejects the immediately prior `97298fd` pin as
+  well as the earlier reader pin; this is qualification metadata only and does
+  not alter the benchmark workload, measurements, or Durable behavior.
+
 - Stage pending Durable WAL segments in private, scalar-accounted files below
   the recovered engine scratch directory. Sealed publication retries fence all
   new mutations before preparation or native execution, while read-only SQL
