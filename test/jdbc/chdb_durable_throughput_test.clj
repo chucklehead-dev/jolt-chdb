@@ -47,6 +47,7 @@
         stage-metrics #'throughput/stage-metrics
         attribution-events #'throughput/attribution-events
         stage-values #'throughput/stage-values
+        expected-writer-stage-calls #'throughput/expected-writer-stage-calls
         stage-report #'throughput/stage-report
         stage-attribution! #'throughput/stage-attribution!
         admission-attribution-stages @#'throughput/admission-attribution-stages
@@ -108,6 +109,20 @@
       (check "stage timing omits its private event ledger from child handoff values"
              {}
              (stage-values metrics)))
+    (check "file-WAL stage smoke requires creation and commit verification"
+           {:wal-immutable-verify 2 :backend/put-file-if-absent 1}
+           (select-keys
+            (expected-writer-stage-calls {:selector :stage-smoke
+                                          :encode-included? false}
+                                         1)
+            [:wal-immutable-verify :backend/put-file-if-absent]))
+    (check "ordinary writer stages do not claim file-WAL verification phases"
+           {:wal-immutable-verify nil :backend/put-file-if-absent 1}
+           (let [calls (expected-writer-stage-calls {:selector :scale-512
+                                                     :encode-included? false}
+                                                    1)]
+             {:wal-immutable-verify (:wal-immutable-verify calls)
+              :backend/put-file-if-absent (:backend/put-file-if-absent calls)}))
     (check "staged recovery selectors are bounded 512-row fresh-process workloads"
            [[:recovery-512-10 512 10 0 1 [:durable-preencoded]]
             [:recovery-512-25 512 25 0 1 [:durable-preencoded]]
@@ -385,8 +400,8 @@
                   :prepare-query {:nanos 30}
                   :native-classify {:nanos 40}
                   :native-execute {:nanos 50}
-                  :backend/put-bytes-if-absent {:nanos 60}
-                  :backend/get-bytes {:nanos 70}
+                  :backend/put-file-if-absent {:nanos 60}
+                  :backend/download-to-file {:nanos 70}
                   :backend/get-with-etag {:nanos 80}
                   :backend/replace-if-match {:nanos 90}}
           admission (stage-attribution! :admission 200 stages
@@ -402,10 +417,10 @@
                                          [:finish :native-execute]]
                                         admission-attribution-stages)
           flush (stage-attribution! :flush 400 stages
-                                    [[:start :backend/put-bytes-if-absent]
-                                     [:finish :backend/put-bytes-if-absent]
-                                     [:start :backend/get-bytes]
-                                     [:finish :backend/get-bytes]
+                                    [[:start :backend/put-file-if-absent]
+                                     [:finish :backend/put-file-if-absent]
+                                     [:start :backend/download-to-file]
+                                     [:finish :backend/download-to-file]
                                      [:start :backend/get-with-etag]
                                      [:finish :backend/get-with-etag]
                                      [:start :backend/replace-if-match]

@@ -25,7 +25,8 @@
             [jolt.ffi :as ffi]
             [jolt.host :as host]
             [jolt.process :as process])
-  (:import [java.io File]))
+  (:import [java.io File]
+           [java.nio.file Files]))
 
 (def ^:private logs-ddl
   "CREATE TABLE otel_logs (
@@ -223,7 +224,7 @@
 
 (def ^:private attribution-stage-keys
   #{:data-json :exporter-materialization :prepare-query :native-classify
-    :native-execute :backend/put-bytes-if-absent :backend/get-bytes
+    :native-execute :backend/put-file-if-absent :backend/download-to-file
     :backend/get-with-etag :backend/replace-if-match})
 
 (def ^:private attribution-events-key ::attribution-events)
@@ -239,6 +240,29 @@
 
 (defn- stage-values [metrics]
   (dissoc @metrics attribution-events-key))
+
+(defn- expected-writer-stage-calls
+  "Return the exact measured writer-stage cardinalities for one configuration.
+
+  File-WAL publication verifies a created immutable object before returning
+  from publication, then `commit-reference!` verifies it again before the
+  head CAS.  The second verification is intentional: it makes the commit
+  boundary independently fail closed.  The old byte-WAL path verifies only at
+  commit time, so keep that one-call baseline outside the file-WAL selectors."
+  [{:keys [selector encode-included?]} batches]
+  (cond-> {:prepare-query batches :native-classify batches
+           :native-execute batches
+           :backend/put-file-if-absent 1
+           :backend/replace-if-match 1}
+    (contains? #{:stage-512 :stage-smoke} selector)
+    (assoc :wal-prepare batches
+           :wal-append batches
+           :wal-join 1
+           :wal-immutable-put 1
+           :wal-immutable-verify 2
+           :wal-head-cas 1)
+    encode-included?
+    (assoc :data-json batches :exporter-materialization batches)))
 
 (defn- reset-stage-metrics! [metrics]
   (let [events (attribution-events metrics)]
@@ -289,8 +313,8 @@
    [:writer/native-execute :native-execute]])
 
 (def ^:private flush-attribution-stages
-  [[:backend/put-immutable-wal :backend/put-bytes-if-absent]
-   [:backend/verify-immutable-wal :backend/get-bytes]
+  [[:backend/put-immutable-wal :backend/put-file-if-absent]
+   [:backend/verify-immutable-wal :backend/download-to-file]
    [:backend/read-head :backend/get-with-etag]
    [:backend/compare-and-swap-head :backend/replace-if-match]])
 
@@ -381,7 +405,10 @@
       (timed-stage metrics :backend/get-with-etag 0
                    #(backend/get-with-etag delegate key)))
     (put-file-if-absent! [_ key path]
-      (timed-stage metrics :backend/put-file-if-absent 0
+      ;; The Phase 2 writer supplies its sealed WAL file.  Measure its scalar
+      ;; file size, not content, so stage-byte accounting remains comparable
+      ;; to the old byte-array publication without retaining payload bytes.
+      (timed-stage metrics :backend/put-file-if-absent (Files/size path)
                    #(backend/put-file-if-absent! delegate key path)))
     (put-bytes-if-absent! [_ key bytes]
       (timed-stage metrics :backend/put-bytes-if-absent (alength bytes)
@@ -434,13 +461,14 @@
 
 (defn- instrumentation-contract! []
   (let [operations (timed-operations (atom {}))]
-    (when (contains? operations :publish-wal!)
+    (when (or (contains? operations :publish-wal!)
+              (contains? operations :publish-wal-file!))
       (throw (ex-info
               "benchmark must retain the production retry-aware WAL publisher"
-              {:operation :publish-wal!})))
+              {:operation :publish-wal-file!})))
     {:publish-wal-operation :production
      :retry-options :writer-owned
-     :publication-observation [:backend/put-bytes-if-absent
+     :publication-observation [:backend/put-file-if-absent
                                :backend/replace-if-match]}))
 
 (defn- delete-tree! [^File root]
@@ -901,20 +929,7 @@
                   (throw (ex-info "Durable measured flush did not persist"
                                   {:type ::flush-failed})))
               stage-values (stage-values metrics)
-              expected-stage-calls
-              (cond-> {:prepare-query batches :native-classify batches
-                       :native-execute batches
-                       :backend/put-bytes-if-absent 1
-                       :backend/replace-if-match 1}
-                (contains? #{:stage-512 :stage-smoke} (:selector options))
-                (assoc :wal-prepare batches
-                       :wal-append batches
-                       :wal-join 1
-                       :wal-immutable-put 1
-                       :wal-immutable-verify 1
-                       :wal-head-cas 1)
-                encode-included?
-                (assoc :data-json batches :exporter-materialization batches))
+              expected-stage-calls (expected-writer-stage-calls options batches)
               actual-stage-calls
               (into {} (map (fn [[stage entry]] [stage (:calls entry)]))
                     stage-values)
@@ -925,7 +940,7 @@
                                      :actual actual-stage-calls}))))
               _ (when-not (= (:pending-wal-bytes pending)
                              (get-in stage-values
-                                     [:backend/put-bytes-if-absent :bytes]))
+                                     [:backend/put-file-if-absent :bytes]))
                   (throw (ex-info "published WAL byte count mismatch"
                                   {:pending pending :stages stage-values})))
               admission-attribution
