@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a separately opt-in, OIDC-only AWS S3 matched-batch qualification lane
+  for the existing 512, 1,000, 5,000, and 10,000-row Durable selectors. It
+  preserves the independent 512-row measured-WAL curve, exact compiler/native
+  pin checks, unique prefixes, and bounded redacted artifacts; no AWS run or
+  throughput claim is included in this change.
+
 - Repair the Durable throughput-metrics provenance contract and its paired
   documentation to name the actual checked-in `casselc/data.json` revision
   `e7f97a9`. The contract now rejects the immediately prior `97298fd` pin as

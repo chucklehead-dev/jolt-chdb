@@ -371,6 +371,22 @@
                 (str/includes?
                  workflow
                  "inputs.run_throughput && needs.s3-provider.result == 'success'")))
+    (check "matched sweep is separately opt-in after provider qualification"
+           true
+           (and (str/includes? workflow "run_matched_throughput:")
+                (str/includes?
+                 workflow
+                 "inputs.run_matched_throughput && needs.s3-provider.result == 'success'")
+                (str/includes? workflow "s3-matched-throughput:")
+                (str/includes? workflow
+                               "matched-aws-512 matched-aws-1000 matched-aws-5000 matched-aws-10000")
+                (str/includes? workflow "matched-throughput/$selector")
+                (str/includes? workflow "durable-s3-matched-throughput-")))
+    (check "matched sweep documentation preserves the curve distinction"
+           true
+           (and (str/includes? durable-doc "run_matched_throughput")
+                (str/includes? durable-doc "not a\nreplacement for that curve")
+                (str/includes? durable-doc "matched-aws-10000")))
     (check "workflow removes process-wide file-size limits"
            false (str/includes? workflow "ulimit -f"))
     (check "workflow bounds only the copied artifact log"

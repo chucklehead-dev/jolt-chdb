@@ -1257,6 +1257,13 @@
    :matched-aws-512 [:aws-s3 512] :matched-aws-1000 [:aws-s3 1000]
    :matched-aws-5000 [:aws-s3 5000] :matched-aws-10000 [:aws-s3 10000]})
 
+(defn- aws-matched-profile? [profile]
+  (= :aws-s3 (first (get matched-profiles profile))))
+
+(defn- remote-s3-profile? [profile]
+  (or (= :s3-curve profile)
+      (aws-matched-profile? profile)))
+
 (def ^:private recovery-profile-batches
   {:recovery-512-10 10 :recovery-512-25 25 :recovery-512-50 50})
 
@@ -1406,7 +1413,7 @@
             :git-parent (get-in runtime [:git :parent])
             :git-tree (get-in runtime [:git :tree])
             :git-status (get-in runtime [:git :status])}
-            (= :s3-curve profile)
+            (remote-s3-profile? profile)
             (assoc
              :metrics-harness-sha256
              (get-in runtime [:benchmark-harness :metrics-sha256])
@@ -1890,7 +1897,7 @@
     {:schema-version 2
      :profile profile
      :process-scope (cond
-                      (= :s3-curve profile)
+                      (remote-s3-profile? profile)
                       :independent-remote-object-per-target-and-mode
                       isolated-selector? :one-selected-configuration
                       :else :multi-configuration-with-controls)
@@ -2063,7 +2070,7 @@
                                   (select-keys event [:phase :epoch-ms])))))
               report (binding [*progress!* emit!] (run! profile))
               final-report (assoc report :phase-log (:phases @progress))]
-          (when (= :s3-curve profile)
+          (when (remote-s3-profile? profile)
             (provider-metrics/assert-redacted!
              final-report "" "" (evidence-canaries)))
           (spit output (str (pr-str final-report) "\n"))
@@ -2074,6 +2081,6 @@
                                     :summaries (:summaries result)})
                                  (:configurations report))}))))
       (catch Throwable error
-        (if (= :s3-curve profile)
+        (if (remote-s3-profile? profile)
           (provider-metrics/throw-redacted-failure! error)
           (throw error)))))))

@@ -308,7 +308,13 @@
       (check "S3 provenance fails closed without hosted identity"
              :jdbc.chdb-durable-throughput/missing-provenance
              (rejected-type #(provenance! :s3-curve
-                                          (dissoc s3-runtime :hosted-run)))))
+                                          (dissoc s3-runtime :hosted-run))))
+      (check "matched AWS provenance has the same hosted provider boundary"
+             nil (provenance! :matched-aws-512 s3-runtime))
+      (check "matched AWS provenance fails closed without provider identity"
+             :jdbc.chdb-durable-throughput/missing-provenance
+             (rejected-type #(provenance! :matched-aws-512
+                                          (dissoc s3-runtime :provider)))))
     (check "isolated recovery evidence also requires complete provenance"
            nil
            (provenance! :recovery-512-10 clean-runtime))
@@ -563,6 +569,16 @@
     (check "matched sweep reuses all four existing batch sizes"
            [512 1000 5000 10000]
            (mapv #(get (configuration :local-posix %) :batch-size) [512 1000 5000 10000]))
+    (check "matched AWS selectors retain all four isolated batch sizes"
+           [[:matched-aws-512 :aws-s3 512]
+            [:matched-aws-1000 :aws-s3 1000]
+            [:matched-aws-5000 :aws-s3 5000]
+           [:matched-aws-10000 :aws-s3 10000]]
+           (mapv (fn [selector]
+                   (let [config (first (#'throughput/profile-configs selector))]
+                     [(:selector config) (:provider-kind config) (:batch-size config)]))
+                 [:matched-aws-512 :matched-aws-1000
+                  :matched-aws-5000 :matched-aws-10000]))
     (check "matched selector does not claim crash-safe admission ACK"
            :jdbc-return-not-crash-safe-ack
            (:admission @#'throughput/measurement-boundaries))
