@@ -10,6 +10,12 @@
   mutants now run in the Durable formal CI boundary. This does not claim local
   crash durability, fsync semantics, or S3/provider qualification.
 
+- Attribute the existing scalar WAL prepare and WAL append observations as
+  separate, causally non-overlapping categories of opt-in `stage-512` Durable
+  admission timing. The enclosing admission stopwatch and explicit residual
+  remain unchanged; this benchmark-only diagnostic changes no writer queue or
+  persistence behavior and makes no throughput claim.
+
 - Make the Typed Clojure CI bootstrap deterministic: install the immutable
   Clojure CLI 1.12.4.1582 archive from its checksum-attested release artifact
   with bounded download retries, then assert the installed CLI provenance
