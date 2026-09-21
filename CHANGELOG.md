@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Make the local Durable throughput selector reject tracked or untracked
+  nonignored checkout state before claiming `BENCH_GIT_STATUS=clean`. Ignored
+  generated/cache/output paths remain outside that Git-status claim, while
+  runtime binary and native-library identities remain explicit inputs. The
+  hosted stage-smoke lane now keeps its generated Jolt cache and gitlibs trees
+  in a workspace sibling rather than the checkout.
+
 - Add a receipt-first acceptance gate for the Durable encoding-inclusive
   512-row path. `qualification`, `scale-512`, and matched local/AWS 512 runs
   now require exactly 500 p99-qualified samples with p50 at most 20.48 ms and

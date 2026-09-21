@@ -62,6 +62,9 @@ class DurableSelectorForensicsTest(unittest.TestCase):
         self.fake_bin.write_text(
             "#!/usr/bin/env bash\n"
             "if [[ ${1:-} == --version ]]; then echo 'jolt vtest'; exit 0; fi\n"
+            "if [[ -n ${FAKE_JOLT_CREATE_CACHES:-} ]]; then\n"
+            "  mkdir -p \"$JOLT_CACHE_DIR\" \"$JOLT_GITLIBS_DIR\"\n"
+            "fi\n"
             "if [[ -n ${FAKE_JOLT_PID_FILE:-} ]]; then\n"
             "  printf '%s\\n' \"$$\" > \"$FAKE_JOLT_PID_FILE\"\n"
             "  trap 'exit 42' TERM HUP INT\n"
@@ -123,6 +126,68 @@ class DurableSelectorForensicsTest(unittest.TestCase):
         self.assertTrue((output / "run.log").is_file())
         self.assertTrue((output / "time-v.txt").is_file())
         self.assertFalse((root / "ordinary-output.launch-forensics").exists())
+
+    def test_selector_allows_runtime_caches_outside_the_checkout(self) -> None:
+        root = pathlib.Path(self.tmp.name)
+        output = root / "cache-output"
+        cache = root / "runtime-cache"
+        gitlibs = root / "runtime-gitlibs"
+        result = subprocess.run(
+            [str(self.selector), "stage-smoke", str(output)],
+            cwd=self.repo,
+            env=self.env | {
+                "FAKE_JOLT_CREATE_CACHES": "1",
+                "JOLT_CACHE_DIR": str(cache),
+                "JOLT_GITLIBS_DIR": str(gitlibs),
+            },
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(cache.is_dir())
+        self.assertTrue(gitlibs.is_dir())
+        self.assertEqual(
+            "", subprocess.check_output(
+                ["git", "-C", str(self.repo), "status", "--porcelain"], text=True
+            ),
+        )
+        self.assertTrue((output / "run.log").is_file())
+        self.assertTrue((output / "time-v.txt").is_file())
+
+    def test_selector_rejects_tracked_and_untracked_state_before_artifacts(self) -> None:
+        root = pathlib.Path(self.tmp.name)
+        original = self.selector.read_text()
+
+        with self.subTest("tracked modification"):
+            self.selector.write_text(original + "# dirty tracked fixture\n")
+            output = root / "tracked-dirty-output"
+            result = subprocess.run(
+                [str(self.selector), "scale-512", str(output)],
+                cwd=self.repo,
+                env=self.env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("benchmark checkout must be clean", result.stderr)
+            self.assertFalse(output.exists())
+            self.selector.write_text(original)
+
+        with self.subTest("untracked helper"):
+            untracked = self.repo / "untracked-benchmark-helper"
+            untracked.write_text("not reviewed\n")
+            output = root / "untracked-dirty-output"
+            result = subprocess.run(
+                [str(self.selector), "scale-512", str(output)],
+                cwd=self.repo,
+                env=self.env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("benchmark checkout must be clean", result.stderr)
+            self.assertFalse(output.exists())
+            untracked.unlink()
 
     def test_diagnostic_launcher_keeps_outer_lifecycle_and_inventory(self) -> None:
         root = pathlib.Path(self.tmp.name)
