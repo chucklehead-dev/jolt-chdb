@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make the Typed Clojure CI bootstrap deterministic: install the immutable
+  Clojure CLI 1.12.4.1582 archive from its checksum-attested release artifact
+  with bounded download retries, then assert the installed CLI provenance
+  before preserving the existing positive and mutation-control check.
+
 - Avoid rebuilding zero-parameter SQL when every `?` is contained in a quoted
   literal, quoted identifier, or comment. Executable unbound placeholders
   retain the established validation error, while accepted literal-only SQL
