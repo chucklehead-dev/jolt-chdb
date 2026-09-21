@@ -525,7 +525,7 @@
       (fail! ::lease-fenced "The Durable writer generation is not reachable"))
     generation))
 
-(declare verify-byte-reference!)
+(declare verify-byte-reference! verify-file-reference!)
 
 (defn- reconcile-publication!
   [status verify-reference! verify-created? options]
@@ -606,7 +606,57 @@
                                   #(verify-byte-reference! store reference))
                  false options)
         :reference reference
-        :etag (:etag result)}))))
+         :etag (:etag result)}))))
+
+(defn publish-wal-file!
+  "Publish one staged statement-WAL file under its exact V1 reference.
+
+  This is deliberately parallel to `publish-wal-bytes!`, but it neither
+  changes the writer's current in-memory WAL representation nor takes
+  ownership of the caller's spool file.  A later writer transition may use
+  this primitive only after it has established the spool's append, close, and
+  cleanup lifecycle.  Until then, callers remain responsible for deleting the
+  file after this function returns.
+
+  As with byte publication, an existing immutable object is accepted only
+  after exact size and full SHA-256 verification.  Ambiguous put results are
+  reconciled by the streaming file verifier, so a lost provider response is
+  never mistaken for a successful WAL publication."
+  ([store token file-path]
+   (publish-wal-file! store token file-path {}))
+  ([store token file-path options]
+   (let [path (if (instance? Path file-path)
+                file-path
+                (Paths/get (str file-path) (make-array String 0)))]
+     (when-not (Files/isRegularFile path (make-array java.nio.file.LinkOption 0))
+       (fail! ::invalid-options "WAL publication requires a regular file"))
+     (let [observe! (:phase-observe! options)
+           _ (when (and (some? observe!) (not (fn? observe!)))
+               (fail! ::invalid-options "phase-observe! must be a function"))
+           snapshot (or (read-head! store)
+                        (fail! ::lease-fenced "The Durable head no longer exists"))
+           current (:head snapshot)
+           generation (checked-token-generation token current)
+           sequence (inc (get-in current ["manifest" "seq"]))]
+       (when (> sequence head/max-safe-integer)
+         (fail! ::sequence-exhausted
+                "The Durable manifest sequence cannot be incremented safely"))
+       (let [reference {"key" (str "wal/" generation "-" sequence "-"
+                                    (unique-object-token) ".jsonl")
+                        "size" (Files/size path)
+                        "sha256" (digest/sha256-file path)}
+             result (observed-phase observe! :wal-immutable-put
+                                    (get reference "size")
+                                    #(backend/put-file-if-absent!
+                                      store (get reference "key") path))]
+         {:status (reconcile-publication!
+                   (:status result)
+                   #(observed-phase observe! :wal-immutable-verify
+                                    (get reference "size")
+                                    #(verify-file-reference! store reference))
+                   true options)
+          :reference reference
+          :etag (:etag result)})))))
 
 (defn verify-byte-reference!
   "Verify a bounded in-memory immutable object against a V1 reference.

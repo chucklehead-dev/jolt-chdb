@@ -205,6 +205,28 @@
            [(:calls open-result) (:head open-result)])
     supported?))
 
+(defn- run-wal-spool-allocation-checks! []
+  ;; Phase 1 exposes no public spool API and the current writer still retains
+  ;; byte-array lines.  Exercise the private allocator directly so a later
+  ;; state-machine change has a concrete, host-portable allocation contract.
+  (let [scratch (java.nio.file.Files/createTempDirectory
+                 "jolt-chdb-wal-spool-test-"
+                 (make-array java.nio.file.attribute.FileAttribute 0))
+        allocate! @(ns-resolve 'jdbc.chdb.durable.writer 'allocate-wal-spool!)]
+    (try
+      (let [{:keys [path byte-count]} (allocate! scratch)]
+        (check "WAL spool allocation returns an empty scalar descriptor"
+               [0 true 0]
+               [byte-count
+                (java.nio.file.Files/isRegularFile
+                 path (make-array java.nio.file.LinkOption 0))
+                (java.nio.file.Files/size path)])
+        (check "WAL spool allocation stays below its supplied scratch directory"
+               scratch (.getParent path))
+        (java.nio.file.Files/deleteIfExists path))
+      (finally
+        (java.nio.file.Files/deleteIfExists scratch)))))
+
 (defn- run-statement-size-fastpath-checks! []
   (let [predicate-var
         (ns-resolve 'jdbc.chdb.durable.writer 'statement-bytes-exceed?)
@@ -1542,6 +1564,7 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (run-wal-spool-allocation-checks!)
   (run-statement-size-fastpath-checks!)
   (let [supported? (run-capability-checks!)]
     (if supported?

@@ -969,6 +969,44 @@
                (error-type #(control/publish-wal-bytes!
                              store token (.getBytes "abc" "UTF-8")))))))
 
+  (let [wal (java.nio.file.Files/createTempFile
+             "jolt-chdb-wal-file-" ".jsonl"
+             (make-array java.nio.file.attribute.FileAttribute 0))]
+    (try
+      (java.nio.file.Files/write wal (.getBytes "abc" "UTF-8")
+                                 (make-array java.nio.file.OpenOption 0))
+      (let [delegate (backend/memory-backend)
+            token (:token (control/acquire! delegate base-options))
+            publication (control/publish-wal-file! delegate token wal)
+            reference (:reference publication)]
+        (check "file WAL publication preserves exact source bytes"
+               ["abc" 3 abc-digest]
+               [(String. (backend/get-bytes delegate (get reference "key")) "UTF-8")
+                (get reference "size")
+                (get reference "sha256")])
+        (check "file WAL publication derives an exact V1 WAL reference"
+               true
+               (boolean (re-matches #"wal/1-1-[0-9a-f]{8}\.jsonl"
+                                   (get reference "key"))))
+        (check "file WAL publication is independently file-verifiable"
+               reference (control/verify-file-reference! delegate reference)))
+      (doseq [[label mode expected]
+              [["landed ambiguous file WAL publication reconciles"
+                :land :reconciled]
+               ["conflicting ambiguous file WAL publication is rejected"
+                :conflict ::control/object-unverified]
+               ["dropped ambiguous file WAL publication stays unprovable"
+                :drop ::control/commit-ambiguous]]]
+        (let [delegate (backend/memory-backend)
+              store (ambiguous-publication-backend delegate mode)
+              token (:token (control/acquire! store base-options))]
+          (check label expected
+                 (if (= :land mode)
+                   (:status (control/publish-wal-file! store token wal))
+                   (error-type #(control/publish-wal-file! store token wal))))))
+      (finally
+        (java.nio.file.Files/deleteIfExists wal))))
+
   (let [checkpoint (java.nio.file.Files/createTempFile
                     "jolt-chdb-ambiguous-" ".tar.gz"
                     (make-array java.nio.file.attribute.FileAttribute 0))]
