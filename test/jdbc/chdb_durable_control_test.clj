@@ -180,6 +180,27 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- definite-file-conflict-backend
+  "Make the WAL-file create lose to a real, differently-valued object."
+  [delegate published-key]
+  (reify backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key _]
+      (if (= control/head-key key)
+        (throw (ex-info "head must not use file publication" {}))
+        (do
+          (reset! published-key key)
+          (backend/put-bytes-if-absent!
+           delegate key (.getBytes "different" "UTF-8"))
+          {:status :precondition-failed})))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (backend/download-to-file! delegate key path))))
+
 (defn- delayed-ambiguous-publication-backend [delegate put-count]
   (let [hidden-key (atom nil)
         hidden-reads (atom 0)]
@@ -990,6 +1011,16 @@
                                    (get reference "key"))))
         (check "file WAL publication is independently file-verifiable"
                reference (control/verify-file-reference! delegate reference)))
+      (let [delegate (backend/memory-backend)
+            published-key (atom nil)
+            store (definite-file-conflict-backend delegate published-key)
+            token (:token (control/acquire! store base-options))]
+        (check "definite existing different file WAL is rejected"
+               ::control/object-unverified
+               (error-type #(control/publish-wal-file! store token wal)))
+        (check "definite file WAL conflict verifies the real existing object"
+               "different"
+               (String. (backend/get-bytes delegate @published-key) "UTF-8")))
       (doseq [[label mode expected]
               [["landed ambiguous file WAL publication reconciles"
                 :land :reconciled]
