@@ -140,7 +140,6 @@
   "Allocate an empty, private staged WAL file below `scratch`.
 
    This Phase 1 helper has no production call site: the live writer still owns
-  This Phase 1 helper has no production call site: the live writer still owns
   an in-memory vector of byte arrays.  Keeping allocation separate lets a
    later switch make append/flush/close/deletion ownership explicit rather than
    silently changing the existing writer state machine.  The descriptor is
