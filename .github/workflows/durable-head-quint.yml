@@ -12,7 +12,8 @@ on:
     paths:
       - .github/actions/install-jolt-aspects/action.yml
       - .github/workflows/durable-head-quint.yml
-      - formal/durable-head-cas*.smt2
+      - formal/*.smt2
+      - formal/**/*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
       - scripts/fingerprint-durable-model-inputs.sh
@@ -24,6 +25,10 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - scripts/check-durable-file-wal-spool-quint.sh
+      - bench/jdbc/chdb_durable_throughput.clj
+      - bench/jdbc/chdb_durable_throughput_metrics.clj
+      - scripts/benchmark-durable-matched-provider.sh
+      - scripts/run-durable-throughput-selector.sh
       - test/durable-model-path-classifier.sh
       - deps.edn
       - src/jdbc/chdb/durable.clj
@@ -31,6 +36,8 @@ on:
       - test/durable-*.sh
       - test/fixtures/durable/**
       - test/jdbc/chdb_durable_*.clj
+      - test/jdbc/chdb_durable_throughput_test.clj
+      - test/jdbc/chdb_durable_throughput_metrics_test.clj
       - test/support/**
   push:
     branches:
@@ -38,7 +45,8 @@ on:
     paths:
       - .github/actions/install-jolt-aspects/action.yml
       - .github/workflows/durable-head-quint.yml
-      - formal/durable-head-cas*.smt2
+      - formal/*.smt2
+      - formal/**/*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
       - scripts/fingerprint-durable-model-inputs.sh
@@ -50,6 +58,10 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - scripts/check-durable-file-wal-spool-quint.sh
+      - bench/jdbc/chdb_durable_throughput.clj
+      - bench/jdbc/chdb_durable_throughput_metrics.clj
+      - scripts/benchmark-durable-matched-provider.sh
+      - scripts/run-durable-throughput-selector.sh
       - test/durable-model-path-classifier.sh
       - deps.edn
       - src/jdbc/chdb/durable.clj
@@ -57,6 +69,8 @@ on:
       - test/durable-*.sh
       - test/fixtures/durable/**
       - test/jdbc/chdb_durable_*.clj
+      - test/jdbc/chdb_durable_throughput_test.clj
+      - test/jdbc/chdb_durable_throughput_metrics_test.clj
       - test/support/**
 
 permissions:
@@ -70,6 +84,8 @@ jobs:
     outputs:
       exhaustive: ${{ steps.decision.outputs.exhaustive }}
       reason: ${{ steps.decision.outputs.reason }}
+      fast: ${{ steps.decision.outputs.fast }}
+      fast_reason: ${{ steps.decision.outputs.fast_reason }}
       changed_count: ${{ steps.decision.outputs.changed_count }}
     steps:
       - uses: actions/checkout@v4
@@ -99,10 +115,10 @@ jobs:
           trap cleanup EXIT HUP INT TERM
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
             if [[ "$MANUAL_EXHAUSTIVE" == true ]]; then
-              printf 'exhaustive=true\nreason=manual-full-dispatch\nchanged_count=0\n' \
+              printf 'exhaustive=true\nreason=manual-full-dispatch\nfast=true\nfast_reason=manual-full-dispatch\nchanged_count=0\n' \
                 > "$decision_file"
             else
-              printf 'exhaustive=false\nreason=manual-fast-only-dispatch\nchanged_count=0\n' \
+              printf 'exhaustive=false\nreason=manual-fast-only-dispatch\nfast=true\nfast_reason=manual-fast-only-dispatch\nchanged_count=0\n' \
                 > "$decision_file"
             fi
           else
@@ -134,9 +150,18 @@ jobs:
           fi
           decision_count=$(grep -c '^exhaustive=' "$decision_file" || true)
           decision_value=$(sed -n 's/^exhaustive=//p' "$decision_file")
-          if [[ $decision_count -ne 1 ]] || \
-             [[ $decision_value != true && $decision_value != false ]]; then
-            echo "classifier produced an invalid exhaustive decision" >&2
+          fast_count=$(grep -c '^fast=' "$decision_file" || true)
+          fast_value=$(sed -n 's/^fast=//p' "$decision_file")
+          reason_count=$(grep -c '^reason=' "$decision_file" || true)
+          fast_reason_count=$(grep -c '^fast_reason=' "$decision_file" || true)
+          changed_count_count=$(grep -c '^changed_count=' "$decision_file" || true)
+          if [[ $decision_count -ne 1 ]] || [[ $fast_count -ne 1 ]] || \
+             [[ $reason_count -ne 1 ]] || [[ $fast_reason_count -ne 1 ]] || \
+             [[ $changed_count_count -ne 1 ]] || \
+             [[ $decision_value != true && $decision_value != false ]] || \
+             [[ $fast_value != true && $fast_value != false ]] || \
+             [[ $decision_value == true && $fast_value != true ]]; then
+            echo "classifier produced an invalid model-tier decision" >&2
             cat "$decision_file" >&2
             exit 1
           fi
@@ -157,34 +182,54 @@ jobs:
       PINNED_JOLT_VERSION: jolt v0.8.6-599-gbf8a5dde
     steps:
       - name: Require a successful path decision
-        run: test "${{ needs.classify-model-inputs.result }}" = success
+        run: |
+          test "${{ needs.classify-model-inputs.result }}" = success
+          decision="${{ needs.classify-model-inputs.outputs.exhaustive }}"
+          fast="${{ needs.classify-model-inputs.outputs.fast }}"
+          test "$decision" = true || test "$decision" = false
+          test "$fast" = true || test "$fast" = false
+          test "$decision" != true || test "$fast" = true
+      - name: Report an explicit successful skip
+        if: ${{ needs.classify-model-inputs.outputs.fast != 'true' }}
+        run: |
+          echo "Fast model checks skipped: ${{ needs.classify-model-inputs.outputs.fast_reason }}"
+          echo "Changed paths considered: ${{ needs.classify-model-inputs.outputs.changed_count }}"
       - uses: actions/checkout@v4
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
       - uses: actions/setup-node@v4
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         with:
           node-version: 22
       - uses: actions/setup-go@v6
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         with:
           go-version: '1.26.0'
       - name: Install pinned Quint and literate tangler
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         run: |
           npm install --global @informalsystems/quint@0.32.0
           go install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
       - name: Install the pinned Jolt aspect compiler
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         id: pinned-jolt
         uses: ./.github/actions/install-jolt-aspects
       - name: Verify pinned Jolt provenance
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         run: |
           test "${{ steps.pinned-jolt.outputs.source-sha }}" = "$PINNED_JOLT_SOURCE_SHA"
           test "${{ steps.pinned-jolt.outputs.version }}" = "$PINNED_JOLT_VERSION"
           test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
       - name: Assert tool versions
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         run: |
           test "$(quint --version)" = "0.32.0"
           test "$(jolt --version)" = "$PINNED_JOLT_VERSION"
           test "$(go version -m "$(command -v lmt)" | awk '$1 == "mod" { print $3 }')" = "v0.0.0-20210421124901-62fe18f2f6a6"
       - name: Replay one deterministic Quint ITF corpus through memory and S3
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         run: scripts/check-durable-head-itf-corpus.sh --with-s3
       - name: Tangle, typecheck, test, sample, and replay generated ITF
+        if: ${{ needs.classify-model-inputs.outputs.fast == 'true' }}
         run: scripts/check-durable-head-quint.sh
 
   literate-model:
@@ -205,7 +250,10 @@ jobs:
           test "${{ needs.classify-model-inputs.result }}" = success
           test "${{ needs.fast-model-linked.result }}" = success
           decision="${{ needs.classify-model-inputs.outputs.exhaustive }}"
+          fast="${{ needs.classify-model-inputs.outputs.fast }}"
           test "$decision" = true || test "$decision" = false
+          test "$fast" = true || test "$fast" = false
+          test "$decision" != true || test "$fast" = true
       - name: Report an explicit successful skip
         if: ${{ needs.classify-model-inputs.outputs.exhaustive != 'true' }}
         run: |
