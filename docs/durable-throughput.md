@@ -243,11 +243,13 @@ native execution, immutable WAL PUT, and head CAS per expected operation. It
 records only operation labels, counts, byte counts, and timings. Its opt-in
 `stage-512` result also carries `:admission-attribution` and
 `:flush-attribution`: each has one enclosing stopwatch, fixed scalar operation
-categories, and `:writer/unattributed` as the exact residual. The categories
+categories, and `:writer/unattributed` as the exact residual. Admission also
+separates the existing scalar `:writer/wal-prepare` and `:writer/wal-append`
+observations. The categories
 are causally non-overlapping: a private bounded start/finish sequence rejects
 nested or concurrent selected seams, and the harness also fails if their total
 would exceed the enclosing timer. The residual deliberately includes queue,
-policy/lease, WAL/control, and timer work not observed at an operation seam; it
+policy/lease, other WAL/control, and timer work not observed at an operation seam; it
 does not identify a production hot path or change Durable behavior. No SQL,
 payload, object identity, ETag, header, provider identity, or other dynamic
 value enters either attribution map.

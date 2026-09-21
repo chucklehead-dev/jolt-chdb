@@ -224,7 +224,8 @@
 
 (def ^:private attribution-stage-keys
   #{:data-json :exporter-materialization :prepare-query :native-classify
-    :native-execute :backend/put-file-if-absent :backend/download-to-file
+    :native-execute :wal-prepare :wal-append
+    :backend/put-file-if-absent :backend/download-to-file
     :backend/get-with-etag :backend/replace-if-match})
 
 (def ^:private attribution-events-key ::attribution-events)
@@ -285,6 +286,16 @@
                (update :bytes + bytes)
                (update-in [:statuses status] (fnil + 0) calls)))))
 
+(defn- record-writer-phase!
+  "Record a settled writer phase in the benchmark's bounded causal ledger."
+  [metrics event]
+  (let [phase (:phase event)]
+    (record-attribution-event! metrics :start phase)
+    (try
+      (record-recovery-phase! metrics event)
+      (finally
+        (record-attribution-event! metrics :finish phase)))))
+
 (defn- timed-stage [metrics stage bytes f]
   (record-attribution-event! metrics :start stage)
   (try
@@ -310,7 +321,9 @@
    [:encoding/materialization :exporter-materialization]
    [:writer/prepare-query :prepare-query]
    [:writer/native-classify :native-classify]
-   [:writer/native-execute :native-execute]])
+   [:writer/native-execute :native-execute]
+   [:writer/wal-prepare :wal-prepare]
+   [:writer/wal-append :wal-append]])
 
 (def ^:private flush-attribution-stages
   [[:backend/put-immutable-wal :backend/put-file-if-absent]
@@ -322,7 +335,6 @@
   {:admission
    [:driver-and-queue-dispatch
     :writer-policy-and-lease-checks
-    :wal-preparation-and-append
     :timer-bookkeeping]
    :flush
    [:driver-and-queue-dispatch
@@ -457,7 +469,7 @@
      writer-phase-attribution?
      (assoc :writer-phase!
             (fn [event]
-              (record-recovery-phase! metrics event))))))
+              (record-writer-phase! metrics event))))))
 
 (defn- instrumentation-contract! []
   (let [operations (timed-operations (atom {}))]

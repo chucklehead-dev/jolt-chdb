@@ -400,11 +400,13 @@
                   :prepare-query {:nanos 30}
                   :native-classify {:nanos 40}
                   :native-execute {:nanos 50}
+                  :wal-prepare {:nanos 60}
+                  :wal-append {:nanos 70}
                   :backend/put-file-if-absent {:nanos 60}
                   :backend/download-to-file {:nanos 70}
                   :backend/get-with-etag {:nanos 80}
                   :backend/replace-if-match {:nanos 90}}
-          admission (stage-attribution! :admission 200 stages
+          admission (stage-attribution! :admission 300 stages
                                         [[:start :data-json]
                                          [:finish :data-json]
                                          [:start :exporter-materialization]
@@ -414,7 +416,11 @@
                                          [:start :native-classify]
                                          [:finish :native-classify]
                                          [:start :native-execute]
-                                         [:finish :native-execute]]
+                                         [:finish :native-execute]
+                                         [:start :wal-prepare]
+                                         [:finish :wal-prepare]
+                                         [:start :wal-append]
+                                         [:finish :wal-append]]
                                         admission-attribution-stages)
           flush (stage-attribution! :flush 400 stages
                                     [[:start :backend/put-file-if-absent]
@@ -427,13 +433,15 @@
                                      [:finish :backend/replace-if-match]]
                                     flush-attribution-stages)]
       (check "admission timing categories form an exact non-overlapping partition"
-             [200 150 50 true
+             [300 280 20 true
               {:encoding/data-json 10
                :encoding/materialization 20
                :writer/prepare-query 30
                :writer/native-classify 40
                :writer/native-execute 50
-               :writer/unattributed 50}]
+               :writer/wal-prepare 60
+               :writer/wal-append 70
+               :writer/unattributed 20}]
              [(:total-nanos admission) (:accounted-nanos admission)
               (:unattributed-nanos admission) (:partition-verified? admission)
               (into {}
@@ -451,13 +459,15 @@
              :jdbc.chdb-durable-throughput/invalid-stage-attribution
              (rejected-type
               #(stage-attribution!
-                :admission 149 stages
+                :admission 279 stages
                 [[:start :data-json] [:finish :data-json]
                  [:start :exporter-materialization]
                  [:finish :exporter-materialization]
                  [:start :prepare-query] [:finish :prepare-query]
                  [:start :native-classify] [:finish :native-classify]
-                 [:start :native-execute] [:finish :native-execute]]
+                 [:start :native-execute] [:finish :native-execute]
+                 [:start :wal-prepare] [:finish :wal-prepare]
+                 [:start :wal-append] [:finish :wal-append]]
                 admission-attribution-stages)))
       (check "nested selected stage timing fails even with positive residual"
              :jdbc.chdb-durable-throughput/invalid-stage-attribution
@@ -469,7 +479,9 @@
                  [:start :exporter-materialization]
                  [:finish :exporter-materialization]
                  [:start :native-classify] [:finish :native-classify]
-                 [:start :native-execute] [:finish :native-execute]]
+                 [:start :native-execute] [:finish :native-execute]
+                 [:start :wal-prepare] [:finish :wal-prepare]
+                 [:start :wal-append] [:finish :wal-append]]
                 admission-attribution-stages)))
       (check "missing causality evidence cannot qualify a timing partition"
              :jdbc.chdb-durable-throughput/invalid-stage-attribution
