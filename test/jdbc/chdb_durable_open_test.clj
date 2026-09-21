@@ -48,6 +48,8 @@
   (or (ns-resolve 'jdbc.chdb.durable symbol)
       (throw (ex-info "missing Durable test seam" {:symbol symbol}))))
 
+(declare prepared-wal-store)
+
 (defn- check-canonical-scratch-cleanup! []
   (let [root (Files/createTempDirectory
               "jchdb-durable-cleanup-" (make-array FileAttribute 0))
@@ -137,6 +139,250 @@
                    (mapv :phase @phases))
             (finally
               (writer/close! opened))))))))
+
+(defn- capture-error [f]
+  (try
+    (f)
+    nil
+    (catch Throwable error error)))
+
+(defn- check-startup-envelope!
+  [label stage cause invoke!]
+  (let [error (capture-error invoke!)
+        data (some-> error ex-data)]
+    (check (str label " publishes only its stable stage map")
+           {:type ::durable/startup-failed
+            :jdbc.chdb.durable/startup-stage stage}
+           data)
+    (check (str label " retains the immediate original cause")
+           true (identical? cause (some-> error .getCause)))
+    (check (str label " does not copy cause ex-data into the public envelope")
+           false (contains? data :private-cause-data))))
+
+(defn- startup-cause [stage]
+  (ex-info (str "private startup failure at " (name stage))
+           {:private-cause-data stage}))
+
+(defn- writer-open-options [store operations]
+  {:store store :owner "startup-writer" :instance "startup-instance"
+   :database "startup-db" :lease-ttl-ms 100M :operations operations})
+
+(defn- check-startup-stage-envelopes! []
+  (println "Durable startup-stage failure envelopes")
+  (let [base-reader-operations
+        (fn [calls clocks close-count cleanup-count]
+          (support/fake-open-operations calls clocks close-count cleanup-count))]
+    (with-redefs-fn
+      {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)
+       #'writer/require-wal-byte-writer-capability! (constantly true)}
+      (fn []
+        (let [cause (startup-cause :durable-capability)
+              calls (atom [])
+              operations (assoc (base-reader-operations calls (atom [0M])
+                                                        (atom 0) (atom 0))
+                                :durable-capability (fn [] (throw cause)))]
+          (check-startup-envelope!
+           "reader capability failure" :durable-capability cause
+           #(durable/open-reader! {:store (prepared-wal-store)
+                                   :operations operations})))
+
+        (let [cause (startup-cause :read-head)
+              calls (atom [])
+              operations (base-reader-operations calls (atom [0M]) (atom 0) (atom 0))]
+          (with-redefs [control/read-head-read-only! (fn [_] (throw cause))]
+            (check-startup-envelope!
+             "reader head read failure" :read-head cause
+             #(durable/open-reader! {:store (prepared-wal-store)
+                                     :operations operations}))))
+
+        (let [store (backend/memory-backend)
+              _ (backend/put-bytes-if-absent!
+                 store control/head-key (.getBytes "{" "UTF-8"))
+              error (capture-error
+                     #(durable/open-reader!
+                       {:store store
+                        :operations (base-reader-operations
+                                     (atom []) (atom [0M]) (atom 0) (atom 0))}))]
+          (check "malformed head remains the established decode error"
+                 ::head/corrupt (:type (ex-data error)))
+          (check "malformed head does not acquire a startup stage"
+                 false (contains? (ex-data error)
+                                  :jdbc.chdb.durable/startup-stage)))
+
+        (let [store (prepared-wal-store)
+              current (backend/get-with-etag store control/head-key)
+              text (String. ^bytes (:bytes current) "UTF-8")
+              mutated (.getBytes
+                       (str/replace text "\"version\":1" "\"version\":2")
+                       "UTF-8")
+              _ (backend/replace-if-match!
+                 store control/head-key mutated (:etag current))
+              error (capture-error
+                     #(durable/open-reader!
+                       {:store store
+                        :operations (base-reader-operations
+                                     (atom []) (atom [0M]) (atom 0) (atom 0))}))]
+          (check "unsupported head protocol remains the established protocol error"
+                 ::head/protocol-unsupported (:type (ex-data error)))
+          (check "unsupported head protocol does not acquire a startup stage"
+                 false (contains? (ex-data error)
+                                  :jdbc.chdb.durable/startup-stage)))
+
+        (let [cause (startup-cause :create-scratch)
+              calls (atom [])
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              operations (assoc (base-reader-operations calls (atom [0M])
+                                                       close-count cleanup-count)
+                                :create-scratch! (fn [_] (throw cause)))]
+          (check-startup-envelope!
+           "reader scratch creation failure" :create-scratch cause
+           #(durable/open-reader! {:store (prepared-wal-store)
+                                   :operations operations}))
+          (check "reader scratch creation failure has no cleanup side effects"
+                 [0 0] [@close-count @cleanup-count]))
+
+        (let [cause (startup-cause :open-native)
+              calls (atom [])
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              operations (assoc (base-reader-operations calls (atom [0M])
+                                                       close-count cleanup-count)
+                                :open-native! (fn [_] (throw cause)))]
+          (check-startup-envelope!
+           "reader native open failure" :open-native cause
+           #(durable/open-reader! {:store (prepared-wal-store)
+                                   :operations operations}))
+          (check "reader native open failure cleans only scratch"
+                 [0 1] [@close-count @cleanup-count]))
+
+        (let [cause (ex-info "private corrupt recovery failure"
+                             {:type ::durable/corrupt
+                              :private-cause-data :recover-snapshot})
+              calls (atom [])
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              operations (assoc (base-reader-operations calls (atom [0M])
+                                                       close-count cleanup-count)
+                                :create-database! (fn [_ _] (throw cause)))]
+          (check-startup-envelope!
+           "reader corrupt recovery failure" :recover-snapshot cause
+           #(durable/open-reader! {:store (prepared-wal-store)
+                                   :operations operations}))
+          (check "reader recovery failure closes native state then cleans scratch"
+                 [1 1] [@close-count @cleanup-count]))
+
+        (let [cause (startup-cause :acquire-lease)
+              calls (atom [])
+              operations (base-reader-operations calls (atom [0M]) (atom 0) (atom 0))]
+          (with-redefs [control/acquire! (fn [& _] (throw cause))]
+            (check-startup-envelope!
+             "writer lease acquisition failure" :acquire-lease cause
+             #(durable/open-writer!
+               (writer-open-options (backend/memory-backend) operations)))))
+
+        (let [operations (base-reader-operations (atom []) (atom [0M])
+                                                 (atom 0) (atom 0))
+              acquire-error
+              (capture-error
+               #(durable/open-writer!
+                 (assoc (writer-open-options (backend/memory-backend) operations)
+                        :max-attempts 0)))
+              retry-error
+              (capture-error
+               #(durable/open-writer!
+                 (assoc (writer-open-options (backend/memory-backend) operations)
+                        :max-attempts 1
+                        :retry-initial-backoff-ms 2
+                        :retry-max-backoff-ms 1)))]
+          (check "acquire validation remains the established control error"
+                 ::control/invalid-options (:type (ex-data acquire-error)))
+          (check "acquire validation does not acquire a startup stage"
+                 false (contains? (ex-data acquire-error)
+                                  :jdbc.chdb.durable/startup-stage))
+          (check "retry validation remains the established control error"
+                 ::control/invalid-options (:type (ex-data retry-error)))
+          (check "retry validation does not acquire a startup stage"
+                 false (contains? (ex-data retry-error)
+                                  :jdbc.chdb.durable/startup-stage)))
+
+        (letfn [(renew-error [cause]
+                  (let [operations
+                        (base-reader-operations (atom []) (atom [0M 1M])
+                                                (atom 0) (atom 0))]
+                    (with-redefs [control/renew! (fn [& _] (throw cause))]
+                      (capture-error
+                       #(durable/open-writer!
+                         (writer-open-options (backend/memory-backend)
+                                              operations))))))]
+          (doseq [[label cause expected-type]
+                  [["lease-fenced renewal"
+                    (ex-info "lease fenced" {:type ::control/lease-fenced})
+                    ::control/lease-fenced]
+                   ["timeout renewal"
+                    (ex-info "renewal timed out" {:type ::control/timeout})
+                    ::control/timeout]]]
+            (let [error (renew-error cause)]
+              (check (str label " remains the established control error")
+                     expected-type (:type (ex-data error)))
+              (check (str label " does not acquire a startup stage")
+                     false (contains? (ex-data error)
+                                      :jdbc.chdb.durable/startup-stage)))))
+
+        (let [cause (ex-info "hostile typed backend failure"
+                             {:type :jdbc.chdb.durable/hostile-backend-failure
+                              :private-cause-data :renew-lease})
+              calls (atom [])
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              store (backend/memory-backend)
+              operations (base-reader-operations calls (atom [0M 1M])
+                                                 close-count cleanup-count)]
+          (with-redefs [control/renew! (fn [& _] (throw cause))]
+            (check-startup-envelope!
+             "hostile typed backend renewal failure" :renew-lease cause
+             #(durable/open-writer! (writer-open-options store operations))))
+          (check "writer renewal failure closes, releases, and cleans"
+                 [1 1 nil]
+                 [@close-count @cleanup-count
+                  (get-in (:head (control/read-head! store)) ["lease" "owner"])]))
+
+        (let [cause (startup-cause :writer-start)
+              calls (atom [])
+              close-count (atom 0)
+              cleanup-count (atom 0)
+              ordering (atom [])
+              store (backend/memory-backend)
+              base (base-reader-operations calls (atom [0M 1M])
+                                           close-count cleanup-count)
+              operations
+              (assoc base
+                     :close-native! (fn [handle]
+                                      (swap! ordering conj :close)
+                                      ((:close-native! base) handle))
+                     :cleanup-scratch! (fn [path]
+                                         (swap! ordering conj :cleanup)
+                                         ((:cleanup-scratch! base) path)))
+              release! control/release!]
+          (with-redefs [writer/start! (fn [& _] (throw cause))
+                        control/release! (fn [release-store token]
+                                           (swap! ordering conj :release)
+                                           (release! release-store token))]
+            (check-startup-envelope!
+             "writer start failure" :writer-start cause
+             #(durable/open-writer! (writer-open-options store operations))))
+          (check "writer start failure keeps close, release, cleanup ordering"
+                 [:close :release :cleanup] @ordering))
+
+        (let [error (capture-error
+                     #(durable/open-writer!
+                       {:owner "invalid" :instance "instance" :database "db"
+                        :heartbeat-interval-ms 0M}))]
+          (check "invalid writer timing remains an unwrapped public validation error"
+                 ::durable/invalid-options (:type (ex-data error)))
+          (check "invalid writer timing has no startup stage"
+                 false (contains? (ex-data error)
+                                  :jdbc.chdb.durable/startup-stage)))))))
 
 (defn- prepare-raw-wal-store! [store payload]
   (let [token (:token (control/acquire! store initial-options))
@@ -243,12 +489,14 @@
               :reader (reader/close! opened)
               :writer (writer/close! opened))
             nil)
-          (catch Throwable caught
-            (loop [current caught]
-              (when current
-                (or (:type (ex-data current))
-                    (recur (.getCause current)))))))]
-    {:error error :calls @calls :close-count @close-count
+          (catch Throwable caught caught))]
+    {:error (:type (ex-data error))
+     :startup-stage (:jdbc.chdb.durable/startup-stage (ex-data error))
+     :cause-error (loop [current (.getCause error)]
+                    (when current
+                      (or (:type (ex-data current))
+                          (recur (.getCause current)))))
+     :calls @calls :close-count @close-count
      :cleanup-count @cleanup-count
      :head (:head (control/read-head! store))}))
 
@@ -757,7 +1005,9 @@
             outcome-ok?
             (and (= expected-shape actual-shape)
                  schema-valid?
-                 (= ::durable/corrupt (:error result))
+                 (= ::durable/startup-failed (:error result))
+                 (= :recover-snapshot (:startup-stage result))
+                 (= ::durable/corrupt (:cause-error result))
                  (empty? reached)
                  (= [1 1] [(:close-count result) (:cleanup-count result)])
                  (= reference after-reference)
@@ -769,8 +1019,11 @@
                     " fixture is a schema-valid head")
                true schema-valid?)
         (check (str (name mode) " rejects " (name fault) " " (name kind)
-                    " as public corrupt despite cleanup failures")
-               ::durable/corrupt (:error result))
+                    " as a public recovery-stage startup failure")
+               ::durable/startup-failed (:error result))
+        (check (str (name mode) " preserves corrupt as the immediate recovery cause")
+               [::durable/corrupt :recover-snapshot]
+               [(:cause-error result) (:startup-stage result)])
         (check (str (name mode) " " (name fault) " " (name kind)
                     " verification prevents restore or replay")
                [] reached)
@@ -1019,8 +1272,8 @@
                           :restore-database!
                           (fn [_ _ _]
                             (throw (ex-info "restore failed" {}))))]
-    (check "a compatible full-archive restore failure is engine-incompatible"
-           ::durable/engine-incompatible
+    (check "a compatible full-archive restore failure is a recovery-stage startup failure"
+           ::durable/startup-failed
            (error-type
             #(durable/open-writer!
               {:store store :owner "new-writer" :instance "new-instance"
@@ -1165,8 +1418,8 @@
         clocks (atom [0M])
         close-count (atom 0)
         cleanup-count (atom 0)]
-    (check "reader rejects noncanonical UTF-8 WAL bytes"
-           ::durable/corrupt
+    (check "reader rejects noncanonical UTF-8 WAL bytes at the recovery stage"
+           ::durable/startup-failed
            (error-type
             #(durable/open-reader!
               {:store store
@@ -1222,6 +1475,7 @@
   (reset! failures 0)
   (check-canonical-scratch-cleanup!)
   (check-public-writer-phase-observer-forwarding!)
+  (check-startup-stage-envelopes!)
   (with-redefs [native/active-storage
                 (fn [] {:phase :anchored :path ":memory:"
                         :references 0 :anchored? true})]
