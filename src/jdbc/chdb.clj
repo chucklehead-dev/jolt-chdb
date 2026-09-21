@@ -189,9 +189,59 @@
                 :else
                 (recur (inc i) mode block-depth pindex (conj! out c))))))))))
 
+(defn- code-placeholder?
+  "Return true when `sql` contains a positional placeholder in executable SQL.
+
+  This deliberately mirrors the lexical states used by
+  `rewrite-placeholders-with-scan`, but does not construct an output or a
+  parameter vector.  The empty-parameter path only needs to reject an
+  executable `?`; literals and comments can retain the caller's exact string.
+  Keep the two state machines in lockstep when adding SQL lexical contexts."
+  [sql]
+  (let [n (count sql)]
+    (loop [i 0 mode :code block-depth 0]
+      (if (= i n)
+        false
+        (let [c (nth sql i)
+              next-c (when (< (inc i) n) (nth sql (inc i)))]
+          (case mode
+            :code
+            (cond
+              (= c \?) true
+              (= c \') (recur (inc i) :single 0)
+              (= c \u0022) (recur (inc i) :double 0)
+              (= c \`) (recur (inc i) :backtick 0)
+              (and (= c \-) (= next-c \-)) (recur (+ i 2) :line 0)
+              (and (= c \/) (= next-c \*)) (recur (+ i 2) :block 1)
+              :else (recur (inc i) :code 0))
+
+            :line
+            (recur (inc i) (if (= c \newline) :code :line) 0)
+
+            :block
+            (cond
+              (and (= c \/) (= next-c \*))
+              (recur (+ i 2) :block (inc block-depth))
+              (and (= c \*) (= next-c \/))
+              (let [depth (dec block-depth)]
+                (recur (+ i 2) (if (zero? depth) :code :block) depth))
+              :else (recur (inc i) :block block-depth))
+
+            ;; All remaining modes are quoted identifiers or string literals.
+            (let [quote (case mode :single \' :double \u0022 :backtick \`)]
+              (cond
+                (and (= c \\) next-c) (recur (+ i 2) mode block-depth)
+                (and (= c quote) (= next-c quote)) (recur (+ i 2) mode block-depth)
+                (= c quote) (recur (inc i) :code 0)
+                :else (recur (inc i) mode block-depth)))))))))
+
 (defn- rewrite-placeholders [sql params]
-  (if (and (empty? params) (= -1 (.indexOf sql "?")))
-    {:sql sql :parameters []}
+  (if (empty? params)
+    (if (or (= -1 (.indexOf sql "?"))
+            (not (code-placeholder? sql)))
+      {:sql sql :parameters []}
+      ;; Preserve the established error shape for an unbound code placeholder.
+      (rewrite-placeholders-with-scan sql params))
     (rewrite-placeholders-with-scan sql params)))
 
 (defprotocol ^:private PreparedQueryValue
