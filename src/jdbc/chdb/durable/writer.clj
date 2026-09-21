@@ -4,16 +4,16 @@
   `start!` deliberately does not open or recover an object. It accepts an
   already-acquired fencing token and an already-recovered engine handle, then
   owns the public query/execute/flush/close queue for that live writer."
-  (:require [clojure.data.json :as json]
-            [jdbc.chdb :as chdb]
+  (:require [jdbc.chdb :as chdb]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.observation :as observation]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
+            [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.native :as native])
-  (:import [java.io BufferedOutputStream ByteArrayOutputStream OutputStreamWriter]
+  (:import [java.io BufferedOutputStream]
            [java.nio.file Files OpenOption Path]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util.concurrent ArrayBlockingQueue]))
@@ -162,12 +162,9 @@
     (assoc spool :output output)))
 
 (defn- wal-line [sql]
-  (let [output (ByteArrayOutputStream.)
-        text-output (OutputStreamWriter. output "UTF-8")]
-    (json/write {"sql" sql} text-output)
-    (.append text-output "\n")
-    (.flush text-output)
-    (.toByteArray output)))
+  ;; Retain this narrow seam: writer tests inject an encoding failure here so
+  ;; they cover the native and portable selectors without coupling to data.json.
+  (wal/line sql))
 
 (defn- ensure-open-wal-spool!
   "Allocate the current append target before native execution.
