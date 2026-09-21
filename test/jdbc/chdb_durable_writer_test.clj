@@ -546,9 +546,11 @@
     (try
       (check "WAL encoding failure is returned unchanged"
              ::encode-failure
-             (with-redefs [json/write (fn [& _] (throw encode-error))]
-               (error-type #(writer/execute! writer
-                                             "INSERT INTO t VALUES (1)"))))
+             (with-redefs-fn
+               {(ns-resolve 'jdbc.chdb.durable.writer 'wal-line)
+                (fn [_] (throw encode-error))}
+               #(error-type #(writer/execute! writer
+                                               "INSERT INTO t VALUES (1)"))))
       (check "WAL encoding failure reaches neither analysis, native execution, nor pending WAL"
              [[] 0 0]
              [@calls

@@ -8,6 +8,13 @@
   well as the earlier reader pin; this is qualification metadata only and does
   not alter the benchmark workload, measurements, or Durable behavior.
 
+- Add a behavior-probed Jolt native Durable WAL byte encoder. It is selected
+  only after a fixed empty/ASCII/escaping/control/BMP/astral corpus matches
+  the established streaming data.json bytes; unavailable or divergent
+  runtimes retain that portable path. The existing pre-admission capability
+  gate, byte limits, native-execute-before-append ordering, spool lifecycle,
+  immutable publication, and recovery semantics are unchanged.
+
 - Stage pending Durable WAL segments in private, scalar-accounted files below
   the recovered engine scratch directory. Sealed publication retries fence all
   new mutations before preparation or native execution, while read-only SQL
