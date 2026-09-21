@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid rebuilding zero-parameter SQL when every `?` is contained in a quoted
+  literal, quoted identifier, or comment. Executable unbound placeholders
+  retain the established validation error, while accepted literal-only SQL
+  keeps the caller's exact text.
 - Repin the owned `casselc/data.json` provider to `e7f97a9`, including its
   Jolt-specialized codepoint-decoder access and String-backed reader ordinary
   run improvements. In a current-runtime, six-fresh-slot recovery comparison,
