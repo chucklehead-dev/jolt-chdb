@@ -835,6 +835,58 @@
     ((:recovery-event! operations) event)
     (catch Throwable _ nil)))
 
+(defn- startup-failed
+  "Return the public, stage-local failure envelope for a Durable open call.
+
+  The original exception remains the immediate cause.  In particular, this
+  boundary intentionally does not copy its message or ex-data: callers can
+  classify the public stage without accidentally treating backend details as a
+  stable or redacted API surface."
+  [stage cause]
+  (ex-info "Durable startup failed"
+           {:type ::startup-failed
+           :jdbc.chdb.durable/startup-stage stage}
+           cause))
+
+(def ^:private established-control-error-types
+  #{::head/corrupt
+    ::head/protocol-unsupported
+    ::head/limit-exceeded
+    ::head/invalid-mode
+    ::invalid-options
+    ::engine-incompatible
+    ::control/invalid-options
+    ::control/lease-held
+    ::control/lease-fenced
+    ::control/timeout
+    ::control/commit-ambiguous
+    ::control/generation-exhausted})
+
+(defn- established-control-error?
+  "True only for the closed set of established control-path public errors.
+
+  The set covers the head decoder's schema/protocol errors and the validation,
+  compatibility, retry, and lease/precondition outcomes reachable while
+  reading, acquiring, or renewing.  Backend errors—including a hostile error
+  carrying any other durable-looking type—remain stage-local failures."
+  [cause]
+  (contains? established-control-error-types (:type (ex-data cause))))
+
+(defn- at-startup-stage!
+  "Run one operational startup call and expose failures at `stage`.
+
+  Validation, compatibility, and precondition checks deliberately remain
+  outside this helper so their established public exceptions remain intact."
+  ([stage f]
+   (at-startup-stage! stage (constantly false) f))
+  ([stage preserve? f]
+   (try
+     (f)
+     (catch Throwable cause
+       (if (preserve? cause)
+         (throw cause)
+         (throw (startup-failed stage cause)))))))
+
 (defn- recover-snapshot!
   "Restore exactly `document`'s manifest into an already opened private handle."
   [store document operations scratch handle]
@@ -902,10 +954,14 @@
                          :query-bytes-native!]
                         recovery-operation-keys)]
       (required-operation! operations key))
-    (let [capability ((:durable-capability operations))]
+    (let [capability (at-startup-stage!
+                      :durable-capability
+                      #((:durable-capability operations)))]
       (when-not (= :supported (:status capability))
         (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
-      (let [snapshot (or (control/read-head-read-only! store)
+      (let [snapshot (or (at-startup-stage!
+                          :read-head established-control-error?
+                          #(control/read-head-read-only! store))
                          (fail! ::not-found "The Durable object does not exist"))
             document (:head snapshot)
             scratch (atom nil)
@@ -919,10 +975,16 @@
                    "The Durable snapshot head does not match its expected digest")))
         (check-engine-compatibility! document (:native-version capability))
         (try
-          (reset! scratch ((:create-scratch! operations) scratch-parent))
-          (reset! handle ((:open-native! operations) @scratch))
-          (let [database (recover-snapshot!
-                          store document operations @scratch @handle)]
+          (reset! scratch (at-startup-stage!
+                           :create-scratch
+                           #((:create-scratch! operations) scratch-parent)))
+          (reset! handle (at-startup-stage!
+                          :open-native
+                          #((:open-native! operations) @scratch)))
+          (let [database (at-startup-stage!
+                          :recover-snapshot
+                          #(recover-snapshot!
+                            store document operations @scratch @handle))]
             (reader/start!
              {:handle @handle :database database
               :recovered-document document
@@ -995,10 +1057,13 @@
               (fail! ::invalid-options
                      "The initial lease expiry lacks renewal headroom in the supported epoch range"))
           store (resolve-store! options)
-          existing (control/read-head! store)]
+          existing (at-startup-stage! :read-head established-control-error?
+                                      #(control/read-head! store))]
       (when existing
         (validate-comparison-domain! (:head existing) clock-skew-ms))
-      (let [capability ((:durable-capability operations))]
+      (let [capability (at-startup-stage!
+                        :durable-capability
+                        #((:durable-capability operations)))]
         (when-not (= :supported (:status capability))
           (fail! ::engine-incompatible "The running chDB core lacks Durable V1"))
         (let [running-version (:native-version capability)]
@@ -1012,31 +1077,40 @@
                :monotonic-ms! (:monotonic-ms! operations)
                :await-backoff! (:await-backoff! operations)}
               now-seconds (epoch-ms->seconds now-ms)
-              acquired (control/acquire!
-                        store
-                        (merge
-                         retry-options
-                         {:owner owner :instance instance
-                          :expires-at
-                          (epoch-ms->seconds initial-expiry-ms)
-                          :now now-seconds
-                          :clock-skew (epoch-ms->seconds clock-skew-ms)
-                          :validate-existing-acquire-head!
-                          #(validate-comparison-domain! % clock-skew-ms)
-                          :force? force?
-                          :database database :engine-version running-version
-                          :backup-format reader-backup-format
-                          :min-reader running-version}))
+              acquired (at-startup-stage!
+                        :acquire-lease established-control-error?
+                        #(control/acquire!
+                          store
+                          (merge
+                           retry-options
+                           {:owner owner :instance instance
+                            :expires-at
+                            (epoch-ms->seconds initial-expiry-ms)
+                            :now now-seconds
+                            :clock-skew (epoch-ms->seconds clock-skew-ms)
+                            :validate-existing-acquire-head!
+                            #(validate-comparison-domain! % clock-skew-ms)
+                            :force? force?
+                            :database database :engine-version running-version
+                            :backup-format reader-backup-format
+                            :min-reader running-version})))
               token (:token acquired)
               document (:head acquired)
               scratch (atom nil)
               handle (atom nil)]
           (try
             (check-engine-compatibility! document running-version)
-            (reset! scratch ((:create-scratch! operations) scratch-parent))
-            (reset! handle ((:open-native! operations) @scratch))
+            (reset! scratch (at-startup-stage!
+                             :create-scratch
+                             #((:create-scratch! operations) scratch-parent)))
+            (reset! handle (at-startup-stage!
+                            :open-native
+                            #((:open-native! operations) @scratch)))
             (let [logical-database
-                  (recover-snapshot! store document operations @scratch @handle)]
+                  (at-startup-stage!
+                   :recover-snapshot
+                   #(recover-snapshot!
+                     store document operations @scratch @handle))]
               (let [renew-now (sample-epoch-milliseconds! operations)
                     current-expiry
                     (epoch-seconds->ms
@@ -1048,14 +1122,18 @@
                 (when (>= renew-now current-expiry)
                   (fail! ::control/lease-fenced
                          "The Durable writer lease expired during recovery"))
-                (control/renew!
-                 store token (epoch-ms->seconds renewed-expiry)
-                 (assoc retry-options
-                        :stopped?
-                        #(>= (sample-epoch-milliseconds! operations)
-                             current-expiry)))
-                (writer/start!
-                 {:store store :token token :handle @handle
+                (at-startup-stage!
+                 :renew-lease established-control-error?
+                 #(control/renew!
+                   store token (epoch-ms->seconds renewed-expiry)
+                   (assoc retry-options
+                          :stopped?
+                          #(>= (sample-epoch-milliseconds! operations)
+                               current-expiry))))
+                (at-startup-stage!
+                 :writer-start
+                 #(writer/start!
+                   {:store store :token token :handle @handle
                   :database logical-database
                   :recovered-document document
                   :engine-metadata
@@ -1094,7 +1172,7 @@
                                       :backup-format reader-backup-format
                                       :min-reader running-version}))))
                          :cleanup-scratch!
-                         (fn [] ((:cleanup-scratch! operations) @scratch)))})))
+                         (fn [] ((:cleanup-scratch! operations) @scratch)))}))))
             (catch Throwable primary
               (when @handle
                 (try ((:close-native! operations) @handle) (catch Throwable _)))
