@@ -191,7 +191,7 @@ supplied by your application to construct such a pin. This is a snapshot
 identity guard, not a freshness, lease, or external-reader guarantee.
 
 Durable runtime and recovery currently require `casselc/jolt`
-`integration/aspects` commit `bf8a5dde`, or a later Jolt release containing
+`integration/aspects` commit `57e591d4`, or a later Jolt release containing
 upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
 base driver's Jolt 0.8.6 floor. Reader and writer opens functionally verify both
 valid multibyte decoding and malformed-input rejection before storage or native

@@ -58,8 +58,8 @@ classpath winner without integrating the behavior of both lineages.
 
 Jolt 0.8.6 remains the ordinary JDBC minimum. Durable writer qualification
 currently requires the documented `casselc/jolt` compiler
-`bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95` (banner
-`jolt v0.8.6-599-gbf8a5dde`) until a release contains its strict-decoder and
+`57e591d4d6481c5536858575ffc006cf5a41adbf` (banner
+`jolt v0.8.6-37-g57e591d4`) until a release contains its strict-decoder and
 `OutputStreamWriter.append` corrections. The fixture accepts that executable
 through `JOLT_BIN` and always runs it through the workspace's mandatory Chez
 10.4.1 wrapper.

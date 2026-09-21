@@ -402,8 +402,8 @@
     (check "shared action asserts the exact strict-decoder compiler version"
            true
            (and (str/includes?
-                 action "bf8a5dde7bebb5658d218e9757ab1df0aa9c3b95")
-                (str/includes? action "jolt v0.8.6-599-gbf8a5dde")))
+                 action "57e591d4d6481c5536858575ffc006cf5a41adbf")
+                (str/includes? action "jolt v0.8.6-37-g57e591d4")))
     (check "throughput provenance consumes shared action outputs"
            true
            (and (str/includes?

@@ -404,11 +404,11 @@
     (check "active hosted pins contain no obsolete compiler revision"
            false (str/includes? active-jolt-pin-text (str "fd216" "943")))
     (check "active hosted pins require the strict-decoder compiler banner"
-           true (every? #(str/includes? % "jolt v0.8.6-599-gbf8a5dde")
+           true (every? #(str/includes? % "jolt v0.8.6-37-g57e591d4")
                         (cons jolt-action jolt-workflows)))
     (check "user docs distinguish the Durable compiler from the base floor"
            true
-           (every? #(and (str/includes? % "bf8a5dde")
+           (every? #(and (str/includes? % "57e591d4")
                          (str/includes? % "PR #957")
                          (str/includes? % "base driver"))
                    durable-runtime-docs))
@@ -426,7 +426,7 @@
             pins jolt-action
             (update jolt-workflows 1
                     str/replace
-                    "v0.8.6-aspects-bf8a5dde"
+                    "v0.8.6-aspects-57e591d4"
                     "v0.8.6-aspects-stale")))
     (check "a newly discovered unguarded consumer turns the path-set guard red"
            false
