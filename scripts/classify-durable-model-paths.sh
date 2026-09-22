@@ -15,7 +15,9 @@ is_zero_revision() {
 
 is_exhaustive_input() {
   case "$1" in
+    .github/actions/install-jolt-aspects/action.yml | \
     .github/workflows/durable-head-quint.yml | \
+    deps.edn | \
     formal/*.smt2 | formal/**/*.smt2 | \
     formal/quint/* | formal/quint/**/* | \
     scripts/check-durable-head-quint.sh | \
@@ -36,36 +38,93 @@ is_exhaustive_input() {
   esac
 }
 
+is_receipt_only_input() {
+  # These inputs only define an opt-in benchmark/acceptance receipt. They do
+  # not affect the literate model, generated ITF corpus, or the runtime paths
+  # replayed by the fast model-linked tier.
+  case "$1" in
+    bench/jdbc/chdb_durable_throughput.clj | \
+    bench/jdbc/chdb_durable_throughput_metrics.clj | \
+    scripts/benchmark-durable-matched-provider.sh | \
+    scripts/run-durable-throughput-selector.sh | \
+    test/jdbc/chdb_durable_throughput_test.clj | \
+    test/jdbc/chdb_durable_throughput_metrics_test.clj)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_fast_input() {
+  # The full tier always implies the deterministic/typecheck/ITF tier.
+  if is_exhaustive_input "$1"; then
+    return 0
+  fi
+  # Receipt-only paths are deliberately checked by their own benchmark gates.
+  # Test this before the broad Durable test pattern below.
+  if is_receipt_only_input "$1"; then
+    return 1
+  fi
+  case "$1" in
+    src/jdbc/chdb/durable.clj | src/jdbc/chdb/durable/* | \
+    test/durable-*.sh | test/fixtures/durable/* | \
+    test/jdbc/chdb_durable_*.clj | test/support/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 emit_decision() {
   local exhaustive=$1
   local reason=$2
-  local changed_count=$3
+  local fast=$3
+  local fast_reason=$4
+  local changed_count=$5
   printf 'exhaustive=%s\n' "$exhaustive"
   printf 'reason=%s\n' "$reason"
+  printf 'fast=%s\n' "$fast"
+  printf 'fast_reason=%s\n' "$fast_reason"
   printf 'changed_count=%s\n' "$changed_count"
 }
 
 fail_closed() {
-  emit_decision true "diff-command-failed" 0
+  emit_decision true "diff-command-failed" true "fail-closed" 0
   exit 0
 }
 
 classify_paths() {
   local path
   local count=0
-  local first_match=""
+  local first_exhaustive=""
+  local first_fast=""
   for path in "$@"; do
     count=$((count + 1))
-    if [[ -z $first_match ]] && is_exhaustive_input "$path"; then
-      first_match=$path
+    if [[ -z $first_exhaustive ]] && is_exhaustive_input "$path"; then
+      first_exhaustive=$path
+    fi
+    if [[ -z $first_fast ]] && is_fast_input "$path"; then
+      first_fast=$path
     fi
   done
-  if [[ -n $first_match ]]; then
+  if [[ -n $first_exhaustive ]]; then
     # Shell escaping keeps unusual but valid Git paths on one safe output line.
-    printf -v first_match '%q' "$first_match"
-    emit_decision true "model-input:$first_match" "$count"
+    printf -v first_exhaustive '%q' "$first_exhaustive"
+    # is_fast_input delegates exhaustive inputs, so this preserves the
+    # exhaustive => fast invariant independently of caller order.
+    emit_decision true "model-input:$first_exhaustive" true \
+      "exhaustive-input:$first_exhaustive" "$count"
+  elif [[ -n $first_fast ]]; then
+    printf -v first_fast '%q' "$first_fast"
+    emit_decision false "model-inputs-byte-identical" true \
+      "model-linked-input:$first_fast" "$count"
   else
-    emit_decision false "model-inputs-byte-identical" "$count"
+    emit_decision false "model-inputs-byte-identical" false \
+      "receipt-or-non-model-input" "$count"
   fi
 }
 
@@ -87,7 +146,7 @@ case "$mode" in
     [[ ${3:-} == --merge-base ]] && use_merge_base=true
     if [[ -z $base || -z $head ]] || is_zero_revision "$base" || \
        is_zero_revision "$head"; then
-      emit_decision true "missing-or-zero-diff-boundary" 0
+      emit_decision true "missing-or-zero-diff-boundary" true "fail-closed" 0
       exit 0
     fi
 
@@ -143,11 +202,15 @@ case "$mode" in
          head_fingerprint=$(bash "$helper" "$repo_root" "$head" 2>/dev/null) && \
          [[ "$base_fingerprint" =~ ^[a-f0-9]{64}$ && "$head_fingerprint" =~ ^[a-f0-9]{64}$ ]]; then
         if [[ "$base_fingerprint" == "$head_fingerprint" ]]; then
-          emit_decision false effective-model-inputs-identical "${#paths[@]}"
+          # A literate source remains model-linked even when its extracted
+          # bytes are unchanged, so retain the fast tangle/typecheck/ITF tier.
+          emit_decision false effective-model-inputs-identical true \
+            literate-model-input "${#paths[@]}"
           exit 0
         fi
       fi
-      emit_decision true effective-model-inputs-changed-or-unavailable "${#paths[@]}"
+      emit_decision true effective-model-inputs-changed-or-unavailable true \
+        literate-model-input "${#paths[@]}"
       exit 0
     fi
     classify_paths "${paths[@]}"

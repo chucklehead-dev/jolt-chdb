@@ -29,6 +29,30 @@ def classifier_helpers(source):
     return set(inventory), function
 
 classifier_inventory, function = classifier_helpers(classifier)
+fast_definitions = list(re.finditer(r"^is_fast_input\(\)\s*\{", classifier, re.M))
+assert len(fast_definitions) == 1, "missing/duplicate fast-model classifier"
+assert "is_exhaustive_input \"$1\"" in classifier, \
+    "fast classifier must include every exhaustive input"
+assert "is_receipt_only_input \"$1\"" in classifier, \
+    "fast classifier must exclude receipt-only inputs before broad test paths"
+assert "fast: ${{ steps.decision.outputs.fast }}" in workflow, \
+    "workflow does not publish fast decision"
+assert "outputs.fast != 'true'" in workflow, \
+    "fast job lacks an explicit successful stub"
+assert "test \"$decision\" != true || test \"$fast\" = true" in workflow, \
+    "workflow does not enforce exhaustive implies fast"
+fast_job = workflow.split("  fast-model-linked:", 1)[1].split("\n  literate-model:", 1)[0]
+for step in ("actions/checkout@v4", "actions/setup-node@v4", "actions/setup-go@v6",
+             "Install pinned Quint and literate tangler",
+             "Install the pinned Jolt aspect compiler",
+             "Replay one deterministic Quint ITF corpus through memory and S3",
+             "Tangle, typecheck, test, sample, and replay generated ITF"):
+    start = fast_job.index(step)
+    end = fast_job.find("\n      - ", start)
+    if end == -1:
+        end = len(fast_job)
+    assert "outputs.fast == 'true'" in fast_job[start:end], \
+        f"fast=false stub can execute tool step: {step}"
 fingerprint_inventory = set(re.findall(r'"(scripts/[A-Za-z0-9_./-]+\.(?:sh|jq))"',
                                       fingerprinter))
 assert fingerprint_inventory, "empty fingerprint model-helper inventory"
@@ -36,9 +60,7 @@ helpers = classifier_inventory | fingerprint_inventory
 # Reorder the actual function after every other definition without changing it.
 reordered = classifier[:function.start()] + classifier[function.end():] + "\n" + function[0]
 assert classifier_helpers(reordered)[0] == classifier_inventory, "function order changes inventory"
-assert not re.findall(r"scripts/[a-z0-9-]+\.(?:sh|jq)",
-                      reordered.split("emit_decision()", 1)[0]), "old-order RED control not reached"
-print("ok classifier definition reorder preserves inventory; old order oracle loses it")
+print("ok classifier definition reorder preserves exhaustive inventory")
 for label, source in (("missing", classifier[:function.start()] + classifier[function.end():]),
                       ("empty", "is_exhaustive_input() {\n  return 1\n}\n")):
     try:
@@ -91,10 +113,25 @@ fast = {"deps.edn", "src/jdbc/chdb/durable.clj",
         "test/fixtures/durable/python-live-fractional-seconds.json",
         "test/jdbc/chdb_durable_throughput_test.clj",
         ".github/actions/install-jolt-aspects/action.yml"}
+receipt_only = {
+    "bench/jdbc/chdb_durable_throughput.clj",
+    "bench/jdbc/chdb_durable_throughput_metrics.clj",
+    "scripts/benchmark-durable-matched-provider.sh",
+    "scripts/run-durable-throughput-selector.sh",
+    "test/jdbc/chdb_durable_throughput_test.clj",
+    "test/jdbc/chdb_durable_throughput_metrics_test.clj",
+}
+formal_smt = {"formal/durable-head-cas.smt2", "formal/nested/future-model.smt2"}
 for event, patterns in paths.items():
     absent = missing(patterns, helpers | fast)
     assert not absent, f"{event} trigger misses declared inputs: {absent}"
     print(f"ok {event} declared model helpers and known fast paths trigger")
+    absent_receipts = missing(patterns, receipt_only)
+    assert not absent_receipts, f"{event} trigger misses receipt-only stub paths: {absent_receipts}"
+    print(f"ok {event} all receipt-only paths trigger the explicit success stub")
+    absent_smt = missing(patterns, formal_smt)
+    assert not absent_smt, f"{event} trigger misses classifier SMT inputs: {absent_smt}"
+    print(f"ok {event} classifier SMT inputs trigger exhaustive coverage")
     assert missing(patterns, sentinel_inventory | fingerprint_inventory) == [sentinel], \
         f"{event} classifier-only helper missing trigger is hidden"
     print(f"ok {event} classifier-only underscore helper missing trigger is rejected")
@@ -157,15 +194,35 @@ check_reason() {
   fi
 }
 
+check_fast() {
+  local label=$1
+  local expected=$2
+  local repo=$3
+  shift 3
+  local actual
+  actual=$(DURABLE_MODEL_CLASSIFIER_REPO="$repo" "$classifier" "$@")
+  if grep -Fxq "fast=$expected" <<<"$actual"; then
+    echo "ok $label"
+  else
+    echo "FAIL $label: expected fast=$expected" >&2
+    echo "$actual" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 for path in \
+  .github/actions/install-jolt-aspects/action.yml \
   formal/quint/durable-head-cas.md \
   formal/quint/native-process-lifecycle.md \
+  formal/quint/durable-persistence-observation.md \
   formal/quint/future-model.unknown \
   formal/durable-head-cas.smt2 \
+  formal/nested/future-model.smt2 \
   formal/quint/traces/corrected-mbt.itf.json \
   formal/quint/traces/native-process-lifecycle.itf.json \
   formal/quint/traces/native-process-terminal.itf.json \
   formal/quint/traces/native-process-options.itf.json \
+  deps.edn \
   scripts/check-durable-head-quint.sh \
   scripts/check-durable-file-wal-spool-quint.sh \
   scripts/check-durable-head-itf-corpus.sh \
@@ -178,24 +235,45 @@ for path in \
   .github/workflows/durable-head-quint.yml
 do
   check "model input $path" true --paths "$path"
+  check_fast "model input is fast $path" true "$repo_root" --paths "$path"
 done
 
 for path in \
   src/jdbc/chdb/durable/control.clj \
   src/jdbc/chdb/durable.clj \
   test/jdbc/chdb_durable_epoch_seconds_test.clj \
-  test/fixtures/durable/python-live-fractional-seconds.json \
-  docs/durable-trace-validation.md \
-  README.md \
-  deps.edn
+  test/fixtures/durable/python-live-fractional-seconds.json
 do
   check "fast-only path $path" false --paths "$path"
+  check_fast "fast-only path is model-linked $path" true "$repo_root" --paths "$path"
+done
+
+for path in \
+  bench/jdbc/chdb_durable_throughput.clj \
+  bench/jdbc/chdb_durable_throughput_metrics.clj \
+  scripts/benchmark-durable-matched-provider.sh \
+  scripts/run-durable-throughput-selector.sh \
+  test/jdbc/chdb_durable_throughput_test.clj \
+  test/jdbc/chdb_durable_throughput_metrics_test.clj
+do
+  check "receipt-only path $path" false --paths "$path"
+  check_fast "receipt-only path skips model fast tier $path" false "$repo_root" --paths "$path"
+done
+
+for path in docs/durable-trace-validation.md README.md; do
+  check "non-model path $path" false --paths "$path"
+  check_fast "non-model path skips model fast tier $path" false "$repo_root" --paths "$path"
 done
 
 check "mixed paths choose exhaustive" true --paths \
   docs/durable.md formal/quint/durable-writer-lifecycle.md
+check_fast "mixed paths retain fast tier" true "$repo_root" --paths \
+  docs/durable.md formal/quint/durable-writer-lifecycle.md
 check "empty exact diff stays fast-only" false --diff HEAD HEAD
+check_fast "empty exact diff skips fast tier" false "$repo_root" --diff HEAD HEAD
 check "zero before SHA fails conservative" true --diff \
+  0000000000000000000000000000000000000000 HEAD
+check_fast "zero before SHA retains fast tier" true "$repo_root" --diff \
   0000000000000000000000000000000000000000 HEAD
 check_reason "missing commit reports checked Git failure" diff-command-failed \
   "$repo_root" --diff missing-model-base HEAD
@@ -222,12 +300,32 @@ git -C "$fixture_repo" commit -q -m fast
 fast_commit=$(git -C "$fixture_repo" rev-parse HEAD)
 check_output "real Git fast-only commit" false "$fixture_repo" \
   --diff "$root_commit" "$fast_commit"
+check_fast "real Git runtime commit keeps fast tier" true "$fixture_repo" \
+  --diff "$root_commit" "$fast_commit"
+
+mkdir -p "$fixture_repo/test/jdbc"
+printf 'receipt only\n' > "$fixture_repo/test/jdbc/chdb_durable_throughput_test.clj"
+git -C "$fixture_repo" add test/jdbc/chdb_durable_throughput_test.clj
+git -C "$fixture_repo" commit -q -m receipt-only
+receipt_commit=$(git -C "$fixture_repo" rev-parse HEAD)
+check_output "real Git receipt-only commit skips exhaustive" false "$fixture_repo" \
+  --diff "$fast_commit" "$receipt_commit"
+check_fast "real Git receipt-only commit skips fast tier" false "$fixture_repo" \
+  --diff "$fast_commit" "$receipt_commit"
+printf 'runtime again\n' > "$fixture_repo/src/jdbc/chdb/durable/reader.clj"
+git -C "$fixture_repo" add src/jdbc/chdb/durable/reader.clj
+git -C "$fixture_repo" commit -q -m receipt-plus-runtime
+receipt_runtime_commit=$(git -C "$fixture_repo" rev-parse HEAD)
+check_fast "receipt plus runtime commit retains fast tier" true "$fixture_repo" \
+  --diff "$receipt_commit" "$receipt_runtime_commit"
 
 printf 'model\n' > "$fixture_repo/formal/quint/future-model.unknown"
 git -C "$fixture_repo" add formal/quint/future-model.unknown
 git -C "$fixture_repo" commit -q -m model
 model_commit=$(git -C "$fixture_repo" rev-parse HEAD)
 check_output "real Git unknown formal/quint model input" true "$fixture_repo" \
+  --diff "$fast_commit" "$model_commit"
+check_fast "real Git unknown model input keeps fast tier" true "$fixture_repo" \
   --diff "$fast_commit" "$model_commit"
 
 git -C "$fixture_repo" rm -q formal/quint/future-model.unknown
@@ -300,6 +398,8 @@ check_reason "prose-only effective inputs skip exhaustive" \
   effective-model-inputs-identical "$effective_repo" --diff "$effective_base" "$prose_head"
 check_output "prose-only decision is explicitly false" false "$effective_repo" \
   --diff "$effective_base" "$prose_head"
+check_fast "prose-only literate edit retains fast tier" true "$effective_repo" \
+  --diff "$effective_base" "$prose_head"
 printf 'Neutral changelog entry.\n' > "$effective_repo/CHANGELOG.md"
 git -C "$effective_repo" add .
 git -C "$effective_repo" commit -q -m prose-plus-changelog
@@ -313,6 +413,19 @@ git -C "$effective_repo" commit -q -m changed-extracted-model
 model_head=$(git -C "$effective_repo" rev-parse HEAD)
 check_output "changed extracted model requests exhaustive" true "$effective_repo" \
   --diff "$prose_head" "$model_head"
+check_fast "changed extracted model retains fast tier" true "$effective_repo" \
+  --diff "$prose_head" "$model_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+sed -i 's/module durablePersistenceObservation/module durablePersistenceObservationChanged/' \
+  "$effective_repo/formal/quint/durable-persistence-observation.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m changed-persistence-observation-model
+persistence_observation_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "changed persistence observation model requests exhaustive" true "$effective_repo" \
+  --diff "$prose_head" "$persistence_observation_head"
+check_fast "changed persistence observation model retains fast tier" true "$effective_repo" \
+  --diff "$prose_head" "$persistence_observation_head"
+git -C "$effective_repo" checkout -q "$prose_head"
 printf '\n```quint target/formal/quint/unknown.qnt +=\nmodule unknown {}\n```\n' \
   >> "$effective_repo/formal/quint/durable-head-cas.md"
 git -C "$effective_repo" add .

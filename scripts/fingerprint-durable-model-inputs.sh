@@ -19,11 +19,14 @@ def git(*args):
 docs = ["formal/quint/durable-head-cas.md",
         "formal/quint/durable-writer-lifecycle.md",
         "formal/quint/native-process-lifecycle.md",
+        "formal/quint/durable-persistence-observation.md",
         "formal/quint/durable-file-wal-spool.md"]
 models = [name + suffix + ".qnt" for name in (
     "durableHeadCas", "durablePublicationAck", "durableWriterBoundary",
     "durableLeaseTime", "durableEngineMetadata", "durableWriterLifecycle",
     "nativeProcessLifecycle") for suffix in ("", "Test")]
+models += [name + suffix + ".qnt" for name in (
+    "durablePersistenceObservation",) for suffix in ("", "Test")]
 models += [name + suffix + ".qnt" for name in (
     "durableFileWalSpool",) for suffix in ("", "Test")]
 outputs = {"target/formal/quint/" + name for name in models}

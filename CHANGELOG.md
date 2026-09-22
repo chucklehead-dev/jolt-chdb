@@ -9,6 +9,13 @@
   evidence before failing. Other batch sizes and the S3 WAL curve remain
   non-gating. No new throughput result is claimed.
 
+- Split the Durable formal CI decision into exhaustive and fast-model-linked
+  outputs. Receipt-only throughput/acceptance changes now leave both model
+  tiers as explicit successful stubs, while runtime, ITF, and toolchain edits
+  retain fast validation and exhaustive inputs still require both tiers. Add
+  the previously omitted persistence-observation literate source and generated
+  modules to the effective-input fingerprint inventory.
+
 - Add a separately opt-in, OIDC-only AWS S3 matched-batch qualification lane
   for the existing 512, 1,000, 5,000, and 10,000-row Durable selectors. It
   preserves the independent 512-row measured-WAL curve, exact compiler/native
