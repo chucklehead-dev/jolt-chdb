@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add an opt-in positive Durable writer
+  `:checkpoint-wal-reference-threshold`. A crossing `flush!` now uses the
+  existing full V1 checkpoint publication/CAS before returning its persistence
+  witness, atomically replacing the base and clearing manifest WAL references.
+  This bounds `head.json` reference growth without introducing merged WALs,
+  manifest indexes, or object garbage collection; it makes no throughput,
+  recovery, or provider-qualification claim.
+
 - Make the local Durable throughput selector reject tracked or untracked
   nonignored checkout state before claiming `BENCH_GIT_STATUS=clean`. Ignored
   generated/cache/output paths remain outside that Git-status claim, while

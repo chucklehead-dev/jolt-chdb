@@ -131,7 +131,10 @@ or writer attempt.
                    {:namespace-backend storage
                     :object-id "primary"
                     :owner "my-app"
-                    :database "default"}))]
+                    :database "default"
+                    ;; Optional: on the crossing flush, publish one full V1
+                    ;; checkpoint before returning the durability witness.
+                    :checkpoint-wal-reference-threshold 64}))]
   (jdbc/execute! conn ["INSERT INTO events VALUES (?, ?)" 1 "accepted"])
   ;; Do this before acknowledging the write to another system.
   (durable/flush! conn))
@@ -141,7 +144,11 @@ Mutations are durable only after `flush!`, `checkpoint!`, or a successful close
 has committed the new manifest. Materialized SQL uses statement WAL. A mutation
 with native bound values makes that boundary publish a full checkpoint because
 V1 WAL has no typed-parameter record; values are never interpolated or placed
-in WAL. A fresh process can open `(durable/snapshot-dbspec
+in WAL. `:checkpoint-wal-reference-threshold` is an optional positive writer
+setting. When committing the next WAL reference would reach that limit, the
+serialized writer instead creates and proves a normal full V1 checkpoint before
+`flush!` returns. It bounds references in `head.json`, not retained immutable
+objects; V1 has no garbage-collection semantics. A fresh process can open `(durable/snapshot-dbspec
 {:namespace-backend storage :object-id "primary"})`; it restores one fixed
 manifest snapshot and does not take the writer lease. The constructors return
 ordinary JDBC maps, reject role/configuration mistakes before opening resources,

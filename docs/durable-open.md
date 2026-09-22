@@ -148,6 +148,15 @@ mutation. Oscope uses `checkpoint!` after its sole schema owner has
 applied migrations and before ingress, then uses `flush!` before acknowledging
 each accepted OTLP batch.
 
+A writer may set a positive `:checkpoint-wal-reference-threshold`. When a
+non-empty flush would make the referenced WAL count reach that threshold, its
+serialized owner worker runs the existing full V1 `checkpoint!` path before the
+flush returns. The checkpoint contains the staged mutations, replaces `base`,
+and clears `manifest.wal` only after a confirmed or reconciled head CAS. This
+is not WAL merging, indexing, or object deletion; V1 leaves immutable objects
+retained and does not define garbage collection. A checkpoint failure therefore
+withholds the flush acknowledgement and retains the staged recovery work.
+
 ## Bounded persistence observation
 
 `jdbc.chdb.durable/persistence-observation` is a zero-I/O, closed projection
