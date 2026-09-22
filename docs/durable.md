@@ -337,6 +337,13 @@ after the update is confirmed or an uncertain response is reconciled by
 rereading the exact expected reference and sequence. The implementation keeps
 both pending recovery obligations if that outcome cannot be proved.
 
+For a shared writer, `jdbc.chdb.durable/execute-and-flush!` makes one fully
+materialized mutation and its persistence barrier a single FIFO worker request.
+It returns that caller's confirmed or reconciled publication receipt; this
+avoids another caller being admitted between the local mutation and the
+publication. It does not merge callers, weaken WAL retention on failure, or
+make a provider-delivery or freshness claim.
+
 `checkpoint!` creates a full native backup, streams and verifies its immutable
 publication, and then conditionally replaces the checkpoint reference while
 clearing covered WALs. That same head CAS records the running producer version,
