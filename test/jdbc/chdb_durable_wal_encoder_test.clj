@@ -68,26 +68,18 @@
    ["all named controls"
     (str "controls" (char 0) (char 8) (char 9) (char 10) (char 12) (char 13))
     "{\"sql\":\"controls\\u0000\\b\\t\\n\\f\\r\"}\n"]
+   ["line separators" (str (char 8232) (char 8233))
+    "{\"sql\":\"\\u2028\\u2029\"}\n"]
    ["BMP" "β€" "{\"sql\":\"\\u03b2\\u20ac\"}\n"]
    ["astral" "😀" "{\"sql\":\"\\ud83d\\ude00\"}\n"]])
 
-(defn- generated-sqls []
-  (let [boundaries [(char 0) (char 1) (char 7) (char 8) (char 9)
-                    (char 10) (char 12) (char 13) (char 31) (char 32)
-                    (char 34) (char 47) (char 92) (char 126) (char 127)
-                    (char 128) (char 255) (char 2047) (char 2048)
-                    (char 55295) (char 57344) (char 65535)]]
-    (concat
-     [(apply str boundaries) "β€😀" "quote\"slash/backslash\\"]
-     (for [index (range 128)]
-       (str "generated-" index "-"
-            (apply str
-                   (map (fn [offset]
-                          (nth boundaries
-                               (mod (+ (* 17 index) (* 11 offset))
-                                    (count boundaries))))
-                        (range (inc (mod index 17)))))
-            (if (zero? (mod index 3)) "😀" "β"))))))
+(defn- shared-native-probe-sql []
+  ;; Keep the native admission corpus shared with the production selector.
+  ;; Expected bytes still come from the independent encoder above.
+  (let [probe (ns-resolve 'jdbc.chdb.durable.wal 'native-probe-sql)]
+    (when-not probe
+      (throw (ex-info "native WAL corpus is unavailable" {})))
+    (@probe)))
 
 (defn- bytes [value]
   (vec value))
@@ -96,6 +88,13 @@
   (try
     [:ok (bytes (native-line! sql))]
     (catch Throwable _ [:unavailable])))
+
+(defn- output-stream-writer-range-observation []
+  (let [output (java.io.ByteArrayOutputStream.)
+        writer (java.io.OutputStreamWriter. output "UTF-8")]
+    (.append writer "abc" 1 2)
+    (.flush writer)
+    (bytes (.toByteArray output))))
 
 (defn -main [& _]
   (println "Durable V1 WAL byte encoder")
@@ -108,7 +107,7 @@
                (map-indexed (fn [index sql]
                               [(str "generated-" index) sql
                                (independently-encoded-line sql)])
-                            (generated-sqls)))]
+                            (shared-native-probe-sql)))]
     (doseq [[label sql expected] cases]
       (check (str label " independent encoder agrees with fixed JSONL form")
              (bytes expected) (bytes (independently-encoded-line sql)))
@@ -133,10 +132,24 @@
                        cases))]
       (check "native selection requires complete independent corpus parity"
              (boolean native-complete?) (wal/native-line-enabled?)))
-    (check "portable fallback has no OutputStreamWriter dependency"
-           false
-           (str/includes? (slurp "src/jdbc/chdb/durable/wal.cljc")
-                          "(OutputStreamWriter."))
+    (let [observed (output-stream-writer-range-observation)]
+      (println "  OutputStreamWriter ranged-append observation" (pr-str observed))
+      ;; Stock Jolt 0.8.10 emits [97 98 99], not the requested [98]. Do not
+      ;; turn a later fixed runtime red: this negative control instead proves
+      ;; the managed fallback remains exact when the bad behavior is present.
+      (when (not= [98] observed)
+        (check "broken OutputStreamWriter range cannot affect managed fallback"
+               (bytes (independently-encoded-line "range-negative-control"))
+               (bytes (wal/portable-line-bytes "range-negative-control")))))
+    (check "shared native corpus retains long pre-escape boundaries"
+           [0 1 2 63 64 127 128 1023]
+           (mapv (fn [sql]
+                   (let [quote-index (.indexOf sql (int 34))]
+                     (when (and (not= -1 quote-index)
+                                (= "\"/\\β😀" (subs sql quote-index)))
+                       quote-index)))
+                 (filter #(str/ends-with? % "\"/\\β😀")
+                         (shared-native-probe-sql))))
     (when-not (zero? @failures)
       (throw (ex-info (str @failures " Durable WAL encoder checks failed")
                       {:failures @failures}))))

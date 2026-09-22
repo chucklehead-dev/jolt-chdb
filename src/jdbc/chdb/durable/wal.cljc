@@ -38,11 +38,16 @@
                     (char 10) (char 12) (char 13) (char 31) (char 32)
                     (char 34) (char 47) (char 92) (char 126) (char 127)
                     (char 128) (char 255) (char 2047) (char 2048)
-                    (char 55295) (char 57344) (char 65535)]]
+                    (char 55295) (char 57344) (char 8232) (char 8233)
+                    (char 65535)]
+        prefixes [0 1 2 63 64 127 128 1023]]
     (concat
      ["" "SELECT 1" "SELECT \"quote\" / slash \\ backslash"
       (str "controls" (char 0) (char 8) (char 9) (char 10) (char 12) (char 13))
       (apply str boundaries) "β€😀" "quote\"slash/backslash\\"]
+     (map (fn [length]
+            (str (apply str (repeat length "a")) "\"/\\β😀"))
+          prefixes)
      (for [index (range 128)]
        (str "generated-" index "-"
             (apply str

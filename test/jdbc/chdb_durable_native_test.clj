@@ -8,8 +8,10 @@
             [jdbc.chdb.native :as native]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
+            [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
-            [jolt.ffi :as ffi]))
+            [jolt.ffi :as ffi])
+  (:import [java.util Arrays]))
 
 (def failures (atom 0))
 
@@ -67,6 +69,15 @@
 
 (defn- scratch-options []
   {:scratch-parent (required-env "JOLT_CHDB_NATIVE_SCRATCH_ROOT")})
+
+(defn- force-managed-wal? []
+  (= "1" (System/getenv "JOLT_CHDB_FORCE_MANAGED_WAL")))
+
+(defn- call-with-wal-selection [f]
+  (if (force-managed-wal?)
+    (with-redefs [wal/native-line-enabled? (constantly false)]
+      (f))
+    (f)))
 
 (defn- run-durable-object-e2e [phase]
   (println "Durable native object checkpoint and cross-process reopen" phase)
@@ -147,15 +158,31 @@
                     (merge
                      {:namespace-backend namespace :object-id object-id
                       :owner "wal-writer" :instance "wal-instance"
-                      :database database :lease-ttl-ms 30000}
-                     (scratch-options)))]
+                     :database database :lease-ttl-ms 30000}
+                     (scratch-options)))
+            create-sql "CREATE TABLE `данные` (id UInt32) ENGINE = MergeTree ORDER BY id"
+            insert-sql "INSERT INTO `данные` VALUES (10)"
+            expected (byte-array
+                      (map unchecked-byte
+                           (mapcat seq (map wal/portable-line-bytes
+                                            [create-sql insert-sql]))))]
         (try
-          (writer/execute!
-           opened
-           "CREATE TABLE `данные` (id UInt32) ENGINE = MergeTree ORDER BY id")
-          (writer/execute! opened "INSERT INTO `данные` VALUES (10)")
-          (check "WAL-only flush commits"
-                 :committed (:status (writer/flush! opened)))
+          (when (force-managed-wal?)
+            (check "stock native WAL test observes optional encoder disabled"
+                   false (wal/native-line-enabled?)))
+          (call-with-wal-selection
+           #(do
+              (writer/execute!
+               opened create-sql)
+              (writer/execute! opened insert-sql)
+              (check "WAL-only flush commits"
+                     :committed (:status (writer/flush! opened)))))
+          (let [reference (first (get-in (:head (control/read-head-read-only! store))
+                                         ["manifest" "wal"]))]
+            (check "stock native writer persists forced managed WAL bytes"
+                   true
+                   (Arrays/equals expected
+                                  (backend/get-bytes store (get reference "key")))))
           (finally
             (writer/close! opened))))
 
