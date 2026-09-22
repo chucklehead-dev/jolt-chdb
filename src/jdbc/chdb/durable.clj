@@ -956,7 +956,6 @@
          force? false
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
-  (writer/require-wal-byte-writer-capability!)
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
