@@ -95,6 +95,8 @@
   ([calls close-count]
    (new-writer calls close-count (fake-operations calls close-count)))
   ([calls close-count operations]
+   (new-writer calls close-count operations {}))
+  ([calls close-count operations writer-options]
    (let [store (backend/memory-backend)
          acquired (control/acquire! store base-options)]
      {:store store
@@ -102,14 +104,16 @@
       :close-count close-count
       :writer
       (writer/start!
-       {:store store
-        :token (:token acquired)
-        :handle :fake-handle
-        :database "default"
-        :engine-metadata {:version (:engine-version base-options)
-                          :backup-format (:backup-format base-options)
-                          :min-reader (:min-reader base-options)}
-        :operations operations})})))
+       (merge
+        {:store store
+         :token (:token acquired)
+         :handle :fake-handle
+         :database "default"
+         :engine-metadata {:version (:engine-version base-options)
+                           :backup-format (:backup-format base-options)
+                           :min-reader (:min-reader base-options)}
+         :operations operations}
+        writer-options))})))
 
 (defn- stored-wal-lines [store]
   (let [head (:head (control/read-head! store))]
@@ -515,6 +519,38 @@
             [:analyze-execute "INSERT INTO t VALUES (1)" "default"]
             [:execute "INSERT INTO t VALUES (1)"]]
            (subvec @calls 0 4)))
+
+  (let [calls (atom [])
+        close-count (atom 0)
+        {:keys [store writer]}
+        (new-writer calls close-count
+                    (model-checkpoint-operations calls close-count)
+                    {:checkpoint-wal-reference-threshold 2})]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (1)")
+      (check "threshold below the next manifest reference keeps ordinary WAL acknowledgement"
+             :committed (:status (writer/flush! writer)))
+      (writer/execute! writer "INSERT INTO t VALUES (2)")
+      (check "threshold-crossing flush acknowledges only the V1 checkpoint commit"
+             :committed (:status (writer/flush! writer)))
+      (let [head (:head (control/read-head! store))]
+        (check "threshold checkpoint atomically replaces base and clears prior WAL references"
+               [2 true [] 0]
+               [(get-in head ["manifest" "seq"])
+                (boolean (get-in head ["manifest" "base"]))
+                (get-in head ["manifest" "wal"])
+                (:pending-statements (writer/status writer))]))
+      (finally (writer/close! writer))))
+
+  (let [calls (atom [])
+        close-count (atom 0)]
+    (check "writer rejects a nonpositive WAL-reference checkpoint threshold before startup"
+           ::writer/invalid-options
+           (error-type
+            #(writer/start!
+              {:store (backend/memory-backend) :token {} :handle :fake-handle
+               :database "default" :checkpoint-wal-reference-threshold 0
+               :operations (fake-operations calls close-count)}))))
 
   (let [sql-values [(str "a" (char 34) (char 92) "b")
                     (str (char 10) (char 9) (char 0))

@@ -43,7 +43,8 @@
 (def writer-only-keys
   [:owner :instance :database :lease-ttl-ms :clock-skew-ms
    :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
-   :retry-initial-backoff-ms :retry-max-backoff-ms])
+   :retry-initial-backoff-ms :retry-max-backoff-ms
+   :checkpoint-wal-reference-threshold])
 
 (defn- run-validation-checks! []
   (println "Durable dbspec validation")
@@ -132,6 +133,13 @@
            [(:lease-ttl-ms spec) (:clock-skew-ms spec)
             (:heartbeat-interval-ms spec)]))
 
+  (let [spec (durable/writer-dbspec
+              {:backend (backend/memory-backend)
+               :owner "owner" :database "default"
+               :checkpoint-wal-reference-threshold 32})]
+    (check "writer accepts an explicit positive WAL-reference checkpoint threshold"
+           32 (:checkpoint-wal-reference-threshold spec)))
+
   (doseq [key writer-only-keys]
     (check (str "snapshot rejects writer-only " key)
            ::durable/invalid-options
@@ -151,7 +159,8 @@
                   :max-attempts 4
                   :retry-deadline-ms 5000
                   :retry-initial-backoff-ms 10
-                  :retry-max-backoff-ms 250)})))))
+                  :retry-max-backoff-ms 250
+                  :checkpoint-wal-reference-threshold 32)})))))
 
   (doseq [[label options]
           [["missing storage" {:owner "owner" :database "default"}]
@@ -194,6 +203,9 @@
            ["zero retry deadline"
             {:backend (backend/memory-backend) :owner "owner"
              :database "default" :retry-deadline-ms 0}]
+           ["zero WAL-reference checkpoint threshold"
+            {:backend (backend/memory-backend) :owner "owner"
+             :database "default" :checkpoint-wal-reference-threshold 0}]
            ["inverted retry backoff"
             {:backend (backend/memory-backend) :owner "owner"
              :database "default" :retry-initial-backoff-ms 20

@@ -30,7 +30,8 @@
 (defrecord DurableWriter
     [store token handle database queue admission-lock lifecycle closed-result
      wal-state lease-state heartbeat-stop backend-context retry-options
-     operations worker heartbeat persistence-observation wal-spool-parent])
+     operations worker heartbeat persistence-observation wal-spool-parent
+     checkpoint-wal-reference-threshold])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -440,6 +441,22 @@
                           kind reference result)
   result)
 
+(defn- checkpoint-threshold-reached?
+  "Whether committing the staged WAL as another reference would reach the
+  configured manifest-WAL limit.
+
+  The threshold is an owner-writer policy, not a new Durable V1 manifest
+  transition. The following checkpoint uses the existing full-backup
+  transition, which atomically replaces the base and clears WAL only after its
+  head CAS is proved."
+  [writer]
+  (when-let [threshold (:checkpoint-wal-reference-threshold writer)]
+    (let [snapshot (or (control/read-head! (:store writer))
+                       (fail! ::control/lease-fenced
+                              "The Durable head no longer exists"))]
+      (>= (inc (count (get-in (:head snapshot) ["manifest" "wal"])))
+          threshold))))
+
 (defn- do-flush! [writer]
   (assert-writable! writer)
   (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
@@ -449,6 +466,12 @@
 
       (zero? byte-count)
       {:status :empty}
+
+      (checkpoint-threshold-reached? writer)
+      ;; The pending mutations are already present in the serialized owner
+      ;; handle. Checkpoint before returning this flush result, so its caller
+      ;; still receives one confirmed/reconciled V1 head witness.
+      (do-checkpoint! writer)
 
       :else
       (let [spool
@@ -695,7 +718,8 @@
   epoch-seconds control seam."
   [{:keys [store token handle database queue-capacity operations
            lease-expiry lease-ttl-ms heartbeat-interval-ms retry-options
-           engine-metadata recovered-document wal-spool-parent]
+           engine-metadata recovered-document wal-spool-parent
+           checkpoint-wal-reference-threshold]
     :or {queue-capacity default-queue-capacity}}]
   (require-wal-byte-writer-capability!)
   (when-not store (fail! ::invalid-options "store is required"))
@@ -703,6 +727,9 @@
   (when-not handle (fail! ::invalid-options "handle is required"))
   (require-string! database "database")
   (require-positive-int! queue-capacity "queue-capacity")
+  (when (some? checkpoint-wal-reference-threshold)
+    (require-positive-int! checkpoint-wal-reference-threshold
+                          "checkpoint-wal-reference-threshold"))
   (when-not (= (nil? lease-expiry) (nil? lease-ttl-ms))
     (fail! ::invalid-options
            "lease-expiry and lease-ttl-ms must be supplied together"))
@@ -811,7 +838,8 @@
                          :checkpoint-required? false})
                   lease-state
                   (promise) backend-context retry-options operations
-                  worker heartbeat persistence-observation wal-spool-parent)]
+                  worker heartbeat persistence-observation wal-spool-parent
+                  checkpoint-wal-reference-threshold)]
       (owned-thread/start! worker #(worker-loop writer))
       (when heartbeat
         (owned-thread/start!

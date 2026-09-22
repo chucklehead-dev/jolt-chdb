@@ -79,7 +79,8 @@
   (into common-dbspec-keys
         [:owner :instance :database :lease-ttl-ms :clock-skew-ms
          :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
-         :retry-initial-backoff-ms :retry-max-backoff-ms]))
+         :retry-initial-backoff-ms :retry-max-backoff-ms
+         :checkpoint-wal-reference-threshold]))
 
 (def ^:private snapshot-dbspec-keys
   (conj common-dbspec-keys :expected-normalized-head-sha256))
@@ -222,6 +223,9 @@
   (positive-integer! (:retry-initial-backoff-ms spec)
                      "retry-initial-backoff-ms")
   (positive-integer! (:retry-max-backoff-ms spec) "retry-max-backoff-ms")
+  (when (some? (:checkpoint-wal-reference-threshold spec))
+    (positive-integer! (:checkpoint-wal-reference-threshold spec)
+                       "checkpoint-wal-reference-threshold"))
   (when (> (:retry-initial-backoff-ms spec)
            (:retry-max-backoff-ms spec))
     (fail! ::invalid-options
@@ -941,7 +945,8 @@
   "Acquire, recover, renew, and return a serialized Durable V1 writer."
   [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
            heartbeat-interval-ms scratch-parent operations max-attempts
-           retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms]
+           retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms
+           checkpoint-wal-reference-threshold]
     :or {lease-ttl-ms default-lease-ttl-ms
          clock-skew-ms default-clock-skew-ms
          max-attempts default-max-attempts
@@ -955,6 +960,9 @@
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
+  (when (some? checkpoint-wal-reference-threshold)
+    (positive-integer! checkpoint-wal-reference-threshold
+                       "checkpoint-wal-reference-threshold"))
   (let [configured-operations operations
         configured-preparation?
         (contains? configured-operations :prepare-query!)
@@ -1061,6 +1069,8 @@
                   ;; recovered engine lifetime. It is not a public API and
                   ;; does not extend scratch persistence beyond process use.
                   :wal-spool-parent @scratch
+                  :checkpoint-wal-reference-threshold
+                  checkpoint-wal-reference-threshold
                   :recovered-document document
                   :engine-metadata
                   {:version running-version
