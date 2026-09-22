@@ -34,13 +34,16 @@ positional parameter API:
                      :where [:= :id 1]}))
 ```
 
-Jolt 0.8.6 or newer is the base driver floor. Durable reader and writer opens
-functionally probe the strict `CharsetDecoder` interop used by recovery and
-fail before storage or native effects if it is unavailable. WAL records are
-encoded through managed `StringWriter` text and one final UTF-8 conversion;
-this avoids depending on a host `OutputStreamWriter` range overload. The
-repository declares only the base release floor with `:jolt/min-version`; there
-is no older-Jolt compatibility lane.
+Jolt 0.8.6 or newer is the base driver floor. Durable runtime and recovery
+currently require `casselc/jolt` `integration/aspects` commit `57e591d4`, or a
+later Jolt release containing upstream PR #957, for strict `CharsetDecoder`
+interop. This is stronger than the base driver's floor. Reader and writer opens
+functionally probe that decoder and fail before storage or native effects if it
+is unavailable. WAL records are encoded through managed `StringWriter` text and
+one final UTF-8 conversion; this avoids depending on a host
+`OutputStreamWriter` range overload. The repository declares only the base
+release floor with `:jolt/min-version`; there is no older-Jolt compatibility
+lane.
 
 `nil` has no inferable ClickHouse type. Use `(jdbc.chdb/typed-param
 "Nullable(String)" nil)` when binding it. Transactions and generated keys are
