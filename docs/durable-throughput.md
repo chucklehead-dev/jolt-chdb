@@ -158,6 +158,13 @@ requires exactly one positive `Maximum resident set size (kbytes)` and an exit
 status of zero. Keep the whole output directory together. The helper does not
 upload artifacts or print environment values.
 
+The selector's clean-checkout provenance rejects tracked and nonignored
+untracked state.
+If an invocation sets `JOLT_CACHE_DIR` or `JOLT_GITLIBS_DIR`, place both
+generated directories outside the checkout (for example, below a private
+temporary or cache root), rather than below the repository. Their runtime
+identities are separately supplied by the benchmark provenance inputs.
+
 ### Diagnosing a selector that does not complete
 
 If a local selector leaves an empty log, timing file, or no receipt, use the

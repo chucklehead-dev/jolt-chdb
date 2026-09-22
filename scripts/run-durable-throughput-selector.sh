@@ -99,7 +99,13 @@ done
   exit 2
 }
 
-git -C "$repo_root" diff --quiet && git -C "$repo_root" diff --cached --quiet || {
+# A receipt's `BENCH_GIT_STATUS=clean` covers all nonignored worktree state,
+# not only tracked blobs. `git diff` omits untracked files, which could
+# otherwise let a locally added workload/helper be exercised while the receipt
+# still says clean. Ignored generated/cache/output paths are deliberately
+# outside this Git-status claim; the launcher separately requires explicit
+# executable and native-library provenance inputs.
+[[ -z $(git -C "$repo_root" status --porcelain --untracked-files=all) ]] || {
   echo "benchmark checkout must be clean" >&2
   exit 2
 }
