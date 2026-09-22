@@ -14,9 +14,6 @@
 
 (def failures (atom 0))
 
-(defn- require-wal-byte-writer-capability? []
-  (= "1" (System/getenv "JOLT_CHDB_REQUIRE_WAL_BYTE_WRITER")))
-
 (def ^:private base-options support/base-options)
 
 (defn- check [label expected actual]
@@ -136,86 +133,6 @@
   (= {:spool nil :byte-count 0 :statement-count 0
       :checkpoint-required? false}
      state))
-
-(def ^:private wal-byte-writer-unavailable-message
-  (str "Durable WAL streaming requires correct "
-       "OutputStreamWriter.append(CharSequence, start, end); "
-       "use a Jolt build containing casselc/jolt#73"))
-
-(defn- start-capability-attempt [override]
-  (let [store (backend/memory-backend)
-        calls (atom [])
-        close-count (atom 0)
-        start #(writer/start!
-                {:store store :token {} :handle :fake-handle
-                 :database "default"
-                 :operations (fake-operations calls close-count)})
-        error (try
-                (if override
-                  (with-redefs-fn
-                   {(ns-resolve 'jdbc.chdb.durable.writer
-                                'output-stream-writer-ranged-append-capable?)
-                    override}
-                   start)
-                  (start))
-                nil
-                (catch Throwable thrown thrown))]
-    {:error error :calls @calls :close-count @close-count
-     :head (backend/get-bytes store control/head-key)}))
-
-(defn- open-capability-attempt [override]
-  (let [store (backend/memory-backend)
-        calls (atom [])
-        open #(durable/open-writer!
-               {:backend store :owner "writer-1" :instance "instance-1"
-                :database "default"
-                :operations {:now-ms (fn [] (swap! calls conj :now) 0M)}})
-        error (try
-                (if override
-                  (with-redefs-fn
-                   {(ns-resolve 'jdbc.chdb.durable.writer
-                                'output-stream-writer-ranged-append-capable?)
-                    override}
-                   open)
-                  (open))
-                nil
-                (catch Throwable thrown thrown))]
-    {:error error :calls @calls
-     :head (backend/get-bytes store control/head-key)}))
-
-(defn- run-capability-checks! []
-  (let [actual-error (try
-                       (writer/require-wal-byte-writer-capability!)
-                       nil
-                       (catch Throwable thrown thrown))
-        supported? (nil? actual-error)
-        override (when supported? (delay false))
-        {:keys [error calls close-count head]}
-        (start-capability-attempt override)
-        open-result (open-capability-attempt override)]
-    (when supported?
-      (check "the running ranged-append capability passes"
-             true
-             (writer/require-wal-byte-writer-capability!)))
-    (check (if supported?
-             "a simulated broken ranged append is rejected at writer construction"
-             "the running broken ranged append is rejected at writer construction")
-           [::writer/wal-byte-writer-unavailable
-            wal-byte-writer-unavailable-message]
-           [(:type (ex-data error)) (ex-message error)])
-    (check "capability rejection precedes worker, native, WAL, and head effects"
-           [[] 0 nil]
-           [calls close-count head])
-    (check "public open reports the stable ranged-append capability error"
-           [::writer/wal-byte-writer-unavailable
-            wal-byte-writer-unavailable-message]
-           [(-> open-result :error ex-data :type)
-            (some-> open-result :error ex-message)])
-    (check (str "public capability rejection precedes clock, acquisition, "
-                "and native effects")
-           [[] nil]
-           [(:calls open-result) (:head open-result)])
-    supported?))
 
 (defn- run-wal-spool-allocation-checks! []
   ;; Phase 1 exposes no public spool API and the current writer still retains
@@ -1751,25 +1668,15 @@
   (reset! failures 0)
   (run-wal-spool-allocation-checks!)
   (run-statement-size-fastpath-checks!)
-  (let [supported? (run-capability-checks!)]
-    (if supported?
-      (do
-        (run-checkpoint-cleanup-precedence-checks!)
-        (run-checkpoint-public-retry-checks!)
-        (run-file-wal-phase2-checks!)
-        (run-deterministic-checks!)
-        (run-stateful-property!))
-      (do
-        (println (str "SKIPPED Durable writer functional and Hegel checks: "
-                      "WAL byte-writer capability unsupported"))
-        (when (require-wal-byte-writer-capability?)
-          (swap! failures inc)
-          (println "  FAIL CI requires the WAL byte-writer capability"))))
-    (when-not (zero? @failures)
-      (throw (ex-info (str @failures " Durable writer checks failed")
-                      {:failures @failures})))
-    (when supported?
-      (println "all Durable writer checks passed")))
+  (run-checkpoint-cleanup-precedence-checks!)
+  (run-checkpoint-public-retry-checks!)
+  (run-file-wal-phase2-checks!)
+  (run-deterministic-checks!)
+  (run-stateful-property!)
+  (when-not (zero? @failures)
+    (throw (ex-info (str @failures " Durable writer checks failed")
+                    {:failures @failures})))
+  (println "all Durable writer checks passed")
   true)
 
 (defn -main [& _]

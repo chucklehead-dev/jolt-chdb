@@ -92,10 +92,10 @@
         (delete-tree! root)))))
 
 (defn- check-public-writer-phase-observer-forwarding! []
-  ;; Exercise the public composition seam without a real native writer or the
-  ;; OutputStreamWriter capability probe.  `open-writer!` replaces the raw
-  ;; writer commit operation, so this catches a regression where its wrapper
-  ;; drops the observer needed by control's verify/head-CAS phases.
+  ;; Exercise the public composition seam without a real native writer.
+  ;; `open-writer!` replaces the raw writer commit operation, so this catches
+  ;; a regression where its wrapper drops the observer needed by control's
+  ;; verify/head-CAS phases.
   (let [store (backend/memory-backend)
         calls (atom [])
         clocks (atom [1000M 1001M 1002M])
@@ -108,8 +108,7 @@
         (assoc (support/fake-open-operations calls clocks close-count cleanup-count)
                :writer-phase! observe!)]
     (with-redefs-fn
-      {#'writer/require-wal-byte-writer-capability! (constantly true)
-       (private-var 'require-strict-utf8-decoder-capability!) (constantly true)
+      {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)
        #'control/commit-reference!
        (fn [_ _ options]
          (swap! forwarded conj (:phase-observe! options))

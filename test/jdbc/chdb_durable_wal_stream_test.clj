@@ -11,6 +11,7 @@
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.head :as head]
             [jdbc.chdb.durable.reader :as reader]
+            [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-open-test-support :as support])
   (:import [java.nio ByteBuffer]
@@ -46,9 +47,11 @@
               (recur (.getCause current))))))))
 
 (defn- wal-bytes [sql-values]
-  (.getBytes
-   (apply str (map #(str (json/write-str {"sql" %}) "\n") sql-values))
-   "UTF-8"))
+  ;; Exercise the managed fallback through immutable publication and reader
+  ;; recovery; expected JSON syntax is independently qualified by the WAL
+  ;; encoder corpus.
+  (byte-array
+   (map unchecked-byte (mapcat seq (map wal/line sql-values)))))
 
 (defn- concat-bytes [left right]
   (let [combined (byte-array (+ (alength left) (alength right)))]
@@ -392,14 +395,61 @@
                 (not (str/includes? decode-source ".getBytes"))
                 (not (str/includes? decode-source "Arrays/equals")))))
 
+  (let [sql "INSERT INTO fallback_round_trip VALUES ('\ud83d\ude00\\u0000')"
+        store (backend/memory-backend)
+        acquired (control/acquire! store initial-options)
+        writer-calls (atom [])
+        writer-close-count (atom 0)
+        writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-writer
+          :database "default"
+          :operations
+          (assoc (support/fake-open-operations writer-calls (atom [0M])
+                                              writer-close-count (atom 0))
+                 :cleanup-scratch! (fn [] nil))})]
+    (try
+      (writer/execute! writer sql)
+      (writer/flush! writer)
+      (let [reference (first (get-in (:head (control/read-head! store))
+                                     ["manifest" "wal"]))]
+        (check "stock fallback writer publishes its exact immutable WAL bytes"
+               true
+               (Arrays/equals (wal/line sql)
+                              (backend/get-bytes store (get reference "key")))))
+      (finally
+        (writer/close! writer)))
+    (let [reader-calls (atom [])
+          reader-close-count (atom 0)
+          reader-cleanup-count (atom 0)
+          opened (durable/open-reader!
+                  {:store store
+                   :operations (support/fake-open-operations
+                                reader-calls (atom [0M]) reader-close-count
+                                reader-cleanup-count)})]
+      (try
+        (check "stock fallback writer WAL recovers through a fresh reader"
+               [sql]
+               (mapv second (filter #(= :execute (first %)) @reader-calls)))
+        (finally
+          (reader/close! opened)))))
+
   (let [sql-values ["SELECT '\ud83d\ude00'"
-                    "SELECT 'control \u0000\t\r'"]]
+                    "SELECT 'control \u0000\t\r'"]
+        payload (wal-bytes sql-values)
+        store (prepared-wal-store payload)
+        reference (first (get-in (:head (control/read-head! store))
+                                 ["manifest" "wal"]))]
+    (check "managed fallback bytes survive immutable reference publication"
+           true
+           (Arrays/equals payload
+                          (backend/get-bytes store (get reference "key"))))
     (attempt-open
-     (wal-bytes sql-values)
+     payload
      (fn [open! calls _ _]
        (let [opened (open!)]
          (try
-           (check "canonical astral and control UTF-8 replays exactly"
+           (check "managed fallback astral and control JSONL replays exactly"
                   sql-values
                   (mapv second (filter #(= :execute (first %)) @calls)))
            (finally
