@@ -1,5 +1,7 @@
 (ns jdbc.chdb-durable-writer-concurrency-test
-  (:require [jdbc.chdb.durable.backend :as backend]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
+            [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.head :as head]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
@@ -106,10 +108,203 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- committed-wal-sql [store]
+  (->> (get-in (:head (control/read-head! store)) ["manifest" "wal"])
+       (mapcat
+        (fn [reference]
+          (->> (String. (backend/get-bytes store (get reference "key")) "UTF-8")
+               str/split-lines
+               (map #(get (json/read-str %) "sql")))))))
+
 
 (defn run-checks! []
   (reset! failures 0)
   (println "Durable writer blocked-I/O concurrency")
+  ;; Characterization red control: two callers separately compose execute!
+  ;; and flush!. A has staged its mutation, B stages its own, then A's blocked
+  ;; publication lets B queue a later flush. Once A commits both records, B
+  ;; observes :empty despite B's mutation being durably covered.
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        a-executed (promise)
+        b-executed (promise)
+        b-flush-starting (promise)
+        allow-a-flush (promise)
+        allow-b-flush (promise)
+        publish-entered (promise)
+        release-publish (promise)
+        first-publication? (atom true)
+        operations
+        (assoc (fake-operations (atom []) (atom 0))
+               :publish-wal-file!
+               (fn [store token path]
+                 (when (compare-and-set! first-publication? true false)
+                   (deliver publish-entered true)
+                   @release-publish)
+                 (control/publish-wal-file! store token path)))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :operations operations})]
+    (try
+      (let [caller-a
+            (fibers/spawn
+             #(do (writer/execute! durable-writer "INSERT INTO t VALUES ('A')")
+                  (deliver a-executed true)
+                  @allow-a-flush
+                  (writer/flush! durable-writer)))
+            caller-b
+            (fibers/spawn
+             #(do @a-executed
+                  (writer/execute! durable-writer "INSERT INTO t VALUES ('B')")
+                  (deliver b-executed true)
+                  @allow-b-flush
+                  (deliver b-flush-starting true)
+                  (writer/flush! durable-writer)))]
+        @b-executed
+        (deliver allow-a-flush true)
+        @publish-entered
+        (deliver allow-b-flush true)
+        @b-flush-starting
+        (loop [remaining 1000]
+          (when (and (pos? remaining) (zero? (.size (:queue durable-writer))))
+            (Thread/yield)
+            (recur (dec remaining))))
+        (check "legacy split two-caller schedule queues B flush behind A publication"
+               1 (.size (:queue durable-writer)))
+        (deliver release-publish true)
+        (check "legacy split two-caller schedule exposes committed-empty red control"
+             [:committed :empty ["INSERT INTO t VALUES ('A')"
+                                 "INSERT INTO t VALUES ('B')"]]
+             [(:status (fibers/join caller-a))
+              (:status (fibers/join caller-b))
+              (vec (committed-wal-sql store))])
+        )
+      (finally (writer/close! durable-writer))))
+
+  ;; Green control: A is held inside its publication while B is admitted to
+  ;; the queue. Releasing A must settle A before B is executed, so both callers
+  ;; receive their own non-empty confirmed publication receipt.
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        publish-entered (promise)
+        release-first-publish (promise)
+        first-publication? (atom true)
+        operations
+        (assoc (fake-operations (atom []) (atom 0))
+               :publish-wal-file!
+               (fn [store token path]
+                 (when (compare-and-set! first-publication? true false)
+                   (deliver publish-entered true)
+                   @release-first-publish)
+                 (control/publish-wal-file! store token path)))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :operations operations})
+        caller-a
+        (fibers/spawn
+         #(writer/execute-and-flush! durable-writer "INSERT INTO t VALUES ('A')"))]
+    (try
+      @publish-entered
+      (let [caller-b
+            (fibers/spawn
+             #(writer/execute-and-flush! durable-writer "INSERT INTO t VALUES ('B')"))]
+        (loop [remaining 1000]
+          (when (and (pos? remaining) (zero? (.size (:queue durable-writer))))
+            (Thread/yield)
+            (recur (dec remaining))))
+        (check "second atomic caller is queued behind the first publication"
+               1 (.size (:queue durable-writer)))
+        (deliver release-first-publish true)
+        (check "atomic execute-and-flush settles each caller with a publication"
+               [:committed :committed]
+               [(:status (fibers/join caller-a))
+                (:status (fibers/join caller-b))])
+        (check "atomic calls preserve per-caller WAL publication order"
+               ["INSERT INTO t VALUES ('A')" "INSERT INTO t VALUES ('B')"]
+               (vec (committed-wal-sql store))))
+      (finally (writer/close! durable-writer))))
+
+  ;; Close is admitted after both atomic requests. Even when A is blocked in
+  ;; publication, B must settle before close's cleanup starts.
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        publish-entered (promise)
+        release-first-publish (promise)
+        first-publication? (atom true)
+        events (atom [])
+        operations
+        (assoc (fake-operations (atom []) (atom 0))
+               :publish-wal-file!
+               (fn [store token path]
+                 (let [publication-index (if (compare-and-set! first-publication? true false)
+                                           1 2)]
+                   (swap! events conj [:publish-begin publication-index])
+                   (when (= 1 publication-index)
+                     (deliver publish-entered true)
+                     @release-first-publish)
+                   (swap! events conj [:publish-end publication-index])
+                   (control/publish-wal-file! store token path)))
+               :close-native! (fn [_] (swap! events conj :native-close))
+               :cleanup-scratch! (fn [] (swap! events conj :cleanup)))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :operations operations})
+        caller-a
+        (fibers/spawn
+         #(writer/execute-and-flush! durable-writer "INSERT INTO t VALUES ('A')"))]
+    @publish-entered
+    (let [caller-b
+          (fibers/spawn
+           #(writer/execute-and-flush! durable-writer "INSERT INTO t VALUES ('B')"))]
+      (loop [remaining 1000]
+        (when (and (pos? remaining) (zero? (.size (:queue durable-writer))))
+          (Thread/yield)
+          (recur (dec remaining))))
+      (let [closing (fibers/spawn #(writer/close! durable-writer))]
+        (loop [remaining 1000]
+          (when (and (pos? remaining) (< (.size (:queue durable-writer)) 2))
+            (Thread/yield)
+            (recur (dec remaining))))
+        (check "close is queued after both admitted atomic callers"
+               2 (.size (:queue durable-writer)))
+        (deliver release-first-publish true)
+        (check "admitted atomic callers settle before queued close returns"
+               [:committed :committed nil]
+               [(:status (fibers/join caller-a))
+                (:status (fibers/join caller-b))
+                (fibers/join closing)])
+        (check "close cleanup begins only after B atomic publication"
+               true
+               (< (.indexOf @events [:publish-end 2])
+                  (.indexOf @events :native-close))))))
+
+  (let [store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        close-count (atom 0)
+        operations
+        (assoc (fake-operations (atom []) close-count)
+               :publish-wal-file!
+               (fn [& _]
+                 (throw (ex-info "publication failed" {:type ::publication-failed}))))
+        durable-writer
+        (writer/start!
+         {:store store :token (:token acquired) :handle :fake-handle
+          :database "default" :operations operations})]
+    (check "atomic publication failure is returned to its caller"
+           ::publication-failed
+           (error-type
+            #(writer/execute-and-flush! durable-writer "INSERT INTO t VALUES (1)")))
+    (check "atomic publication failure retains the caller WAL obligation"
+           1 (:pending-statements (writer/status durable-writer)))
+    (check "close after atomic publication failure keeps the same failure"
+           ::publication-failed
+           (error-type #(writer/close! durable-writer)))
+    (check "failed atomic close performs native cleanup exactly once"
+           1 @close-count))
+
   (let [store (backend/memory-backend)
         acquired (control/acquire! store base-options)
         calls (atom [])

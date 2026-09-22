@@ -18,6 +18,12 @@ The synchronous operations are:
   Arrow or Parquet result through the neutral `db.export` SPI;
 - `execute!`: reject oversize or inadmissible SQL before execution, execute one
   contained non-secret mutation locally, then append its JSONL record;
+- `execute-and-flush!`: execute one fully materialized mutation and publish its
+  recovery state as one FIFO worker request, returning a confirmed or
+  reconciled publication receipt that covers that caller's mutation. Earlier
+  pending work can also be included, so this does not grant an exclusive WAL
+  segment. This is the safe composition boundary for a shared writer; it is
+  not equivalent to separately calling `execute!` and `flush!`;
 - `flush!`: publish the complete pending WAL under a fresh UUIDv4 key, or a full
   checkpoint when a bound mutation requires it; commit its reference with head
   CAS, and clear pending recovery state only after confirmed or reconciled

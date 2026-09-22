@@ -1064,6 +1064,10 @@
              (vec (:bytes (export/query-bytes
                            connection ["SELECT ?" 42]
                            {:format :parquet}))))
+      (check "Durable JDBC atomic execute-and-flush publishes its own mutation"
+             :committed
+             (:status (durable/execute-and-flush!
+                       connection "INSERT INTO t VALUES (41)")))
       (check "jdbc.core adapter admits fully materialized mutations"
              0 (jdbc/execute! connection "INSERT INTO t VALUES (42)"))
       (check "Durable JDBC flush publishes the pending WAL"
@@ -1085,7 +1089,7 @@
            [(get-in (:head (control/read-head! store)) ["lease" "owner"])
             @close-count @cleanup-count])
     (check "checkpoint replaces earlier WAL at the JDBC extension boundary"
-           [3 true []]
+           [4 true []]
            (let [head (:head (control/read-head! store))]
              [(get-in head ["manifest" "seq"])
               (some? (get-in head ["manifest" "base"]))

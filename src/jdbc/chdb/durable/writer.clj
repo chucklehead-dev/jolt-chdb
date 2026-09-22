@@ -395,6 +395,16 @@
      #((:execute-native! (:operations writer)) (:handle writer) sql [])
      line)))
 
+(declare do-flush!)
+
+(defn- do-execute-and-flush! [writer sql]
+  ;; This is deliberately one worker request, rather than composition of the
+  ;; public execute! and flush! calls.  That makes the caller's local mutation
+  ;; adjacent to the confirmed/reconciled publication which settles it; another
+  ;; caller cannot contribute work between those two halves.
+  (do-execute! writer sql)
+  (do-flush! writer))
+
 (defn- do-sql! [writer sql params]
   (require-string! sql "sql")
   (when-not (sequential? params)
@@ -584,6 +594,7 @@
       :query-bytes (do-query-bytes! writer (:sql request) (:params request)
                                     (:options request))
       :execute (do-execute! writer (:sql request))
+      :execute-and-flush (do-execute-and-flush! writer (:sql request))
       :sql (do-sql! writer (:sql request) (:params request))
       :flush (do-flush! writer)
       :checkpoint (do-checkpoint! writer)
@@ -859,6 +870,17 @@
 
 (defn execute! [writer sql]
   (enqueue-open! writer {:op :execute :sql sql :result (promise)}))
+
+(defn execute-and-flush!
+  "Execute one fully materialized Durable mutation and publish its recovery
+  state as one serialized writer request.
+
+  The returned value is the confirmed or reconciled publication receipt. A
+  failure retains the pending recovery work exactly as `flush!` does. This is
+  the caller-atomic alternative to separately calling `execute!` then `flush!`
+  on a shared writer."
+  [writer sql]
+  (enqueue-open! writer {:op :execute-and-flush :sql sql :result (promise)}))
 
 (defn sql! [writer sql params]
   (enqueue-open! writer {:op :sql :sql sql :params params :result (promise)}))

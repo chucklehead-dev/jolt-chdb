@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `execute-and-flush!` at the Durable writer and JDBC extension boundaries.
+  It performs one fully materialized mutation and its confirmed/reconciled V1
+  publication as a single FIFO worker request, so another shared-writer caller
+  cannot be admitted between those halves. Failed or ambiguous publication
+  retains the existing recovery obligation. This fixes a caller-composition
+  boundary and makes no batching, throughput, provider-delivery, or freshness
+  claim.
+
 - Add an opt-in positive Durable writer
   `:checkpoint-wal-reference-threshold`. A crossing `flush!` now uses the
   existing full V1 checkpoint publication/CAS before returning its persistence

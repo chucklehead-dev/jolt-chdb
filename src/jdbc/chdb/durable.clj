@@ -1165,6 +1165,18 @@
   (shim/extension-operation
    #(writer/flush! (jdbc-writer-handle connection))))
 
+(defn execute-and-flush!
+  "Execute one fully materialized Durable mutation and publish it atomically
+  with respect to the writer queue.
+
+  The returned value is the confirmed or reconciled publication receipt. This
+  extension is for integrations that must not let another connection user run
+  between mutation admission and its persistence barrier. Other driver types
+  and read-only Durable connections fail closed."
+  [connection sql]
+  (shim/extension-operation
+   #(writer/execute-and-flush! (jdbc-writer-handle connection) sql)))
+
 (defn checkpoint!
   "Publish and commit a full checkpoint for a Durable JDBC writer connection.
 
