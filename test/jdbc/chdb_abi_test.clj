@@ -188,7 +188,7 @@
 (defn- hosted-jolt-pin-matches?
   [pins action workflows]
   (let [{:keys [line commit version]} (get-in pins [:jolt :compiler])
-        cache-namespace (str "v0.8.6-aspects-" (subs commit 0 8))
+        cache-namespace (str "v" version "-" line "-" (subs commit 0 8))
         workflow-guards
         ["id: pinned-jolt"
          (str "PINNED_JOLT_SOURCE_SHA: " commit)
@@ -197,7 +197,7 @@
          "steps.pinned-jolt.outputs.version"
          "$(jolt --version)"
          cache-namespace]]
-    (and (= "integration/aspects" line)
+    (and (= "release" line)
          (every? string? [commit version])
          (str/includes? action commit)
          (str/includes? action (str "JOLT_VERSION=\"v" version "\""))
@@ -403,14 +403,12 @@
            [] (discover-hosted-jolt-workflows rejected-consumers))
     (check "active hosted pins contain no obsolete compiler revision"
            false (str/includes? active-jolt-pin-text (str "fd216" "943")))
-    (check "active hosted pins require the strict-decoder compiler banner"
-           true (every? #(str/includes? % "jolt v0.8.6-37-g57e591d4")
+    (check "active hosted pins require the released Jolt v0.8.10 banner"
+           true (every? #(str/includes? % "jolt v0.8.10")
                         (cons jolt-action jolt-workflows)))
-    (check "user docs distinguish the Durable compiler from the base floor"
+    (check "user docs name the released Jolt floor"
            true
-           (every? #(and (str/includes? % "57e591d4")
-                         (str/includes? % "PR #957")
-                         (str/includes? % "base driver"))
+           (every? #(str/includes? % "0.8.10")
                    durable-runtime-docs))
     (check "one workflow source-revision drift turns the guard red"
            false
@@ -426,8 +424,8 @@
             pins jolt-action
             (update jolt-workflows 1
                     str/replace
-                    "v0.8.6-aspects-57e591d4"
-                    "v0.8.6-aspects-stale")))
+                    "v0.8.10-release-5b659b7d"
+                    "v0.8.10-release-stale")))
     (check "a newly discovered unguarded consumer turns the path-set guard red"
            false
            (= expected-hosted-jolt-workflow-paths
@@ -444,7 +442,7 @@
     (check "hosted Jolt version drift turns the guard red"
            false
            (hosted-jolt-pin-matches?
-            (assoc-in pins [:jolt :compiler :version] "0.8.6-0-g00000000")
+           (assoc-in pins [:jolt :compiler :version] "0.8.10-0-g00000000")
             jolt-action jolt-workflows))
     (check "JVM FFI revision agrees with the selected deps.edn alias"
            (get-in deps ffi-path)

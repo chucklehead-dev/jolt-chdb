@@ -1,4 +1,4 @@
-{:jolt/min-version "0.8.6"
+{:jolt/min-version "0.8.10"
  :paths ["src"]
  :deps {casselc/samizdat
         ;; The audited fork commit is published by its upstream repository.

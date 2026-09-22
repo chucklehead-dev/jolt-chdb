@@ -34,9 +34,8 @@ positional parameter API:
                      :where [:= :id 1]}))
 ```
 
-Jolt 0.8.6 or newer is the base driver floor. Durable mode currently requires
-the pinned `casselc/jolt` `integration/aspects` compiler at commit `57e591d4`,
-or a later release that contains upstream Jolt PR #957. That compiler supplies
+Jolt 0.8.10 or newer is the base driver and Durable floor. Hosted Durable CI
+pins the released Jolt v0.8.10 source commit `5b659b7d`; that release supplies
 the strict `CharsetDecoder` interop used by recovery. Reader and writer opens
 functionally probe strict decoding and fail before storage or native effects if
 it is unavailable. Durable WAL streaming separately probes for the compiler's

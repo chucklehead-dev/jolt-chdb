@@ -1,5 +1,5 @@
 {:paths ["src"]
- :jolt/min-version "0.8.6"
+ :jolt/min-version "0.8.10"
  :deps {io.github.chucklehead-dev/jolt-chdb
         {:local/root "../../.."}
         io.github.chucklehead-dev/jolt-otel-clickhouse

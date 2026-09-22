@@ -56,12 +56,11 @@ Do not add an exclusion, `:override-deps`, or a root mapping from one historical
 coordinate to the other historical revision. Those techniques choose a
 classpath winner without integrating the behavior of both lineages.
 
-Jolt 0.8.6 remains the ordinary JDBC minimum. Durable writer qualification
-currently requires the documented `casselc/jolt` compiler
-`57e591d4d6481c5536858575ffc006cf5a41adbf` (banner
-`jolt v0.8.6-37-g57e591d4`) until a release contains its strict-decoder and
-`OutputStreamWriter.append` corrections. The fixture accepts that executable
-through `JOLT_BIN` and always runs it through the workspace's mandatory Chez
+Jolt 0.8.10 is the ordinary JDBC and Durable minimum. Durable writer
+qualification uses the released Jolt v0.8.10 commit
+`5b659b7dbb6fe09161d53a92f706cb55dee955d6` (banner `jolt v0.8.10`). The
+fixture accepts that executable through `JOLT_BIN` and always runs it through
+the workspace's mandatory Chez
 10.4.1 wrapper.
 
 ## Qualification

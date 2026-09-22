@@ -5,12 +5,12 @@
   :retire-in :phase-1
   :criterion "Fold this adapter into jdbc.chdb.native and delete the test-only binding namespace before exposing a BB/JVM API."}
  :jolt
- {:version "0.8.6"
-  :release-commit "f3041a0e32ba0db1b92bd69b8ecb7b40f8b2e115"
+ {:version "0.8.10"
+  :release-commit "5b659b7dbb6fe09161d53a92f706cb55dee955d6"
   :compiler
-  {:line "integration/aspects"
-   :commit "57e591d4d6481c5536858575ffc006cf5a41adbf"
-   :version "0.8.6-37-g57e591d4"}}
+  {:line "release"
+   :commit "5b659b7dbb6fe09161d53a92f706cb55dee955d6"
+   :version "0.8.10"}}
  :babashka
  {:tag "v1.13.220"
   :tag-commit "b98575c98a0ef4df77775ff25fd7fc7b591b1afd"

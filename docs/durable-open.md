@@ -199,12 +199,10 @@ Use `jdbc.chdb.durable/normalized-head-sha256` only on a decoded head already
 supplied by your application to construct such a pin. This is a snapshot
 identity guard, not a freshness, lease, or external-reader guarantee.
 
-Durable runtime and recovery currently require `casselc/jolt`
-`integration/aspects` commit `57e591d4`, or a later Jolt release containing
-upstream PR #957, for strict `CharsetDecoder` interop. This is stronger than the
-base driver's Jolt 0.8.6 floor. Reader and writer opens functionally verify both
-valid multibyte decoding and malformed-input rejection before storage or native
-effects. Run the focused gate with that pinned compiler and Chez 10.4.1 (the
+Durable runtime and recovery require Jolt v0.8.10 or later for strict
+`CharsetDecoder` interop. Reader and writer opens functionally verify both valid
+multibyte decoding and malformed-input rejection before storage or native
+effects. Run the focused gate with Jolt v0.8.10 and Chez 10.4.1 (the
 shared maintainer workspace supplies its pinned wrapper through the parent
 `AGENTS.md`):
 

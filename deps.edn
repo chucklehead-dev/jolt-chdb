@@ -1,5 +1,5 @@
 {:paths ["src" "resources"]
- :jolt/min-version "0.8.6"
+ :jolt/min-version "0.8.10"
  :deps {jolt-lang/db
         {:git/url "https://github.com/casselc/db.git"
          ;; The pure Durable observation boundary requires this read-only

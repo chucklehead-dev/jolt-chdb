@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Raise the Jolt floor to released v0.8.10. Hosted Durable workflows now build
+  and verify the exact v0.8.10 source commit in isolated release-namespaced
+  caches; no Durable protocol, model, or throughput threshold changes are made.
+
 - Add an opt-in positive Durable writer
   `:checkpoint-wal-reference-threshold`. A crossing `flush!` now uses the
   existing full V1 checkpoint publication/CAS before returning its persistence
