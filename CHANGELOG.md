@@ -12,6 +12,11 @@
   serialization requires CPU-only, nonparking callbacks; the lifecycle tests
   gate workers before serialization rather than parking inside a JSON writer.
 
+- Add redacted, exact-order traces for public JDBC and raw Durable writer
+  preflight routes, classifier rejection, and bound-value checkpoint recovery.
+  Link those concrete routes to the existing writer abstraction without changing
+  Durable behavior or expanding the model state space (#207).
+
 - Pin the merged `casselc/data.json` default writer and map-entry fast paths
   for production-shaped JSONEachRow. A matched local 512-row run (500 samples
   per mode) reduced encoding-inclusive p50 from 107.095 to 60.167 ms and p99

@@ -18,6 +18,7 @@
             [jdbc.chdb-durable-engine-metadata-itf-test :as durable-engine-metadata-itf]
             [jdbc.chdb-durable-secret-conformance-test :as durable-secret-conformance]
             [jdbc.chdb-durable-writer-test :as durable-writer]
+            [jdbc.chdb-durable-writer-route-test :as durable-writer-route]
             [jdbc.chdb-durable-writer-concurrency-test :as durable-writer-concurrency]
             [jdbc.chdb-durable-worker-join-test :as durable-worker-join]
             [jdbc.chdb-durable-open-test :as durable-open]
@@ -703,6 +704,7 @@
   (durable-engine-metadata-itf/run-checks!)
   (durable-secret-conformance/run-checks!)
   (durable-writer/run-checks!)
+  (durable-writer-route/run-checks!)
   (durable-writer-concurrency/run-checks!)
   (durable-worker-join/run-checks!)
   (durable-open/run-checks!)
