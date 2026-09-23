@@ -194,6 +194,112 @@
                              (execute!)))))))
         (check "native error frees SQL buffer once" 1 @frees)))))
 
+(defn- run-buffered-prepared-checks []
+  (println "Request-local prepared JDBC SQL buffer")
+  (let [with-buffer! (:with-native-prepared-buffer!
+                      ((ns-resolve 'jdbc.chdb.durable 'default-open-operations)))
+        secret "prepared-bound-secret"
+        prepared (chdb/prepare-query "INSERT INTO t VALUES (?)" [secret])
+        sql (chdb/prepared-sql prepared)
+        accepted {:query-class :mutating :statement-count 1
+                  :has-secrets false :writes-only-target-database true
+                  :changes-database-lifecycle false}]
+    (doseq [[label analysis expected-execution]
+            [["accepted" accepted 1]
+             ["multi-statement" (assoc accepted :statement-count 2) 0]
+             ["secret" (assoc accepted :has-secrets true) 0]
+             ["cross-database" (assoc accepted :writes-only-target-database false) 0]]]
+      (let [classified (atom nil)
+            executed (atom nil)
+            frees (atom 0)
+            native-free ffi/free]
+        (with-redefs [native/classify-query-buffer!
+                      (fn [_ buffer _]
+                        (reset! classified buffer)
+                        (check (str label " classifier sees only typed SQL")
+                               false
+                               (str/includes?
+                                (String. (ffi/read-array (:pointer buffer)
+                                                         (:length buffer)) "UTF-8")
+                                secret))
+                        (check (str label " classifier sees exact prepared SQL")
+                               sql
+                               (String. (ffi/read-array (:pointer buffer)
+                                                        (:length buffer)) "UTF-8"))
+                        analysis)
+                      chdb/execute-prepared-any-with-query-buffer
+                      (fn [_ execution-prepared buffer]
+                        (reset! executed buffer)
+                        (check (str label " executes same prepared request")
+                               true (identical? prepared execution-prepared))
+                        :native-result)
+                      ffi/free (fn [pointer]
+                                 (swap! frees inc)
+                                 (native-free pointer))]
+          (let [result (rejected
+                        #(with-buffer! :handle prepared "default"
+                           (fn [analysis execute!]
+                             (policy/authorize-execute! analysis)
+                             (execute!))))]
+            (check (str label " executes only after policy")
+                   expected-execution (if @executed 1 0))
+            (if (= label "accepted")
+              (do
+                (check "accepted classification/execution share native buffer"
+                       true (identical? @classified @executed))
+                (check "accepted result survives buffer cleanup" nil result))
+              (check (str label " rejects before native mutation")
+                     ::policy/rejected (:type (ex-data result))))
+            (check (str label " SQL buffer freed exactly once") 1 @frees)))))
+    (let [frees (atom 0)
+          native-free ffi/free]
+      (with-redefs [native/classify-query-buffer!
+                    (fn [_ _ _] (throw (ex-info "classified failure"
+                                                  {:type ::classifier-failure})))
+                    chdb/execute-prepared-any-with-query-buffer
+                    (fn [& _] (throw (ex-info "should not execute"
+                                               {:type ::unexpected-execution})))
+                    ffi/free (fn [pointer]
+                               (swap! frees inc)
+                               (native-free pointer))]
+        (check "classification failure propagates without execution"
+               ::classifier-failure
+               (:type (ex-data (rejected
+                                #(with-buffer! :handle prepared "default"
+                                   (fn [_ execute!] (execute!)))))))
+        (check "classification failure frees SQL buffer" 1 @frees)))
+    (let [frees (atom 0)
+          native-free ffi/free]
+      (with-redefs [native/classify-query-buffer! (fn [_ _ _] accepted)
+                    chdb/execute-prepared-any-with-query-buffer
+                    (fn [& _] (throw (ex-info "native failed"
+                                               {:type ::native-failure})))
+                    ffi/free (fn [pointer]
+                               (swap! frees inc)
+                               (native-free pointer))]
+        (check "native failure propagates after prepared admission"
+               ::native-failure
+               (:type (ex-data
+                       (rejected
+                        #(with-buffer! :handle prepared "default"
+                           (fn [analysis execute!]
+                             (policy/authorize-execute! analysis)
+                             (execute!)))))))
+        (check "native failure frees prepared SQL buffer" 1 @frees)))))
+
+(defn- run-real-native-prepared-checks [handle]
+  ;; Native storage identity is process-wide. Reuse the core phase's owned
+  ;; handle, rather than opening :memory: before that phase claims core/db.
+  (let [prepared (chdb/prepare-query "SELECT ?" [42])]
+    (native/with-query-buffer
+     (chdb/prepared-sql prepared)
+     (fn [query-buffer]
+       (check "real native prepared execution accepts shared SQL and bound value"
+              "42"
+              (-> (chdb/execute-prepared-any-with-query-buffer
+                   handle prepared query-buffer)
+                  :rows first first str))))))
+
 (defn- required-env [name]
   (or (some-> (System/getenv name) str/trim not-empty)
       (throw (ex-info "durable native subprocess environment is incomplete"
@@ -660,6 +766,7 @@
       (chdb/execute-any handle
                         "CREATE TABLE mem.t (id UInt32) ENGINE = MergeTree ORDER BY id" [])
       (chdb/execute-any handle "INSERT INTO mem.t VALUES (1),(2),(3)" [])
+      (run-real-native-prepared-checks handle)
       (run-analysis-checks handle)
       (run-backup-checks handle root backups)
       (finally
@@ -677,6 +784,7 @@
   (case mode
     "core" (do (run-shared-query-buffer-checks)
                (run-buffered-admission-checks)
+               (run-buffered-prepared-checks)
                (run-core-native-checks))
     "object-writer" (run-durable-object-e2e :writer)
     "object-reader" (run-durable-object-e2e :reader)

@@ -320,7 +320,8 @@
         execute-prepared-native! (:execute-prepared-native! operations)]
     (if (and prepare-query! execute-prepared-native!)
       (let [prepared (prepare-query! sql params)]
-        {:classification-sql (chdb/prepared-sql prepared)
+        {:prepared prepared
+         :classification-sql (chdb/prepared-sql prepared)
          :execute! #(execute-prepared-native! (:handle writer) prepared)})
       ;; Preserve the raw start! test seam and third-party operation overrides.
       ;; Public Durable open supplies the paired prepared-query operations.
@@ -383,6 +384,27 @@
   (do-execute! writer sql)
   (do-flush! writer))
 
+(defn- apply-sql-analysis! [writer sql params analysis execute!]
+  (case (:query-class analysis)
+    :read-only
+    (do
+      (policy/authorize-query! analysis)
+      (policy/call-with-query-error-redaction
+       analysis
+       #((:query-native! (:operations writer))
+         (:handle writer) sql params)))
+
+    :mutating
+    (do
+      (assert-writable! writer)
+      (policy/authorize-execute! analysis)
+      (let [line (if (seq params)
+                   (do (validate-statement-size! sql) nil)
+                   (prepare-wal-line! writer sql))]
+        (execute-admitted! writer execute! line)))
+
+    (policy/authorize-query! analysis)))
+
 (defn- do-sql! [writer sql params]
   (require-string! sql "sql")
   (when-not (sequential? params)
@@ -392,29 +414,19 @@
   ;; the only recovery work and does not disturb ordinary read-only sql! or
   ;; query! requests.
   (reject-sealed-wal-mutation! writer sql)
-  (let [{:keys [classification-sql execute!]}
-        (prepare-execution! writer sql params)
-        analysis ((:classify! (:operations writer))
-                  (:handle writer) classification-sql (:database writer))]
-    (case (:query-class analysis)
-      :read-only
-      (do
-        (policy/authorize-query! analysis)
-        (policy/call-with-query-error-redaction
-         analysis
-         #((:query-native! (:operations writer))
-           (:handle writer) sql params)))
-
-      :mutating
-      (do
-        (assert-writable! writer)
-        (policy/authorize-execute! analysis)
-        (let [line (if (seq params)
-                     (do (validate-statement-size! sql) nil)
-                     (prepare-wal-line! writer sql))]
-          (execute-admitted! writer execute! line)))
-
-      (policy/authorize-query! analysis))))
+  (let [{:keys [prepared classification-sql execute!]}
+        (prepare-execution! writer sql params)]
+    (if-let [with-buffer! (and prepared
+                              (:with-native-prepared-buffer! (:operations writer)))]
+      (with-buffer!
+       (:handle writer) prepared (:database writer)
+       (fn [analysis shared-execute!]
+         (apply-sql-analysis! writer sql params analysis shared-execute!)))
+      (apply-sql-analysis!
+       writer sql params
+       ((:classify! (:operations writer))
+        (:handle writer) classification-sql (:database writer))
+       execute!))))
 
 (declare do-checkpoint!)
 

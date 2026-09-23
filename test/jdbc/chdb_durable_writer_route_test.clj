@@ -5,7 +5,9 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb.native :as native]
             [jdbc.chdb-durable-open-test-support :as open-support]
             [jdbc.chdb-durable-writer-test-support :as writer-support]
             [jdbc.core :as jdbc]))
@@ -120,17 +122,31 @@
          (finally (writer/close! opened)))))
 
 (defn- run-jdbc-materialized! []
-  (let [events (atom [])]
+  (let [events (atom [])
+        sql "INSERT INTO t VALUES (1)"]
     (with-jdbc-writer
       events false
-      (fn [connection _]
+      (fn [connection store]
         (check "JDBC materialized mutation returns through public execute!"
-               0 (jdbc/execute! connection "INSERT INTO t VALUES (1)"))
+               0 (with-redefs [native/with-query-buffer
+                               (fn [& _]
+                                 (throw (ex-info "custom route used default buffer"
+                                                 {:type ::unexpected-default-buffer})))]
+                   (jdbc/execute! connection sql)))
         (check "JDBC preflight and replay staging are totally ordered"
                [:prepare-query :classify :wal-prepare :native :wal-append]
                (phase-names @events))
         (check "JDBC WAL observer has only closed scalar fields"
-               true (closed-wal-events? @events 2))))))
+               true (closed-wal-events? @events 2))
+        (check "JDBC materialized flush confirms exact WAL"
+               :committed (:status (durable/flush! connection)))
+        (let [head (:head (control/read-head! store))
+              references (get-in head ["manifest" "wal"])]
+          (check "JDBC materialized WAL has one replay record"
+                 1 (count references))
+          (check "JDBC zero-parameter replay line retains exact SQL bytes"
+                 (vec (wal/line sql))
+                 (vec (backend/get-bytes store (get (first references) "key")))))))))
 
 (defn- run-raw-materialized! []
   (let [events (atom [])]

@@ -816,6 +816,15 @@
         (execute-admitted!
          (native/classify-query-buffer! handle query-buffer database)
          #(chdb/execute-any-with-query-buffer handle sql query-buffer)))))
+   :with-native-prepared-buffer!
+   (fn [handle prepared database classified!]
+     (native/with-query-buffer
+      (chdb/prepared-sql prepared)
+      (fn [query-buffer]
+        (classified!
+         (native/classify-query-buffer! handle query-buffer database)
+         #(chdb/execute-prepared-any-with-query-buffer
+           handle prepared query-buffer)))))
    :execute-prepared-native! chdb/execute-prepared-any
    :recovery-event! (fn [_] nil)})
 
@@ -1024,6 +1033,9 @@
         _ (when (contains? configured-operations :with-native-admitted-buffer!)
             (fail! ::invalid-options
                    "with-native-admitted-buffer! is reserved for the default writer"))
+        _ (when (contains? configured-operations :with-native-prepared-buffer!)
+            (fail! ::invalid-options
+                   "with-native-prepared-buffer! is reserved for the default writer"))
         configured-preparation?
         (contains? configured-operations :prepare-query!)
         configured-prepared-execution?
@@ -1047,6 +1059,12 @@
         (if (or (contains? configured-operations :analyze-execute!)
                 (contains? configured-operations :execute-native!))
           (dissoc operations :with-native-admitted-buffer!)
+          operations)
+        operations
+        (if (some #(contains? configured-operations %)
+                  [:classification-sql! :prepare-query! :classify!
+                   :query-native! :execute-native! :execute-prepared-native!])
+          (dissoc operations :with-native-prepared-buffer!)
           operations)
         required [:now-ms :monotonic-ms! :await-backoff!
                   :durable-capability :create-scratch! :cleanup-scratch!
