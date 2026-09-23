@@ -182,6 +182,15 @@
            :durable-throughput
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput"]}
+           :durable-confirmed-10000
+           {:extra-paths ["bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000"]}
+           :durable-confirmed-10000-test
+           {:extra-paths ["test" "bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000-test"]}
+           :durable-confirmed-10000-native-test
+           {:extra-paths ["test" "bench"]
+            :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000-test" "--native"]}
            :durable-throughput-contract-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-test"]}
