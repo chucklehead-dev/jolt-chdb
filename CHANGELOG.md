@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a separately gated manual OIDC S3 qualification for 10,000-row public
+  `execute-and-flush!`: three warmups, 100 measured confirmations, and a
+  fresh-process readback of all 1,030,000 rows with aggregate/fingerprint
+  parity. Evidence is bounded and redacted. No AWS run or throughput claim is
+  included; live dispatch still requires verified IAM scope, current and
+  noncurrent lifecycle expiry, and request/storage/cost bounds.
+
 - Reuse a WAL object's completed size-and-SHA readback when committing the
   matching publication on the same backend and lease token. A private witness
   preserves the public receipt shape; absent or mismatched witnesses still
