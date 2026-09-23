@@ -46,6 +46,16 @@
           (or (:type (ex-data current))
               (recur (.getCause current))))))))
 
+(defn- check-recovery-failure! [label expected-cause-type f]
+  (let [error (try (f) nil (catch Throwable thrown thrown))]
+    (check label
+           [{:type ::durable/startup-failed
+             :jdbc.chdb.durable/startup-stage :recover}
+            expected-cause-type]
+           [(some-> error ex-data)
+            (some-> error ex-cause ex-data :type)])
+    error))
+
 (defn- wal-bytes [sql-values]
   ;; Exercise the managed fallback through immutable publication and reader
   ;; recovery; expected JSON syntax is independently qualified by the WAL
@@ -211,24 +221,24 @@
          operations
          (assoc (support/fake-open-operations
                  calls (atom [0M]) close-count cleanup-count)
-                :recovery-event! (or observer #(swap! events conj %)))]
-     {:result
-      (try
-        (let [opened (durable/open-reader! {:store store :operations operations})]
-          (reader/close! opened)
-          :opened)
-        (catch Throwable error
-          (loop [current error]
-            (if current
-              (or (:type (ex-data current)) (recur (.getCause current)))
-              :unknown))))
-      :calls @calls
-      :events @events
-      :close-count @close-count
-      :cleanup-count @cleanup-count
-      :head-before head-bytes
-      :head-after (vec (backend/get-bytes store control/head-key))
-      :payload-size (alength payload)})))
+                :recovery-event! (or observer #(swap! events conj %)))
+         outcome
+         (try
+           (let [opened (durable/open-reader! {:store store :operations operations})]
+             (reader/close! opened)
+             {:result :opened})
+           (catch Throwable error
+             {:result (some-> error ex-data :type)
+              :stage (some-> error ex-data :jdbc.chdb.durable/startup-stage)
+              :cause-result (some-> error ex-cause ex-data :type)}))]
+     (merge outcome
+            {:calls @calls
+             :events @events
+             :close-count @close-count
+             :cleanup-count @cleanup-count
+             :head-before head-bytes
+             :head-after (vec (backend/get-bytes store control/head-key))
+             :payload-size (alength payload)}))))
 
 (def ^:private expected-empty-wal-recovery-events
   [{:event :durable/wal-integrity-verified :wal-index 0}
@@ -313,17 +323,31 @@
             :two-byte-overlong :three-byte-overlong :four-byte-overlong
             :encoded-surrogate :above-unicode-maximum]
            (mapv first @malformed-probes-var))
-    (with-redefs-fn
-      {decoder-capability-var (delay false)}
-      (fn []
-        ;; Public opens must fail at this guard before resolving storage,
-        ;; validating writer options, acquiring a lease, or touching native code.
-        (check "reader fails closed before effects without strict decoding"
-               ::durable/strict-utf8-decoder-unavailable
-               (error-type #(durable/open-reader! {})))
-        (check "writer fails closed before effects without strict decoding"
-               ::durable/strict-utf8-decoder-unavailable
-               (error-type #(durable/open-writer! {})))))
+    (let [later-boundaries (atom [])
+          native-lifetime-var
+          (ns-resolve 'jdbc.chdb.durable 'require-fresh-default-native-lifetime!)
+          resolve-store-var (ns-resolve 'jdbc.chdb.durable 'resolve-store!)]
+      (with-redefs-fn
+        {decoder-capability-var (delay false)
+         native-lifetime-var (fn [& _] (swap! later-boundaries conj :native-lifetime))
+         resolve-store-var (fn [& _] (swap! later-boundaries conj :store))}
+        (fn []
+          ;; Both public opens must reject directly, before process-lifetime
+          ;; or store effects. Looking down the cause chain would let an
+          ;; unintended startup-stage envelope satisfy this assertion.
+          (doseq [[label open!]
+                  [["reader" #(durable/open-reader! {})]
+                   ["writer" #(durable/open-writer! {})]]]
+            (let [error (try (open!) nil (catch Throwable thrown thrown))]
+              (check (str label " has a direct strict-decoder rejection")
+                     {:type ::durable/strict-utf8-decoder-unavailable}
+                     (some-> error ex-data))
+              (check (str label " has no startup stage")
+                     false
+                     (contains? (or (some-> error ex-data) {})
+                                :jdbc.chdb.durable/startup-stage))))
+          (check "strict-decoder rejection precedes later open boundaries"
+                 [] @later-boundaries))))
     (check "strict decoder preserves control, replacement, multibyte, and astral text"
            "control:\u0000\t\r replacement:\ufffd latin:\u00f5 greek:\u03b2 astral:\ud83d\ude00"
            (decode! (.getBytes
@@ -557,8 +581,10 @@
       :analyze-execute! (fn [& _] (throw primary))}
      (fn [open! calls _ _]
        (let [actual (try (open!) nil (catch Throwable error error))]
-         (check "throwing observer preserves primary throwable identity"
-                true (identical? primary actual))
+         (check "throwing observer retains the primary throwable as the immediate recovery cause"
+                [{:type ::durable/startup-failed
+                  :jdbc.chdb.durable/startup-stage :recover} true]
+                [(ex-data actual) (identical? primary (ex-cause actual))])
          (check "failed classification reaches no native replay"
                 [] (filterv #(= :execute (first %)) @calls))))))
 
@@ -569,8 +595,9 @@
     (attempt-open
      payload {:recovery-phase! #(swap! events conj %)}
      (fn [open! calls _ _]
-       (check "instrumented malformed tail preserves corruption precedence"
-              ::durable/corrupt (error-type open!))
+       (check-recovery-failure!
+        "instrumented malformed tail preserves corruption precedence"
+        ::durable/corrupt open!)
        (check "instrumented malformed tail applies no validated prefix"
               [] (engine-effects @calls))))
     (check "failed JSON phase emits a terminal failure status"
@@ -772,8 +799,9 @@
         #(attempt-open
           (wal-bytes ["SELECT 1"])
           (fn [open! calls _ _]
-            (check "record decoding uses the bounded-size decision seam"
-                   ::durable/limit-exceeded (error-type open!))
+            (check-recovery-failure!
+             "record decoding uses the bounded-size decision seam"
+             ::durable/limit-exceeded open!)
             (check "a forced size rejection has no engine effect"
                    [] (engine-effects @calls)))))))
 
@@ -790,8 +818,8 @@
        (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"]) suffix)
        #(swap! events conj %)
        (fn [open! calls close-count cleanup-count]
-         (check (str label " is corrupt") ::durable/corrupt
-                (error-type open!))
+         (check-recovery-failure! (str label " is corrupt")
+                                  ::durable/corrupt open!)
          (check (str label " executes no validated prefix") []
                 (engine-effects @calls))
          (check (str label " still closes and cleans") [1 1]
@@ -863,7 +891,8 @@
   (doseq [fault [:size :digest]]
     (let [result (open-empty-wal-fixture fault)]
       (check (str "empty-WAL " (name fault) " control is corrupt")
-             ::durable/corrupt (:result result))
+             [::durable/startup-failed :recover ::durable/corrupt]
+             [(:result result) (:stage result) (:cause-result result)])
       (check (str "empty-WAL " (name fault)
                   " control reaches neither validation nor replay")
              [[] [] 1 1]
@@ -873,8 +902,8 @@
   (attempt-open
    (.getBytes "{\"sql\":\"SELECT 1\"}" "UTF-8")
    (fn [open! calls _ _]
-     (check "unterminated WAL is corrupt" ::durable/corrupt
-            (error-type open!))
+     (check-recovery-failure! "unterminated WAL is corrupt"
+                              ::durable/corrupt open!)
      (check "unterminated WAL has no engine effect" []
             (engine-effects @calls))))
 
@@ -885,8 +914,8 @@
     (attempt-open
      (.getBytes text "UTF-8")
      (fn [open! calls _ _]
-       (check (str label " is corrupt") ::durable/corrupt
-              (error-type open!))
+       (check-recovery-failure! (str label " is corrupt")
+                                ::durable/corrupt open!)
        (check (str label " has no engine effect") []
               (engine-effects @calls)))))
 
@@ -894,8 +923,9 @@
     (attempt-open
      (wal-bytes ["ok" "four"])
      (fn [open! calls _ _]
-       (check "an oversized tail retains limit-exceeded classification"
-              ::durable/limit-exceeded (error-type open!))
+       (check-recovery-failure!
+        "an oversized tail retains limit-exceeded classification"
+        ::durable/limit-exceeded open!)
        (check "an oversized tail executes no preceding statement" []
               (engine-effects @calls)))))
 
@@ -916,8 +946,9 @@
      (concat-bytes (wal-bytes ["four"])
                    (byte-array [(unchecked-byte 0xc3) 0x28 0x0a]))
      (fn [open! calls _ _]
-       (check "whole-segment UTF-8 corruption precedes an earlier record limit"
-              ::durable/corrupt (error-type open!))
+       (check-recovery-failure!
+        "whole-segment UTF-8 corruption precedes an earlier record limit"
+        ::durable/corrupt open!)
        (check "UTF-8 precedence has no engine effect" []
               (engine-effects @calls)))))
 
@@ -926,8 +957,9 @@
      (concat-bytes (wal-bytes ["four"])
                    (.getBytes "{\"sql\":\"ok\"}" "UTF-8"))
      (fn [open! calls _ _]
-       (check "missing final LF retains precedence over a record limit"
-              ::durable/corrupt (error-type open!))
+       (check-recovery-failure!
+        "missing final LF retains precedence over a record limit"
+        ::durable/corrupt open!)
        (check "termination precedence has no engine effect" []
               (engine-effects @calls)))))
 

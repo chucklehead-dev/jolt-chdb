@@ -27,6 +27,18 @@
 (defn- error-type [f]
   (try (f) nil (catch Throwable error (:type (ex-data error)))))
 
+(defn- acquire-failure-data [error]
+  [(ex-data error) (some-> error ex-cause ex-data :type)])
+
+(defn- expected-acquire-failure [cause-type]
+  [{:type ::durable/startup-failed
+    :jdbc.chdb.durable/startup-stage :acquire-lease}
+   cause-type])
+
+(defn- acquire-failure [f]
+  (let [error (try (f) nil (catch Throwable thrown thrown))]
+    (acquire-failure-data error)))
+
 (defn- fixture-store [path]
   (let [store (backend/memory-backend)]
     (backend/put-bytes-if-absent!
@@ -126,7 +138,7 @@
     (let [opened (open! store now-ms opts)]
       (try :opened (finally (writer/close! opened))))
     (catch Throwable error
-      (:type (ex-data error)))))
+      (acquire-failure-data error))))
 
 (defn run-checks! []
   (reset! failures 0)
@@ -234,7 +246,8 @@
                 store (atom [(+ python-now-ms 626M)])
                 {:clock-skew-ms 1M})]
     (check "acquire validates the head that replaced the outer snapshot"
-           ::durable/invalid-options (:type (ex-data (:error result))))
+           (expected-acquire-failure ::durable/invalid-options)
+           (acquire-failure-data (:error result)))
     (check "TOCTOU replacement is preserved before eligibility, warning, or CAS"
            [replacement 0 []]
            [(:head (control/read-head! delegate)) @acquire-replaces
@@ -276,8 +289,8 @@
 
   (let [store (fixture-store python-fixture)]
     (check "public open preserves a live fractional Python lease"
-           ::control/lease-held
-           (error-type #(open! store python-now-ms {})))
+           (expected-acquire-failure ::control/lease-held)
+           (acquire-failure #(open! store python-now-ms {})))
     (check "rejected cross-binding takeover does not touch the head"
            [1 "python-writer" 1788230400.125M]
            (let [lease (get-in (:head (control/read-head! store)) ["lease"])]
@@ -291,14 +304,14 @@
         below-before (stored-head-bytes below-store)
         equal-before (stored-head-bytes equal-store)]
     (check "clock skew keeps the lease held one millisecond below the boundary"
-           ::control/lease-held
+           (expected-acquire-failure ::control/lease-held)
            (open-result below-store (+ python-now-ms 624M)
                         {:clock-skew-ms 500M}))
     (check "a rejected below-boundary takeover leaves the stored head unchanged"
            below-before
            (stored-head-bytes below-store))
     (check "clock skew keeps the lease held at the inclusive boundary"
-           ::control/lease-held
+           (expected-acquire-failure ::control/lease-held)
            (open-result equal-store (+ python-now-ms 625M)
                         {:clock-skew-ms 500M}))
     (check "a rejected equality takeover leaves the stored head unchanged"
@@ -479,8 +492,8 @@
 
   (let [store (fixture-store legacy-millisecond-fixture)]
     (check "legacy millisecond expiry is not guessed from its magnitude"
-           ::control/lease-held
-           (error-type #(open! store python-now-ms {})))
+           (expected-acquire-failure ::control/lease-held)
+           (acquire-failure #(open! store python-now-ms {})))
     (let [opened (open! store python-now-ms {:force? true})]
       (try
         (check "explicit force migration increments generation and rewrites seconds"
