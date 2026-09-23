@@ -15,6 +15,8 @@
   `execute-and-flush!` run (three warmups, 100 measured, fresh reader) measured
   p99 419.0 ms versus 443.4 ms on the clean control, with 1,030,000-row
   readback parity. This local result does not qualify S3 or collector delivery.
+  The Python checkpoint fixture now checks the closed recover-stage startup
+  envelope and its retained in-process corruption cause.
 
 - Add a separately gated manual OIDC S3 qualification for 10,000-row public
   `execute-and-flush!`: three warmups, 100 measured confirmations, and a
