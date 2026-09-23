@@ -474,6 +474,133 @@ renamed_alias_head=$(git -C "$alias_repo" rev-parse HEAD)
 check_output "renamed deps.edn stays exhaustive" true "$alias_repo" \
   --diff "$valid_alias_head" "$renamed_alias_head"
 
+# A production dependency repin is normally exhaustive. The sole exception
+# below requires an exact data.json SHA substitution and unchanged effective
+# model inputs at both committed revisions.
+sha_repo="$fixture_root/data-json-sha"
+mkdir -p "$sha_repo"
+git archive HEAD formal scripts .github/workflows/durable-head-quint.yml | \
+  tar -x -C "$sha_repo"
+cp "$repo_root/deps.edn" "$sha_repo/deps.edn"
+git -C "$sha_repo" init -q
+git -C "$sha_repo" config user.name "model classifier test"
+git -C "$sha_repo" config user.email "model-classifier@example.invalid"
+git -C "$sha_repo" add .
+git -C "$sha_repo" commit -q -m data-json-sha-base
+sha_base=$(git -C "$sha_repo" rev-parse HEAD)
+old_json_sha=1b0716268232a79dd2b2fdb968cca171414bd589
+new_json_sha=0f51b99101bc5e840f957c073f87b6f877309a25
+sha_case() {
+  local label=$1
+  local expected=$2
+  local old=$3
+  local new=$4
+  shift 4
+  git -C "$sha_repo" checkout -q "$sha_base"
+  sed -i "s|$old|$new|" "$sha_repo/deps.edn"
+  git -C "$sha_repo" add -A
+  git -C "$sha_repo" commit -q -m "$label"
+  local candidate
+  candidate=$(git -C "$sha_repo" rev-parse HEAD)
+  check_output "$label" "$expected" "$sha_repo" --diff "$sha_base" "$candidate" "$@"
+}
+sha_case "exact data.json SHA-only repin skips exhaustive" false \
+  "$old_json_sha" "$new_json_sha"
+sha_valid_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_reason "exact data.json SHA-only reason" validated-data-json-sha-only \
+  "$sha_repo" --diff "$sha_base" "$sha_valid_head"
+check_fast "exact data.json SHA-only retains fast" true "$sha_repo" \
+  --diff "$sha_base" "$sha_valid_head"
+check_reason "PR merge-base SHA repin skips exhaustive" validated-data-json-sha-only \
+  "$sha_repo" --diff "$sha_base" "$sha_valid_head" --merge-base
+# The PR base can advance on a sibling branch. Prove the merge-base path is
+# nonvacuous: the base tip changes a model, while the feature tip changes only
+# the data.json SHA. The direct tip-to-tip diff must still be conservative.
+git -C "$sha_repo" checkout -q "$sha_base"
+printf '\nSibling model mutation.\n' >> "$sha_repo/formal/quint/durable-head-cas.md"
+git -C "$sha_repo" add -A
+git -C "$sha_repo" commit -q -m sibling-model-change
+sha_sibling_model_head=$(git -C "$sha_repo" rev-parse HEAD)
+[[ $(git -C "$sha_repo" merge-base "$sha_sibling_model_head" "$sha_valid_head") == "$sha_base" ]] || {
+  echo "FAIL SHA/model siblings do not share the intended merge base" >&2
+  exit 1
+}
+check_reason "divergent PR merge-base ignores sibling model change" \
+  validated-data-json-sha-only "$sha_repo" \
+  --diff "$sha_sibling_model_head" "$sha_valid_head" --merge-base
+check_output "direct divergent SHA/model tips remain exhaustive" true "$sha_repo" \
+  --diff "$sha_sibling_model_head" "$sha_valid_head"
+check_output "paths mode keeps SHA repins exhaustive" true "$sha_repo" --paths deps.edn
+sha_case "other dependency SHA remains exhaustive" true \
+  308d5a741825cb13ded6d4766041306a61181acb \
+  1111111111111111111111111111111111111111
+sha_case "data.json URL remains exhaustive" true \
+  https://github.com/casselc/data.json.git https://example.invalid/data.json.git
+sha_case "data.json coordinate remains exhaustive" true \
+  org.clojure/data.json example/data.json
+sha_case "data.json SHA malformed remains exhaustive" true \
+  "$old_json_sha" not-a-commit
+git -C "$sha_repo" checkout -q "$sha_base"
+sed -i "s/$old_json_sha/$new_json_sha/" "$sha_repo/deps.edn"
+printf '\n' >> "$sha_repo/deps.edn"
+git -C "$sha_repo" add -A
+git -C "$sha_repo" commit -q -m sha-plus-whitespace
+sha_whitespace_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_output "SHA plus deps whitespace remains exhaustive" true "$sha_repo" \
+  --diff "$sha_base" "$sha_whitespace_head"
+
+git -C "$sha_repo" checkout -q "$sha_valid_head"
+git -C "$sha_repo" rm -q deps.edn
+git -C "$sha_repo" commit -q -m sha-deleted-deps
+sha_deleted_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_output "deleted SHA deps remains exhaustive" true "$sha_repo" \
+  --diff "$sha_base" "$sha_deleted_head"
+git -C "$sha_repo" checkout -q "$sha_valid_head"
+git -C "$sha_repo" mv deps.edn deps-old.edn
+git -C "$sha_repo" commit -q -m sha-renamed-deps
+sha_renamed_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_output "renamed SHA deps remains exhaustive" true "$sha_repo" \
+  --diff "$sha_base" "$sha_renamed_head"
+
+sha_bad_tools="$fixture_root/sha-bad-tools"
+mkdir "$sha_bad_tools"
+printf '#!/bin/sh\nexit 17\n' > "$sha_bad_tools/go"
+chmod 755 "$sha_bad_tools/go"
+PATH="$sha_bad_tools:$PATH" check_output \
+  "unavailable SHA model fingerprint remains exhaustive" true "$sha_repo" \
+  --diff "$sha_base" "$sha_valid_head"
+
+git -C "$sha_repo" checkout -q "$sha_base"
+sed -i "s/$old_json_sha/$new_json_sha/" "$sha_repo/deps.edn"
+printf '\nmodel mutation\n' >> "$sha_repo/formal/quint/durable-head-cas.md"
+git -C "$sha_repo" add -A
+git -C "$sha_repo" commit -q -m sha-plus-model
+sha_model_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_output "SHA plus model edit remains exhaustive" true "$sha_repo" \
+  --diff "$sha_base" "$sha_model_head"
+git -C "$sha_repo" checkout -q "$sha_base"
+sed -i "s/$old_json_sha/$new_json_sha/" "$sha_repo/deps.edn"
+printf 'README-only change\n' > "$sha_repo/README.md"
+git -C "$sha_repo" add -A
+git -C "$sha_repo" commit -q -m sha-plus-readme
+sha_readme_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_reason "SHA plus non-model docs still skips exhaustive" validated-data-json-sha-only \
+  "$sha_repo" --diff "$sha_base" "$sha_readme_head"
+git -C "$sha_repo" checkout -q "$sha_valid_head"
+mkdir -p "$sha_repo/test/jdbc"
+printf '%s\n' '(ns jdbc.chdb-durable-throughput-metrics-test)' \
+  > "$sha_repo/test/jdbc/chdb_durable_throughput_metrics_test.clj"
+git -C "$sha_repo" add -A
+git -C "$sha_repo" commit -q -m sha-plus-receipt-only-test
+sha_receipt_head=$(git -C "$sha_repo" rev-parse HEAD)
+check_reason "SHA plus receipt-only test retains the validated skip" \
+  validated-data-json-sha-only "$sha_repo" \
+  --diff "$sha_base" "$sha_receipt_head"
+check_fast "SHA plus receipt-only test retains fast tier" true "$sha_repo" \
+  --diff "$sha_base" "$sha_receipt_head"
+check_reason "missing SHA boundary stays conservative" missing-or-zero-diff-boundary \
+  "$sha_repo" --diff 0000000000000000000000000000000000000000 "$sha_readme_head"
+
 # Full real source inventory, isolated Git history and pinned extraction only.
 # No exported script, Quint evaluator or solver is executed from this fixture.
 effective_repo="$fixture_root/effective"

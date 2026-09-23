@@ -226,9 +226,34 @@ case "$mode" in
         [[ $path == deps.edn ]] || filtered_paths+=("$path")
       done
       classify_paths "${filtered_paths[@]}"
-    else
-      classify_paths "${paths[@]}"
+      exit 0
     fi
+    # The production data.json pin is used by runtime tests, not by the
+    # model extractor. Only an exact SHA substitution with identical effective
+    # model inputs may skip the expensive tier. Keep the fast tier.
+    if [[ " ${paths[*]} " == *" deps.edn "* ]] && \
+       python3 "$default_repo/scripts/validate-durable-benchmark-aliases.py" \
+         --data-json-sha-only "$repo_root" "$diff_base" "$head"; then
+      sha_only_candidate=true
+      for path in "${paths[@]}"; do
+        if [[ $path != deps.edn ]] && is_exhaustive_input "$path"; then
+          sha_only_candidate=false
+          break
+        fi
+      done
+      if [[ $sha_only_candidate == true ]]; then
+        helper="$default_repo/scripts/fingerprint-durable-model-inputs.sh"
+        if base_fingerprint=$(bash "$helper" "$repo_root" "$diff_base" 2>/dev/null) && \
+           head_fingerprint=$(bash "$helper" "$repo_root" "$head" 2>/dev/null) && \
+           [[ "$base_fingerprint" =~ ^[a-f0-9]{64}$ && "$head_fingerprint" =~ ^[a-f0-9]{64}$ ]] && \
+           [[ "$base_fingerprint" == "$head_fingerprint" ]]; then
+          emit_decision false validated-data-json-sha-only true \
+            data-json-runtime-dependency "${#paths[@]}"
+          exit 0
+        fi
+      fi
+    fi
+    classify_paths "${paths[@]}"
     ;;
   *)
     usage
