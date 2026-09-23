@@ -73,6 +73,9 @@
               :git/sha "ae95d82034fe79fd6b7c31e56bc3bb3c5dcf7660"}}
             :extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-writer-test"]}
+           :durable-writer-route-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-writer-route-test"]}
            :durable-wal-encoder-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-wal-encoder-test"]}
@@ -234,6 +237,7 @@
          durable-conformance-inventory-test "jolt -M:durable-conformance-inventory-test"
          durable-secret-conformance-test "jolt -M:durable-secret-conformance-test"
          durable-writer-test "jolt -M:durable-writer-test"
+         durable-writer-route-test "jolt -M:durable-writer-route-test"
          durable-writer-concurrency-test "jolt -M:durable-writer-concurrency-test"
          durable-thread-test "jolt -M:durable-thread-test"
          durable-worker-join-test "jolt -M:durable-worker-join-test"

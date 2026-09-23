@@ -100,6 +100,31 @@ and checkpoint state across sequential commands. Neither layer should be cited
 as evidence for thread isolation or close-time heartbeat ordering; changes to
 those claims must retain the lifecycle model and the isolated runtime gate.
 
+### Writer preflight route mapping
+
+The deterministic `durable-writer-route-test` traces two concrete entry points.
+Public JDBC `jdbc/execute!` reaches `writer/sql!`: a materialized mutation
+follows `prepare-query → classify → wal-prepare → native → wal-append`. Raw
+`writer/execute!` instead follows `wal-prepare → classify → native → wal-append`.
+These are phase-name-only observations; SQL and bound values are never trace
+fields. A classifier rejection has no native mutation or WAL append on either
+route, although raw execution may already have prepared an unappended WAL line.
+JDBC bound values follow `prepare-query → classify → native`, then require a
+full checkpoint rather than a V1 statement-WAL line.
+
+Both successful materialized routes refine the same abstract completed
+`executeMaterialized` transition in the literate `durableWriterBoundary`
+companion of `durable-head-cas.md`. Its `StatementWal` obligation is selected
+only after native success and staging; `executeBound` selects
+`FullCheckpoint`. The file-spool model starts at `nativeSuccess` and models
+append/stage failure, not placeholder preparation or classification. The
+proposed buffered-publication model's `prepareReplay → nativeApply` order is a
+future admission/replay-preparation boundary, not a proof of either concrete
+route's preflight calls. Rejected requests make no abstract
+successful-mutation transition. Thus these route tests close a concrete
+refinement/trace gap without expanding the head-CAS or buffered model state
+space, and neither model is claimed to prove the concrete phase order.
+
 Hegel first checks the explicit `hegel.operation-events` revision 1 envelope,
 including contiguous sequence, complete invoke/terminal lifecycles, parentage,
 causal links, and context. Its Durable model then checks known outcomes and
