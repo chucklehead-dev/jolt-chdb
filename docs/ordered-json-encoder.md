@@ -46,6 +46,37 @@ cross-host byte identity or canonical object-key order. For example, Cheshire
 may emit raw `é` where data.json emits `\u00e9`. A caller that needs exact
 wire bytes should pin the host and writer, not compare bytes across hosts.
 
-This API is deliberately separate from JDBC and Durable acceptance. It makes
-no claim that parallel encoding improves confirmed throughput or p99 latency
-on a given host; those must be measured on the complete persistence path.
+The encoder alone is separate from JDBC and Durable acceptance. For a Durable
+writer connection, `jdbc.chdb.durable.json-rows` provides an opt-in consumer:
+
+```clojure
+(require '[jdbc.chdb.durable.json-rows :as durable-rows]
+         '[jdbc.chdb.durable :as durable])
+
+(let [row-writer (durable-rows/open-writer connection {:parallelism 4})]
+  (try
+    ;; Local execution only: no persisted acknowledgement yet.
+    (durable-rows/admit-rows!
+     row-writer "events" ["id" "message"]
+     [{"id" 1 "message" "accepted"}])
+    ;; One barrier can cover several admitted batches.
+    (durable/flush! connection)
+    (finally (durable-rows/close! row-writer))))
+```
+
+`insert-rows-and-flush!` is the separately named option when a single batch
+must execute and publish as one serialized writer request. It returns a
+confirmed or reconciled receipt; `admit-rows!` returns only the local native
+execution result. Do not use the latter as an external persistence ACK. The
+context rejects competing operations through the entire encode-and-submit
+call. Its close stops admission and waits for a synchronous operation before
+closing the encoder; the caller retains ownership of the Durable connection.
+
+The consumer validates simple ASCII table/column names, constructs exact SQL,
+then uses the existing Durable classifier, policy, statement WAL and writer
+queue. It does not use native streaming or change the Durable wire format.
+The encoder's UTF-8 byte result does not directly enter the native query path:
+the complete SQL string is encoded at the existing native boundary. Therefore
+this wiring makes no claim that parallel encoding improves admitted or
+confirmed throughput or p99 latency on a given host; measure the complete
+persistence path independently.

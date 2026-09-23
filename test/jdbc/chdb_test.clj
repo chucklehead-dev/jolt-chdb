@@ -8,6 +8,7 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb-json-rows-test :as json-rows]
             [jdbc.chdb-json-each-row-test]
+            [jdbc.chdb-durable-json-rows-test]
             [jdbc.chdb-durable-head-test :as durable-head]
             [jdbc.chdb-durable-head-whitespace-test :as durable-head-whitespace]
             [jdbc.chdb-durable-head-depth-test :as durable-head-depth]
@@ -687,6 +688,8 @@
   (reset! failures 0)
   (json-rows/run check)
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-json-each-row-test)]
+    (swap! failures + fail error))
+  (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-durable-json-rows-test)]
     (swap! failures + fail error))
   (run-ffi-write-order-checks)
   (run-query-checks)

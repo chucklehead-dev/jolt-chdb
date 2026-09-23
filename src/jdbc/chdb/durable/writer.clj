@@ -646,12 +646,38 @@
   (let [{:keys [value error]} @result]
     (if error (throw error) value)))
 
-(defn- enqueue-open! [writer request]
+(defn- await-result-settled [result]
+  ;; An opt-in caller-owned operation must not release its active gate while
+  ;; this already-enqueued writer request can still mutate or publish. Promise
+  ;; deref is interruptible on Jolt; retain the ticket and settle the worker
+  ;; result before restoring the caller's interrupt status on either outcome.
+  (let [interrupted? (atom false)]
+    (try
+      (let [{:keys [value error]}
+            (loop []
+              (let [attempt (try {:outcome @result}
+                                 (catch InterruptedException _
+                                   {:interrupted true}))]
+                (if (:interrupted attempt)
+                  (do (reset! interrupted? true) (recur))
+                  (:outcome attempt))))]
+        (if error (throw error) value))
+      (finally
+        (when @interrupted?
+          (.interrupt (Thread/currentThread)))))))
+
+(defn- enqueue-open-ticket! [writer request]
   (locking (:admission-lock writer)
     (when-not (= :open @(:lifecycle writer))
       (fail! ::closed "Durable writer is closed"))
     (.put ^ArrayBlockingQueue (:queue writer) request))
-  (await-result (:result request)))
+  (:result request))
+
+(defn- enqueue-open! [writer request]
+  (await-result (enqueue-open-ticket! writer request)))
+
+(defn- enqueue-open-settled! [writer request]
+  (await-result-settled (enqueue-open-ticket! writer request)))
 
 (defn- heartbeat-loop [writer interval-ms ttl-ms]
   (loop []
@@ -864,6 +890,13 @@
 (defn execute! [writer sql]
   (enqueue-open! writer {:op :execute :sql sql :result (promise)}))
 
+(defn execute-settled!
+  "Internal-use opt-in seam for a caller-owned context: wait for a raw execute
+  request's worker result even if its waiting thread is interrupted. This is
+  still local admission, not a persisted acknowledgement."
+  [writer sql]
+  (enqueue-open-settled! writer {:op :execute :sql sql :result (promise)}))
+
 (defn execute-and-flush!
   "Execute one fully materialized Durable mutation and publish its recovery
   state as one serialized writer request.
@@ -874,6 +907,13 @@
   on a shared writer."
   [writer sql]
   (enqueue-open! writer {:op :execute-and-flush :sql sql :result (promise)}))
+
+(defn execute-and-flush-settled!
+  "Internal-use opt-in seam: settle this atomic execute-and-flush request
+  before its caller-owned context releases the in-flight gate."
+  [writer sql]
+  (enqueue-open-settled!
+   writer {:op :execute-and-flush :sql sql :result (promise)}))
 
 (defn sql! [writer sql params]
   (enqueue-open! writer {:op :sql :sql sql :params params :result (promise)}))
