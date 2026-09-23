@@ -112,6 +112,13 @@ jobs:
         run: jolt -Srepro -M:durable-conformance-inventory-test
       - name: Qualify the Durable JSON nesting bound on JVM Clojure
         run: clojure -M:durable-head-depth-test
+      - name: Test ordered JSONEachRow encoder on JVM Clojure
+        run: >-
+          clojure -Srepro
+          -Sdeps '{:paths ["src" "test"] :deps {org.clojure/data.json {:mvn/version "2.5.2"}}}'
+          -M -m jdbc.chdb-json-each-row-test
+      - name: Test ordered JSONEachRow encoder on Babashka
+        run: bb -cp src:test -m jdbc.chdb-json-each-row-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
       - name: Smoke a real isolated staged Durable writer child
