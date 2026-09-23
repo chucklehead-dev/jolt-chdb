@@ -25,6 +25,7 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - scripts/check-durable-file-wal-spool-quint.sh
+      - scripts/check-buffered-publication-quint.sh
       - bench/jdbc/chdb_durable_throughput.clj
       - bench/jdbc/chdb_durable_throughput_metrics.clj
       - scripts/benchmark-durable-matched-provider.sh
@@ -58,6 +59,7 @@ on:
       - scripts/check-durable-head-itf-corpus.sh
       - scripts/check-durable-head-quint.sh
       - scripts/check-durable-file-wal-spool-quint.sh
+      - scripts/check-buffered-publication-quint.sh
       - bench/jdbc/chdb_durable_throughput.clj
       - bench/jdbc/chdb_durable_throughput_metrics.clj
       - scripts/benchmark-durable-matched-provider.sh

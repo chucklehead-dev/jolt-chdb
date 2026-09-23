@@ -22,6 +22,7 @@ is_exhaustive_input() {
     formal/quint/* | formal/quint/**/* | \
     scripts/check-durable-head-quint.sh | \
     scripts/check-durable-file-wal-spool-quint.sh | \
+    scripts/check-buffered-publication-quint.sh | \
     scripts/check-durable-head-itf-corpus.sh | \
     scripts/generate-durable-head-itf.sh | \
     scripts/generate-durable-engine-metadata-itf.sh | \
@@ -179,7 +180,7 @@ case "$mode" in
     while IFS= read -r -d '' path; do
       paths+=("$path")
     done < "$diff_file"
-    # Refine only edits to the three established literate sources. Unknown
+    # Refine only edits to the listed literate sources. Unknown
     # inputs, renames/deletions and checker/workflow changes stay conservative.
     literate_only=false
     saw_literate=false
@@ -191,6 +192,7 @@ case "$mode" in
           formal/quint/durable-writer-lifecycle.md | \
           formal/quint/native-process-lifecycle.md | \
           formal/quint/durable-file-wal-spool.md) saw_literate=true ;;
+          formal/quint/buffered-publication.md) saw_literate=true ;;
           README.md | CHANGELOG.md) ;;
           *) literate_only=false ;;
         esac

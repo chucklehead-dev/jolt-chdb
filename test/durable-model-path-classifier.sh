@@ -215,6 +215,7 @@ for path in \
   formal/quint/durable-head-cas.md \
   formal/quint/native-process-lifecycle.md \
   formal/quint/durable-persistence-observation.md \
+  formal/quint/buffered-publication.md \
   formal/quint/future-model.unknown \
   formal/durable-head-cas.smt2 \
   formal/nested/future-model.smt2 \
@@ -225,6 +226,7 @@ for path in \
   deps.edn \
   scripts/check-durable-head-quint.sh \
   scripts/check-durable-file-wal-spool-quint.sh \
+  scripts/check-buffered-publication-quint.sh \
   scripts/check-durable-head-itf-corpus.sh \
   scripts/generate-durable-head-itf.sh \
   scripts/generate-durable-engine-metadata-itf.sh \
@@ -384,6 +386,10 @@ cp "$repo_root/formal/quint/durable-file-wal-spool.md" \
   "$effective_repo/formal/quint/durable-file-wal-spool.md"
 cp "$repo_root/scripts/check-durable-file-wal-spool-quint.sh" \
   "$effective_repo/scripts/check-durable-file-wal-spool-quint.sh"
+cp "$repo_root/formal/quint/buffered-publication.md" \
+  "$effective_repo/formal/quint/buffered-publication.md"
+cp "$repo_root/scripts/check-buffered-publication-quint.sh" \
+  "$effective_repo/scripts/check-buffered-publication-quint.sh"
 git -C "$effective_repo" init -q
 git -C "$effective_repo" config user.name "model classifier test"
 git -C "$effective_repo" config user.email "model-classifier@example.invalid"
@@ -400,6 +406,16 @@ check_output "prose-only decision is explicitly false" false "$effective_repo" \
   --diff "$effective_base" "$prose_head"
 check_fast "prose-only literate edit retains fast tier" true "$effective_repo" \
   --diff "$effective_base" "$prose_head"
+git -C "$effective_repo" checkout -q "$effective_base"
+printf '\nBuffered prose-only control.\n' >> \
+  "$effective_repo/formal/quint/buffered-publication.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m buffered-prose-only
+buffered_prose_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_reason "buffered prose-only edit skips exhaustive" \
+  effective-model-inputs-identical "$effective_repo" \
+  --diff "$effective_base" "$buffered_prose_head"
+git -C "$effective_repo" checkout -q "$prose_head"
 printf 'Neutral changelog entry.\n' > "$effective_repo/CHANGELOG.md"
 git -C "$effective_repo" add .
 git -C "$effective_repo" commit -q -m prose-plus-changelog
@@ -415,6 +431,14 @@ check_output "changed extracted model requests exhaustive" true "$effective_repo
   --diff "$prose_head" "$model_head"
 check_fast "changed extracted model retains fast tier" true "$effective_repo" \
   --diff "$prose_head" "$model_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+sed -i 's/module bufferedPublication {/module bufferedPublicationChanged {/' \
+  "$effective_repo/formal/quint/buffered-publication.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m changed-buffered-model
+buffered_model_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "changed buffered extracted model requests exhaustive" true \
+  "$effective_repo" --diff "$prose_head" "$buffered_model_head"
 git -C "$effective_repo" checkout -q "$prose_head"
 sed -i 's/module durablePersistenceObservation/module durablePersistenceObservationChanged/' \
   "$effective_repo/formal/quint/durable-persistence-observation.md"
@@ -433,6 +457,14 @@ git -C "$effective_repo" commit -q -m unknown-extraction-output
 unknown_head=$(git -C "$effective_repo" rev-parse HEAD)
 check_output "unknown output fails closed before extraction" true "$effective_repo" \
   --diff "$model_head" "$unknown_head"
+git -C "$effective_repo" checkout -q "$prose_head"
+printf '\n```quint target/formal/quint/staleBuffered.qnt +=\nmodule staleBuffered {}\n```\n' \
+  >> "$effective_repo/formal/quint/buffered-publication.md"
+git -C "$effective_repo" add .
+git -C "$effective_repo" commit -q -m stale-buffered-generated-output
+stale_buffered_head=$(git -C "$effective_repo" rev-parse HEAD)
+check_output "buffered undeclared generated output fails closed" true \
+  "$effective_repo" --diff "$prose_head" "$stale_buffered_head"
 check "fingerprinter changes require exhaustive" true --paths \
   scripts/fingerprint-durable-model-inputs.sh
 git -C "$effective_repo" checkout -q "$prose_head"

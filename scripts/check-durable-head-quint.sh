@@ -7,6 +7,7 @@ lifecycle_literate_spec="$repo_root/formal/quint/durable-writer-lifecycle.md"
 native_lifecycle_literate_spec="$repo_root/formal/quint/native-process-lifecycle.md"
 observation_literate_spec="$repo_root/formal/quint/durable-persistence-observation.md"
 file_wal_spool_literate_spec="$repo_root/formal/quint/durable-file-wal-spool.md"
+buffered_literate_spec="$repo_root/formal/quint/buffered-publication.md"
 target="$repo_root/target/formal/quint"
 model="$target/durableHeadCas.qnt"
 tests="$target/durableHeadCasTest.qnt"
@@ -25,6 +26,7 @@ native_lifecycle_model="$target/nativeProcessLifecycle.qnt"
 native_lifecycle_tests="$target/nativeProcessLifecycleTest.qnt"
 observation_model="$target/durablePersistenceObservation.qnt"
 observation_tests="$target/durablePersistenceObservationTest.qnt"
+buffered_model="$target/bufferedPublication.qnt"
 native_lifecycle_trace_dir="$target/native-process-traces"
 required_quint_version=0.32.0
 lmt_revision=62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
@@ -69,6 +71,7 @@ mkdir -p "$target"
   lmt "${native_lifecycle_literate_spec#$repo_root/}"
   lmt "${observation_literate_spec#$repo_root/}"
   lmt "${file_wal_spool_literate_spec#$repo_root/}"
+  lmt "${buffered_literate_spec#$repo_root/}"
 )
 
 quint typecheck "$model"
@@ -87,6 +90,7 @@ quint typecheck "$native_lifecycle_model"
 quint typecheck "$native_lifecycle_tests"
 quint typecheck "$observation_model"
 quint typecheck "$observation_tests"
+quint typecheck "$buffered_model"
 
 # This bounded file-WAL gate is part of the same pinned extractor/version
 # boundary as the established Durable literate suite.  It carries its own
@@ -96,6 +100,7 @@ quint typecheck "$observation_tests"
 
 if [[ $mode != exhaustive ]]
 then
+"$repo_root/scripts/check-buffered-publication-quint.sh" "$buffered_model"
 quint test "$lease_time_tests" \
   --main durableLeaseTimeTest \
   --match '.*Test' \
