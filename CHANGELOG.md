@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep the fast Durable model gate, but skip exhaustive checking for a
+  committed `casselc/data.json` SHA-only repin when every other model input is
+  unchanged. Other dependency edits and unavailable model fingerprints still
+  select the exhaustive tier (#205).
+
 - Repin the merged `casselc/data.json` map-entry-sequence writer optimization
   at `1b071626`. Keep the production ClickStack fixture's byte and decoded-value
   goldens as gates for the repin, and correct the throughput-metrics exact-pin

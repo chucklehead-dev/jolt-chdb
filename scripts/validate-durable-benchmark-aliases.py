@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allow only additive, self-contained bench/test aliases in committed deps.edn."""
+"""Validate narrowly exempted committed deps.edn edits for the model gate."""
 
 import json
 import re
@@ -96,17 +96,24 @@ def string(value):
     return ("string", value)
 
 
-def validate(repo, base, head):
+def committed_deps(repo, base, head):
     statuses = git(repo, "diff", "--no-renames", "--name-status", "-z", base, head).split(b"\0")
     if statuses[-1:] != [b""] or len(statuses[:-1]) % 2:
         raise Invalid("invalid name-status diff")
     changed = {path.decode(): status.decode() for status, path in zip(statuses[::2], statuses[1::2])}
     if changed.get("deps.edn") != "M":
         raise Invalid("deps.edn must be modified")
-    before = Reader(git(repo, "show", f"{base}:deps.edn").decode()).read()
-    after = Reader(git(repo, "show", f"{head}:deps.edn").decode()).read()
+    before_text = git(repo, "show", f"{base}:deps.edn").decode()
+    after_text = git(repo, "show", f"{head}:deps.edn").decode()
+    before = Reader(before_text).read()
+    after = Reader(after_text).read()
     if not isinstance(before, dict) or not isinstance(after, dict):
         raise Invalid("deps.edn root must be a map")
+    return before_text, after_text, before, after, changed
+
+
+def validate(repo, base, head):
+    _, _, before, after, changed = committed_deps(repo, base, head)
     old_aliases = before.pop(atom(":aliases"), None)
     new_aliases = after.pop(atom(":aliases"), None)
     if before != after or not isinstance(old_aliases, dict) or not isinstance(new_aliases, dict):
@@ -146,11 +153,56 @@ def validate(repo, base, head):
             raise Invalid("main namespace was not newly added")
 
 
+def validate_data_json_sha_only(repo, base, head):
+    before_text, after_text, before, after, _ = committed_deps(repo, base, head)
+    deps_key = atom(":deps")
+    coordinate = atom("org.clojure/data.json")
+    old_deps = before.get(deps_key)
+    new_deps = after.get(deps_key)
+    if not isinstance(old_deps, dict) or not isinstance(new_deps, dict):
+        raise Invalid("missing root deps map")
+    old_json = old_deps.get(coordinate)
+    new_json = new_deps.get(coordinate)
+    if not isinstance(old_json, dict) or not isinstance(new_json, dict):
+        raise Invalid("missing data.json dependency")
+    sha_key = atom(":git/sha")
+    url_key = atom(":git/url")
+    expected_url = string("https://github.com/casselc/data.json.git")
+    if set(old_json) != {sha_key, url_key} or set(new_json) != {sha_key, url_key}:
+        raise Invalid("unsupported data.json dependency shape")
+    if old_json[url_key] != expected_url or new_json[url_key] != expected_url:
+        raise Invalid("data.json fork URL changed")
+    old_sha = old_json[sha_key]
+    new_sha = new_json[sha_key]
+    if (not isinstance(old_sha, tuple) or not isinstance(new_sha, tuple)
+            or old_sha[0] != "string" or new_sha[0] != "string"
+            or not re.fullmatch(r"[0-9a-f]{40}", old_sha[1])
+            or not re.fullmatch(r"[0-9a-f]{40}", new_sha[1])
+            or old_sha == new_sha):
+        raise Invalid("not an exact changed 40-hex SHA")
+    # A structural EDN check rejects changes outside the root dependency.
+    old_root = dict(before)
+    new_root = dict(after)
+    old_root[deps_key] = dict(old_deps)
+    new_root[deps_key] = dict(new_deps)
+    new_root[deps_key][coordinate] = old_json
+    if old_root != new_root:
+        raise Invalid("other dependency or option changed")
+    # A byte-level check rejects comments, whitespace, duplicate SHA literals,
+    # or any parser-accepted formatting changes hidden by structural equality.
+    if (before_text.count(old_sha[1]) != 1 or after_text.count(new_sha[1]) != 1
+            or before_text.replace(old_sha[1], new_sha[1], 1) != after_text):
+        raise Invalid("source differs outside the exact SHA substitution")
+
+
 if __name__ == "__main__":
     try:
-        if len(sys.argv) != 4:
-            raise Invalid("expected repository and exact base/head revisions")
-        validate(*sys.argv[1:])
+        if len(sys.argv) == 5 and sys.argv[1] == "--data-json-sha-only":
+            validate_data_json_sha_only(*sys.argv[2:])
+        elif len(sys.argv) == 4:
+            validate(*sys.argv[1:])
+        else:
+            raise Invalid("expected mode, repository and exact base/head revisions")
     except (Invalid, KeyError, TypeError, OSError, UnicodeError, ValueError,
             subprocess.CalledProcessError):
         sys.exit(1)
