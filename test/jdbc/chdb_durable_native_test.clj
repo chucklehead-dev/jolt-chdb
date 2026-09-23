@@ -196,18 +196,6 @@
 
 (defn- run-buffered-prepared-checks []
   (println "Request-local prepared JDBC SQL buffer")
-  (let [handle (native/open! ":memory:")
-        prepared (chdb/prepare-query "SELECT ?" [42])]
-    (try
-      (native/with-query-buffer
-       (chdb/prepared-sql prepared)
-       (fn [query-buffer]
-         (check "real native prepared execution accepts shared SQL and bound value"
-                "42"
-                (-> (chdb/execute-prepared-any-with-query-buffer
-                     handle prepared query-buffer)
-                    :rows first first str))))
-      (finally (native/close! handle))))
   (let [with-buffer! (:with-native-prepared-buffer!
                       ((ns-resolve 'jdbc.chdb.durable 'default-open-operations)))
         secret "prepared-bound-secret"
@@ -298,6 +286,19 @@
                              (policy/authorize-execute! analysis)
                              (execute!)))))))
         (check "native failure frees prepared SQL buffer" 1 @frees)))))
+
+(defn- run-real-native-prepared-checks [handle]
+  ;; Native storage identity is process-wide. Reuse the core phase's owned
+  ;; handle, rather than opening :memory: before that phase claims core/db.
+  (let [prepared (chdb/prepare-query "SELECT ?" [42])]
+    (native/with-query-buffer
+     (chdb/prepared-sql prepared)
+     (fn [query-buffer]
+       (check "real native prepared execution accepts shared SQL and bound value"
+              "42"
+              (-> (chdb/execute-prepared-any-with-query-buffer
+                   handle prepared query-buffer)
+                  :rows first first str))))))
 
 (defn- required-env [name]
   (or (some-> (System/getenv name) str/trim not-empty)
@@ -765,6 +766,7 @@
       (chdb/execute-any handle
                         "CREATE TABLE mem.t (id UInt32) ENGINE = MergeTree ORDER BY id" [])
       (chdb/execute-any handle "INSERT INTO mem.t VALUES (1),(2),(3)" [])
+      (run-real-native-prepared-checks handle)
       (run-analysis-checks handle)
       (run-backup-checks handle root backups)
       (finally
