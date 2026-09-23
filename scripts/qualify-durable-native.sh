@@ -187,6 +187,7 @@ run_phase() {
 for phase in \
   core \
   object-writer object-reader \
+  json-rows-writer json-rows-reader \
   wal-writer wal-reader checkpoint-writer checkpoint-reader \
   secret-mutation secret-read
 do

@@ -15,6 +15,7 @@
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.local-posix :as local]
+            [jdbc.chdb.durable.json-rows :as durable-rows]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.writer :as writer]
@@ -41,6 +42,15 @@
 
 (def ^:private insert-prefix "INSERT INTO otel_logs FORMAT JSONEachRow\n")
 (def ^:private insert-prefix-bytes (alength (.getBytes insert-prefix "UTF-8")))
+(def ^:private log-columns
+  ["Timestamp" "TraceId" "SpanId" "TraceFlags" "SeverityText"
+   "SeverityNumber" "ServiceName" "Body" "ResourceSchemaUrl"
+   "ResourceAttributes" "ScopeSchemaUrl" "ScopeName" "ScopeVersion"
+   "ScopeAttributes" "LogAttributes" "EventName"])
+(def ^:private ordered-insert-prefix-bytes
+  (alength (.getBytes (chdb/json-rows-insert-prefix "otel_logs" log-columns)
+                      "UTF-8")))
+
 (defn- log-row [index question-mark?]
   (log-fixture/log-row index question-mark?))
 
@@ -622,6 +632,7 @@
   ;; execution-only and must never enter bounded EDN or progress output.
   (select-keys configuration
                [:label :selector :batch-size :batches :warmup-batches :trials
+                :parallelism
                 :question-mark? :provider-kind :target-wal-bytes]))
 
 (defn- collect-measured-batches!
@@ -822,6 +833,138 @@
             :transport @(:transport provider-metrics)})}
       (finally
         (cleanup!)))))
+
+(defn- ordered-consumer-trial
+  "One opt-in, admission-only product-context trial. A scalar payload-size
+  ledger is prepared before the measured window and discarded before GC; it
+  never substitutes preencoded SQL for the real ordered consumer call."
+  [{:keys [batch-size batches warmup-batches question-mark? trial parallelism]
+    :as options}]
+  (let [{:keys [namespace-backend object-id provider-kind cleanup!]}
+        (trial-context! options)
+        expected (atom empty-expected-aggregates)
+        trial-result (atom nil)
+        flush-outcome (atom nil)
+        configuration {:namespace-backend namespace-backend :object-id object-id
+                       :scratch-parent (:root *worker-descriptor*)
+                       :owner "durable-throughput-benchmark"
+                       :database "benchmark" :lease-ttl-ms 300000
+                       :heartbeat-interval-ms 100000}]
+    (try
+      (with-open [connection (jdbc/connection (durable/writer-dbspec configuration))]
+        (jdbc/execute! connection logs-ddl)
+        (durable/flush! connection)
+        (let [row-context (durable-rows/open-writer
+                           connection {:parallelism parallelism})]
+          (try
+            (reduce-row-batches
+             log-row batch-size warmup-batches question-mark? 0 nil
+             (fn [_ _ rows]
+               (swap! expected accumulate-expected-batch rows question-mark?)
+               (durable-rows/admit-rows!
+                row-context "otel_logs" log-columns rows)))
+            (durable/flush! connection)
+            (let [size-ledger
+                  (mapv
+                   (fn [batch]
+                     (let [start (+ (* batch-size warmup-batches)
+                                    (* batch batch-size))
+                           rows (mapv #(log-row % question-mark?)
+                                      (range start (+ start batch-size)))
+                           payload-bytes (:payload-bytes
+                                          (encode-batch-production rows))]
+                       {:payload-bytes payload-bytes
+                        :statement-bytes (+ ordered-insert-prefix-bytes
+                                            payload-bytes)}))
+                   (range batches))
+                  _ (System/gc)
+                  measured
+                  (atom {:samples [] :payload-bytes 0 :statement-bytes 0
+                         :maximum-batch-payload-bytes 0
+                         :maximum-batch-statement-bytes 0
+                         :counter-deltas {}})
+                  boundary
+                  (collect-measured-batches!
+                   options
+                   (fn [batch]
+                     (let [start (+ (* batch-size warmup-batches)
+                                    (* batch batch-size))
+                           rows (mapv #(log-row % question-mark?)
+                                      (range start (+ start batch-size)))
+                           sizes (nth size-ledger batch)]
+                       (swap! expected accumulate-expected-batch rows
+                              question-mark?)
+                       (let [before (counter-sample)
+                             batch-start (System/nanoTime)
+                             _ (durable-rows/admit-rows!
+                                row-context "otel_logs" log-columns rows)
+                             elapsed (- (System/nanoTime) batch-start)
+                             after (counter-sample)]
+                         (swap! measured
+                                (fn [acc]
+                                  (-> acc
+                                      (update :samples conj elapsed)
+                                      (update :payload-bytes +
+                                              (:payload-bytes sizes))
+                                      (update :statement-bytes +
+                                              (:statement-bytes sizes))
+                                      (update :maximum-batch-payload-bytes max
+                                              (:payload-bytes sizes))
+                                      (update :maximum-batch-statement-bytes max
+                                              (:statement-bytes sizes))
+                                      (update :counter-deltas add-counter-delta
+                                              (counter-delta before after))))))))
+                   #(writer/status (durable-handle connection)))
+                  measured @measured
+                  completed (:batches boundary)
+                  samples (:samples measured)
+                  ingest-nanos (reduce + 0 samples)
+                  pending (:pending boundary)
+                  flush-before (counter-sample)
+                  flush-start (System/nanoTime)
+                  flush-result (durable/flush! connection)
+                  flush-nanos (- (System/nanoTime) flush-start)
+                  flush-after (counter-sample)]
+              (when-not (successful-flush? flush-result)
+                (throw (ex-info "Ordered Durable measured flush did not persist"
+                                {:type ::flush-failed})))
+              (reset! flush-outcome (:status flush-result))
+              (reset! trial-result
+                      (merge
+                       {:trial trial :provider-kind provider-kind
+                        :mode :durable-ordered-consumer
+                        :parallelism parallelism
+                        :instrumented? false
+                        :measured-rows (* batch-size completed)
+                        :batch-size batch-size :batches completed
+                        :question-mark-every-row? question-mark?
+                        :batch-latency (latency-summary samples)
+                        ::batch-latency-samples samples
+                        :ingest-ms (ms ingest-nanos)
+                        :ingest-rows-per-second
+                        (/ (double (* batch-size completed 1000000000))
+                           ingest-nanos)
+                        :flush-ms (ms flush-nanos)
+                        :flush-cadence-batches completed
+                        :flush-cadence-rows (* batch-size completed)
+                        :flush-cadence-bytes (:pending-wal-bytes pending)
+                        :persisted-rate-semantics
+                        :one-flush-amortized-over-all-measured-batches
+                        :persisted-ms (ms (+ ingest-nanos flush-nanos))
+                        :persisted-rows-per-second
+                        (/ (double (* batch-size completed 1000000000))
+                           (+ ingest-nanos flush-nanos))
+                        :ingest-counters (:counter-deltas measured)
+                        :flush-counters (counter-delta flush-before flush-after)
+                        :pending-before-flush pending
+                        :payload-size-source :serial-data-json-parity-ledger
+                        :payload-bytes (:payload-bytes measured)
+                        :statement-bytes (:statement-bytes measured)}
+                       (wal-size-observation pending measured))))
+            (finally (durable-rows/close! row-context)))))
+      {:result @trial-result :expected @expected
+       :flush-outcome @flush-outcome}
+      (finally (cleanup!)))))
 
 (defn- durable-trial
   [{:keys [batch-size batches warmup-batches question-mark? encode-included?
@@ -1211,7 +1354,7 @@
     :matched-local-512 :matched-local-1000 :matched-local-5000 :matched-local-10000
     :matched-aws-512 :matched-aws-1000 :matched-aws-5000 :matched-aws-10000
     :scale-512 :scale-1000 :scale-5000 :scale-10000
-    :stage-512 :stage-smoke
+    :stage-512 :stage-smoke :ordered-durable-local-512
     :recovery-512-10 :recovery-512-25 :recovery-512-50})
 
 (def ^:private scale-configurations
@@ -1343,7 +1486,7 @@
 (defn- isolated-selector-profile? [profile]
   (or (contains? matched-profiles profile)
       (contains? scale-profile-batch-size profile)
-      (contains? #{:stage-512 :stage-smoke} profile)
+      (contains? #{:stage-512 :stage-smoke :ordered-durable-local-512} profile)
       (contains? recovery-profile-batches profile)))
 
 (defn- validate-profile-configs! [profile configurations]
@@ -1420,6 +1563,13 @@
         :instrumented? true :question-mark? false
         :modes [:durable-preencoded]}]
 
+      (= :ordered-durable-local-512 profile)
+      [{:label :ordered-durable-local-512
+        :selector :ordered-durable-local-512
+        :batch-size 512 :batches 100 :warmup-batches 2 :trials 1
+        :parallelism 4 :question-mark? false
+        :modes [:durable-ordered-consumer]}]
+
       (contains? recovery-profile-batches profile)
       [(recovery-configuration (get recovery-profile-batches profile))]
 
@@ -1491,7 +1641,7 @@
   ;; observation-only WAL/control phase hook; otherwise stage reports silently
   ;; omit those child phases while claiming an instrumented profile.
   (select-keys options [:selector :batch-size :batches :warmup-batches :question-mark?
-                       :encode-included? :target-wal-bytes :trial]))
+                       :encode-included? :target-wal-bytes :trial :parallelism]))
 
 (defn- provider-descriptor! [options root]
   (let [factory (:backend-context! options)]
@@ -1767,7 +1917,10 @@
                       (diagnostic! (str (:root descriptor) "/diagnostic-progress.edn"))
                     ((case kind
                        :instrumented durable-trial
-                       :uninstrumented durable-uninstrumented-trial)
+                       :uninstrumented
+                       (if (= :ordered-durable-local-512 (:selector options))
+                         ordered-consumer-trial
+                         durable-uninstrumented-trial))
                      (assoc options :backend-context! (fn [_] context)))))))
               :reader
               (do (reset! stage :reader-recovery)
@@ -1844,6 +1997,9 @@
                         (owned-trial! :uninstrumented
                          (assoc configuration :trial trial
                                 :encode-included? true))
+                        :durable-ordered-consumer
+                        (owned-trial! :uninstrumented
+                         (assoc configuration :trial trial))
                         :durable-preencoded
                         (owned-trial! (if (:instrumented? configuration)
                                         :instrumented
