@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a caller-owned ordered JSONEachRow encoder with explicit four-fiber
+  opt-in on Jolt and serial JVM/Babashka fallbacks (#209). It admits one batch
+  per context, settles started fibers before releasing ownership, and supports
+  repeatable timed close. Jolt/JVM retain their data.json writer bytes;
+  Babashka uses native Cheshire with row-order and decoded-value parity, not
+  cross-host byte identity. This API is not yet wired into JDBC or Durable
+  admission, so it makes no confirmed-throughput claim. Parallel row
+  serialization requires CPU-only, nonparking callbacks; the lifecycle tests
+  gate workers before serialization rather than parking inside a JSON writer.
+
 - Add redacted, exact-order traces for public JDBC and raw Durable writer
   preflight routes, classifier rejection, and bound-value checkpoint recovery.
   Link those concrete routes to the existing writer abstraction without changing

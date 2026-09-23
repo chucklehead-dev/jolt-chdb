@@ -197,6 +197,9 @@
            :durable-throughput-contract-test
            {:extra-paths ["test" "bench"]
             :main-opts ["-m" "jdbc.chdb-durable-throughput-test"]}
+           :json-each-row-encoder-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-json-each-row-test"]}
            :durable-cross-binding-recovery
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
