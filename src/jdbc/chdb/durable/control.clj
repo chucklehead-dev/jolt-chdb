@@ -18,6 +18,8 @@
 
 (def head-key "head.json")
 (def ^:private default-commit-attempts 4)
+(def ^:private verified-wal-seal (Object.))
+(deftype ^:private VerifiedWalWitness [seal store token reference])
 
 (def ^:private phase-observe-labels
   #{:wal-immutable-put :wal-immutable-verify :wal-head-cas})
@@ -564,6 +566,24 @@
              "The runtime did not produce a UUIDv4 publication token"))
     (subs (str uuid) 0 8)))
 
+(defn- verified-wal-publication
+  [publication store token reference]
+  ;; Map metadata preserves the public receipt's shape and wire representation.
+  ;; The sealed value is minted only after a successful readback. Matching all
+  ;; inputs prevents reuse for another backend or write.
+  (with-meta publication
+    {verified-wal-seal
+     (VerifiedWalWitness. verified-wal-seal store token reference)}))
+
+(defn- verified-wal-publication?
+  [publication store token reference]
+  (let [witness (get (meta publication) verified-wal-seal)]
+    (and (instance? VerifiedWalWitness witness)
+         (identical? verified-wal-seal (.-seal ^VerifiedWalWitness witness))
+         (identical? store (.-store ^VerifiedWalWitness witness))
+         (= token (.-token ^VerifiedWalWitness witness))
+         (= reference (.-reference ^VerifiedWalWitness witness)))))
+
 (defn publish-wal-bytes!
   "Publish one bounded statement-WAL object under its exact V1 reference.
 
@@ -599,14 +619,16 @@
            result (observed-phase observe! :wal-immutable-put (alength bytes)
                                 #(backend/put-bytes-if-absent!
                                   store (get reference "key") bytes))]
-       {:status (reconcile-publication!
-                 (:status result)
-                 #(observed-phase observe! :wal-immutable-verify
-                                  (get reference "size")
-                                  #(verify-byte-reference! store reference))
-                 false options)
-        :reference reference
-         :etag (:etag result)}))))
+       (verified-wal-publication
+        {:status (reconcile-publication!
+                  (:status result)
+                  #(observed-phase observe! :wal-immutable-verify
+                                   (get reference "size")
+                                   #(verify-byte-reference! store reference))
+                  true options)
+         :reference reference
+         :etag (:etag result)}
+        store token reference)))))
 
 (defn publish-wal-file!
   "Publish one staged statement-WAL file under its exact V1 reference.
@@ -649,14 +671,16 @@
                                     (get reference "size")
                                     #(backend/put-file-if-absent!
                                       store (get reference "key") path))]
-         {:status (reconcile-publication!
-                   (:status result)
-                   #(observed-phase observe! :wal-immutable-verify
-                                    (get reference "size")
-                                    #(verify-file-reference! store reference))
-                   true options)
-          :reference reference
-          :etag (:etag result)})))))
+         (verified-wal-publication
+          {:status (reconcile-publication!
+                    (:status result)
+                    #(observed-phase observe! :wal-immutable-verify
+                                     (get reference "size")
+                                     #(verify-file-reference! store reference))
+                    true options)
+           :reference reference
+           :etag (:etag result)}
+          store token reference))))))
 
 (defn verify-byte-reference!
   "Verify a bounded in-memory immutable object against a V1 reference.
@@ -895,13 +919,16 @@
   "Commit one already-published immutable WAL or checkpoint reference.
 
   `verify-reference!` must return truthy only after checking the backend
-  object against the reference's size and SHA-256. The verification completes
-  before the head CAS without excluding same-owner lease renewal. Definite
+  object against the reference's size and SHA-256. A matching private WAL
+  publication witness carries that completed readback into this call; all
+  other commits invoke the supplied verifier. Verification precedes the head
+  CAS without excluding same-owner lease renewal. Definite
   heartbeat CAS conflicts retry from the latest owned head; ambiguous CAS
   outcomes never retry. Checkpoint commits require and atomically install
   producer `engine-metadata` while replacing the base and clearing WAL; WAL
   commits append exactly one reference."
-  [store token {:keys [kind reference verify-reference! max-attempts
+  [store token {:keys [kind reference verify-reference! verified-publication
+                       max-attempts
                        engine-metadata]
                 :or {max-attempts default-commit-attempts}
                 :as options}]
@@ -921,11 +948,14 @@
                     (fail! ::lease-fenced "The Durable head no longer exists"))
         initial-current (assert-owned! (:head initial) token)]
     (reference-transition initial-current token kind reference engine-metadata)
-    (when-not (observed-phase observe! :wal-immutable-verify
-                              (get reference "size")
-                              #(verify-reference! store reference))
-      (fail! ::object-unverified
-             "The immutable Durable object could not be verified"))
+    (when-not (and (= :wal kind)
+                   (verified-wal-publication?
+                    verified-publication store token reference))
+      (when-not (observed-phase observe! :wal-immutable-verify
+                                (get reference "size")
+                                #(verify-reference! store reference))
+        (fail! ::object-unverified
+               "The immutable Durable object could not be verified")))
     ;; A heartbeat may change only the lease expiry while verification is in
     ;; flight. Rebuild from the newest owned head and retry only a definite CAS
     ;; precondition failure. An ambiguous CAS is never retried: exact reread

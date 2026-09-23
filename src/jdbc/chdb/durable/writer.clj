@@ -474,6 +474,7 @@
                                (:store writer) (:token writer)
                                {:kind :wal
                                 :reference (:reference publication)
+                                :verified-publication publication
                                 :verify-reference! control/verify-file-reference!})]
                 [publication committed])
               (catch Throwable error
