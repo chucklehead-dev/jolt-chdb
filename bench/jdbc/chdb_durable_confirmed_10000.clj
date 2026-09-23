@@ -105,6 +105,9 @@
      :object-write-attempts writes}))
 
 (defn- check-resource-bounds! [provider-report cumulative-bytes]
+  ;; Provider requests happen inside each public call. These counters are
+  ;; post-call audit gates, not preventive per-request throttles; the fixed
+  ;; 3+100-call workload is the preventive cardinality bound.
   (let [{:keys [requests transport-body-bytes object-write-attempts]
          :as totals} (resource-totals provider-report)]
     (when-not (and (<= cumulative-bytes max-cumulative-statement-bytes)
@@ -262,10 +265,12 @@
                                :transport-request-cap max-transport-requests
                                :transport-body-byte-cap max-transport-body-bytes
                                :object-write-attempt-cap max-object-write-attempts
+                               :resource-cap-semantics :post-call-audit
                                :statements (:statements @state)}
                     :confirmations (:confirmations @state)
                     :latency {:boundary :public-execute-and-flush-return
                               :raw-nanos samples
+                              :p99-interpretation :rough-nearest-rank-tail-estimate
                               :summary (#'throughput/latency-summary samples)}
                     :reconciliation {:rows expected-rows
                                      :aggregates (:expected @state)

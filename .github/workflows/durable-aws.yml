@@ -366,11 +366,14 @@ jobs:
           set -e
           raw_log_bytes=$(wc -c < "$raw_log")
           head -c 8388608 "$raw_log" > "$log"
+          test "$raw_log_bytes" -le 8388608
+          if [ "$run_status" -ne 0 ]; then
+            echo "confirmed qualification failed before receipt validation" >&2
+            exit 1
+          fi
           scripts/check-durable-throughput-artifacts.sh "$report" "$log" "$timing"
           rss_kb=$(awk -F: '/^\tMaximum resident set size \(kbytes\):/ {gsub(/^[[:space:]]+/, "", $2); print $2}' "$timing")
           test "$rss_kb" -le 6291456
-          test "$raw_log_bytes" -le 8388608
-          test "$run_status" -eq 0
       - name: Publish bounded sanitized confirmed qualification evidence
         uses: actions/upload-artifact@v4
         with:

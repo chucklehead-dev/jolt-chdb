@@ -80,7 +80,8 @@ The workload preconstructs and SHA-256-identifies each production-shaped
 10,000-row SQL statement before its timer. Three warmups and 100 measured
 calls each use the public `durable/execute-and-flush!` boundary and must return
 confirmed or reconciled publication. The 100 raw durations support empirical
-p50 and p99 for that boundary, not the admission-only or amortized-flush
+p50 and a rough nearest-rank p99 tail estimate for that boundary, not a
+statistically precise tail guarantee or the admission-only or amortized-flush
 targets above. A new process opens a snapshot reader and checks all 1,030,000
 rows, the aggregate oracle, and a full-row fingerprint against the writer.
 The report includes selected compiler/native/backend identities, per-statement
@@ -89,6 +90,9 @@ raw samples, and a six-GiB peak-RSS job gate. It excludes credentials, headers,
 S3 object contents, and SQL payloads; the existing canary scanner checks the
 bounded report, log, and GNU-time receipt. The report does not measure a
 collector or exporter and does not assert a 20k/25k rows/s acceptance target.
+The fixed 103-call workload is the preventive operation-count limit; request,
+object-write-attempt, and byte caps are post-call audit gates and cannot stop
+an in-flight call before it crosses a cap.
 
 ## Release-runtime recovery comparison
 
