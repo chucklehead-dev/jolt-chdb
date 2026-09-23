@@ -104,9 +104,9 @@
      :clj (str (json/write-str row) "\n")))
 
 (defn- serial-payload [rows]
-  ;; Materialize row serialization before apply-str. On Jolt, apply-str may
-  ;; realize a lazy map while holding an internal counted lock; a user-supplied
-  ;; JSONWriter that parks inside that realization cannot safely suspend.
+  ;; Materialize rows before apply-str to avoid forcing that lazy map in apply.
+  ;; Jolt may still hold a counted lock during mapv's internal seq realization:
+  ;; parallel row serialization must be CPU-only and nonparking throughout.
   (apply str (mapv row-text rows)))
 
 #?(:jolt
@@ -170,8 +170,10 @@
   text), `:utf8` (caller-owned byte array), and `:byte-count`. No SQL prefix is
   added, and no mutable byte array is retained by the context.
 
-  Input values must be finite and supported by the host writer. If an encoding
-  worker fails, all started workers finish before the error is rethrown. An
+  Input values must be finite and supported by the host writer. On Jolt,
+  parallel row serialization (including lazy values and custom writers) must
+  not park, block, or do I/O. If an encoding worker fails, all started workers
+  finish before the error is rethrown. An
   interrupted waiting caller likewise waits for worker settlement first."
   [encoder rows]
   (let [batch (admit! encoder)

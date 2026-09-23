@@ -4,7 +4,8 @@
                :clj [clojure.data.json :as json])
             [clojure.string :as str]
             [clojure.test :refer [deftest is run-tests testing]]
-            [jdbc.chdb.json-each-row :as encoder]))
+            [jdbc.chdb.json-each-row :as encoder]
+            #?(:jolt [jolt.fibers :as fibers])))
 
 (defn- failure-type [f]
   (try (f) nil
@@ -15,8 +16,7 @@
                            :jolt json/write-str
                            :clj json/write-str) %) "\n") rows)))
 
-#?(:bb nil
-   :default
+#?(:bb nil :jolt nil :clj
    (defn- blocking-value [entered release]
      (reify json/JSONWriter
        (-write [_ out _]
@@ -44,6 +44,17 @@
   (.join thread 5000)
   (is (not (.isAlive thread)) "encoding owner must terminate")
   (deref outcome 1000 ::timeout))
+
+#?(:jolt
+   (defn- gated-worker [chunk entered release]
+     ;; Gate a child before row serialization, never inside data.json/mapv.
+     (let [serialize @(ns-resolve 'jdbc.chdb.json-each-row 'serial-payload)]
+       (fibers/spawn
+        (fn []
+          (deliver entered :entered)
+          @release
+          (try {:value (serialize chunk)}
+               (catch Throwable error {:error error})))))))
 
 (deftest host-default-bytes-and-order
   (let [context (encoder/open-encoder {:parallelism 4})
@@ -94,8 +105,8 @@
              (:payload (encoder/encode-rows! context [{"x" 1}]))))
       (finally (is (= :closed (encoder/close! context)))))))
 
-#?(:bb nil
-   :default
+#?(:bb nil :jolt nil
+   :clj
    (deftest bounded-close-and-busy
   (let [context (encoder/open-encoder {:parallelism 4})
         entered (promise)
@@ -112,6 +123,34 @@
     (is (= "{\"x\":true}\n" (get-in (finish-thread! owned) [:value :payload])))
     (is (= :closed (encoder/close! context 1000)))
     (is (= :closed (encoder/close! context 0))))))
+
+#?(:jolt
+   (deftest bounded-close-and-busy
+     (let [context (encoder/open-encoder {:parallelism 4})
+           entered (promise)
+           release (promise)
+           spawn-var (ns-resolve 'jdbc.chdb.json-each-row 'spawn-chunk)
+           original @spawn-var
+           calls (atom 0)]
+       (with-redefs-fn
+         {spawn-var (fn [chunk]
+                      (if (= 1 (swap! calls inc))
+                        (gated-worker chunk entered release)
+                        (original chunk)))}
+         (fn []
+           (let [owned (start-encode context [{"x" true}])]
+             (try
+               (is (= :entered (deref entered 5000 ::timeout)))
+               (is (= :jdbc.chdb.json-each-row/busy
+                      (failure-type #(encoder/encode-rows! context []))))
+               (is (= :pending (encoder/close! context 0)))
+               (is (= :jdbc.chdb.json-each-row/closed
+                      (failure-type #(encoder/encode-rows! context []))))
+               (finally (deliver release :release)))
+             (is (= "{\"x\":true}\n"
+                    (get-in (finish-thread! owned) [:value :payload])))
+             (is (= :closed (encoder/close! context 1000)))
+             (is (= :closed (encoder/close! context 0)))))))))
 
 #?(:bb
    (deftest bounded-close-and-busy-native
@@ -162,18 +201,26 @@
                          (-write [_ out _]
                            (.append out "2")
                            (deliver later-completed :completed)))
-           owned (start-encode context
-                               [{"n" (blocking-value earlier-entered release-earlier)}
-                                {"n" later-value}
-                                {"n" 3} {"n" 4}])]
-       (try
-         (is (= :entered (deref earlier-entered 5000 ::timeout)))
-         (is (= :completed (deref later-completed 5000 ::timeout)))
-         (is (= :pending (deref (:outcome owned) 0 :pending)))
-         (finally (deliver release-earlier :release)))
-       (is (= "{\"n\":true}\n{\"n\":2}\n{\"n\":3}\n{\"n\":4}\n"
-              (get-in (finish-thread! owned) [:value :payload])))
-       (is (= :closed (encoder/close! context))))))
+           spawn-var (ns-resolve 'jdbc.chdb.json-each-row 'spawn-chunk)
+           original @spawn-var
+           calls (atom 0)]
+       (with-redefs-fn
+         {spawn-var (fn [chunk]
+                      (if (= 1 (swap! calls inc))
+                        (gated-worker chunk earlier-entered release-earlier)
+                        (original chunk)))}
+         (fn []
+           (let [owned (start-encode context
+                                     [{"n" true} {"n" later-value}
+                                      {"n" 3} {"n" 4}])]
+             (try
+               (is (= :entered (deref earlier-entered 5000 ::timeout)))
+               (is (= :completed (deref later-completed 5000 ::timeout)))
+               (is (= :pending (deref (:outcome owned) 0 :pending)))
+               (finally (deliver release-earlier :release)))
+             (is (= "{\"n\":true}\n{\"n\":2}\n{\"n\":3}\n{\"n\":4}\n"
+                    (get-in (finish-thread! owned) [:value :payload])))
+             (is (= :closed (encoder/close! context)))))))))
 
 #?(:jolt
    (deftest parallel-error-waits-for-siblings
@@ -181,36 +228,53 @@
            error (ex-info "row failure" {:canary :original})
            entered (promise)
            release (promise)
-           owned (start-encode
-                  context
-                  [{"x" (throwing-value error)}
-                   {"x" (blocking-value entered release)}
-                   {"x" 2} {"x" 3}])]
-       (try
-         (is (= :entered (deref entered 5000 ::timeout)))
-         (is (= :pending (deref (:outcome owned) 0 :pending)))
-         (is (= :jdbc.chdb.json-each-row/busy
-                (failure-type #(encoder/encode-rows! context []))))
-         (finally (deliver release :release)))
-       (is (identical? error (:error (finish-thread! owned))))
-       (is (= :closed (encoder/close! context))))))
+           spawn-var (ns-resolve 'jdbc.chdb.json-each-row 'spawn-chunk)
+           original @spawn-var
+           calls (atom 0)]
+       (with-redefs-fn
+         {spawn-var (fn [chunk]
+                      (if (= 2 (swap! calls inc))
+                        (gated-worker chunk entered release)
+                        (original chunk)))}
+         (fn []
+           (let [owned (start-encode
+                        context
+                        [{"x" (throwing-value error)}
+                         {"x" 1} {"x" 2} {"x" 3}])]
+             (try
+               (is (= :entered (deref entered 5000 ::timeout)))
+               (is (= :pending (deref (:outcome owned) 0 :pending)))
+               (is (= :jdbc.chdb.json-each-row/busy
+                      (failure-type #(encoder/encode-rows! context []))))
+               (finally (deliver release :release)))
+             (is (identical? error (:error (finish-thread! owned))))
+             (is (= :closed (encoder/close! context)))))))))
 
 #?(:jolt
    (deftest interrupted-join-settles-before-release
      (let [context (encoder/open-encoder {:parallelism 4})
            entered (promise)
            release (promise)
-           owned (start-encode context
-                               [{"x" (blocking-value entered release)}])]
-       (try
-         (is (= :entered (deref entered 5000 ::timeout)))
-         (.interrupt (:thread owned))
-         (is (= :pending (encoder/close! context 0)))
-         (is (= :jdbc.chdb.json-each-row/closed
-                (failure-type #(encoder/encode-rows! context []))))
-         (finally (deliver release :release)))
-       (is (instance? InterruptedException (:error (finish-thread! owned))))
-       (is (= :closed (encoder/close! context 1000))))))
+           spawn-var (ns-resolve 'jdbc.chdb.json-each-row 'spawn-chunk)
+           original @spawn-var
+           calls (atom 0)]
+       (with-redefs-fn
+         {spawn-var (fn [chunk]
+                      (if (= 1 (swap! calls inc))
+                        (gated-worker chunk entered release)
+                        (original chunk)))}
+         (fn []
+           (let [owned (start-encode context [{"x" true}])]
+             (try
+               (is (= :entered (deref entered 5000 ::timeout)))
+               (.interrupt (:thread owned))
+               (is (= :pending (encoder/close! context 0)))
+               (is (= :jdbc.chdb.json-each-row/closed
+                      (failure-type #(encoder/encode-rows! context []))))
+               (finally (deliver release :release)))
+             (is (instance? InterruptedException
+                            (:error (finish-thread! owned))))
+             (is (= :closed (encoder/close! context 1000)))))))))
 
 #?(:jolt
    (deftest partial-spawn-failure-drains-started-child
@@ -223,12 +287,13 @@
            calls (atom 0)]
        (with-redefs-fn
          {spawn-var (fn [chunk]
-                      (if (= 2 (swap! calls inc))
-                        (throw error)
+                      (case (swap! calls inc)
+                        1 (gated-worker chunk entered release)
+                        2 (throw error)
                         (original chunk)))}
          (fn []
            (let [owned (start-encode
-                        context [{"x" (blocking-value entered release)}
+                        context [{"x" true}
                                  {"x" 1} {"x" 2} {"x" 3}])]
              (try
                (is (= :entered (deref entered 5000 ::timeout)))

@@ -18,6 +18,12 @@ SQL, admit a Durable write, publish a WAL entry, or confirm persistence.
 
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
+Parallel rows should be fully realized, CPU-only JSON values. Nothing in row
+serialization—including custom writers, lazy value/key realization, or value
+transforms—may park, block, or perform I/O inside a worker. Some Jolt builds
+reject parking while realizing the row sequence under an internal counted
+lock. Use serial mode for values needing blocking callbacks; this constraint
+is a caller contract, not something the encoder can validate automatically.
 The application must arrange adequate carrier capacity; the encoder neither
 changes nor assumes a process-global carrier setting. JVM Clojure and
 Babashka accept the same option but currently encode serially.
