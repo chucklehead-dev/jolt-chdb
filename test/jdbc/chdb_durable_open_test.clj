@@ -423,7 +423,9 @@
         (let [error (capture-error
                      #(durable/open-writer!
                        {:owner "invalid" :instance "instance" :database "db"
-                        :heartbeat-interval-ms 0M}))]
+                        :heartbeat-interval-ms 0M
+                        :operations (base-reader-operations
+                                     (atom []) (atom [0M]) (atom 0) (atom 0))}))]
           (check "invalid writer timing remains an unwrapped public validation error"
                  ::durable/invalid-options (:type (ex-data error)))
           (check "invalid writer timing has no startup stage"
