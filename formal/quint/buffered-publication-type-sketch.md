@@ -1,7 +1,19 @@
 # Buffered publication: proposed type sketch for #190
 
-Status: proposal for review. No buffered mode, executable Quint model, or runtime
-change is approved by this document.
+Status: caller contract approved for a bounded executable model. The companion
+[`buffered-publication.md`](buffered-publication.md) models it. Neither document
+approves a buffered runtime mode or changes the default confirmed contract.
+
+## Approved bounded caller contract
+
+`:admitted` means only that this live writer accepted the request into its
+bounded queue. It is not a persistence receipt and does not authorize consumer
+cleanup. A separate ticket/flush result confirms publication. A full queue
+rejects before admission. Normal successful close drains admitted work,
+confirms its publication, joins the heartbeat, and releases the lease. Fresh
+readers see only work referenced by the committed head; no local-writer
+read-after-write promise is made by admission. The model leaves exact API
+names, timeout/error payloads, and runtime implementation to a later slice.
 
 ## Why model this boundary
 
@@ -109,9 +121,13 @@ owner, and expose an unpublished object to the reader. Each should fail its
 corresponding property while the corrected bounded model reaches the valid
 boundary.
 
-## Decisions needed before writing model logic
+## Original decision matrix and remaining runtime choices
 
-These are alternatives for review, not behavior selected by this proposal.
+The approved bounded caller contract above selects admission-only success,
+full-queue rejection, successful close drain/confirmation, and head-gated fresh
+reader visibility. The alternatives below remain useful as a record of the
+design space; unselected runtime details are not silently specified by the
+first model.
 
 | Boundary | Explicit options to decide |
 | --- | --- |
@@ -120,8 +136,8 @@ These are alternatives for review, not behavior selected by this proposal.
 | Explicit flush and shutdown | Decide whether flush returns one receipt for the admitted prefix or per-request settlement, and whether close drains/flushes all admitted work or can fail with unresolved tickets. Define the result when publication is committed but cleanup throws, and the identity of the first failure shared by concurrent close callers. |
 | Visibility and recovery | Decide whether buffered success promises local-writer read-after-write, only eventual recovered-reader visibility after a later receipt, or no read guarantee before settlement. Define crash loss for admitted but unpublished work and whether consumers may clear source data before confirmation. Recovered readers remain head-gated in every option. |
 
-The first approval should settle the caller result vocabulary, queue behavior,
-shutdown outcome, and visibility promise together. Only then should types be
-typechecked and guarded actions, witnesses, and sampled Quint runs be written.
-Local qualification should precede S3 qualification, with receipts labeled by
-mode; confirmed-mode results cannot be transferred to buffered mode.
+The approved contract supports the bounded executable companion. Runtime API
+shape, deadline/cancellation policy, exact failure payloads, and local-writer
+visibility still require separate decisions before implementation. Local
+qualification should precede S3 qualification, with receipts labeled by mode;
+confirmed-mode results cannot be transferred to buffered mode.
