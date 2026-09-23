@@ -19,6 +19,7 @@
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb-durable-log-fixture :as log-fixture]
             [jdbc.chdb-durable-throughput-metrics :as provider-metrics]
             [jdbc.chdb.native :as native]
             [jdbc.core :as jdbc]
@@ -49,37 +50,9 @@
 (def ^:private ordered-insert-prefix-bytes
   (alength (.getBytes (chdb/json-rows-insert-prefix "otel_logs" log-columns)
                       "UTF-8")))
-(def ^:private base-nanos 1700000000000000000)
-
-(defn- padded-hex [width n]
-  (let [value (format "%x" n)]
-    (str (apply str (repeat (- width (count value)) "0")) value)))
 
 (defn- log-row [index question-mark?]
-  {"Timestamp" (format "%d.%09d"
-                       (quot (+ base-nanos (* index 1000000)) 1000000000)
-                       (mod (+ base-nanos (* index 1000000)) 1000000000))
-   "TraceId" (padded-hex 32 (inc index))
-   "SpanId" (padded-hex 16 (+ 1000000 index))
-   "TraceFlags" (mod index 2)
-   "SeverityText" (if (zero? (mod index 20)) "ERROR" "INFO")
-   "SeverityNumber" (if (zero? (mod index 20)) 17 9)
-   "ServiceName" "oscope.benchmark"
-   "Body" (str "request completed route=/api/items/" (mod index 64)
-               " status=" (if (zero? (mod index 20)) 500 200)
-               (if question-mark? " query=ready?" ""))
-   "ResourceSchemaUrl" "https://opentelemetry.io/schemas/1.27.0"
-   "ResourceAttributes" {"service.name" "oscope.benchmark"
-                         "deployment.environment.name" "benchmark"}
-   "ScopeSchemaUrl" ""
-   "ScopeName" "oscope.benchmark"
-   "ScopeVersion" "1.0"
-   "ScopeAttributes" {"library.language" "clojure"}
-   "LogAttributes" {"http.request.method" "GET"
-                    "http.response.status_code"
-                    (str (if (zero? (mod index 20)) 500 200))
-                    "benchmark.bucket" (str (mod index 16))}
-   "EventName" "benchmark.request"})
+  (log-fixture/log-row index question-mark?))
 
 (defn- encode-batch-production [rows]
   (let [start (System/nanoTime)

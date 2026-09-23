@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add an encoder-only cross-host comparison for the exact 512-row
+  ClickStack/OTel Durable log fixture, with Jolt serial/four-fiber, JVM
+  data.json/Cheshire, and Babashka native Cheshire profiles. The fixture is
+  shared with the Durable probe; verification requires decoded-value parity
+  across hosts and UTF-8 byte parity for the Jolt/JVM data.json profiles.
+  This makes no persisted-throughput claim.
+
 - Add a manual, isolated 512-row local throughput selector for the opt-in
   Durable JSONEachRow consumer. It times 100 admission-only batches and one
   separate flush, reports both admission and flush-amortized persisted rates,
