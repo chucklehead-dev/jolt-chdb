@@ -256,9 +256,9 @@
       (writer/flush! writer)
       (check "writer phase observer preserves ordered scalar WAL/control stages"
              [:wal-prepare :wal-append :wal-join :wal-immutable-put
-              ;; File publication verifies the created immutable object and
-              ;; commit verifies it again before the head transition.
-              :wal-immutable-verify :wal-immutable-verify :wal-head-cas]
+              ;; File publication verifies the immutable object once and
+              ;; carries that proof into the head transition.
+              :wal-immutable-verify :wal-head-cas]
              (mapv :phase @events))
       (check "writer phase observer excludes SQL and backend identity"
              true

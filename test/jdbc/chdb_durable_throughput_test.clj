@@ -186,8 +186,8 @@
       (check "stage timing omits its private event ledger from child handoff values"
              {}
              (stage-values metrics)))
-    (check "file-WAL stage smoke requires creation and commit verification"
-           {:wal-immutable-verify 2 :backend/put-file-if-absent 1}
+    (check "file-WAL stage smoke reuses its publication verification at commit"
+           {:wal-immutable-verify 1 :backend/put-file-if-absent 1}
            (select-keys
             (expected-writer-stage-calls {:selector :stage-smoke
                                           :encode-included? false}

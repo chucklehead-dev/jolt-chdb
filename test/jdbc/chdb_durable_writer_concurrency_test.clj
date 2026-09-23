@@ -650,8 +650,8 @@
     (check "manifest retry exhaustion is reported to the writer"
            ::control/timeout
            (error-type #(writer/flush! durable-writer)))
-    (check "exhausted commit verifies once, advances zero times, and retains WAL"
-           [2 1 0 1]
+    (check "exhausted commit reuses publication proof, advances zero times, and retains WAL"
+           [2 0 0 1]
            [@replace-count @verify-count
             (get-in (:head (control/read-head! delegate)) ["manifest" "seq"])
             (:pending-statements (writer/status durable-writer))])

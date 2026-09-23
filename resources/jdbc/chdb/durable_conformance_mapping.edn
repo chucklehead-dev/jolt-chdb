@@ -72,7 +72,7 @@
   {:case :upstream/conditional-create-race :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_backend_test.clj" :anchor "second conditional create loses"}]}
   {:case :upstream/wal-put-lands-but-head-cas-fails :disposition :mapped
-   :local-tests [{:path "test/jdbc/chdb_durable_writer_concurrency_test.clj" :anchor "exhausted commit verifies once, advances zero times, and retains WAL"}]}
+   :local-tests [{:path "test/jdbc/chdb_durable_writer_concurrency_test.clj" :anchor "exhausted commit reuses publication proof, advances zero times, and retains WAL"}]}
   {:case :upstream/head-cas-committed-but-response-lost :disposition :mapped
    :local-tests [{:path "test/jdbc/chdb_durable_control_test.clj" :anchor "ambiguous CAS is acknowledged only after exact reread proof"}]}
   {:case :upstream/unprovable-commit-is-ambiguous :disposition :mapped

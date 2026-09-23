@@ -81,6 +81,56 @@
     (download-to-file! [_ key path]
       (backend/download-to-file! delegate key path))))
 
+(defn- wal-readback-backend [delegate put-mode first-read-mode reads cas-count]
+  (let [first-read? (atom true)]
+    (reify backend/ObjectBackend
+      (get-bytes [_ key]
+        (if (= key control/head-key)
+          (backend/get-bytes delegate key)
+          (do
+            (swap! reads inc)
+            (if (compare-and-set! first-read? true false)
+              (case first-read-mode
+                :missing nil
+                :corrupt (.getBytes "bad" "UTF-8")
+                (backend/get-bytes delegate key))
+              (backend/get-bytes delegate key)))))
+      (get-with-etag [_ key] (backend/get-with-etag delegate key))
+      (put-file-if-absent! [_ key path]
+        (let [result (backend/put-file-if-absent! delegate key path)]
+          (if (= control/head-key key)
+            result
+            (case put-mode
+              :ambiguous {:status :ambiguous}
+              :conflict {:status :precondition-failed}
+              result))))
+      (put-bytes-if-absent! [_ key bytes]
+        (let [result (backend/put-bytes-if-absent! delegate key bytes)]
+          (if (= control/head-key key)
+            result
+            (case put-mode
+              :ambiguous {:status :ambiguous}
+              :conflict {:status :precondition-failed}
+              result))))
+      (replace-if-match! [_ key bytes etag]
+        (swap! cas-count inc)
+        (backend/replace-if-match! delegate key bytes etag))
+      (download-to-file! [_ key path]
+        (if (= key control/head-key)
+          (backend/download-to-file! delegate key path)
+          (do
+            (swap! reads inc)
+            (if (compare-and-set! first-read? true false)
+              (case first-read-mode
+                :missing {:status :not-found}
+                :corrupt (do
+                           (java.nio.file.Files/write
+                            path (.getBytes "bad" "UTF-8")
+                            (make-array java.nio.file.OpenOption 0))
+                           {:status :downloaded :byte-count 3})
+                (backend/download-to-file! delegate key path))
+              (backend/download-to-file! delegate key path))))))))
+
 (defn- landed-ambiguous-head-create-backend [delegate]
   (reify backend/ObjectBackend
     (get-bytes [_ key] (backend/get-bytes delegate key))
@@ -465,7 +515,7 @@
                              :now 101M :expires-at 300M :force? true))]
     (check "ambiguous landed forced takeover reconciles one warning"
            [:reconciled
-           [{:event control/forced-live-takeover-event
+            [{:event control/forced-live-takeover-event
               :severity :warning
               :protocol-version 1
               :lease-generation 2}]]
@@ -1063,6 +1113,195 @@
       (finally
         (java.nio.file.Files/deleteIfExists checkpoint)))))
 
+(defn- run-wal-witness-checks! []
+  (println "Durable verified WAL publication witness")
+  (doseq [file? [false true]
+          put-mode [:created :conflict :ambiguous]]
+    (let [delegate (backend/memory-backend)
+          reads (atom 0)
+          cas-count (atom 0)
+          store (wal-readback-backend delegate put-mode nil reads cas-count)
+          token (:token (control/acquire! store base-options))
+          path (when file?
+                 (java.nio.file.Files/createTempFile
+                  "jolt-chdb-witness-" ".jsonl"
+                  (make-array java.nio.file.attribute.FileAttribute 0)))]
+      (try
+        (when path
+          (java.nio.file.Files/write path (.getBytes "abc" "UTF-8")
+                                     (make-array java.nio.file.OpenOption 0)))
+        (let [publication (if file?
+                            (control/publish-wal-file! store token path)
+                            (control/publish-wal-bytes!
+                             store token (.getBytes "abc" "UTF-8")))
+              expected-status (case put-mode
+                                :created :published
+                                :conflict :already-published
+                                :ambiguous :reconciled)
+              committed (control/commit-reference!
+                         store token
+                         {:kind :wal :reference (:reference publication)
+                          :verified-publication publication
+                          :verify-reference!
+                          (if file?
+                            control/verify-file-reference!
+                            control/verify-byte-reference!)})]
+          (check (str "WAL verified receipt " file? " " put-mode)
+                 [expected-status 1 1 1]
+                 [(:status publication) @reads @cas-count
+                  (get-in (:head committed) ["manifest" "seq"])]))
+        (finally
+          (when path (java.nio.file.Files/deleteIfExists path))))))
+  (doseq [file? [false true]
+          first-read-mode [:missing :corrupt]]
+    (let [delegate (backend/memory-backend)
+          reads (atom 0)
+          cas-count (atom 0)
+          store (wal-readback-backend
+                 delegate :created first-read-mode reads cas-count)
+          token (:token (control/acquire! store base-options))
+          path (when file?
+                 (java.nio.file.Files/createTempFile
+                  "jolt-chdb-witness-bad-" ".jsonl"
+                  (make-array java.nio.file.attribute.FileAttribute 0)))]
+      (try
+        (when path
+          (java.nio.file.Files/write path (.getBytes "abc" "UTF-8")
+                                     (make-array java.nio.file.OpenOption 0)))
+        (let [before (:head (control/read-head! store))]
+          (check (str "first WAL readback fails closed " file? " " first-read-mode)
+                 [::control/object-unverified 1 0 before]
+                 [(error-type #(if file?
+                                 (control/publish-wal-file! store token path)
+                                 (control/publish-wal-bytes!
+                                  store token (.getBytes "abc" "UTF-8"))))
+                  @reads @cas-count (:head (control/read-head! store))]))
+        (finally
+          (when path (java.nio.file.Files/deleteIfExists path))))))
+  (let [delegate (backend/memory-backend)
+        reads (atom 0)
+        cas-count (atom 0)
+        store (wal-readback-backend delegate :created nil reads cas-count)
+        token (:token (control/acquire! store base-options))
+        publication (control/publish-wal-bytes!
+                     store token (.getBytes "abc" "UTF-8"))
+        reference (:reference publication)]
+    (control/renew! store token 300M)
+    (let [cas-before @cas-count]
+      (check "changed token context cannot reuse WAL witness"
+             [::control/object-unverified cas-before]
+             [(error-type
+               #(control/commit-reference!
+                 store (assoc token :scope :different)
+                 {:kind :wal :reference reference
+                  :verified-publication publication
+                  :verify-reference! (fn [_ _] false)}))
+              @cas-count]))
+    (let [committed (control/commit-reference!
+                     store token
+                     {:kind :wal :reference reference
+                      :verified-publication publication
+                      :verify-reference! control/verify-byte-reference!})]
+      (check "lease renewal retains verified WAL witness"
+             [1 2 300]
+             [@reads @cas-count
+              (get-in (:head committed) ["lease" "expires_at"])])))
+  (let [delegate (backend/memory-backend)
+        reads (atom 0)
+        cas-count (atom 0)
+        store (wal-readback-backend delegate :created nil reads cas-count)
+        token (:token (control/acquire! store base-options))
+        publication (control/publish-wal-bytes!
+                     store token (.getBytes "abc" "UTF-8"))]
+    (control/acquire!
+     store (assoc base-options :owner "writer-2" :instance "instance-2"
+                  :now 256M :expires-at 400M))
+    (let [before (:head (control/read-head! store))
+          cas-before @cas-count]
+      (check "takeover fences verified WAL witness before readback or CAS"
+             [::control/lease-fenced 1 cas-before before]
+             [(error-type
+               #(control/commit-reference!
+                 store token
+                 {:kind :wal :reference (:reference publication)
+                  :verified-publication publication
+                  :verify-reference! control/verify-byte-reference!}))
+              @reads @cas-count (:head (control/read-head! store))])))
+  (let [delegate (backend/memory-backend)
+        reads-a (atom 0)
+        reads-b (atom 0)
+        cas-a (atom 0)
+        cas-b (atom 0)
+        store-a (wal-readback-backend delegate :created nil reads-a cas-a)
+        store-b (wal-readback-backend delegate :created nil reads-b cas-b)
+        token (:token (control/acquire! store-a base-options))
+        publication (control/publish-wal-bytes!
+                     store-a token (.getBytes "abc" "UTF-8"))]
+    (control/commit-reference!
+     store-b token
+     {:kind :wal :reference (:reference publication)
+      :verified-publication publication
+      :verify-reference! control/verify-byte-reference!})
+    (check "foreign backend identity requires fresh WAL verification"
+           [1 1] [@reads-a @reads-b]))
+  (let [delegate (backend/memory-backend)
+        reads (atom 0)
+        cas-count (atom 0)
+        store (wal-readback-backend delegate :created nil reads cas-count)
+        token (:token (control/acquire! store base-options))
+        first-publication (control/publish-wal-bytes!
+                           store token (.getBytes "abc" "UTF-8"))
+        second-publication (control/publish-wal-bytes!
+                            store token (.getBytes "abc" "UTF-8"))]
+    (doseq [[field value] [["size" 4]
+                           ["sha256" (apply str (repeat 64 "0"))]]]
+      (let [cas-before @cas-count
+            reads-before @reads]
+        (check (str "mismatched witness " field
+                    " fails verification before CAS")
+               [::control/object-unverified (inc reads-before) cas-before]
+               [(error-type
+                 #(control/commit-reference!
+                   store token
+                   {:kind :wal
+                    :reference (assoc (:reference first-publication)
+                                      field value)
+                    :verified-publication first-publication
+                    :verify-reference! control/verify-byte-reference!}))
+                @reads @cas-count])))
+    (control/commit-reference!
+     store token
+     {:kind :wal :reference (:reference second-publication)
+      :verified-publication first-publication
+      :verify-reference! control/verify-byte-reference!})
+    (check "mismatched witness key requires fresh WAL verification"
+           5 @reads))
+  (let [delegate (backend/memory-backend)
+        reads (atom 0)
+        cas-count (atom 0)
+        store (wal-readback-backend delegate :created nil reads cas-count)
+        token (:token (control/acquire! store base-options))
+        publication (control/publish-wal-bytes!
+                     store token (.getBytes "abc" "UTF-8"))]
+    (control/commit-reference!
+     store token
+     {:kind :wal :reference (:reference publication)
+      :verified-publication
+      (with-meta publication
+        {(first (keys (meta publication)))
+         {:store store :token token :reference (:reference publication)}})
+      :verify-reference! control/verify-byte-reference!})
+    (check "forged witness under a copied metadata key cannot skip verification"
+           2 @reads)
+    (let [next-publication (control/publish-wal-bytes!
+                            store token (.getBytes "abc" "UTF-8"))]
+      (control/commit-reference!
+       store token
+       {:kind :wal :reference (:reference next-publication)
+        :verify-reference! control/verify-byte-reference!})
+      (check "fresh recovery without receipt verifies WAL independently"
+             4 @reads))))
+
 (def durable-event-rule
   (ht/event-model
    :durable-head-monotonic
@@ -1207,6 +1446,7 @@
 (defn run-checks! []
   (reset! failures 0)
   (run-deterministic-checks!)
+  (run-wal-witness-checks!)
   (run-stateful-property!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable control checks failed")
