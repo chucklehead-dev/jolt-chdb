@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Reuse one request-owned exact UTF-8 SQL buffer for default Durable JDBC
+  mutation classification and prepared execution, including typed bound
+  requests. Authorization still precedes native mutation, bound values remain
+  outside the classifier and V1 statement WAL, and zero-parameter WAL records
+  retain their original SQL bytes. Configured operation overrides keep their
+  existing route. A matched local 512-row A/B/A showed a small full-path gain,
+  but the encode-inclusive throughput target remains unmet. Read-only query
+  execution and Durable persistence semantics are unchanged.
+
 - Add a caller-owned ordered JSONEachRow encoder with explicit four-fiber
   opt-in on Jolt and serial JVM/Babashka fallbacks (#209). It admits one batch
   per context, settles started fibers before releasing ownership, and supports

@@ -1715,9 +1715,62 @@
                (vec (filter #{:classify :native} @calls)))
         (finally (writer/close! writer))))))
 
+(defn- run-buffered-prepared-order-checks! []
+  (doseq [[label analysis expected-type expected-native]
+          [["accepted" {:query-class :mutating :statement-count 1
+                          :has-secrets false :writes-only-target-database true
+                          :changes-database-lifecycle false}
+            nil 1]
+           ["rejected" {:query-class :mutating :statement-count 2
+                          :has-secrets false :writes-only-target-database true
+                          :changes-database-lifecycle false}
+            ::policy/rejected 0]]]
+    (let [calls (atom [])
+          closes (atom 0)
+          phases (atom [])
+          secret "request-bound-secret"
+          operations
+          (assoc (model-checkpoint-operations calls closes)
+                 :writer-phase! #(swap! phases conj (:phase %))
+                 :prepare-query! chdb/prepare-query
+                 :classify! (fn [& _]
+                              (throw (ex-info "legacy classifier called"
+                                              {:type ::legacy-classifier})))
+                 :execute-prepared-native!
+                 (fn [& _]
+                   (throw (ex-info "legacy prepared execution called"
+                                   {:type ::legacy-execution})))
+                 :with-native-prepared-buffer!
+                 (fn [_ prepared _ classified!]
+                   (swap! calls conj :classify)
+                   (check (str label " classification keeps bound value out of SQL")
+                          false (str/includes? (chdb/prepared-sql prepared) secret))
+                   (classified! analysis
+                                (fn []
+                                  (swap! calls conj :native)
+                                  {:count 1}))))
+          {:keys [writer]} (new-writer calls closes operations)]
+      (try
+        (check (str label " prepared policy outcome")
+               expected-type
+               (error-type #(writer/sql! writer "INSERT INTO t VALUES (?)"
+                                         [secret])))
+        (check (str label " prepared native mutation count")
+               expected-native (count (filter #{:native} @calls)))
+        (check (str label " prepared classifier precedes native mutation")
+               (if (zero? expected-native) [:classify] [:classify :native])
+               (vec (filter #{:classify :native} @calls)))
+        (check (str label " bound parameter remains out of V1 statement WAL")
+               [] (vec (filter #{:wal-prepare :wal-append} @phases)))
+        (when (= label "accepted")
+          (check "accepted bound mutation confirms through checkpoint"
+                 :committed (:status (writer/flush! writer))))
+        (finally (writer/close! writer))))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-buffered-admission-order-checks!)
+  (run-buffered-prepared-order-checks!)
   (run-wal-spool-allocation-checks!)
   (run-statement-size-fastpath-checks!)
   (run-checkpoint-cleanup-precedence-checks!)

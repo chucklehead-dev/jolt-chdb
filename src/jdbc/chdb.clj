@@ -422,6 +422,16 @@
    handle prepared "JSONCompactEachRowWithNamesAndTypes"
    (fn [_ _ result] (consume-json-result result)) nil))
 
+(defn execute-prepared-any-with-query-buffer
+  "Execute a prepared request using its caller-owned, exact UTF-8 SQL buffer.
+  The caller must have encoded `(prepared-sql prepared)` and keep the buffer
+  live through result consumption. Bound values remain request-local and are
+  encoded separately by the native parameter path."
+  [handle prepared query-buffer]
+  (execute-prepared-native
+   handle prepared "JSONCompactEachRowWithNamesAndTypes"
+   (fn [_ _ result] (consume-json-result result)) query-buffer))
+
 (defn execute-any-with-query-buffer
   "Execute an unbound SQL request using a caller-owned exact UTF-8 buffer.
   The caller must keep the buffer live through result consumption."
