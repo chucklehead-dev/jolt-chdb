@@ -119,6 +119,13 @@ jobs:
           -M -m jdbc.chdb-json-each-row-test
       - name: Test ordered JSONEachRow encoder on Babashka
         run: bb -cp src:test -m jdbc.chdb-json-each-row-test
+      - name: Verify production log JSON encoding on JVM Clojure
+        run: >-
+          clojure -Srepro
+          -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "0f51b99101bc5e840f957c073f87b6f877309a25"}}}'
+          -M -m jdbc.chdb-production-json-encode-test
+      - name: Verify production log JSON encoding on Babashka
+        run: bb -cp src:bench:test -m jdbc.chdb-production-json-encode-test
       - name: Install pinned chDB
         run: jolt -M:setup-native
       - name: Smoke a real isolated staged Durable writer child
