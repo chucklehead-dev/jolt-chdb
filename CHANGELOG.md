@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Pin the merged `casselc/data.json` default writer and map-entry fast paths
+  for production-shaped JSONEachRow. A matched local 512-row run (500 samples
+  per mode) reduced encoding-inclusive p50 from 107.095 to 60.167 ms and p99
+  from 187.387 to 172.959 ms; both still miss the 20.48/25.60 ms targets.
+  All ten measured WAL objects per arm had identical SHA-256 hashes across
+  arms. Broader data.json value-shape parity remains governed by the fork's
+  JVM/Jolt tests; this run does not qualify S3 or collector throughput.
+
 - Expose the existing option-bearing `publish-wal-file!` entry as an additive
   Durable aspect selector. The `publish-wal-bytes!` selector remains intact;
   this adds observation coverage for the writer's sealed-file WAL path without
