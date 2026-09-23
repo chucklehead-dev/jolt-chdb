@@ -246,10 +246,10 @@
   "Return the exact measured writer-stage cardinalities for one configuration.
 
   File-WAL publication verifies a created immutable object before returning
-  from publication, then `commit-reference!` verifies it again before the
-  head CAS.  The second verification is intentional: it makes the commit
-  boundary independently fail closed.  The old byte-WAL path verifies only at
-  commit time, so keep that one-call baseline outside the file-WAL selectors."
+  from publication. A confirmed commit reuses that exact publication proof,
+  so the file-WAL selectors expect one verification. Absent or mismatched
+  proofs still require commit-time verification. The old byte-WAL path verifies
+  at commit time and remains outside the file-WAL selectors."
   [{:keys [selector encode-included?]} batches]
   (cond-> {:prepare-query batches :native-classify batches
            :native-execute batches
@@ -260,7 +260,7 @@
            :wal-append batches
            :wal-join 1
            :wal-immutable-put 1
-           :wal-immutable-verify 2
+           :wal-immutable-verify 1
            :wal-head-cas 1)
     encode-included?
     (assoc :data-json batches :exporter-materialization batches)))
