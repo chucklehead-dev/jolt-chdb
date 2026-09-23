@@ -16,6 +16,7 @@ on:
       - formal/**/*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
+      - scripts/validate-durable-benchmark-aliases.py
       - scripts/fingerprint-durable-model-inputs.sh
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq
@@ -50,6 +51,7 @@ on:
       - formal/**/*.smt2
       - formal/quint/**
       - scripts/classify-durable-model-paths.sh
+      - scripts/validate-durable-benchmark-aliases.py
       - scripts/fingerprint-durable-model-inputs.sh
       - scripts/durable-head-itf-coverage.jq
       - scripts/durable-head-itf-commands.jq

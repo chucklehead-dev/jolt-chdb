@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep Durable model CI exhaustive for dependency or existing-alias edits, but
+  skip its exhaustive tier for validated additive `deps.edn` aliases that only
+  launch newly added bench/test namespaces. The fast tier still runs for
+  model-linked test paths; malformed or unsupported edits fail closed (#196).
+
 - Add a separately gated manual OIDC S3 qualification for 10,000-row public
   `execute-and-flush!`: three warmups, 100 measured confirmations, and a
   fresh-process readback of all 1,030,000 rows with aggregate/fingerprint

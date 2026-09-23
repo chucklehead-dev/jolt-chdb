@@ -23,7 +23,7 @@ def classifier_helpers(source):
     assert len(definitions) == len(functions) == 1, "missing/duplicate model-input function"
     function = functions[0]
     body = function[1]
-    inventory = re.findall(r"scripts/[A-Za-z0-9_./-]+\.(?:sh|jq)(?=\s|\||\)|$)", body)
+    inventory = re.findall(r"scripts/[A-Za-z0-9_./-]+\.(?:sh|jq|py)(?=\s|\||\)|$)", body)
     assert inventory, "empty classifier model-helper input inventory"
     assert body.count("scripts/") == len(inventory), "unknown model-helper inventory syntax"
     return set(inventory), function
@@ -234,6 +234,7 @@ for path in \
   scripts/durable-head-itf-commands.jq \
   scripts/durable-head-itf-coverage.jq \
   scripts/classify-durable-model-paths.sh \
+  scripts/validate-durable-benchmark-aliases.py \
   .github/workflows/durable-head-quint.yml
 do
   check "model input $path" true --paths "$path"
@@ -371,6 +372,107 @@ check_reason "missing merge base reports checked Git failure" diff-command-faile
 check_reason "non-repository boundary reports checked Git failure" \
   diff-command-failed "$fixture_root/not-a-repo" \
   --diff "$root_commit" "$fast_commit"
+
+# Compare committed EDN trees, not worktree text or a deps.edn filename alone.
+alias_repo="$fixture_root/aliases"
+git init -q "$alias_repo"
+git -C "$alias_repo" config user.name "model classifier test"
+git -C "$alias_repo" config user.email "model-classifier@example.invalid"
+printf '%s\n' '{:paths ["src"] :deps {example/lib {:git/sha "abc"}} :aliases {:existing {:main-opts ["-m" "old.ns"]}}}' \
+  > "$alias_repo/deps.edn"
+git -C "$alias_repo" add deps.edn
+git -C "$alias_repo" commit -q -m base
+alias_base=$(git -C "$alias_repo" rev-parse HEAD)
+
+alias_case() {
+  local label=$1
+  local expected=$2
+  local contents=$3
+  shift 3
+  git -C "$alias_repo" switch -q --detach "$alias_base"
+  printf '%s\n' "$contents" > "$alias_repo/deps.edn"
+  mkdir -p "$alias_repo/bench/jdbc" "$alias_repo/test/jdbc"
+  printf '%s\n' '(ns jdbc.chdb-durable-confirmed-10000)' \
+    > "$alias_repo/bench/jdbc/chdb_durable_confirmed_10000.clj"
+  printf '%s\n' '(ns jdbc.chdb-durable-confirmed-10000-test)' \
+    > "$alias_repo/test/jdbc/chdb_durable_confirmed_10000_test.clj"
+  git -C "$alias_repo" add -A
+  git -C "$alias_repo" commit -q -m "$label"
+  local candidate
+  candidate=$(git -C "$alias_repo" rev-parse HEAD)
+  check_output "$label" "$expected" "$alias_repo" \
+    --diff "$alias_base" "$candidate" "$@"
+}
+
+base_deps='{:paths ["src"] :deps {example/lib {:git/sha "abc"}} :aliases {:existing {:main-opts ["-m" "old.ns"]}'
+valid_aliases=':new-bench {:extra-paths ["bench"] :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000"]} :new-test {:extra-paths ["test" "bench"] :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000-test"]} :new-native-test {:extra-paths ["test" "bench"] :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000-test" "--native"]}'
+alias_case "additive bench/test aliases skip exhaustive" false \
+  "$base_deps $valid_aliases}}"
+valid_alias_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_fast "additive test alias retains fast tier" true "$alias_repo" \
+  --diff "$alias_base" "$valid_alias_head"
+check_output "merge-base additive aliases skip exhaustive" false "$alias_repo" \
+  --diff "$alias_base" "$valid_alias_head" --merge-base
+check_output "paths mode still treats deps.edn as exhaustive" true "$alias_repo" \
+  --paths deps.edn
+check_reason "validated aliases retain ordinary model-linked reason" \
+  model-inputs-byte-identical "$alias_repo" --diff "$alias_base" "$valid_alias_head"
+
+git -C "$alias_repo" switch -q --detach "$alias_base"
+printf '%s\n' "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000\"]}}}" \
+  > "$alias_repo/deps.edn"
+mkdir -p "$alias_repo/bench/jdbc"
+printf '%s\n' '(ns jdbc.chdb-durable-confirmed-10000)' \
+  > "$alias_repo/bench/jdbc/chdb_durable_confirmed_10000.clj"
+git -C "$alias_repo" add -A
+git -C "$alias_repo" commit -q -m bench-only-alias
+bench_only_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_output "bench-only alias skips exhaustive" false "$alias_repo" \
+  --diff "$alias_base" "$bench_only_head"
+check_fast "bench-only alias does not select fast tier" false "$alias_repo" \
+  --diff "$alias_base" "$bench_only_head"
+
+alias_case "changed production dependency stays exhaustive" true \
+  "${base_deps/\"abc\"/\"def\"} $valid_aliases}}"
+alias_case "changed existing alias stays exhaustive" true \
+  "${base_deps/old.ns/new.ns} $valid_aliases}}"
+alias_case "extra-deps stays exhaustive" true \
+  "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000\"] :extra-deps {evil/lib {:git/sha \"abc\"}}}}"
+alias_case "unknown alias option stays exhaustive" true \
+  "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000\"] :jvm-opts [\"-Xmx2g\"]}}"
+alias_case "malformed EDN stays exhaustive" true \
+  "$base_deps $valid_aliases}"
+alias_case "existing namespace target stays exhaustive" true \
+  "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"old.ns\"]}}"
+alias_case "unapproved main option stays exhaustive" true \
+  "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000\" \"--unsafe\"]}}"
+alias_case "non-string main namespace stays exhaustive" true \
+  "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" {}]}}"
+bad_shape_head=$(git -C "$alias_repo" rev-parse HEAD)
+if helper_output=$(python3 "$repo_root/scripts/validate-durable-benchmark-aliases.py" \
+    "$alias_repo" "$alias_base" "$bad_shape_head" 2>&1); then
+  echo "FAIL malformed alias helper unexpectedly accepted a map namespace" >&2
+  failures=$((failures + 1))
+elif [[ -n $helper_output ]]; then
+  echo "FAIL malformed alias helper printed a traceback or diagnostic" >&2
+  echo "$helper_output" >&2
+  failures=$((failures + 1))
+else
+  echo "ok malformed alias helper fails closed without traceback"
+fi
+
+git -C "$alias_repo" switch -q --detach "$valid_alias_head"
+git -C "$alias_repo" rm -q deps.edn
+git -C "$alias_repo" commit -q -m deleted-deps
+deleted_alias_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_output "deleted deps.edn stays exhaustive" true "$alias_repo" \
+  --diff "$valid_alias_head" "$deleted_alias_head"
+git -C "$alias_repo" switch -q --detach "$valid_alias_head"
+git -C "$alias_repo" mv deps.edn deps-old.edn
+git -C "$alias_repo" commit -q -m renamed-deps
+renamed_alias_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_output "renamed deps.edn stays exhaustive" true "$alias_repo" \
+  --diff "$valid_alias_head" "$renamed_alias_head"
 
 # Full real source inventory, isolated Git history and pinned extraction only.
 # No exported script, Quint evaluator or solver is executed from this fixture.
