@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a manual, isolated 512-row local throughput selector for the opt-in
+  Durable JSONEachRow consumer. It times 100 admission-only batches and one
+  separate flush, reports both admission and flush-amortized persisted rates,
+  and verifies aggregates from a fresh reader process. It does not alter the
+  existing acceptance gate or claim that the target has been met.
+
 - Add an opt-in, caller-owned JSONEachRow Durable consumer. `admit-rows!`
   executes through the existing classified raw writer/WAL path without a
   persistence acknowledgement; `insert-rows-and-flush!` uses one atomic

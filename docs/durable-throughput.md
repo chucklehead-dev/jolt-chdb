@@ -32,6 +32,17 @@ reading belongs to that configuration rather than to the complete sweep.
 Near-miss or unsupported selectors fail before database work; they never fall
 back to the full sweep.
 
+`ordered-durable-local-512` is a separate, one-trial diagnostic for the opt-in
+`jdbc.chdb.durable.json-rows` product consumer. It uses four encoding fibers,
+two warmup batches, and 100 measured batches of 512 rows. Each measured sample
+ends when `admit-rows!` returns after Durable classification, native execution,
+and pending-WAL staging; it does **not** imply persistence. One later `flush!`
+is timed separately. The report distinguishes admission rows/s from the
+one-flush-amortized persisted rows/s, and an independent process verifies the
+fresh Durable snapshot. This selector does not change the serial/default
+consumer or the existing five-trial acceptance gate. Its single empirical p99
+is useful diagnosis, not qualification of the 20k rows/s tail target.
+
 Staged recovery diagnostics use `recovery-512-10`, `recovery-512-25`, and
 `recovery-512-50`. These run one pre-encoded trial of exactly 10, 25, or 50
 512-row WAL records with no warmup rows, then close the writer, open a fresh
@@ -181,6 +192,11 @@ JOLT_CHDB_LIB=/path/to/qualified/libchdb.so \
 scripts/run-durable-throughput-selector.sh scale-1000 \
   target/profiles/scale-1000-$(date -u +%Y%m%dT%H%M%SZ)
 ```
+
+To measure the opt-in product consumer instead, use the same wrapper and
+provenance inputs with `ordered-durable-local-512` as the selector and a fresh
+output directory. Keep its receipt separate from `scale-512`: the paths have
+different encoding and SQL-prefix contracts.
 
 The helper refuses a dirty checkout, a non-isolated selector, missing pinned
 runtime provenance, or a reused output directory. It writes `report.edn`, a

@@ -1,5 +1,7 @@
 (ns jdbc.chdb-durable-throughput-test
   (:require [clojure.string :as str]
+            [jdbc.chdb :as chdb]
+            [jdbc.chdb.json-each-row :as encoder]
             [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
             [jdbc.chdb-durable-throughput :as throughput]))
 
@@ -98,7 +100,11 @@
       (check "non-512 scale selectors remain non-gating"
              :not-applicable
              (:status (acceptance :scale-1000
-                                  [(configuration 1 false 99.0 99.0)]))))
+                                  [(configuration 1 false 99.0 99.0)])))
+      (check "one-trial ordered consumer selector is diagnostic, not target-gating"
+             :not-applicable
+             (:status (acceptance :ordered-durable-local-512
+                                  [(configuration 100 true 99.0 99.0)]))))
     (let [receipt (java.io.File/createTempFile "durable-acceptance-" ".edn")
           failed {:status :failed :reason :latency-target-missed
                   :target {:sample-count 500}
@@ -131,6 +137,9 @@
                                  ":encoding-inclusive-512-acceptance")
                   (str/includes? selector-wrapper
                                  "scripts/check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
+      (check "manual selector wrapper admits the isolated ordered local trial"
+             true
+             (str/includes? selector-wrapper "ordered-durable-local-512"))
       (check "matched wrappers gate only their 512 selectors"
              true
              (and (str/includes? matched-wrapper "matched-local-512")
@@ -161,6 +170,35 @@
                      [(:selector config) (:batch-size config)
                       (:batches config)]))
                  [:scale-512 :scale-1000 :scale-5000 :scale-10000]))
+    (check "ordered consumer selector is one 512x100 local admission trial"
+           [:ordered-durable-local-512 512 100 2 1 4
+            [:durable-ordered-consumer]]
+           (let [config (first (validate-profile-configs!
+                                :ordered-durable-local-512
+                                (profile-configs :ordered-durable-local-512)))]
+             [(:selector config) (:batch-size config) (:batches config)
+              (:warmup-batches config) (:trials config) (:parallelism config)
+              (:modes config)]))
+    (let [config (first (profile-configs :ordered-durable-local-512))
+          captured (atom nil)
+          sentinel (ex-info "stop before worker launch" {:type ::route-probe})]
+      (with-redefs-fn
+        {#'throughput/owned-trial!
+         (fn [kind options]
+           (reset! captured [kind (:selector options) (:trial options)
+                             (:parallelism options)])
+           (throw sentinel))}
+        (fn []
+          (check "ordered mode routes through the uninstrumented owned worker"
+                 ::route-probe
+                 (rejected-type #( #'throughput/run-config config)))
+          (check "ordered route forwards one trial and four-way opt-in"
+                 [:uninstrumented :ordered-durable-local-512 1 4]
+                 @captured))))
+    (check "existing local 512 selector still uses only its established modes"
+           [:durable-encode-included :durable-preencoded
+            :ordinary-native-preencoded]
+           (:modes (first (profile-configs :scale-512))))
     (check "stage selector is one diagnostic-only 512-row Durable-preencoded trial"
            [:stage-512 512 100 1 true [:durable-preencoded]]
            (let [config (first (profile-configs :stage-512))]
@@ -179,6 +217,32 @@
                             :encode-included? false :trial 1
                             :backend-context! (fn [_] :not-serializable)
                             :modes [:durable-preencoded]}))
+    (check "ordered worker retains parallelism but not execution closures"
+           {:selector :ordered-durable-local-512 :batch-size 512 :batches 100
+            :warmup-batches 2 :question-mark? false :trial 1 :parallelism 4}
+           (worker-options {:selector :ordered-durable-local-512
+                            :batch-size 512 :batches 100 :warmup-batches 2
+                            :question-mark? false :trial 1 :parallelism 4
+                            :backend-context! (fn [_] :not-serializable)
+                            :modes [:durable-ordered-consumer]}))
+    (let [rows (mapv #(log-row % false) (range 4))
+          context (encoder/open-encoder {:parallelism 4})]
+      (try
+        (let [encoded (encoder/encode-rows! context rows)
+              legacy (encode-batch-production rows)
+              legacy-prefix @#'throughput/insert-prefix
+              ordered-prefix
+              (chdb/json-rows-insert-prefix
+               "otel_logs" @#'throughput/log-columns)]
+          (check "ordered four-fiber payload matches serial production JSON bytes"
+                 (.substring (:sql legacy) (count legacy-prefix))
+                 (:payload encoded))
+          (check "ordered selector ledger accounts for the exact SQL UTF-8 bytes"
+                 (+ (alength (.getBytes ordered-prefix "UTF-8"))
+                    (:payload-bytes legacy))
+                 (alength (.getBytes (str ordered-prefix (:payload encoded))
+                                     "UTF-8"))))
+        (finally (encoder/close! context))))
     (let [metrics (stage-metrics)]
       (check "stage timing keeps its private event ledger outside Jolt atom metadata"
              []
