@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Repin the merged `casselc/data.json` map-entry-sequence writer optimization
+  at `1b071626`. Keep the production ClickStack fixture's byte and decoded-value
+  goldens as gates for the repin, and correct the throughput-metrics exact-pin
+  assertion and active-pin documentation that still named the older `e7f97a9`
+  revision. Existing throughput measurements remain tied to their original
+  dependency and require a fresh full-path comparison.
+
 - Add an encoder-only cross-host comparison for the exact 512-row
   ClickStack/OTel Durable log fixture, with Jolt serial/four-fiber, JVM
   data.json/Cheshire, and Babashka native Cheshire profiles. The fixture is

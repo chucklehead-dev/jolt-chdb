@@ -551,10 +551,11 @@ The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
 The active dependency is `casselc/data.json`
-`e7f97a9b5ecf7fa00787375fff4176a082fe9b98`. It carries the maintained
-String-backed reader ordinary-run improvements and Jolt-specialized
-codepoint-decoder access. Durable's validation-before-replay ordering, strict
-UTF-8, wire bytes, record order, checksums, and engine-effect vocabulary do not
+`1b0716268232a79dd2b2fdb968cca171414bd589`. It carries the maintained
+String-backed reader ordinary-run improvements, Jolt-specialized
+codepoint-decoder access, and the map-entry-sequence writer reuse. Durable's
+validation-before-replay ordering, strict UTF-8, wire bytes, record order,
+checksums, and engine-effect vocabulary do not
 change, so the correctness models and trace schema require no transition
 update. The active pin must still be measured by the current Durable matrix;
 this historical reader diagnostic is not evidence that it improves admission.

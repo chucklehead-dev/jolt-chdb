@@ -46,6 +46,6 @@ Focused fixture/semantic test commands (these do not time samples):
 
 ```sh
 bb -cp src:bench:test -m jdbc.chdb-production-json-encode-test
-clojure -Srepro -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "0f51b99101bc5e840f957c073f87b6f877309a25"}}}' -M -m jdbc.chdb-production-json-encode-test
-/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -Srepro -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "0f51b99101bc5e840f957c073f87b6f877309a25"}}}' -M -m jdbc.chdb-production-json-encode-test
+clojure -Srepro -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"}}}' -M -m jdbc.chdb-production-json-encode-test
+/home/chuck/ai-src/tools/jolt-with-chez-10.4.1 jolt -Srepro -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"}}}' -M -m jdbc.chdb-production-json-encode-test
 ```

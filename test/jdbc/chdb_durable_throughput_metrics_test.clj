@@ -20,7 +20,7 @@
 
 (def ^:private expected-data-json-coordinate
   '{:git/url "https://github.com/casselc/data.json.git"
-    :git/sha "e7f97a9b5ecf7fa00787375fff4176a082fe9b98"})
+    :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"})
 
 (defn- exact-data-json-pin? [deps]
   (= expected-data-json-coordinate
@@ -343,7 +343,7 @@
            true
            (str/includes?
             durable-doc
-            "e7f97a9b5ecf7fa00787375fff4176a082fe9b98"))
+            "1b0716268232a79dd2b2fdb968cca171414bd589"))
     (check "local selector runner retains checked peak-RSS evidence"
            true
            (and (str/includes? durable-doc
