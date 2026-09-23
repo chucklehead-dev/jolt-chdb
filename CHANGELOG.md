@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a caller-owned ordered JSONEachRow encoder with explicit four-fiber
+  opt-in on Jolt and serial JVM/Babashka fallbacks (#209). It admits one batch
+  per context, settles started fibers before releasing ownership, and supports
+  repeatable timed close. Jolt/JVM retain their data.json writer bytes;
+  Babashka uses native Cheshire with row-order and decoded-value parity, not
+  cross-host byte identity. This API is not yet wired into JDBC or Durable
+  admission, so it makes no confirmed-throughput claim.
+
 - Pin the merged `casselc/data.json` default writer and map-entry fast paths
   for production-shaped JSONEachRow. A matched local 512-row run (500 samples
   per mode) reduced encoding-inclusive p50 from 107.095 to 60.167 ms and p99

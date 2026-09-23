@@ -153,6 +153,29 @@
            (failure-type #(encoder/encode-rows! context []))))))
 
 #?(:jolt
+   (deftest parallel-chunks-finish-out-of-order-but-emit-in-row-order
+     (let [context (encoder/open-encoder {:parallelism 4})
+           earlier-entered (promise)
+           release-earlier (promise)
+           later-completed (promise)
+           later-value (reify json/JSONWriter
+                         (-write [_ out _]
+                           (.append out "2")
+                           (deliver later-completed :completed)))
+           owned (start-encode context
+                               [{"n" (blocking-value earlier-entered release-earlier)}
+                                {"n" later-value}
+                                {"n" 3} {"n" 4}])]
+       (try
+         (is (= :entered (deref earlier-entered 5000 ::timeout)))
+         (is (= :completed (deref later-completed 5000 ::timeout)))
+         (is (= :pending (deref (:outcome owned) 0 :pending)))
+         (finally (deliver release-earlier :release)))
+       (is (= "{\"n\":true}\n{\"n\":2}\n{\"n\":3}\n{\"n\":4}\n"
+              (get-in (finish-thread! owned) [:value :payload])))
+       (is (= :closed (encoder/close! context))))))
+
+#?(:jolt
    (deftest parallel-error-waits-for-siblings
      (let [context (encoder/open-encoder {:parallelism 4})
            error (ex-info "row failure" {:canary :original})
