@@ -328,8 +328,11 @@
                 nil (catch Throwable error error))]
     (if (= label "base-only")
       (when error (throw error))
-      (when-not (= :jdbc.chdb.durable/corrupt (:type (ex-data error)))
-        (fail! (str "expected typed corruption rejection: " label))))
+      (when-not (= [::durable/startup-failed :recover ::durable/corrupt]
+                   [(:type (ex-data error))
+                    (:jdbc.chdb.durable/startup-stage (ex-data error))
+                    (:type (some-> error .getCause ex-data))])
+        (fail! (str "expected recover-stage corruption rejection: " label))))
     (when-not (= before (inventory root)) (fail! "control recovery changed protocol bytes"))
     (println "ok independent fresh-process Jolt control" label)))
 

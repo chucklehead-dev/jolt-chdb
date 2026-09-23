@@ -7,6 +7,17 @@
   launch newly added bench/test namespaces. The fast tier still runs for
   model-linked test paths; malformed or unsupported edits fail closed (#196).
 
+- Reuse one request-owned exact UTF-8 SQL buffer across native Durable
+  classification and execution for fully materialized writer mutations. The
+  sealed-WAL check, WAL preparation, full policy gate, native mutation, and
+  append-on-success order remain intact; caller-supplied operation overrides
+  retain their existing path. A matched local 10,000-row public
+  `execute-and-flush!` run (three warmups, 100 measured, fresh reader) measured
+  p99 419.0 ms versus 443.4 ms on the clean control, with 1,030,000-row
+  readback parity. This local result does not qualify S3 or collector delivery.
+  The Python checkpoint fixture now checks the closed recover-stage startup
+  envelope and its retained in-process corruption cause.
+
 - Add a separately gated manual OIDC S3 qualification for 10,000-row public
   `execute-and-flush!`: three warmups, 100 measured confirmations, and a
   fresh-process readback of all 1,030,000 rows with aggregate/fingerprint

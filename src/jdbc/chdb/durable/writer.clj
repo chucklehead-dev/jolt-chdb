@@ -359,12 +359,19 @@
   ;; a potential next record.
   (reject-sealed-wal! writer)
   (let [line (prepare-wal-line! writer sql)]
-    ((:analyze-execute! (:operations writer))
-     (:handle writer) sql (:database writer))
-    (execute-admitted!
-     writer
-     #((:execute-native! (:operations writer)) (:handle writer) sql [])
-     line)))
+    (if-let [with-buffer! (:with-native-admitted-buffer! (:operations writer))]
+      (with-buffer!
+       (:handle writer) sql (:database writer)
+       (fn [analysis execute!]
+         (policy/authorize-execute! analysis)
+         (execute-admitted! writer execute! line)))
+      (do
+        ((:analyze-execute! (:operations writer))
+         (:handle writer) sql (:database writer))
+        (execute-admitted!
+         writer
+         #((:execute-native! (:operations writer)) (:handle writer) sql [])
+         line)))))
 
 (declare do-flush!)
 
@@ -810,6 +817,9 @@
     (when (and (some? (:writer-phase! operations))
                (not (fn? (:writer-phase! operations))))
       (fail! ::invalid-options "writer-phase! must be a function"))
+    (when (and (some? (:with-native-admitted-buffer! operations))
+               (not (fn? (:with-native-admitted-buffer! operations))))
+      (fail! ::invalid-options "with-native-admitted-buffer! must be a function"))
     (let [worker (owned-thread/completion)
           heartbeat (when lease-expiry (owned-thread/completion))
           writer (->DurableWriter

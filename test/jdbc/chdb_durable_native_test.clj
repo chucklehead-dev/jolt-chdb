@@ -56,6 +56,144 @@
 (defn- unsigned-prefix [bytes length]
   (mapv #(bit-and 255 %) (take length bytes)))
 
+(defn- run-shared-query-buffer-checks []
+  (println "Request-local native SQL buffer")
+  (doseq [sql ["" "INSERT INTO t VALUES (1)"
+               "INSERT INTO `данные` VALUES ('β🌍')"
+               (str "SELECT 'a" (char 0) "b'")
+               "SELECT '?' AS literal"]]
+    (let [expected (.getBytes sql "UTF-8")
+          frees (atom 0)
+          native-free ffi/free]
+      (with-redefs [ffi/free (fn [pointer]
+                              (swap! frees inc)
+                              (native-free pointer))]
+        (native/with-query-buffer
+         sql
+         (fn [{:keys [pointer length]}]
+           (check (str "exact UTF-8 byte count " (pr-str sql))
+                  (alength expected) length)
+           (check (str "exact UTF-8 bytes " (pr-str sql))
+                  (vec expected)
+                  (vec (ffi/read-array pointer length)))
+           (let [other (ffi/alloc (max 1 (inc (* 4 (count sql)))))]
+             (try
+               (check (str "classifier and execution encoders agree " (pr-str sql))
+                      [(alength expected) (vec expected)]
+                      (let [n (ffi/write-bytes other sql)]
+                        [n (vec (ffi/read-array other n))]))
+               (finally (native-free other))))))
+        (check (str "SQL pointer freed once " (pr-str sql)) 1 @frees))))
+  (let [frees (atom 0)
+        native-free ffi/free]
+    (with-redefs [ffi/free (fn [pointer]
+                            (swap! frees inc)
+                            (native-free pointer))]
+      (check "request failure propagates"
+             ::buffer-failure
+             (:type (ex-data
+                     (rejected
+                      #(native/with-query-buffer
+                        "SELECT 1"
+                        (fn [_] (throw (ex-info "failed" {:type ::buffer-failure}))))))))
+      (check "request failure frees SQL pointer once" 1 @frees)))
+  ;; A Jolt string normally contains Unicode scalar values. If this runtime
+  ;; permits a lone surrogate, both encoders must still agree or fail before
+  ;; a pointer is made available to native code.
+  (when-let [malformed (try (str (char 0xD800))
+                            (catch Throwable _ nil))]
+    (let [managed (rejected #(.getBytes malformed "UTF-8"))
+          foreign (rejected #(native/with-query-buffer malformed (fn [_] nil)))]
+      (check "malformed Unicode is treated consistently"
+             (boolean managed) (boolean foreign))
+      (when-not managed
+        (let [expected (.getBytes malformed "UTF-8")]
+          (native/with-query-buffer
+           malformed
+           (fn [{:keys [pointer length]}]
+             (check "representable surrogate has exact encoded bytes"
+                    [(alength expected) (vec expected)]
+                    [length (vec (ffi/read-array pointer length))])))))))
+  (check "quoted question mark preserves exact prepared SQL"
+         "SELECT '?' AS literal"
+         (chdb/prepared-sql
+          (chdb/prepare-query "SELECT '?' AS literal" [])))
+  (check "unbound code placeholder is refused before native execution"
+         true (boolean (rejected #(chdb/prepare-query "SELECT ?" []))))
+  (let [other (chdb/prepare-query "SELECT 2" [])]
+    (with-redefs [chdb/prepare-query (fn [_ _] other)
+                  chdb/execute-prepared-any (fn [_ prepared]
+                                              (check "rewrite mismatch uses ordinary execution"
+                                                     true (identical? other prepared))
+                                              :fallback)]
+      (check "prepared SQL mismatch falls back without shared pointer"
+             :fallback
+             (chdb/execute-any-with-query-buffer :handle "SELECT 1"
+                                                 {:pointer :unused :length 8})))))
+
+(defn- run-buffered-admission-checks []
+  (println "Request-local buffered Durable admission")
+  (let [with-buffer! (:with-native-admitted-buffer!
+                      ((ns-resolve 'jdbc.chdb.durable 'default-open-operations)))
+        sql "INSERT INTO `данные` VALUES ('β')"
+        accepted {:query-class :mutating :statement-count 1
+                  :has-secrets false :writes-only-target-database true
+                  :changes-database-lifecycle false}]
+    (doseq [[label analysis expected-execution]
+            [["accepted" accepted 1]
+             ["multi-statement" (assoc accepted :statement-count 2) 0]
+             ["secret" (assoc accepted :has-secrets true) 0]
+             ["cross-database" (assoc accepted :writes-only-target-database false) 0]]]
+      (let [classified (atom nil)
+            executed (atom nil)
+            frees (atom [])
+            native-free ffi/free]
+        (with-redefs [native/classify-query-buffer!
+                      (fn [_ buffer _]
+                        (reset! classified buffer)
+                        analysis)
+                      chdb/execute-any-with-query-buffer
+                      (fn [_ _ buffer]
+                        (reset! executed buffer)
+                        :native-result)
+                      ffi/free (fn [pointer]
+                                 (swap! frees conj pointer)
+                                 (native-free pointer))]
+          (let [result (rejected
+                        #(with-buffer! :handle sql "default"
+                           (fn [analysis execute!]
+                             (policy/authorize-execute! analysis)
+                             (execute!))))]
+            (check (str label " executes only after policy")
+                   expected-execution (if @executed 1 0))
+            (when (= label "accepted")
+              (check "accepted buffer reaches both native calls unchanged"
+                     true (identical? @classified @executed))
+              (check "accepted result survives buffer cleanup"
+                     nil result))
+            (when-not (= label "accepted")
+              (check (str label " is rejected before native mutation")
+                     ::policy/rejected (:type (ex-data result))))
+            (check (str label " buffer is freed exactly once")
+                   1 (count @frees))))))
+    (let [frees (atom 0)
+          native-free ffi/free]
+      (with-redefs [native/classify-query-buffer! (fn [_ _ _] accepted)
+                    chdb/execute-any-with-query-buffer
+                    (fn [_ _ _] (throw (ex-info "native failed" {:type ::native-failure})))
+                    ffi/free (fn [pointer]
+                               (swap! frees inc)
+                               (native-free pointer))]
+        (check "native error propagates after admission"
+               ::native-failure
+               (:type (ex-data
+                       (rejected
+                        #(with-buffer! :handle sql "default"
+                           (fn [analysis execute!]
+                             (policy/authorize-execute! analysis)
+                             (execute!)))))))
+        (check "native error frees SQL buffer once" 1 @frees)))))
+
 (defn- required-env [name]
   (or (some-> (System/getenv name) str/trim not-empty)
       (throw (ex-info "durable native subprocess environment is incomplete"
@@ -537,7 +675,9 @@
   (reset! failures 0)
   (check-runtime!)
   (case mode
-    "core" (run-core-native-checks)
+    "core" (do (run-shared-query-buffer-checks)
+               (run-buffered-admission-checks)
+               (run-core-native-checks))
     "object-writer" (run-durable-object-e2e :writer)
     "object-reader" (run-durable-object-e2e :reader)
     "wal-writer" (run-durable-local-recovery-e2e :wal-writer)
