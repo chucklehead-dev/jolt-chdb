@@ -62,6 +62,38 @@ The persisted rate amortizes one flush across the reported number of batches.
 It is not a claim of per-batch durability. Single-row inserts and remote
 per-batch flushes are separate ceilings and cannot qualify the primary target.
 
+## Separate confirmed-publication S3 qualification
+
+The manual `run_confirmed_10000` input in `durable-aws-qualification` is not
+part of the matched throughput sweep. It uses the protected `aws-durable-ci`
+OIDC environment and a unique
+`ci/jolt-chdb/<run_id>-<run_attempt>/confirmed-10000` prefix. The job remains
+skipped unless the repository or organization Actions variable
+`AWS_DURABLE_CONFIRMED_10000_DISPATCH_READY` is explicitly set to `true`.
+Do not set that gate from repository documentation alone: first verify the
+deployed role policy applies to precisely this prefix, the bucket lifecycle
+expires current and noncurrent versions, and the request/storage/cost envelope
+is acceptable. Opening an issue or adding this selector does not authorize an
+AWS run.
+
+The workload preconstructs and SHA-256-identifies each production-shaped
+10,000-row SQL statement before its timer. Three warmups and 100 measured
+calls each use the public `durable/execute-and-flush!` boundary and must return
+confirmed or reconciled publication. The 100 raw durations support empirical
+p50 and a rough nearest-rank p99 tail estimate for that boundary, not a
+statistically precise tail guarantee or the admission-only or amortized-flush
+targets above. A new process opens a snapshot reader and checks all 1,030,000
+rows, the aggregate oracle, and a full-row fingerprint against the writer.
+The report includes selected compiler/native/backend identities, per-statement
+bytes and SHA-256, scalar provider request/object-write-attempt counts, bounded
+raw samples, and a six-GiB peak-RSS job gate. It excludes credentials, headers,
+S3 object contents, and SQL payloads; the existing canary scanner checks the
+bounded report, log, and GNU-time receipt. The report does not measure a
+collector or exporter and does not assert a 20k/25k rows/s acceptance target.
+The fixed 103-call workload is the preventive operation-count limit; request,
+object-write-attempt, and byte caps are post-call audit gates and cannot stop
+an in-flight call before it crosses a cap.
+
 ## Release-runtime recovery comparison
 
 `profiles/durable-release-runtime-abba.json` is the separate, manually run
