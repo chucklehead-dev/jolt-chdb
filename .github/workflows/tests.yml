@@ -122,7 +122,7 @@ jobs:
       - name: Verify production log JSON encoding on JVM Clojure
         run: >-
           clojure -Srepro
-          -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "0f51b99101bc5e840f957c073f87b6f877309a25"}}}'
+          -Sdeps '{:paths ["src" "bench" "test"] :deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"}}}'
           -M -m jdbc.chdb-production-json-encode-test
       - name: Verify production log JSON encoding on Babashka
         run: bb -cp src:bench:test -m jdbc.chdb-production-json-encode-test
