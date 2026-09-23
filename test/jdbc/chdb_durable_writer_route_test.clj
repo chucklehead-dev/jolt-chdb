@@ -31,10 +31,31 @@
   {:query-class :mutating :statement-count 1 :has-secrets false
    :writes-only-target-database true :changes-database-lifecycle false})
 
-(defn- observe-wal-phase! [events {:keys [phase]}]
-  ;; Deliberately retain only closed phase names; never SQL or bound values.
-  (when (#{:wal-prepare :wal-append} phase)
-    (swap! events conj phase)))
+(defn- observe-wal-phase! [events event]
+  ;; Keep the production event intact in memory until its shape has been
+  ;; checked. Neither the event nor its fields are printed on failure.
+  (swap! events conj event))
+
+(defn- phase-names [events]
+  (mapv #(if (map? %) (:phase %) %) events))
+
+(def ^:private wal-event-keys #{:phase :status :calls :nanos :bytes})
+
+(defn- closed-wal-event? [event]
+  (and (map? event)
+       (= wal-event-keys (set (keys event)))
+       (#{:wal-prepare :wal-append} (:phase event))
+       (#{:complete :failed} (:status event))
+       (= 1 (:calls event))
+       (integer? (:nanos event))
+       (<= 0 (:nanos event))
+       (integer? (:bytes event))
+       (<= 0 (:bytes event))))
+
+(defn- closed-wal-events? [events expected-count]
+  (let [observed (filter map? events)]
+    (and (= expected-count (count observed))
+         (every? closed-wal-event? observed))))
 
 (defn- jdbc-operations [events reject?]
   (let [lifecycle-calls (atom [])
@@ -107,9 +128,9 @@
                0 (jdbc/execute! connection "INSERT INTO t VALUES (1)"))
         (check "JDBC preflight and replay staging are totally ordered"
                [:prepare-query :classify :wal-prepare :native :wal-append]
-               @events)
-        (check "JDBC observer records phase names only"
-               true (every? keyword? @events))))))
+               (phase-names @events))
+        (check "JDBC WAL observer has only closed scalar fields"
+               true (closed-wal-events? @events 2))))))
 
 (defn- run-raw-materialized! []
   (let [events (atom [])]
@@ -119,9 +140,9 @@
         (writer/execute! opened "INSERT INTO t VALUES (2)")
         (check "raw execute prepares its WAL line before classifier"
                [:wal-prepare :classify :native :wal-append]
-               @events)
-        (check "raw observer records phase names only"
-               true (every? keyword? @events))))))
+               (phase-names @events))
+        (check "raw WAL observer has only closed scalar fields"
+               true (closed-wal-events? @events 2))))))
 
 (defn- run-classifier-rejections! []
   (let [jdbc-events (atom [])]
@@ -133,7 +154,9 @@
                (error-type #(jdbc/execute! connection
                                            "INSERT INTO t VALUES (3)")))
         (check "JDBC rejection has neither WAL preparation nor native effect"
-               [:prepare-query :classify] @jdbc-events))))
+               [:prepare-query :classify] (phase-names @jdbc-events))
+        (check "JDBC rejected request has no WAL observer event"
+               true (closed-wal-events? @jdbc-events 0)))))
   (let [raw-events (atom [])]
     (with-raw-writer
       raw-events true
@@ -143,7 +166,9 @@
                (error-type #(writer/execute! opened
                                              "INSERT INTO t VALUES (4)")))
         (check "raw rejection may prepare but never appends or mutates"
-               [:wal-prepare :classify] @raw-events)
+               [:wal-prepare :classify] (phase-names @raw-events))
+        (check "raw rejected request's preparation event is redacted"
+               true (closed-wal-events? @raw-events 1))
         (check "raw rejection creates no pending statement"
                0 (:pending-statements (writer/status opened)))))))
 
@@ -156,7 +181,9 @@
                0 (jdbc/execute! connection
                                 ["INSERT INTO t VALUES (?)" 5]))
         (check "bound JDBC mutation skips V1 SQL WAL line"
-               [:prepare-query :classify :native] @events)
+               [:prepare-query :classify :native] (phase-names @events))
+        (check "bound JDBC mutation has no WAL observer event"
+               true (closed-wal-events? @events 0))
         (check "bound JDBC flush confirms a full checkpoint"
                :committed (:status (durable/flush! connection)))
         (let [head (:head (control/read-head! store))]

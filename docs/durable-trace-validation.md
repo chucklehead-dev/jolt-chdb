@@ -106,9 +106,12 @@ The deterministic `durable-writer-route-test` traces two concrete entry points.
 Public JDBC `jdbc/execute!` reaches `writer/sql!`: a materialized mutation
 follows `prepare-query → classify → wal-prepare → native → wal-append`. Raw
 `writer/execute!` instead follows `wal-prepare → classify → native → wal-append`.
-These are phase-name-only observations; SQL and bound values are never trace
-fields. A classifier rejection has no native mutation or WAL append on either
-route, although raw execution may already have prepared an unappended WAL line.
+Order comparisons use phase names; the tests separately check each complete
+WAL timing event in memory against the exact closed scalar key set
+`#{:phase :status :calls :nanos :bytes}` without printing event contents on
+failure. SQL and bound values are never trace fields. A classifier rejection
+has no native mutation or WAL append on either route, although raw execution
+may already have prepared an unappended WAL line.
 JDBC bound values follow `prepare-query → classify → native`, then require a
 full checkpoint rather than a V1 statement-WAL line.
 
