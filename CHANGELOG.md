@@ -17,6 +17,12 @@
   publication without changing the durable wire format. This does not qualify
   S3 or collector throughput.
 
+- Wire the bounded buffered-publication literate Quint model into the sampled
+  Durable CI tier. Its corrected-run witnesses and five deliberately faulty
+  controls now run after extraction and typechecking; the effective-input
+  fingerprint distinguishes prose-only edits from changed generated model
+  content. This adds no exhaustive check or runtime behavior claim.
+
 - Add `execute-and-flush!` at the Durable writer and JDBC extension boundaries.
   It performs one fully materialized mutation and its confirmed/reconciled V1
   publication as a single FIFO worker request, so another shared-writer caller

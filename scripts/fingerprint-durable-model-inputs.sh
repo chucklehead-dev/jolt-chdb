@@ -20,7 +20,8 @@ docs = ["formal/quint/durable-head-cas.md",
         "formal/quint/durable-writer-lifecycle.md",
         "formal/quint/native-process-lifecycle.md",
         "formal/quint/durable-persistence-observation.md",
-        "formal/quint/durable-file-wal-spool.md"]
+        "formal/quint/durable-file-wal-spool.md",
+        "formal/quint/buffered-publication.md"]
 models = [name + suffix + ".qnt" for name in (
     "durableHeadCas", "durablePublicationAck", "durableWriterBoundary",
     "durableLeaseTime", "durableEngineMetadata", "durableWriterLifecycle",
@@ -29,11 +30,13 @@ models += [name + suffix + ".qnt" for name in (
     "durablePersistenceObservation",) for suffix in ("", "Test")]
 models += [name + suffix + ".qnt" for name in (
     "durableFileWalSpool",) for suffix in ("", "Test")]
+models += ["bufferedPublication.qnt"]
 outputs = {"target/formal/quint/" + name for name in models}
 required = [
     ".github/workflows/durable-head-quint.yml",
     "scripts/check-durable-head-quint.sh",
     "scripts/check-durable-file-wal-spool-quint.sh",
+    "scripts/check-buffered-publication-quint.sh",
     "scripts/check-durable-head-itf-corpus.sh",
     "scripts/generate-durable-head-itf.sh",
     "scripts/generate-durable-engine-metadata-itf.sh",

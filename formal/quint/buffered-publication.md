@@ -562,6 +562,11 @@ exhaustive model-checking results.
 
 The checkpoint action is an abstract trusted claim that it prepared exact
 replay content for `checkpointPrepared`, the applied set at that instant. The
+claim assumes a full native archive taken on the serialized writer handle
+includes every successful local mutation, including one whose WAL append
+failed. The current writer routes that failure to full backup, but the exact
+injected append-failure → checkpoint → fresh-process reopen path has not yet
+been qualified end-to-end. The
 model tests that selection cannot use a failed-stage flag as proof of content
 for another request; it does not prove that a runtime checkpoint actually
 contains those bytes. Likewise, the corrected reader action is guarded by a
