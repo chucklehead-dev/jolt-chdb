@@ -1,15 +1,18 @@
 (ns jdbc.chdb-durable-native-test
   (:require [clojure.string :as str]
+            [db.jdbc]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.local-posix :as local-posix]
+            [jdbc.chdb.durable.json-rows :as json-rows]
             [jdbc.chdb.native :as native]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.core :as jdbc]
             [jolt.ffi :as ffi])
   (:import [java.util Arrays]))
 
@@ -390,6 +393,59 @@
                 6))
         (finally
           (reader/close! opened)))))))
+
+(defn- durable-json-row [id]
+  {"id" id "message" (str "event?=" id " \\ λ😀")})
+
+(defn- run-durable-json-rows-e2e [phase]
+  (println "Durable ordered JSONEachRow admission and fresh-process readback" phase)
+  (let [{:keys [namespace store]} (process-store "native-json-rows")
+        object-id "native-json-rows"
+        scratch-parent (required-env "JOLT_CHDB_NATIVE_SCRATCH_ROOT")]
+    (case phase
+      :writer
+      (with-open [connection
+                  (jdbc/connection
+                   (durable/writer-dbspec
+                    {:namespace-backend namespace :object-id object-id
+                     :scratch-parent scratch-parent
+                     :owner "json-rows-writer" :instance "json-rows-instance"
+                     :database "json_rows" :lease-ttl-ms 30000}))]
+        (jdbc/execute! connection
+                       (str "CREATE TABLE events (id UInt32, message String) "
+                            "ENGINE = MergeTree ORDER BY id"))
+        (let [context (json-rows/open-writer connection {:parallelism 4})]
+          (try
+            (json-rows/admit-rows!
+             context "events" ["id" "message"]
+             (mapv durable-json-row (range 256)))
+            (check "admission-only rows are not yet in the Durable head"
+                   [] (get-in (:head (control/read-head! store))
+                              ["manifest" "wal"]))
+            (check "explicit flush confirms the first 256 rows"
+                   :committed (:status (durable/flush! connection)))
+            (check "atomic row insert confirms the second 256 rows"
+                   :committed
+                   (:status
+                    (json-rows/insert-rows-and-flush!
+                     context "events" ["id" "message"]
+                     (mapv durable-json-row (range 256 512)))))
+            (finally (json-rows/close! context)))))
+
+      :reader
+      (with-open [connection
+                  (jdbc/connection
+                   (durable/snapshot-dbspec
+                    {:namespace-backend namespace :object-id object-id
+                     :scratch-parent scratch-parent}))]
+        (let [actual (jdbc/fetch connection
+                                 "SELECT id, message FROM events ORDER BY id")
+              expected (mapv (fn [id]
+                               {:id id :message (get (durable-json-row id)
+                                                     "message")})
+                             (range 512))]
+          (check "fresh process reads every ordered row and exact value"
+                 expected (vec actual)))))))
 
 (defn- run-durable-local-recovery-e2e [phase]
   (println "Durable native local object WAL and checkpoint recovery" phase)
@@ -788,6 +844,8 @@
                (run-core-native-checks))
     "object-writer" (run-durable-object-e2e :writer)
     "object-reader" (run-durable-object-e2e :reader)
+    "json-rows-writer" (run-durable-json-rows-e2e :writer)
+    "json-rows-reader" (run-durable-json-rows-e2e :reader)
     "wal-writer" (run-durable-local-recovery-e2e :wal-writer)
     "wal-reader" (run-durable-local-recovery-e2e :wal-reader)
     "checkpoint-writer" (run-durable-local-recovery-e2e :checkpoint-writer)

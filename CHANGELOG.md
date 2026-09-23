@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add an opt-in, caller-owned JSONEachRow Durable consumer. `admit-rows!`
+  executes through the existing classified raw writer/WAL path without a
+  persistence acknowledgement; `insert-rows-and-flush!` uses one atomic
+  execute-and-publish request. A one-operation context covers encoding and
+  synchronous submission, drains on close without closing the caller's
+  connection, and leaves serial encoding as the default. No native stream,
+  Durable wire-format, or default JDBC behavior changes; full-path throughput
+  remains to be qualified.
+
 - Reuse one request-owned exact UTF-8 SQL buffer for default Durable JDBC
   mutation classification and prepared execution, including typed bound
   requests. Authorization still precedes native mutation, bound values remain
@@ -16,8 +25,9 @@
   per context, settles started fibers before releasing ownership, and supports
   repeatable timed close. Jolt/JVM retain their data.json writer bytes;
   Babashka uses native Cheshire with row-order and decoded-value parity, not
-  cross-host byte identity. This API is not yet wired into JDBC or Durable
-  admission, so it makes no confirmed-throughput claim. Parallel row
+  cross-host byte identity. The encoder alone is not JDBC or Durable
+  admission; the separate opt-in Durable consumer above uses it without a
+  confirmed-throughput claim. Parallel row
   serialization requires CPU-only, nonparking callbacks; the lifecycle tests
   gate workers before serialization rather than parking inside a JSON writer.
 

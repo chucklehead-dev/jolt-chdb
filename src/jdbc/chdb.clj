@@ -446,12 +446,28 @@
 (defn execute-any [handle sql params]
   (execute-prepared-any handle (prepare-query sql params)))
 
+(defn json-rows-insert-prefix
+  "Validate table/column identifiers and return the exact JSONEachRow INSERT
+  prefix. Payload bytes are data and must not be scanned as SQL placeholders.
+  This constructs no query on its own and does not authorize execution."
+  [table columns]
+  (when-not (and (string? table) (<= (count table) 255)
+                (re-matches #"[A-Za-z_][A-Za-z0-9_]*" table)
+                (vector? columns) (seq columns)
+                (every? #(and (string? %) (<= (count %) 255)
+                              (re-matches #"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*" %))
+                        columns)
+                (= (count columns) (count (set columns))))
+    (throw (ex-info "Invalid ordinary chDB JSONEachRow insert data"
+                    {:type ::invalid-json-rows :jdbc/sql-error true})))
+  (str "INSERT INTO `" table "` ("
+       (str/join ", " (map #(str "`" % "`") columns))
+       ") FORMAT JSONEachRow\n"))
+
 (defn insert-json-rows!
   "Insert an encoder-produced JSONEachRow String through an ordinary chDB
-  connection. `table` is one simple ASCII identifier in the selected database;
-  `columns` is a nonempty vector of unique ASCII identifiers (dotted nested
-  column names are supported). The driver validates/quotes these identifiers
-  and constructs the INSERT; payload bytes are never scanned for placeholders.
+  connection. Identifiers are validated and quoted by
+  `json-rows-insert-prefix`; payload bytes are never scanned for placeholders.
 
   Payload is trusted format-encoded row data, not arbitrary SQL. Identifier
   validation does not validate JSON, row shape, numeric values or payload size;
@@ -461,20 +477,12 @@
   WAL admission must continue through their ordinary JDBC execution path.
   Native execution retains the existing handle lock and result ownership."
   [conn table columns payload]
-  (when-not (and (string? table) (<= (count table) 255)
-                (re-matches #"[A-Za-z_][A-Za-z0-9_]*" table)
-                (vector? columns) (seq columns)
-                (every? #(and (string? %) (<= (count %) 255)
-                              (re-matches #"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*" %))
-                        columns)
-                (= (count columns) (count (set columns)))
-                (string? payload))
+  (when-not (string? payload)
     (throw (ex-info "Invalid ordinary chDB JSONEachRow insert data"
                     {:type ::invalid-json-rows :jdbc/sql-error true})))
-  (let [{:keys [handle]} (shim/driver-context (proto/connection conn) :chdb)
-        sql (str "INSERT INTO `" table "` ("
-                 (str/join ", " (map #(str "`" % "`") columns))
-                 ") FORMAT JSONEachRow\n" payload)]
+  (let [prefix (json-rows-insert-prefix table columns)
+        {:keys [handle]} (shim/driver-context (proto/connection conn) :chdb)
+        sql (str prefix payload)]
     ;; Narrow, private construction: no public bypass for arbitrary SQL or
     ;; parameter rewriting. This INSERT has no SQL parameters; '?' is row data.
     (execute-prepared-any handle (PreparedQuery. sql []))))
