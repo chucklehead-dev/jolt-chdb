@@ -30,6 +30,7 @@ is_exhaustive_input() {
     scripts/durable-head-itf-commands.jq | \
     scripts/durable-head-itf-coverage.jq | \
     scripts/classify-durable-model-paths.sh | \
+    scripts/validate-durable-benchmark-aliases.py | \
     scripts/fingerprint-durable-model-inputs.sh)
       return 0
       ;;
@@ -215,7 +216,19 @@ case "$mode" in
         literate-model-input "${#paths[@]}"
       exit 0
     fi
-    classify_paths "${paths[@]}"
+    # Only a committed, structurally validated additive bench/test alias edit
+    # may remove deps.edn from the exhaustive inputs for this exact diff.
+    if [[ " ${paths[*]} " == *" deps.edn "* ]] && \
+       python3 "$default_repo/scripts/validate-durable-benchmark-aliases.py" \
+         "$repo_root" "$diff_base" "$head"; then
+      filtered_paths=()
+      for path in "${paths[@]}"; do
+        [[ $path == deps.edn ]] || filtered_paths+=("$path")
+      done
+      classify_paths "${filtered_paths[@]}"
+    else
+      classify_paths "${paths[@]}"
+    fi
     ;;
   *)
     usage
