@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Expose the existing option-bearing `publish-wal-file!` entry as an additive
+  Durable aspect selector. The `publish-wal-bytes!` selector remains intact;
+  this adds observation coverage for the writer's sealed-file WAL path without
+  changing the runtime publication behavior or wire format.
+
 - Keep Durable model CI exhaustive for dependency or existing-alias edits, but
   skip its exhaustive tier for validated additive `deps.edn` aliases that only
   launch newly added bench/test namespaces. The fast tier still runs for
