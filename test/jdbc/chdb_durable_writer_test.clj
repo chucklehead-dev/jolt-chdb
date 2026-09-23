@@ -7,6 +7,7 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-writer-test-support :as support]
@@ -1664,8 +1665,59 @@
     (check "close with a WAL failure still reaches native cleanup once"
            1 @close-count)))
 
+(defn- run-buffered-admission-order-checks! []
+  (let [calls (atom [])
+        closes (atom 0)
+        base (fake-operations calls closes)
+        {:keys [writer]} (new-writer calls closes base)]
+    (try
+      (writer/execute! writer "INSERT INTO t VALUES (90)")
+      (check "custom analyze and execute operations keep their original seam"
+             [[:analyze-execute "INSERT INTO t VALUES (90)" "default"]
+              [:execute "INSERT INTO t VALUES (90)"]]
+             (vec (filter #(contains? #{:analyze-execute :execute} (first %))
+                          @calls)))
+      (finally (writer/close! writer))))
+  (doseq [[label analysis expected-type expected-native]
+          [["accepted" {:query-class :mutating :statement-count 1
+                         :has-secrets false :writes-only-target-database true
+                         :changes-database-lifecycle false}
+            nil 1]
+           ["rejected" {:query-class :mutating :statement-count 2
+                         :has-secrets false :writes-only-target-database true
+                         :changes-database-lifecycle false}
+            ::policy/rejected 0]]]
+    (let [calls (atom [])
+          closes (atom 0)
+          phases (atom [])
+          operations
+          (assoc (fake-operations calls closes)
+                 :writer-phase! #(swap! phases conj (:phase %))
+                 :with-native-admitted-buffer!
+                 (fn [_ _ _ admitted!]
+                   (swap! calls conj :classify)
+                   (admitted! analysis
+                              (fn []
+                                (swap! calls conj :native)
+                                {:count 1}))))
+          {:keys [writer]} (new-writer calls closes operations)]
+      (try
+        (check (str label " policy outcome")
+               expected-type
+               (error-type #(writer/execute! writer "INSERT INTO t VALUES (91)")))
+        (check (str label " native mutation count")
+               expected-native (count (filter #{:native} @calls)))
+        (check (str label " WAL append follows admitted mutation only")
+               (if (zero? expected-native) [:wal-prepare] [:wal-prepare :wal-append])
+               (vec (filter #{:wal-prepare :wal-append} @phases)))
+        (check (str label " classification precedes native mutation")
+               (if (zero? expected-native) [:classify] [:classify :native])
+               (vec (filter #{:classify :native} @calls)))
+        (finally (writer/close! writer))))))
+
 (defn run-checks! []
   (reset! failures 0)
+  (run-buffered-admission-order-checks!)
   (run-wal-spool-allocation-checks!)
   (run-statement-size-fastpath-checks!)
   (run-checkpoint-cleanup-precedence-checks!)

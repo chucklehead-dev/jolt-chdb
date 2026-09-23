@@ -808,6 +808,14 @@
    :query-bytes-native! chdb/execute-query-bytes-handle
    :execute-native! (fn [handle sql params]
                       (chdb/execute-any handle sql params))
+   :with-native-admitted-buffer!
+   (fn [handle sql database execute-admitted!]
+     (native/with-query-buffer
+      sql
+      (fn [query-buffer]
+        (execute-admitted!
+         (native/classify-query-buffer! handle query-buffer database)
+         #(chdb/execute-any-with-query-buffer handle sql query-buffer)))))
    :execute-prepared-native! chdb/execute-prepared-any
    :recovery-event! (fn [_] nil)})
 
@@ -1013,6 +1021,9 @@
     (positive-integer! checkpoint-wal-reference-threshold
                        "checkpoint-wal-reference-threshold"))
   (let [configured-operations operations
+        _ (when (contains? configured-operations :with-native-admitted-buffer!)
+            (fail! ::invalid-options
+                   "with-native-admitted-buffer! is reserved for the default writer"))
         configured-preparation?
         (contains? configured-operations :prepare-query!)
         configured-prepared-execution?
@@ -1031,6 +1042,11 @@
                  (or (contains? configured-operations :classification-sql!)
                      (contains? configured-operations :execute-native!)))
           (dissoc operations :prepare-query! :execute-prepared-native!)
+          operations)
+        operations
+        (if (or (contains? configured-operations :analyze-execute!)
+                (contains? configured-operations :execute-native!))
+          (dissoc operations :with-native-admitted-buffer!)
           operations)
         required [:now-ms :monotonic-ms! :await-backoff!
                   :durable-capability :create-scratch! :cleanup-scratch!

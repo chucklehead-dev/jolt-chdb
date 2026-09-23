@@ -429,6 +429,16 @@
     (when (pos? length) (ffi/write-array pointer bytes))
     {:pointer pointer :length length}))
 
+(defn with-query-buffer
+  "Call f with one request-owned exact UTF-8 SQL buffer. The pointer is valid
+  only during f and must never be retained by native code or the caller."
+  [sql f]
+  (let [allocated (atom [])]
+    (try
+      (f (allocated-utf8! allocated sql))
+      (finally
+        (doseq [pointer (reverse @allocated)] (ffi/free pointer))))))
+
 (defn- validate-query-analysis
   [{:keys [struct-size statement-count flags query-class] :as raw}]
   (let [known-flags (reduce bit-or 0 (keys query-analysis-flags))
@@ -453,19 +463,17 @@
      :writes-only-target-database (not (zero? (bit-and flags 2)))
      :changes-database-lifecycle (not (zero? (bit-and flags 4)))}))
 
-(defn classify-query!
-  "Classify SQL with the connection's parser without executing it. A nil
-  target database skips write-containment analysis. Unknown ABI values fail
-  closed instead of being treated as a permitted statement."
-  [handle sql target-database]
+(defn classify-query-buffer!
+  "Classify an owned, exact-length SQL buffer. The caller keeps it live until
+  this call returns; unknown ABI values fail closed."
+  [handle sql-buffer target-database]
   (require-durable!)
   (with-live-handle
    handle
    (fn [connection]
      (let [allocated (atom [])]
        (try
-         (let [sql-buffer (allocated-utf8! allocated sql)
-               target-buffer (when-not (nil? target-database)
+         (let [target-buffer (when-not (nil? target-database)
                                (allocated-utf8! allocated target-database))
                analysis (ffi/alloc (ffi/layout-size query-analysis-layout))]
            (swap! allocated conj analysis)
@@ -489,6 +497,13 @@
              :query-class (ffi/read-field analysis query-analysis-layout [:query-class])}))
          (finally
            (doseq [pointer (reverse @allocated)] (ffi/free pointer))))))))
+
+(defn classify-query!
+  "Classify SQL with the connection's parser without executing it. A nil
+  target database skips write-containment analysis."
+  [handle sql target-database]
+  (with-query-buffer
+    sql #(classify-query-buffer! handle % target-database)))
 
 (defn- consume-durable-result! [operation result]
   (when (ffi/null? result)

@@ -385,7 +385,7 @@
                                0
                                (native/chdb-result-rows-written result)))))))
 
-(defn- execute-prepared-native [handle prepared format consume]
+(defn- execute-prepared-native [handle prepared format consume query-buffer]
   (let [rewritten (prepared-sql prepared)
         parameters (-prepared-query-parameters prepared)]
     (native/with-live-handle
@@ -393,7 +393,7 @@
      (fn [connection]
        (let [allocated (atom [])]
          (try
-           (let [query-buffer (allocate-encoded! allocated rewritten)
+           (let [query-buffer (or query-buffer (allocate-encoded! allocated rewritten))
                  format-buffer (allocate-encoded! allocated format)
                  name-buffers (mapv (fn [i] (allocate-encoded! allocated (str "p" (inc i))))
                                     (range (count parameters)))
@@ -420,7 +420,18 @@
   [handle prepared]
   (execute-prepared-native
    handle prepared "JSONCompactEachRowWithNamesAndTypes"
-   (fn [_ _ result] (consume-json-result result))))
+   (fn [_ _ result] (consume-json-result result)) nil))
+
+(defn execute-any-with-query-buffer
+  "Execute an unbound SQL request using a caller-owned exact UTF-8 buffer.
+  The caller must keep the buffer live through result consumption."
+  [handle sql query-buffer]
+  (let [prepared (prepare-query sql [])]
+    (if (= sql (prepared-sql prepared))
+      (execute-prepared-native
+       handle prepared "JSONCompactEachRowWithNamesAndTypes"
+       (fn [_ _ result] (consume-json-result result)) query-buffer)
+      (execute-prepared-any handle prepared))))
 
 (defn execute-any [handle sql params]
   (execute-prepared-any handle (prepare-query sql params)))
@@ -672,7 +683,7 @@
     ;; that lock through result destruction and stale-format recovery.
     (execute-prepared-native
      handle (prepare-query bounded-sql params) native-format
-     #(consume-encoded-result %1 %2 %3 max-bytes))))
+     #(consume-encoded-result %1 %2 %3 max-bytes) nil)))
 
 (defn query-bytes
   "Execute one result-bounded SELECT and return an owned Arrow or Parquet byte

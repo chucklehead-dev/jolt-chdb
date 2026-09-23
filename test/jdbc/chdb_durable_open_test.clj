@@ -1525,8 +1525,39 @@
              (catch Throwable _ true))))
   true)
 
+(defn- check-public-custom-admission-operations! []
+  (let [calls (atom [])
+        operations (support/fake-open-operations calls (atom [0M 1M])
+                                                 (atom 0) (atom 0))
+        opened (durable/open-writer!
+                (writer-open-options (backend/memory-backend) operations))]
+    (try
+      (let [before (count @calls)]
+        (writer/execute! opened "INSERT INTO t VALUES (92)")
+        (check "public open preserves custom analyze and execute operations"
+               [[:analyze-execute "INSERT INTO t VALUES (92)" "startup-db"]
+                [:execute "INSERT INTO t VALUES (92)"]]
+               (vec (filter #(contains? #{:analyze-execute :execute} (first %))
+                            (drop before @calls)))))
+      (finally (writer/close! opened)))))
+
 (defn run-checks! []
   (reset! failures 0)
+  (check-public-custom-admission-operations!)
+  (let [calls (atom [])
+        operations (assoc (support/fake-open-operations calls (atom [0M])
+                                                       (atom 0) (atom 0))
+                          :with-native-admitted-buffer!
+                          (fn [& _] :bypass))]
+    (with-redefs-fn
+      {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)}
+      #(check "public writer rejects injected buffered admission hook"
+              ::durable/invalid-options
+              (error-type
+               (fn [] (durable/open-writer!
+                       (writer-open-options (backend/memory-backend)
+                                            operations))))))
+    (check "rejected hook performs no external startup work" [] @calls))
   (check-canonical-scratch-cleanup!)
   (check-public-writer-phase-observer-forwarding!)
   (check-startup-stage-envelopes!)
