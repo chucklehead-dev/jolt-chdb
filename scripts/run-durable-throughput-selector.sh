@@ -9,7 +9,7 @@ selector=${1:?usage: run-durable-throughput-selector.sh SELECTOR OUTPUT-DIR}
 output_dir=${2:?usage: run-durable-throughput-selector.sh SELECTOR OUTPUT-DIR}
 
 case "$selector" in
-  scale-512|scale-1000|scale-5000|scale-10000|stage-512|stage-smoke|recovery-512-10|recovery-512-25|recovery-512-50)
+  scale-512|scale-1000|scale-5000|scale-10000|stage-512|stage-smoke|ordered-durable-local-512|recovery-512-10|recovery-512-25|recovery-512-50)
     ;;
   *)
     echo "unsupported isolated Durable selector" >&2
