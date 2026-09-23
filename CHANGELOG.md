@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Reuse a WAL object's completed size-and-SHA readback when committing the
+  matching publication on the same backend and lease token. A private witness
+  preserves the public receipt shape; absent or mismatched witnesses still
+  require verification before head CAS, and checkpoint verification is
+  unchanged. This removes one redundant local WAL readback per confirmed
+  publication without changing the durable wire format. This does not qualify
+  S3 or collector throughput.
+
 - Add `execute-and-flush!` at the Durable writer and JDBC extension boundaries.
   It performs one fully materialized mutation and its confirmed/reconciled V1
   publication as a single FIFO worker request, so another shared-writer caller
