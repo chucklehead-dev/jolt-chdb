@@ -10,6 +10,10 @@
    :match {:entry jdbc.chdb.durable.control/publish-wal-bytes! :arity 4}
    :advice-role :durable/control
    :expect {:matches 1}}
+  {:id :durable/publish-wal-file
+   :match {:entry jdbc.chdb.durable.control/publish-wal-file! :arity 4}
+   :advice-role :durable/control
+   :expect {:matches 1}}
   {:id :durable/publish-checkpoint
    :match {:entry jdbc.chdb.durable.control/publish-checkpoint-file! :arity 4}
    :advice-role :durable/control
