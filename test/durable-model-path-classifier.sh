@@ -464,7 +464,10 @@ check_fast "existing task preserved with new test stays fast" true "$alias_repo"
 git -C "$alias_repo" switch -q --detach "$existing_task_base"
 printf '%s\n' "{:paths [\"src\"] :deps {example/lib {:git/sha \"abc\"}} :aliases {:existing {:main-opts [\"-m\" \"old.ns\"]} $task_alias} :tasks {existing \"jolt -M:changed\" new-test \"jolt -M:new-test\"}}" \
   > "$alias_repo/deps.edn"
-git -C "$alias_repo" add deps.edn
+mkdir -p "$alias_repo/test/jdbc"
+printf '%s\n' '(ns jdbc.chdb-durable-confirmed-10000-test)' \
+  > "$alias_repo/test/jdbc/chdb_durable_confirmed_10000_test.clj"
+git -C "$alias_repo" add -A
 git -C "$alias_repo" commit -q -m changed-existing-task
 changed_task_head=$(git -C "$alias_repo" rev-parse HEAD)
 check_output "changed existing task stays exhaustive" true "$alias_repo" \
