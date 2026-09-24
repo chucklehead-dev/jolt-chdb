@@ -7,6 +7,22 @@
   task. Existing tasks, different commands, and dependency changes still
   select exhaustive checking; the new Durable test retains the fast tier (#210).
 
+- Treat a Durable native execution exception as an uncertain local mutation:
+  preserve the caller's exact error, require a full checkpoint before any
+  successful flush or close, and withhold a current persistence observation
+  until checkpoint confirmation. No statement WAL is fabricated for an
+  execution whose outcome is unknown.
+
+- Expose opt-in Durable JDBC buffered admission and local ticket completion
+  without changing confirmed `execute-and-flush!`. Admission-only and
+  executed-local results require a separate confirmed flush or successful
+  close before consumer cleanup (#190).
+
+- Keep the pinned MinIO S3 qualification runnable after the public container
+  repository stopped allowing anonymous pulls. Fetch the same official release
+  binaries with checked-in amd64/arm64 SHA-256 pins, run on loopback, and keep
+  the existing live-provider contract checks unchanged.
+
 - Avoid a Durable writer deadlock when a full operation queue coincides with
   worker failure or close (#219). Callers wait for queue capacity outside the
   admission lock, then recheck the writer lifecycle before enqueueing. Queued

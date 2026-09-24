@@ -1376,8 +1376,29 @@
                        connection "INSERT INTO t VALUES (41)")))
       (check "jdbc.core adapter admits fully materialized mutations"
              0 (jdbc/execute! connection "INSERT INTO t VALUES (42)"))
-      (check "Durable JDBC flush publishes the pending WAL"
-             :committed (:status (durable/flush! connection)))
+      (let [head-before (get-in (control/read-head! store) [:head "manifest"])
+            admission (durable/try-admit-buffered!
+                       connection "INSERT INTO t VALUES (44)")]
+        (check "Durable JDBC buffered admission is not a persistence receipt"
+               :admitted (:status admission))
+        (check "Durable JDBC buffered admission returns a local ticket"
+               true (some? (:ticket admission)))
+        (check "Durable JDBC buffered ticket settles only local execution"
+               [:executed-local 0]
+               (let [result (durable/await-local-execution!
+                             (:ticket admission))]
+                 [(:status result) (get-in result [:value :count])]))
+        (check "Durable JDBC local ticket leaves head sequence and references unchanged"
+               head-before
+               (get-in (control/read-head! store) [:head "manifest"]))
+        (check "Durable JDBC flush publishes the pending WAL"
+               :committed (:status (durable/flush! connection)))
+        (check "Durable JDBC confirmed flush advances head sequence and references"
+               [true true]
+               (let [head-after (get-in (control/read-head! store)
+                                        [:head "manifest"])]
+                 [(not= (get head-before "seq") (get head-after "seq"))
+                  (not= (get head-before "wal") (get head-after "wal"))])))
       (check "jdbc.core admits a native bound Durable mutation"
              0 (jdbc/execute! connection
                               ["INSERT INTO t VALUES (?)" 43]))
@@ -1460,7 +1481,11 @@
                            {:format :arrow}))))
       (check "read-only Durable JDBC connections cannot flush"
              ::durable/read-only-required
-             (error-type #(durable/flush! connection))))
+             (error-type #(durable/flush! connection)))
+      (check "read-only Durable JDBC connections cannot admit buffered writes"
+             ::durable/read-only-required
+             (error-type #(durable/try-admit-buffered!
+                           connection "INSERT INTO t VALUES (4)"))))
     (check "reader close closes and cleans without changing lease state"
            [1 1 nil]
            [@close-count @cleanup-count

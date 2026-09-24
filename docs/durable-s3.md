@@ -140,9 +140,18 @@ requires an explicit `commit-ambiguous` result with an unchanged manifest.
 Both paths reuse the native transport afterward and scan captured diagnostics
 for credential, endpoint, prefix, and object-key canaries.
 
-The MinIO gate is pinned to image digest
-`sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`
-(`RELEASE.2025-09-07T16-13-09Z`) and checks real service authentication,
+The MinIO gate downloads the official GitHub release binaries for
+`RELEASE.2025-09-07T16-13-09Z`, verifies checked-in SHA-256 digests before
+execution (Linux amd64
+`7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f`,
+Linux arm64
+`5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d`),
+and runs a temporary server bound to loopback. The pins come from the
+[official MinIO release](https://github.com/minio/minio/releases/tag/RELEASE.2025-09-07T16-13-09Z)
+and its per-architecture `.sha256sum` assets. This retains the release used
+by the previous container gate after its registry became unavailable; it is
+test-only and not a recommendation for production deployment. The gate checks
+real service authentication,
 concurrent conditional creators, stale ETags, lease contention, verified WAL
 commit, and streaming file transfer. The Linux workflow also runs the
 isolated-process large-checkpoint memory gate described above. This slice does

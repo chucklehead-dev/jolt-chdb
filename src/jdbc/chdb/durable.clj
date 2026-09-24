@@ -1282,6 +1282,26 @@
   (shim/extension-operation
    #(writer/execute-settled! (jdbc-writer-handle connection) sql)))
 
+(defn try-admit-buffered!
+  "Opt-in, nonblocking admission of one fully materialized SQL mutation on a
+  Durable JDBC writer connection. `:admitted` returns an opaque local ticket
+  and live-writer admission ordinal; it is NOT execution or persistence. A
+  `:full`, `:contended`, or `:closed` result has no ticket or ordinal. `:full`
+  includes capacity reserved by another caller before queue insertion.
+  Other driver types and read-only Durable connections fail closed."
+  [connection sql]
+  (shim/extension-operation
+   #(writer/try-admit-buffered! (jdbc-writer-handle connection) sql)))
+
+(defn await-local-execution!
+  "Wait through interruption for an admitted buffered ticket's local worker
+  result. `:executed-local` means native execution and recovery staging on
+  this live writer, NOT publication. The exact worker failure is rethrown.
+  Call `flush!` or complete a successful writer close before consumer cleanup."
+  [ticket]
+  (shim/extension-operation
+   #(writer/await-local-execution! ticket)))
+
 (defn execute-and-flush!
   "Execute one fully materialized Durable mutation and publish it atomically
   with respect to the writer queue.

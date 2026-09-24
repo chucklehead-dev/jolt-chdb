@@ -418,7 +418,9 @@
         (check "false has-secrets read mutant leaks its engine failure"
                false (redacted-error? secret read-error)))
       (finally
-        (writer/close! mutation-writer)
+        (check "false has-secrets mutation mutant cannot close as durable"
+               ::writer/checkpoint-unavailable
+               (:type (ex-data (rejected #(writer/close! mutation-writer)))))
         (writer/close! read-writer)))))
 
 (defn- run-redaction-oracle-control! []

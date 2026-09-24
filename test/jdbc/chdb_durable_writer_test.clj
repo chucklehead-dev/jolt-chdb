@@ -126,6 +126,273 @@
     (check "failed offer leaves the existing queue entry unchanged"
            :first (.poll queue))))
 
+(defn- observed-buffered-ticket [ticket]
+  (let [completion (:completion ticket)
+        first-wait (promise)
+        retry (promise)
+        attempts (atom 0)]
+    {:ticket (assoc ticket :completion
+                    (reify clojure.lang.IDeref
+                      (deref [_]
+                        (case (swap! attempts inc)
+                          1 (deliver first-wait true)
+                          2 (deliver retry true)
+                          nil)
+                        @completion)))
+     :first-wait first-wait
+     :retry retry
+     :attempts attempts}))
+
+(defn- run-buffered-ticket-checks! []
+  (let [try-admit (ns-resolve 'jdbc.chdb.durable.writer 'try-admit-buffered!)
+        await-local (ns-resolve 'jdbc.chdb.durable.writer
+                                'await-local-execution!)]
+    (check "opt-in buffered admission API is available" true (ifn? try-admit))
+    (check "opt-in local execution await API is available" true (ifn? await-local))
+    (when (and (ifn? try-admit) (ifn? await-local))
+      (let [calls (atom [])
+            closes (atom 0)
+            entered (promise)
+            release (promise)
+            operations (assoc (fake-operations calls closes)
+                              :execute-native!
+                              (fn [_ sql _]
+                                (when (= sql "INSERT INTO t VALUES (1)")
+                                  (deliver entered true)
+                                  @release)
+                                (swap! calls conj [:execute sql])
+                                {:sql sql}))
+            {:keys [writer store]} (new-writer calls closes operations
+                                               {:queue-capacity 1})]
+        (try
+          (let [first-ticket (try-admit writer "INSERT INTO t VALUES (1)")]
+            (check "first ticket returns before native completion"
+                   [:admitted 1 true]
+                   [(:status first-ticket) (:ordinal first-ticket)
+                    (deref entered 1000 false)])
+            (let [second-ticket (try-admit writer "INSERT INTO t VALUES (2)")]
+              (check "second ticket fills capacity-one queue"
+                     [:admitted 2 1]
+                     [(:status second-ticket) (:ordinal second-ticket)
+                      (.size (:queue writer))])
+              (check "full rejection has no ticket or ordinal"
+                     {:status :full}
+                     (try-admit writer "INSERT INTO t VALUES (3)"))
+              (deliver release true)
+              (check "FIFO local execution remains distinct from publication"
+                     [{:status :executed-local
+                       :value {:sql "INSERT INTO t VALUES (1)"}}
+                      {:status :executed-local
+                       :value {:sql "INSERT INTO t VALUES (2)"}}]
+                     [(await-local (:ticket first-ticket))
+                      (await-local (:ticket second-ticket))])
+              (check "local tickets leave the initial head unadvanced"
+                     [0 []]
+                     (let [head (:head (control/read-head! store))]
+                       [(get-in head ["manifest" "seq"])
+                        (get-in head ["manifest" "wal"])]))
+              (let [third-ticket (try-admit writer "INSERT INTO t VALUES (4)")]
+                (check "rejected admission allocated no ordinal"
+                       [:admitted 3]
+                       [(:status third-ticket) (:ordinal third-ticket)])
+                (await-local (:ticket third-ticket)))
+              (check "explicit flush confirms the earlier buffered prefix"
+                     :committed (:status (writer/flush! writer)))
+              (check "confirmed head covers the buffered work"
+                     1 (get-in (:head (control/read-head! store))
+                               ["manifest" "seq"]))
+              (check "native execution preserves FIFO order"
+                     ["INSERT INTO t VALUES (1)" "INSERT INTO t VALUES (2)"
+                      "INSERT INTO t VALUES (4)"]
+                     (mapv second (filter #(= :execute (first %)) @calls)))))
+          (finally
+            (deliver release true)
+            (writer/close! writer)))
+        (check "closed writer returns no ticket or ordinal"
+               {:status :closed}
+               (try-admit writer "INSERT INTO t VALUES (5)")))
+
+      (let [calls (atom [])
+            closes (atom 0)
+            {:keys [writer]} (new-writer calls closes
+                                         (fake-operations calls closes))
+            held (promise)
+            release (promise)
+            holder (owned-thread/completion)]
+        (try
+          (owned-thread/start!
+           holder
+           #(let [^java.util.concurrent.locks.ReentrantLock
+                  lock (:admission-lock writer)]
+              (.lock lock)
+              (try
+                (deliver held true)
+                @release
+                (finally (.unlock lock)))))
+          (check "contention trace holds the real admission gate"
+                 true (deref held 1000 false))
+          (check "contended admission returns without a ticket"
+                 {:status :contended}
+                 (try-admit writer "INSERT INTO t VALUES (6)"))
+          (finally
+            (deliver release true)
+            (owned-thread/join! holder)
+            (writer/close! writer))))
+
+      (let [calls (atom [])
+            closes (atom 0)
+            native-entered (promise)
+            release-native (promise)
+            failure-entered (promise)
+            release-failure (promise)
+            terminal (ex-info "buffered ticket worker failed"
+                              {:type ::buffered-ticket-worker-failure})
+            takes (atom 0)
+            operations (assoc (fake-operations calls closes)
+                              :execute-native!
+                              (fn [_ sql _]
+                                (deliver native-entered true)
+                                @release-native
+                                (swap! calls conj [:execute sql])
+                                {:sql sql})
+                              :take-request!
+                              (fn [queue]
+                                (if (= 1 (swap! takes inc))
+                                  (.take ^java.util.concurrent.ArrayBlockingQueue
+                                         queue)
+                                  (do
+                                    (deliver failure-entered true)
+                                    @release-failure
+                                    (throw terminal)))))
+            {:keys [writer]} (new-writer calls closes operations
+                                         {:queue-capacity 1})]
+        (try
+          (let [first-ticket (try-admit writer "INSERT INTO t VALUES (7)")]
+            (check "worker failure trace blocks first ticket"
+                   true (deref native-entered 1000 false))
+            (let [queued-ticket (try-admit writer "INSERT INTO t VALUES (8)")]
+              (check "worker failure trace queues second ticket"
+                     [:admitted 1]
+                     [(:status queued-ticket) (.size (:queue writer))])
+              (let [{:keys [ticket first-wait retry attempts]}
+                    (observed-buffered-ticket (:ticket queued-ticket))
+                    waiter (owned-thread/completion)]
+                (try
+                  (owned-thread/start!
+                   waiter
+                   #(let [error (try (await-local ticket) nil
+                                     (catch Throwable error error))]
+                      {:error error
+                       :interrupted? (.isInterrupted (Thread/currentThread))}))
+                  (check "failure waiter enters local execution await"
+                         true (deref first-wait 1000 false))
+                  (check "failure waiter remains blocked on pending ticket"
+                         ::pending (deref (:outcome waiter) 20 ::pending))
+                  (.interrupt ^Thread @(:thread waiter))
+                  (check "failure waiter retries after interruption"
+                         true (deref retry 1000 false))
+                  (check "retry waits for the worker error"
+                         ::pending (deref (:outcome waiter) 20 ::pending))
+                  (deliver release-native true)
+                  (check "first ticket has a local execution result"
+                         :executed-local
+                         (:status (await-local (:ticket first-ticket))))
+                  (check "worker failure occurs before second ticket dequeue"
+                         true (deref failure-entered 1000 false))
+                  (deliver release-failure true)
+                  (check "interrupted failure wait keeps exact error and interrupt"
+                         [terminal true 2]
+                         (let [outcome (:value (deref (:outcome waiter) 1000 {}))]
+                           [(:error outcome) (:interrupted? outcome) @attempts]))
+                  (check "queued ticket retains exact terminal error on retry"
+                         terminal
+                         (try (await-local (:ticket queued-ticket)) nil
+                              (catch Throwable error error)))
+                  (finally
+                    (deliver release-native true)
+                    (deliver release-failure true)
+                    (owned-thread/join! waiter))))
+              (check "close retains exact terminal error"
+                     terminal
+                     (try (writer/close! writer) nil
+                          (catch Throwable error error)))))
+          (finally
+            (deliver release-native true)
+            (deliver release-failure true)
+            (try (writer/close! writer) (catch Throwable _)))))
+
+      (let [calls (atom [])
+            closes (atom 0)
+            entered (promise)
+            release (promise)
+            close-waiting (promise)
+            operations (assoc (fake-operations calls closes)
+                              :execute-native!
+                              (fn [_ sql _]
+                                (deliver entered true)
+                                @release
+                                (swap! calls conj [:execute sql])
+                                {:sql sql})
+                              :admission-wait! #(deliver close-waiting true))
+            {:keys [writer store]} (new-writer calls closes operations
+                                               {:queue-capacity 1})
+            waiter (owned-thread/completion)
+            closer (owned-thread/completion)]
+        (try
+          (let [ticket (try-admit writer "INSERT INTO t VALUES (9)")]
+            (check "interrupt trace reaches blocked native execution"
+                   true (deref entered 1000 false))
+            (let [queued-ticket (try-admit writer "INSERT INTO t VALUES (11)")]
+              (check "close-race trace fills the request queue"
+                     [:admitted 1]
+                     [(:status queued-ticket) (.size (:queue writer))])
+            (let [{:keys [ticket first-wait retry attempts]}
+                  (observed-buffered-ticket (:ticket ticket))]
+              (owned-thread/start!
+               waiter
+               #(let [result (await-local ticket)]
+                  {:result result
+                   :interrupted? (.isInterrupted (Thread/currentThread))}))
+              (check "local ticket waiter enters execution await"
+                     true (deref first-wait 1000 false))
+              (check "local ticket waiter remains blocked on pending ticket"
+                     ::pending (deref (:outcome waiter) 20 ::pending))
+              (.interrupt ^Thread @(:thread waiter))
+              (check "local ticket waiter retries after interruption"
+                     true (deref retry 1000 false))
+              (check "retry remains blocked until native execution finishes"
+                     ::pending (deref (:outcome waiter) 20 ::pending))
+              (owned-thread/start! closer #(writer/close! writer))
+              (check "close stops new buffered admission"
+                     [true :closing]
+                     [(deref close-waiting 1000 false)
+                      @(:lifecycle writer)])
+              (check "close race rejects without allocating a ticket"
+                     {:status :closed}
+                     (try-admit writer "INSERT INTO t VALUES (10)"))
+              (deliver release true)
+              (check "interrupted local wait settles and restores interrupt"
+                     [{:status :executed-local
+                       :value {:sql "INSERT INTO t VALUES (9)"}} true 2]
+                     (let [outcome (deref (:outcome waiter) 1000 {})]
+                       [(get-in outcome [:value :result])
+                        (get-in outcome [:value :interrupted?])
+                        @attempts]))
+              (check "queued local execution settles before close"
+                     :executed-local
+                     (:status (await-local (:ticket queued-ticket))))
+              (check "close confirms ticket before release"
+                     [nil 1]
+                     [(:error (deref (:outcome closer) 1000 {}))
+                      (get-in (:head (control/read-head! store))
+                              ["manifest" "seq"]) ]))))
+          (finally
+            (deliver release true)
+            (doseq [thread [waiter closer]]
+              (when @(:thread thread)
+                (owned-thread/join! thread)))
+            (writer/close! writer)))))))
+
 (defn- run-full-queue-worker-failure-checks! []
   (let [calls (atom [])
         closes (atom 0)
@@ -305,6 +572,9 @@
              [(deref reserved 1000 false)
               (.size (:admission-permits writer))
               (.size (:queue writer))])
+      (check "buffered full includes an unqueued reservation"
+             {:status :full}
+             (writer/try-admit-buffered! writer "INSERT INTO t VALUES (10)"))
       (owned-thread/start! closer #(writer/close! writer))
       (check "close stops admission before reserved caller resumes"
              [true :closing]
@@ -570,7 +840,10 @@
                       (catch Throwable _ nil)))
       (check "native failure emits prepare but never append"
              [:wal-prepare] (mapv :phase @events))
-      (finally (writer/close! writer))))
+      (finally
+        (check "native failure cannot be silently closed without checkpoint"
+               ::writer/checkpoint-unavailable
+               (error-type #(writer/close! writer))))))
   (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
         prepared (chdb/prepare-query sql [])
         quoted-sql "SELECT '?'"
@@ -1169,7 +1442,10 @@
              [0 0]
              (let [status (writer/status writer)]
                [(:pending-statements status) (:pending-wal-bytes status)]))
-      (finally (writer/close! writer))))
+      (finally
+        (check "engine failure close cannot be falsely confirmed"
+               ::writer/checkpoint-unavailable
+               (error-type #(writer/close! writer))))))
 
   (let [calls (atom [])
         close-count (atom 0)
@@ -2047,9 +2323,106 @@
                  :committed (:status (writer/flush! writer))))
         (finally (writer/close! writer))))))
 
+(defn- run-native-exception-uncertainty-checks! []
+  (println "Durable native-exception uncertainty")
+  (let [calls (atom [])
+        close-count (atom 0)
+        published (atom 0)
+        native-error (ex-info "native may have mutated before failing"
+                              {:type ::native-uncertain})
+        operations (assoc (fake-operations calls close-count)
+                          :execute-native!
+                          (fn [_ sql _]
+                            (swap! calls conj [:possibly-applied sql])
+                            (throw native-error))
+                          :publish-wal-file!
+                          (fn [_ _ _]
+                            (swap! published inc)
+                            (throw (ex-info "must not publish a WAL"
+                                            {:type ::unexpected-publish}))))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (check "native error preserves the original caller exception"
+           native-error
+           (try (writer/execute! writer "INSERT INTO t VALUES (91)") nil
+                (catch Throwable error error)))
+    (check "native uncertainty requires checkpoint, not a fabricated WAL"
+           [true 0 0]
+           ((juxt :checkpoint-required? :pending-statements :pending-wal-bytes)
+            (writer/status writer)))
+    (check "empty flush cannot settle possibly applied native mutation"
+           [::writer/checkpoint-unavailable 0]
+           [(error-type #(writer/flush! writer)) @published])
+    (check "close cannot report success after uncheckpointed native exception"
+           [::writer/checkpoint-unavailable :closed 1 0]
+           [(error-type #(writer/close! writer))
+            (:lifecycle (writer/status writer)) @close-count @published]))
+  (let [calls (atom [])
+        close-count (atom 0)
+        native-error (ex-info "ticket native outcome uncertain"
+                              {:type ::ticket-native-uncertain})
+        operations (assoc (fake-operations calls close-count)
+                          :execute-native! (fn [_ _ _] (throw native-error)))
+        {:keys [writer]} (new-writer calls close-count operations)
+        admission (writer/try-admit-buffered! writer
+                                              "INSERT INTO t VALUES (92)")]
+    (check "ticket admits before the native error"
+           :admitted (:status admission))
+    (check "ticket preserves the exact native exception"
+           native-error
+           (try (writer/await-local-execution! (:ticket admission)) nil
+                (catch Throwable error error)))
+    (check "ticket error still requires a checkpoint"
+           true (:checkpoint-required? (writer/status writer)))
+    (check "ticket error cannot be laundered into successful close"
+           ::writer/checkpoint-unavailable
+           (error-type #(writer/close! writer))))
+  (let [calls (atom [])
+        close-count (atom 0)
+        native-error (ex-info "native may have applied"
+                              {:type ::recoverable-native-uncertain})
+        operations (assoc (model-checkpoint-operations calls close-count)
+                          :execute-native! (fn [_ _ _] (throw native-error)))
+        store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        writer (writer/start!
+                {:store store :token (:token acquired) :handle :fake-handle
+                 :database "default" :recovered-document (:head acquired)
+                 :engine-metadata {:version (:engine-version base-options)
+                                   :backup-format (:backup-format base-options)
+                                   :min-reader (:min-reader base-options)}
+                 :operations operations})]
+    (try
+      (check "recovered writer starts with an available public observation"
+             [:available :recovered]
+             ((juxt :availability :state)
+              (writer/persistence-observation writer)))
+      (check "recoverable native failure still reports original error"
+             native-error
+             (try (writer/execute! writer "INSERT INTO t VALUES (93)") nil
+                  (catch Throwable error error)))
+      (check "uncertain native outcome is not a current persistence witness"
+             [:unconfirmed false]
+             ((juxt :state :view-current?)
+              (writer/persistence-observation writer)))
+      (check "checkpoint confirms native state before clearing uncertainty"
+             [:committed false 1 []]
+             (let [result (writer/flush! writer)
+                   status (writer/status writer)
+                   head (:head (control/read-head! store))]
+               [(:status result) (:checkpoint-required? status)
+                (get-in head ["manifest" "seq"])
+                (get-in head ["manifest" "wal"])]))
+      (check "checkpoint is the first new current persistence witness"
+             [:confirmed true :checkpoint 1]
+             ((juxt :state :view-current? :confirmed-boundary
+                    :confirmed-sequence)
+              (writer/persistence-observation writer)))
+      (finally (writer/close! writer)))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-admission-offer-compatibility-checks!)
+  (run-buffered-ticket-checks!)
   (run-full-queue-worker-failure-checks!)
   (run-full-queue-close-failure-checks!)
   (run-reservation-close-race-checks!)
@@ -2061,6 +2434,7 @@
   (run-checkpoint-cleanup-precedence-checks!)
   (run-checkpoint-public-retry-checks!)
   (run-file-wal-phase2-checks!)
+  (run-native-exception-uncertainty-checks!)
   (run-deterministic-checks!)
   (run-stateful-property!)
   (when-not (zero? @failures)

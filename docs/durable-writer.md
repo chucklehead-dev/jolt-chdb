@@ -10,7 +10,7 @@ owner/instance/generation token, the recovered native handle, and logical
 database name. After that point, callers must use the writer rather than the
 handle directly.
 
-The synchronous operations are:
+The writer operations are:
 
 - `query!`: classify exactly one read-only statement, then execute it without
   changing the WAL;
@@ -18,6 +18,15 @@ The synchronous operations are:
   Arrow or Parquet result through the neutral `db.export` SPI;
 - `execute!`: reject oversize or inadmissible SQL before execution, execute one
   contained non-secret mutation locally, then append its JSONL record;
+- `try-admit-buffered!`: opt-in, nonblocking admission of a fully materialized
+  SQL mutation through a Durable JDBC writer. `:admitted` provides a local
+  ticket and live-writer ordinal, not an execution or persistence receipt.
+  `:full` also covers capacity reserved before queue insertion; `:full`,
+  `:contended`, and `:closed` return no ticket. `await-local-execution!` waits
+  for that ticket's native execution and recovery staging, but even its
+  `:executed-local` result does not permit consumer cleanup. A later confirmed
+  `flush!` or successful close is the persistence barrier. The default
+  synchronous operations and their receipts are unchanged;
 - `execute-and-flush!`: execute one fully materialized mutation and publish its
   recovery state as one FIFO worker request, returning a confirmed or
   reconciled publication receipt that covers that caller's mutation. Earlier
