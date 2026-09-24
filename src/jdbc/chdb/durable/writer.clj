@@ -25,10 +25,12 @@
 
 (defrecord DurableWriter
     [store token handle database queue admission-permits admission-lock
-     lifecycle closed-result terminal-error
+     buffered-admission-ordinal lifecycle closed-result terminal-error
      wal-state lease-state heartbeat-stop backend-context retry-options
      operations worker heartbeat persistence-observation wal-spool-parent
      checkpoint-wal-reference-threshold])
+
+(defrecord BufferedTicket [completion ordinal])
 
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
@@ -734,6 +736,52 @@
 (defn- enqueue-open-settled! [writer request]
   (await-result-settled (enqueue-open-ticket! writer request)))
 
+(defn try-admit-buffered!
+  "Opt-in, nonblocking admission of one fully materialized mutation to this
+  live writer. :admitted means queue acceptance only, not native execution,
+  publication, or permission to remove source data. :full means no free
+  admission permit, including when a caller has reserved one before queue
+  insertion; it does not describe the queue size. :full, :contended, and
+  :closed return no ticket or ordinal. Successful ordinals order only this
+  API's admissions; they are not persistent or global request identities."
+  [writer sql]
+  (let [^ReentrantLock lock (:admission-lock writer)]
+    (if-not (.tryLock lock)
+      {:status :contended}
+      (try
+        (if-not (= :open @(:lifecycle writer))
+          {:status :closed}
+          (if-not (.poll ^ArrayBlockingQueue (:admission-permits writer))
+            {:status :full}
+            (let [completion (promise)
+                  request {:op :execute :sql sql :result completion}
+                  admitted? (atom false)]
+              (try
+                ;; Queue insertion under admission-lock is the linearization
+                ;; point; a reserved permit alone is not admission.
+                (offer-required! (:queue writer) request)
+                (reset! admitted? true)
+                (let [ordinal (swap! (:buffered-admission-ordinal writer) inc)]
+                  {:status :admitted
+                   :ticket (->BufferedTicket completion ordinal)
+                   :ordinal ordinal})
+                (finally
+                  (when-not @admitted?
+                    (return-admission-permit! writer)))))))
+        (finally (.unlock lock))))))
+
+(defn await-local-execution!
+  "Wait through interruption for this admitted ticket's local worker result.
+  An :executed-local result means native execution and recovery staging
+  completed on this live writer; it is not a confirmed publication receipt.
+  Failure throws the exact worker error. A later confirmed flush or successful
+  close is still required before consumer cleanup."
+  [ticket]
+  (when-not (instance? BufferedTicket ticket)
+    (fail! ::invalid-buffered-ticket "Expected a Durable buffered ticket"))
+  {:status :executed-local
+   :value (await-result-settled (:completion ticket))})
+
 (defn- heartbeat-loop [writer interval-ms ttl-ms]
   (loop []
     (let [{:keys [expires-at fenced?]} @(:lease-state writer)
@@ -920,7 +968,7 @@
           writer (->DurableWriter
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) permits (ReentrantLock.)
-                  (atom :open) (promise) (atom nil)
+                  (atom 0) (atom :open) (promise) (atom nil)
                   (atom {:spool nil :byte-count 0 :statement-count 0
                          :checkpoint-required? false})
                   lease-state

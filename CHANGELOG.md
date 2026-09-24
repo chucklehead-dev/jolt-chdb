@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Expose opt-in Durable JDBC buffered admission and local ticket completion
+  without changing confirmed `execute-and-flush!`. Admission-only and
+  executed-local results require a separate confirmed flush or successful
+  close before consumer cleanup (#190).
+
 - Avoid a Durable writer deadlock when a full operation queue coincides with
   worker failure or close (#219). Callers wait for queue capacity outside the
   admission lock, then recheck the writer lifecycle before enqueueing. Queued
