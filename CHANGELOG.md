@@ -13,6 +13,11 @@
   executed-local results require a separate confirmed flush or successful
   close before consumer cleanup (#190).
 
+- Keep the pinned MinIO S3 qualification runnable after the public container
+  repository stopped allowing anonymous pulls. Fetch the same official release
+  binaries with checked-in amd64/arm64 SHA-256 pins, run on loopback, and keep
+  the existing live-provider contract checks unchanged.
+
 - Avoid a Durable writer deadlock when a full operation queue coincides with
   worker failure or close (#219). Callers wait for queue capacity outside the
   admission lock, then recheck the writer lifecycle before enqueueing. Queued
