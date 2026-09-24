@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Skip exhaustive Durable model checks for an exact committed edit that adds
+  validated test or bench aliases and at most one matching `jolt -M:<alias>`
+  task. Existing tasks, different commands, and dependency changes still
+  select exhaustive checking; the new Durable test retains the fast tier (#210).
+
 - Treat a Durable native execution exception as an uncertain local mutation:
   preserve the caller's exact error, require a full checkpoint before any
   successful flush or close, and withhold a current persistence observation
