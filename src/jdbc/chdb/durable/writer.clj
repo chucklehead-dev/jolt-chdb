@@ -16,14 +16,16 @@
   (:import [java.io BufferedOutputStream]
            [java.nio.file Files OpenOption Path]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
-           [java.util.concurrent ArrayBlockingQueue]))
+           [java.util.concurrent ArrayBlockingQueue]
+           [java.util.concurrent.locks ReentrantLock]))
 
 (def max-statement-bytes (* 64 1024 1024))
 (def max-wal-segment-bytes (* 128 1024 1024))
 (def default-queue-capacity 64)
 
 (defrecord DurableWriter
-    [store token handle database queue admission-lock lifecycle closed-result
+    [store token handle database queue admission-permits admission-lock
+     lifecycle closed-result terminal-error
      wal-state lease-state heartbeat-stop backend-context retry-options
      operations worker heartbeat persistence-observation wal-spool-parent
      checkpoint-wal-reference-threshold])
@@ -600,28 +602,55 @@
   (deliver result {:error error})
   nil)
 
+(defn- return-admission-permit! [writer]
+  (.add ^ArrayBlockingQueue (:admission-permits writer) true))
+
+(defn- take-admission-permit! [writer]
+  (when-not (.poll ^ArrayBlockingQueue (:admission-permits writer))
+    (when-let [before-wait! (:admission-wait! (:operations writer))]
+      (before-wait!))
+    (.take ^ArrayBlockingQueue (:admission-permits writer))))
+
+(defn- take-close-permit! [writer]
+  ;; Close is uncancellable after it stops admission: do not abandon its sole
+  ;; queue request and leave concurrent close callers waiting forever.
+  (loop [first-interrupt nil]
+    (let [result (try
+                   (take-admission-permit! writer)
+                   :acquired
+                   (catch InterruptedException error error))]
+      (if (= :acquired result)
+        first-interrupt
+        (recur (or first-interrupt result))))))
+
 (defn- terminate-worker! [writer terminal]
   ;; Stop admission before cleanup, then resolve every request that may have
   ;; raced with the terminal queue failure. The worker error remains the
   ;; stable caller-visible cause; cleanup is still attempted in full.
-  (locking (:admission-lock writer)
-    (when (= :open @(:lifecycle writer))
-      (reset! (:lifecycle writer) :closing))
-    ;; Forced terminal cleanup may block in flush, heartbeat join, release, or
-    ;; native close. Its in-memory evidence becomes unavailable at teardown
-    ;; entry, not after those best-effort operations complete.
-    (observation/unavailable! (:persistence-observation writer)))
+  (reset! (:terminal-error writer) terminal)
+  (let [^ReentrantLock lock (:admission-lock writer)]
+    (.lock lock)
+    (try
+      (when (= :open @(:lifecycle writer))
+        (reset! (:lifecycle writer) :closing))
+      ;; Forced cleanup may block. Mark evidence unavailable at teardown entry.
+      (observation/unavailable! (:persistence-observation writer))
+      (finally (.unlock lock))))
   (try
     (call-with-backend-context writer #(do-close! writer))
     (catch Throwable _))
-  (locking (:admission-lock writer)
-    (loop []
-      (when-let [request (.poll ^ArrayBlockingQueue (:queue writer))]
-        (fail-result! (:result request) terminal)
-        (recur)))
-    (reset! (:lifecycle writer) :closed)
-    (observation/unavailable! (:persistence-observation writer))
-    (deliver (:closed-result writer) {:error terminal}))
+  (let [^ReentrantLock lock (:admission-lock writer)]
+    (.lock lock)
+    (try
+      (loop []
+        (when-let [request (.poll ^ArrayBlockingQueue (:queue writer))]
+          (return-admission-permit! writer)
+          (fail-result! (:result request) terminal)
+          (recur)))
+      (reset! (:lifecycle writer) :closed)
+      (observation/unavailable! (:persistence-observation writer))
+      (deliver (:closed-result writer) {:error terminal})
+      (finally (.unlock lock))))
   nil)
 
 (defn- worker-loop [writer]
@@ -629,6 +658,7 @@
     (loop []
       (let [request ((:take-request! (:operations writer)) (:queue writer))
             closing? (= :close (:op request))]
+        (return-admission-permit! writer)
         (try
           (complete! (:result request) (execute-request! writer request))
           (catch Throwable error
@@ -667,10 +697,27 @@
           (.interrupt (Thread/currentThread)))))))
 
 (defn- enqueue-open-ticket! [writer request]
-  (locking (:admission-lock writer)
-    (when-not (= :open @(:lifecycle writer))
-      (fail! ::closed "Durable writer is closed"))
-    (.put ^ArrayBlockingQueue (:queue writer) request))
+  ;; Reserving capacity is not admission. Queue insertion under the lock is
+  ;; the admission linearization point, after the lifecycle is rechecked.
+  (take-admission-permit! writer)
+  (let [^ReentrantLock lock (:admission-lock writer)
+        admitted? (atom false)]
+    (try
+      (when-let [after-reserve! (:admission-reserved! (:operations writer))]
+        (after-reserve!))
+      (.lock lock)
+      (try
+        (when (= :open @(:lifecycle writer))
+          (.add ^ArrayBlockingQueue (:queue writer) request)
+          (reset! admitted? true))
+        (finally (.unlock lock)))
+      (finally
+        (when-not @admitted?
+          (return-admission-permit! writer))))
+    (when-not @admitted?
+      (if-let [terminal @(:terminal-error writer)]
+        (throw terminal)
+        (fail! ::closed "Durable writer is closed"))))
   (:result request))
 
 (defn- enqueue-open! [writer request]
@@ -860,10 +907,12 @@
       (fail! ::invalid-options "with-native-admitted-buffer! must be a function"))
     (let [worker (owned-thread/completion)
           heartbeat (when lease-expiry (owned-thread/completion))
+          permits (ArrayBlockingQueue. queue-capacity)
+          _ (dotimes [_ queue-capacity] (.add permits true))
           writer (->DurableWriter
                   store token handle database
-                  (ArrayBlockingQueue. queue-capacity) (Object.)
-                  (atom :open) (promise)
+                  (ArrayBlockingQueue. queue-capacity) permits (ReentrantLock.)
+                  (atom :open) (promise) (atom nil)
                   (atom {:spool nil :byte-count 0 :statement-count 0
                          :checkpoint-required? false})
                   lease-state
@@ -929,27 +978,47 @@
   [writer]
   (let [request {:op :close :result (promise)}
         disposition
-        (locking (:admission-lock writer)
-          (case @(:lifecycle writer)
-            :open (do
-                    (reset! (:lifecycle writer) :closing)
-                    (observation/unavailable! (:persistence-observation writer))
-                    (try
-                      (.put ^ArrayBlockingQueue (:queue writer) request)
-                      :owner
-                      (catch Throwable error
-                        ;; A failed or interrupted admission did not enqueue
-                        ;; the close request. Restore the only state from which
-                        ;; another caller can safely retry cleanup.
-                        (reset! (:lifecycle writer) :open)
-                        (throw error))))
-            :closing :wait
-            :closed :wait))]
-    (owned-thread/join-after!
-     (:worker writer)
-     #(if (= :owner disposition)
-        (await-result (:result request))
-        (await-result (:closed-result writer))))))
+        (let [^ReentrantLock lock (:admission-lock writer)]
+          (.lock lock)
+          (try
+            (case @(:lifecycle writer)
+              :open (do
+                      (reset! (:lifecycle writer) :closing)
+                      (observation/unavailable! (:persistence-observation writer))
+                      :owner)
+              :closing :wait
+              :closed :wait)
+            (finally (.unlock lock))))]
+    (let [admission-interrupt
+          (when (= :owner disposition)
+            ;; A full queue cannot hold the lock needed for terminal draining.
+            (let [interrupted (take-close-permit! writer)
+                  ^ReentrantLock lock (:admission-lock writer)
+                  enqueued? (atom false)]
+              (try
+                (.lock lock)
+                (try
+                  (when (and (= :closing @(:lifecycle writer))
+                             (nil? @(:terminal-error writer)))
+                    (.add ^ArrayBlockingQueue (:queue writer) request)
+                    (reset! enqueued? true))
+                  (finally (.unlock lock)))
+                (finally
+                  (when-not @enqueued?
+                    (return-admission-permit! writer))))
+              interrupted))
+          result (try
+                   {:value (owned-thread/join-after!
+                            (:worker writer)
+                            #(await-result (:closed-result writer)))}
+                   (catch Throwable error {:error error}))]
+      (when admission-interrupt
+        (.interrupt (Thread/currentThread)))
+      (if-let [error (:error result)]
+        (throw error)
+        (if admission-interrupt
+          (throw admission-interrupt)
+          (:value result))))))
 
 (defn status [writer]
   (let [{:keys [statement-count byte-count checkpoint-required?]}

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Avoid a Durable writer deadlock when a full operation queue coincides with
+  worker failure or close (#219). Callers wait for queue capacity outside the
+  admission lock, then recheck the writer lifecycle before enqueueing. Queued
+  work and concurrent close retain their existing terminal results; confirmed
+  and settled execution acknowledgements are unchanged.
+
 - Keep the fast Durable model gate, but skip exhaustive checking for a
   committed `casselc/data.json` SHA-only repin when every other model input is
   unchanged. Other dependency edits and unavailable model fingerprints still
