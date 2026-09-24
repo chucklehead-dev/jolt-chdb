@@ -602,8 +602,16 @@
   (deliver result {:error error})
   nil)
 
+(defn- offer-required! [queue value]
+  ;; The permit and request queues have matching capacity. A reserved permit
+  ;; makes request insertion possible; a worker take makes permit return
+  ;; possible. Never block while holding admission-lock if this is violated.
+  (when-not (.offer ^ArrayBlockingQueue queue value)
+    (fail! ::admission-capacity-invariant
+           "Durable admission queue capacity invariant was violated")))
+
 (defn- return-admission-permit! [writer]
-  (.add ^ArrayBlockingQueue (:admission-permits writer) true))
+  (offer-required! (:admission-permits writer) true))
 
 (defn- take-admission-permit! [writer]
   (when-not (.poll ^ArrayBlockingQueue (:admission-permits writer))
@@ -708,7 +716,7 @@
       (.lock lock)
       (try
         (when (= :open @(:lifecycle writer))
-          (.add ^ArrayBlockingQueue (:queue writer) request)
+          (offer-required! (:queue writer) request)
           (reset! admitted? true))
         (finally (.unlock lock)))
       (finally
@@ -908,7 +916,7 @@
     (let [worker (owned-thread/completion)
           heartbeat (when lease-expiry (owned-thread/completion))
           permits (ArrayBlockingQueue. queue-capacity)
-          _ (dotimes [_ queue-capacity] (.add permits true))
+          _ (dotimes [_ queue-capacity] (offer-required! permits true))
           writer (->DurableWriter
                   store token handle database
                   (ArrayBlockingQueue. queue-capacity) permits (ReentrantLock.)
@@ -1000,7 +1008,7 @@
                 (try
                   (when (and (= :closing @(:lifecycle writer))
                              (nil? @(:terminal-error writer)))
-                    (.add ^ArrayBlockingQueue (:queue writer) request)
+                    (offer-required! (:queue writer) request)
                     (reset! enqueued? true))
                   (finally (.unlock lock)))
                 (finally

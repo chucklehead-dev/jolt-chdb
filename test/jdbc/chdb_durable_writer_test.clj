@@ -114,6 +114,18 @@
          :operations operations}
         writer-options))})))
 
+(defn- run-admission-offer-compatibility-checks! []
+  (let [offer-required! (ns-resolve 'jdbc.chdb.durable.writer
+                                    'offer-required!)
+        queue (java.util.concurrent.ArrayBlockingQueue. 1)]
+    (check "required offer accepts an available queue slot"
+           nil (offer-required! queue :first))
+    (check "required offer fails closed on a full queue"
+           ::writer/admission-capacity-invariant
+           (error-type #(offer-required! queue :second)))
+    (check "failed offer leaves the existing queue entry unchanged"
+           :first (.poll queue))))
+
 (defn- run-full-queue-worker-failure-checks! []
   (let [calls (atom [])
         closes (atom 0)
@@ -2037,6 +2049,7 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (run-admission-offer-compatibility-checks!)
   (run-full-queue-worker-failure-checks!)
   (run-full-queue-close-failure-checks!)
   (run-reservation-close-race-checks!)
