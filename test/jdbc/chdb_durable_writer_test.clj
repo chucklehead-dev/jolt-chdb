@@ -7,6 +7,7 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
@@ -112,6 +113,285 @@
                            :min-reader (:min-reader base-options)}
          :operations operations}
         writer-options))})))
+
+(defn- run-admission-offer-compatibility-checks! []
+  (let [offer-required! (ns-resolve 'jdbc.chdb.durable.writer
+                                    'offer-required!)
+        queue (java.util.concurrent.ArrayBlockingQueue. 1)]
+    (check "required offer accepts an available queue slot"
+           nil (offer-required! queue :first))
+    (check "required offer fails closed on a full queue"
+           ::writer/admission-capacity-invariant
+           (error-type #(offer-required! queue :second)))
+    (check "failed offer leaves the existing queue entry unchanged"
+           :first (.poll queue))))
+
+(defn- run-full-queue-worker-failure-checks! []
+  (let [calls (atom [])
+        closes (atom 0)
+        native-entered (promise)
+        release-native (promise)
+        put-entered (promise)
+        failure-entered (promise)
+        release-failure (promise)
+        terminal (ex-info "injected worker take failure"
+                          {:type ::injected-worker-take-failure})
+        takes (atom 0)
+        operations
+        (assoc (fake-operations calls closes)
+               :execute-native!
+               (fn [_ sql _]
+                 (when (= sql "INSERT INTO t VALUES (1)")
+                   (deliver native-entered true)
+                   @release-native)
+                 (swap! calls conj [:execute sql])
+                 {:sql sql})
+               :take-request!
+               (fn [queue]
+                 (if (= 1 (swap! takes inc))
+                   (.take ^java.util.concurrent.ArrayBlockingQueue queue)
+                   (do
+                     (deliver failure-entered true)
+                     @release-failure
+                     (throw terminal))))
+               :admission-wait!
+               (fn [] (deliver put-entered true)))
+        {:keys [writer]} (new-writer calls closes operations
+                                     {:queue-capacity 1})
+        first-call (owned-thread/completion)
+        queued-call (owned-thread/completion)
+        legacy-call (owned-thread/completion)]
+    (try
+      (owned-thread/start! first-call
+                           #(writer/execute-settled!
+                             writer "INSERT INTO t VALUES (1)"))
+      (check "worker failure trace blocks first native request"
+             true (deref native-entered 1000 false))
+      (owned-thread/start! queued-call
+                           #(writer/execute! writer "INSERT INTO t VALUES (2)"))
+      (check "worker failure trace fills capacity-one queue"
+             1
+             (loop [remaining 1000]
+               (if (or (= 1 (.size (:queue writer))) (zero? remaining))
+                 (.size (:queue writer))
+                 (do (Thread/sleep 1) (recur (dec remaining))))))
+      (owned-thread/start! legacy-call
+                           #(writer/execute! writer "INSERT INTO t VALUES (3)"))
+      (check "legacy caller waits for full queue capacity"
+             true (deref put-entered 1000 false))
+      (deliver release-native true)
+      (check "worker reaches failing take while queue remains full"
+             [true 1]
+             [(deref failure-entered 1000 false)
+              (.size (:queue writer))])
+      (deliver release-failure true)
+      (let [outcome (deref (:closed-result writer) 1000 ::timeout)]
+      (check "terminal worker drains full queue despite blocked admission"
+               terminal
+               (if (= ::timeout outcome) outcome (:error outcome)))
+        ;; Rescue only the expected pre-fix deadlock, then join every thread.
+        (when (= ::timeout outcome)
+          (when-let [request (.poll ^java.util.concurrent.ArrayBlockingQueue
+                                    (:queue writer))]
+            (deliver (:result request) {:error terminal})))
+        (check "queued call retains exact terminal failure"
+               terminal (:error (deref (:outcome queued-call) 1000 {})))
+        (check "legacy call retains exact terminal failure"
+               terminal (:error (deref (:outcome legacy-call) 1000 {}))))
+      (finally
+        (deliver release-native true)
+        (deliver release-failure true)
+        (when-not (realized? (:closed-result writer))
+          (when-let [request (.poll ^java.util.concurrent.ArrayBlockingQueue
+                                    (:queue writer))]
+            (deliver (:result request) {:error terminal})))
+        (doseq [thread [first-call queued-call legacy-call]]
+          (when @(:thread thread)
+            (try (owned-thread/join! thread) (catch Throwable _))))
+        (try (writer/close! writer) (catch Throwable _))))))
+
+(defn- run-full-queue-close-failure-checks! []
+  (let [calls (atom [])
+        closes (atom 0)
+        native-entered (promise)
+        release-native (promise)
+        close-waiting (promise)
+        failure-entered (promise)
+        release-failure (promise)
+        terminal (ex-info "injected close-race worker failure"
+                          {:type ::injected-close-race-failure})
+        takes (atom 0)
+        operations
+        (assoc (fake-operations calls closes)
+               :execute-native!
+               (fn [_ sql _]
+                 (when (= sql "INSERT INTO t VALUES (1)")
+                   (deliver native-entered true)
+                   @release-native)
+                 (swap! calls conj [:execute sql])
+                 {:sql sql})
+               :take-request!
+               (fn [queue]
+                 (if (= 1 (swap! takes inc))
+                   (.take ^java.util.concurrent.ArrayBlockingQueue queue)
+                   (do
+                     (deliver failure-entered true)
+                     @release-failure
+                     (throw terminal))))
+               :admission-wait! #(deliver close-waiting true))
+        {:keys [writer]} (new-writer calls closes operations
+                                     {:queue-capacity 1})
+        first-call (owned-thread/completion)
+        queued-call (owned-thread/completion)
+        closer (owned-thread/completion)]
+    (try
+      (owned-thread/start! first-call
+                           #(writer/execute-settled!
+                             writer "INSERT INTO t VALUES (1)"))
+      (check "close failure trace reaches blocked native request"
+             true (deref native-entered 1000 false))
+      (owned-thread/start! queued-call
+                           #(writer/execute! writer "INSERT INTO t VALUES (2)"))
+      (check "close failure trace fills queue"
+             1
+             (loop [remaining 1000]
+               (if (or (= 1 (.size (:queue writer))) (zero? remaining))
+                 (.size (:queue writer))
+                 (do (Thread/sleep 1) (recur (dec remaining))))))
+      (owned-thread/start! closer #(writer/close! writer))
+      (check "close waits outside gate while queue remains full"
+             [true :closing]
+             [(deref close-waiting 1000 false) @(:lifecycle writer)])
+      (deliver release-native true)
+      (check "worker reaches failure before taking queued request"
+             true (deref failure-entered 1000 false))
+      (deliver release-failure true)
+      (check "queued call and close share exact terminal error"
+             [terminal terminal 1 0 1]
+             [(:error (deref (:outcome queued-call) 1000 {}))
+              (:error (deref (:outcome closer) 1000 {}))
+              @closes
+              (.size (:queue writer))
+              (.size (:admission-permits writer))])
+      (finally
+        (deliver release-native true)
+        (deliver release-failure true)
+        (doseq [thread [first-call queued-call closer]]
+          (when @(:thread thread)
+            (try (owned-thread/join! thread) (catch Throwable _))))
+        (try (writer/close! writer) (catch Throwable _))))))
+
+(defn- run-reservation-close-race-checks! []
+  (let [calls (atom [])
+        closes (atom 0)
+        reserved (promise)
+        release-reservation (promise)
+        close-waiting (promise)
+        operations
+        (assoc (fake-operations calls closes)
+               :admission-reserved!
+               (fn [] (deliver reserved true) @release-reservation)
+               :admission-wait! #(deliver close-waiting true))
+        {:keys [writer]} (new-writer calls closes operations
+                                     {:queue-capacity 1})
+        caller (owned-thread/completion)
+        closer (owned-thread/completion)]
+    (try
+      (owned-thread/start! caller
+                           #(writer/execute-settled!
+                             writer "INSERT INTO t VALUES (9)"))
+      (check "caller reserves capacity before admission gate"
+             [true 0 0]
+             [(deref reserved 1000 false)
+              (.size (:admission-permits writer))
+              (.size (:queue writer))])
+      (owned-thread/start! closer #(writer/close! writer))
+      (check "close stops admission before reserved caller resumes"
+             [true :closing]
+             [(deref close-waiting 1000 false) @(:lifecycle writer)])
+      (deliver release-reservation true)
+      (check "reserved caller cannot enqueue or execute behind close"
+             [::writer/closed 0]
+             [(:type (ex-data (:error (deref (:outcome caller) 1000 {}))))
+              (count (filter #(= :execute (first %)) @calls))])
+      (check "rejected reservation restores capacity after close"
+             [nil :closed 0 1 1]
+             [(:error (deref (:outcome closer) 1000 {}))
+              @(:lifecycle writer)
+              (.size (:queue writer))
+              (.size (:admission-permits writer))
+              @closes])
+      (finally
+        (deliver release-reservation true)
+        (doseq [thread [caller closer]]
+          (when @(:thread thread)
+            (try (owned-thread/join! thread) (catch Throwable _))))
+        (try (writer/close! writer) (catch Throwable _))))))
+
+(defn- run-close-interrupt-race-checks! []
+  (let [calls (atom [])
+        closes (atom 0)
+        native-entered (promise)
+        release-native (promise)
+        close-waiting (promise)
+        operations
+        (assoc (fake-operations calls closes)
+               :execute-native!
+               (fn [_ sql _]
+                 (when (= sql "INSERT INTO t VALUES (1)")
+                   (deliver native-entered true)
+                   @release-native)
+                 (swap! calls conj [:execute sql])
+                 {:sql sql})
+               :admission-wait! #(deliver close-waiting true))
+        {:keys [writer]} (new-writer calls closes operations
+                                     {:queue-capacity 1})
+        first-call (owned-thread/completion)
+        queued-call (owned-thread/completion)
+        closer (owned-thread/completion)]
+    (try
+      (owned-thread/start! first-call
+                           #(writer/execute-settled!
+                             writer "INSERT INTO t VALUES (1)"))
+      (check "interrupt trace reaches blocked native request"
+             true (deref native-entered 1000 false))
+      (owned-thread/start! queued-call
+                           #(writer/execute! writer "INSERT INTO t VALUES (2)"))
+      (check "interrupt trace fills queue"
+             1
+             (loop [remaining 1000]
+               (if (or (= 1 (.size (:queue writer))) (zero? remaining))
+                 (.size (:queue writer))
+                 (do (Thread/sleep 1) (recur (dec remaining))))))
+      (owned-thread/start!
+       closer
+       #(try
+          (writer/close! writer)
+          {:error nil :interrupted? (.isInterrupted (Thread/currentThread))}
+          (catch InterruptedException error
+            {:error error :interrupted? (.isInterrupted (Thread/currentThread))})))
+      (check "close waits for capacity before interruption"
+             [true :closing]
+             [(deref close-waiting 1000 false) @(:lifecycle writer)])
+      (.interrupt ^Thread @(:thread closer))
+      (deliver release-native true)
+      (let [close-outcome (:value (deref (:outcome closer) 1000 {}))]
+        (check "interrupted close drains, joins, and restores interrupt state"
+               [true true :closed 1 0 1 nil nil]
+               [(instance? InterruptedException (:error close-outcome))
+                (:interrupted? close-outcome)
+                @(:lifecycle writer)
+                @closes
+                (.size (:queue writer))
+                (.size (:admission-permits writer))
+                (:error (deref (:outcome first-call) 1000 {}))
+                (:error (deref (:outcome queued-call) 1000 {}))]))
+      (finally
+        (deliver release-native true)
+        (doseq [thread [first-call queued-call closer]]
+          (when @(:thread thread)
+            (try (owned-thread/join! thread) (catch Throwable _))))
+        (try (writer/close! writer) (catch Throwable _))))))
 
 (defn- stored-wal-lines [store]
   (let [head (:head (control/read-head! store))]
@@ -1769,6 +2049,11 @@
 
 (defn run-checks! []
   (reset! failures 0)
+  (run-admission-offer-compatibility-checks!)
+  (run-full-queue-worker-failure-checks!)
+  (run-full-queue-close-failure-checks!)
+  (run-reservation-close-race-checks!)
+  (run-close-interrupt-race-checks!)
   (run-buffered-admission-order-checks!)
   (run-buffered-prepared-order-checks!)
   (run-wal-spool-allocation-checks!)
