@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Treat a Durable native execution exception as an uncertain local mutation:
+  preserve the caller's exact error, require a full checkpoint before any
+  successful flush or close, and withhold a current persistence observation
+  until checkpoint confirmation. No statement WAL is fabricated for an
+  execution whose outcome is unknown.
+
 - Expose opt-in Durable JDBC buffered admission and local ticket completion
   without changing confirmed `execute-and-flush!`. Admission-only and
   executed-local results require a separate confirmed flush or successful

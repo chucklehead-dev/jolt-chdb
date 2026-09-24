@@ -338,8 +338,18 @@
   ;; Make the public projection conservative before the native mutation. A
   ;; native exception does not in general prove that no mutation happened.
   (observation/pending! (:persistence-observation writer))
-  (let [result (execute!)]
-    ;; Local failure must not create recovery state. An exact materialized
+  (let [result (try
+                 (execute!)
+                 (catch Throwable error
+                   ;; Native failure is not a no-op proof: the engine may have
+                   ;; applied some or all of this request before reporting it.
+                   ;; No exact V1 WAL record is safe to publish for that
+                   ;; uncertain result. Only a full checkpoint of the live
+                   ;; engine can settle subsequent flush/close confirmation.
+                   (require-checkpoint! writer)
+                   (observation/unconfirmed! (:persistence-observation writer))
+                   (throw error)))]
+    ;; A completed native call has a known local result. An exact materialized
     ;; statement enters V1 WAL; a bound mutation instead requires a full
     ;; checkpoint because V1 has no typed-parameter WAL record.
     (if line

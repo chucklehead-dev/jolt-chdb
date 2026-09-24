@@ -840,7 +840,10 @@
                       (catch Throwable _ nil)))
       (check "native failure emits prepare but never append"
              [:wal-prepare] (mapv :phase @events))
-      (finally (writer/close! writer))))
+      (finally
+        (check "native failure cannot be silently closed without checkpoint"
+               ::writer/checkpoint-unavailable
+               (error-type #(writer/close! writer))))))
   (let [sql (apply str ["INSERT INTO t VALUES (1)" ""])
         prepared (chdb/prepare-query sql [])
         quoted-sql "SELECT '?'"
@@ -1439,7 +1442,10 @@
              [0 0]
              (let [status (writer/status writer)]
                [(:pending-statements status) (:pending-wal-bytes status)]))
-      (finally (writer/close! writer))))
+      (finally
+        (check "engine failure close cannot be falsely confirmed"
+               ::writer/checkpoint-unavailable
+               (error-type #(writer/close! writer))))))
 
   (let [calls (atom [])
         close-count (atom 0)
@@ -2317,6 +2323,102 @@
                  :committed (:status (writer/flush! writer))))
         (finally (writer/close! writer))))))
 
+(defn- run-native-exception-uncertainty-checks! []
+  (println "Durable native-exception uncertainty")
+  (let [calls (atom [])
+        close-count (atom 0)
+        published (atom 0)
+        native-error (ex-info "native may have mutated before failing"
+                              {:type ::native-uncertain})
+        operations (assoc (fake-operations calls close-count)
+                          :execute-native!
+                          (fn [_ sql _]
+                            (swap! calls conj [:possibly-applied sql])
+                            (throw native-error))
+                          :publish-wal-file!
+                          (fn [_ _ _]
+                            (swap! published inc)
+                            (throw (ex-info "must not publish a WAL"
+                                            {:type ::unexpected-publish}))))
+        {:keys [writer]} (new-writer calls close-count operations)]
+    (check "native error preserves the original caller exception"
+           native-error
+           (try (writer/execute! writer "INSERT INTO t VALUES (91)") nil
+                (catch Throwable error error)))
+    (check "native uncertainty requires checkpoint, not a fabricated WAL"
+           [true 0 0]
+           ((juxt :checkpoint-required? :pending-statements :pending-wal-bytes)
+            (writer/status writer)))
+    (check "empty flush cannot settle possibly applied native mutation"
+           [::writer/checkpoint-unavailable 0]
+           [(error-type #(writer/flush! writer)) @published])
+    (check "close cannot report success after uncheckpointed native exception"
+           [::writer/checkpoint-unavailable :closed 1 0]
+           [(error-type #(writer/close! writer))
+            (:lifecycle (writer/status writer)) @close-count @published]))
+  (let [calls (atom [])
+        close-count (atom 0)
+        native-error (ex-info "ticket native outcome uncertain"
+                              {:type ::ticket-native-uncertain})
+        operations (assoc (fake-operations calls close-count)
+                          :execute-native! (fn [_ _ _] (throw native-error)))
+        {:keys [writer]} (new-writer calls close-count operations)
+        admission (writer/try-admit-buffered! writer
+                                              "INSERT INTO t VALUES (92)")]
+    (check "ticket admits before the native error"
+           :admitted (:status admission))
+    (check "ticket preserves the exact native exception"
+           native-error
+           (try (writer/await-local-execution! (:ticket admission)) nil
+                (catch Throwable error error)))
+    (check "ticket error still requires a checkpoint"
+           true (:checkpoint-required? (writer/status writer)))
+    (check "ticket error cannot be laundered into successful close"
+           ::writer/checkpoint-unavailable
+           (error-type #(writer/close! writer))))
+  (let [calls (atom [])
+        close-count (atom 0)
+        native-error (ex-info "native may have applied"
+                              {:type ::recoverable-native-uncertain})
+        operations (assoc (model-checkpoint-operations calls close-count)
+                          :execute-native! (fn [_ _ _] (throw native-error)))
+        store (backend/memory-backend)
+        acquired (control/acquire! store base-options)
+        writer (writer/start!
+                {:store store :token (:token acquired) :handle :fake-handle
+                 :database "default" :recovered-document (:head acquired)
+                 :engine-metadata {:version (:engine-version base-options)
+                                   :backup-format (:backup-format base-options)
+                                   :min-reader (:min-reader base-options)}
+                 :operations operations})]
+    (try
+      (check "recovered writer starts with an available public observation"
+             [:available :recovered]
+             ((juxt :availability :state)
+              (writer/persistence-observation writer)))
+      (check "recoverable native failure still reports original error"
+             native-error
+             (try (writer/execute! writer "INSERT INTO t VALUES (93)") nil
+                  (catch Throwable error error)))
+      (check "uncertain native outcome is not a current persistence witness"
+             [:unconfirmed false]
+             ((juxt :state :view-current?)
+              (writer/persistence-observation writer)))
+      (check "checkpoint confirms native state before clearing uncertainty"
+             [:committed false 1 []]
+             (let [result (writer/flush! writer)
+                   status (writer/status writer)
+                   head (:head (control/read-head! store))]
+               [(:status result) (:checkpoint-required? status)
+                (get-in head ["manifest" "seq"])
+                (get-in head ["manifest" "wal"])]))
+      (check "checkpoint is the first new current persistence witness"
+             [:confirmed true :checkpoint 1]
+             ((juxt :state :view-current? :confirmed-boundary
+                    :confirmed-sequence)
+              (writer/persistence-observation writer)))
+      (finally (writer/close! writer)))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-admission-offer-compatibility-checks!)
@@ -2332,6 +2434,7 @@
   (run-checkpoint-cleanup-precedence-checks!)
   (run-checkpoint-public-retry-checks!)
   (run-file-wal-phase2-checks!)
+  (run-native-exception-uncertainty-checks!)
   (run-deterministic-checks!)
   (run-stateful-property!)
   (when-not (zero? @failures)
