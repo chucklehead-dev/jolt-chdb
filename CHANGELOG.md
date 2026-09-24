@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Skip exhaustive Durable model checks for an exact committed edit that adds
+  validated test or bench aliases and at most one matching `jolt -M:<alias>`
+  task. Existing tasks, different commands, and dependency changes still
+  select exhaustive checking; the new Durable test retains the fast tier (#210).
+
 - Avoid a Durable writer deadlock when a full operation queue coincides with
   worker failure or close (#219). Callers wait for queue capacity outside the
   admission lock, then recheck the writer lifecycle before enqueueing. Queued

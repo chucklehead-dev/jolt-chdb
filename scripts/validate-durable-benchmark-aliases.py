@@ -116,8 +116,16 @@ def validate(repo, base, head):
     _, _, before, after, changed = committed_deps(repo, base, head)
     old_aliases = before.pop(atom(":aliases"), None)
     new_aliases = after.pop(atom(":aliases"), None)
+    old_had_tasks = atom(":tasks") in before
+    new_has_tasks = atom(":tasks") in after
+    old_tasks = before.pop(atom(":tasks"), {})
+    new_tasks = after.pop(atom(":tasks"), {})
     if before != after or not isinstance(old_aliases, dict) or not isinstance(new_aliases, dict):
         raise Invalid("root dependencies or options changed")
+    if (not isinstance(old_tasks, dict) or not isinstance(new_tasks, dict)
+            or (old_had_tasks and not new_has_tasks)
+            or (new_has_tasks and not old_had_tasks and not new_tasks)):
+        raise Invalid("unsupported tasks map")
     if any(new_aliases.get(key) != value for key, value in old_aliases.items()):
         raise Invalid("existing alias changed")
     added = set(new_aliases) - set(old_aliases)
@@ -151,6 +159,16 @@ def validate(repo, base, head):
         if not any(changed.get(f"{path[1]}/{relative}.{ext}") == "A"
                    for path in paths[1] for ext in ("clj", "cljc")):
             raise Invalid("main namespace was not newly added")
+    if old_tasks != new_tasks:
+        if any(new_tasks.get(key) != value for key, value in old_tasks.items()):
+            raise Invalid("existing task changed")
+        added_tasks = set(new_tasks) - set(old_tasks)
+        if len(added_tasks) != 1 or set(new_tasks) != set(old_tasks) | added_tasks:
+            raise Invalid("expected one additive task")
+        task = added_tasks.pop()
+        if (task[0] != "atom" or atom(":" + task[1]) not in added
+                or new_tasks[task] != string("jolt -M:" + task[1])):
+            raise Invalid("task must run its new validated alias")
 
 
 def validate_data_json_sha_only(repo, base, head):

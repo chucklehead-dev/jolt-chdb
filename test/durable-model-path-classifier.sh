@@ -418,6 +418,58 @@ check_output "paths mode still treats deps.edn as exhaustive" true "$alias_repo"
 check_reason "validated aliases retain ordinary model-linked reason" \
   model-inputs-byte-identical "$alias_repo" --diff "$alias_base" "$valid_alias_head"
 
+alias_case "additive test alias and matching task skip exhaustive" false \
+  "$base_deps :new-test {:extra-paths [\"test\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000-test\"]}} :tasks {new-test \"jolt -M:new-test\"}}"
+task_alias_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_fast "additive test task retains fast tier" true "$alias_repo" \
+  --diff "$alias_base" "$task_alias_head"
+check_reason "additive test task keeps model-linked reason" \
+  model-inputs-byte-identical "$alias_repo" --diff "$alias_base" "$task_alias_head"
+check_output "additive task merge-base skips exhaustive" false "$alias_repo" \
+  --diff "$alias_base" "$task_alias_head" --merge-base
+task_alias=':new-test {:extra-paths ["test"] :main-opts ["-m" "jdbc.chdb-durable-confirmed-10000-test"]}'
+alias_case "task for an existing alias stays exhaustive" true \
+  "$base_deps $task_alias}} :tasks {existing \"jolt -M:existing\"}}"
+alias_case "task with a different alias stays exhaustive" true \
+  "$base_deps $task_alias}} :tasks {new-test \"jolt -M:existing\"}}"
+alias_case "task shell form stays exhaustive" true \
+  "$base_deps $task_alias}} :tasks {new-test \"bash -c 'jolt -M:new-test'\"}}"
+alias_case "task with extra options stays exhaustive" true \
+  "$base_deps $task_alias}} :tasks {new-test {:task \"jolt -M:new-test\"}}}"
+alias_case "two additive tasks stay exhaustive" true \
+  "$base_deps $task_alias}} :tasks {new-test \"jolt -M:new-test\" second \"jolt -M:new-test\"}}"
+alias_case "empty task map addition stays exhaustive" true \
+  "$base_deps $task_alias}} :tasks {}}"
+alias_case "task plus dependency edit stays exhaustive" true \
+  "${base_deps/\"abc\"/\"def\"} $task_alias}} :tasks {new-test \"jolt -M:new-test\"}}"
+
+git -C "$alias_repo" switch -q --detach "$alias_base"
+printf '%s\n' '{:paths ["src"] :deps {example/lib {:git/sha "abc"}} :aliases {:existing {:main-opts ["-m" "old.ns"]}} :tasks {existing "jolt -M:existing"}}' \
+  > "$alias_repo/deps.edn"
+git -C "$alias_repo" add deps.edn
+git -C "$alias_repo" commit -q -m existing-task-base
+existing_task_base=$(git -C "$alias_repo" rev-parse HEAD)
+printf '%s\n' "{:paths [\"src\"] :deps {example/lib {:git/sha \"abc\"}} :aliases {:existing {:main-opts [\"-m\" \"old.ns\"]} $task_alias} :tasks {existing \"jolt -M:existing\" new-test \"jolt -M:new-test\"}}" \
+  > "$alias_repo/deps.edn"
+mkdir -p "$alias_repo/test/jdbc"
+printf '%s\n' '(ns jdbc.chdb-durable-confirmed-10000-test)' \
+  > "$alias_repo/test/jdbc/chdb_durable_confirmed_10000_test.clj"
+git -C "$alias_repo" add -A
+git -C "$alias_repo" commit -q -m additive-task-with-existing-task
+preserved_task_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_output "existing task preserved with matching new task" false "$alias_repo" \
+  --diff "$existing_task_base" "$preserved_task_head"
+check_fast "existing task preserved with new test stays fast" true "$alias_repo" \
+  --diff "$existing_task_base" "$preserved_task_head"
+git -C "$alias_repo" switch -q --detach "$existing_task_base"
+printf '%s\n' "{:paths [\"src\"] :deps {example/lib {:git/sha \"abc\"}} :aliases {:existing {:main-opts [\"-m\" \"old.ns\"]} $task_alias} :tasks {existing \"jolt -M:changed\" new-test \"jolt -M:new-test\"}}" \
+  > "$alias_repo/deps.edn"
+git -C "$alias_repo" add deps.edn
+git -C "$alias_repo" commit -q -m changed-existing-task
+changed_task_head=$(git -C "$alias_repo" rev-parse HEAD)
+check_output "changed existing task stays exhaustive" true "$alias_repo" \
+  --diff "$existing_task_base" "$changed_task_head"
+
 git -C "$alias_repo" switch -q --detach "$alias_base"
 printf '%s\n' "$base_deps :new-bench {:extra-paths [\"bench\"] :main-opts [\"-m\" \"jdbc.chdb-durable-confirmed-10000\"]}}}" \
   > "$alias_repo/deps.edn"
