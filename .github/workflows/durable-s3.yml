@@ -18,6 +18,7 @@ on:
       - test/durable-s3-curl.sh
       - test/durable-large-checkpoint.sh
       - test/durable-s3-minio.sh
+      - test/durable-s3-minio-script-test.sh
       - test/jdbc/chdb_durable_s3_curl_test.clj
       - test/jdbc/chdb_durable_large_checkpoint_qualification.clj
       - test/jdbc/chdb_durable_s3_minio_test.clj
@@ -38,7 +39,6 @@ jobs:
       JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6-aspects-57e591d4
       PINNED_JOLT_SOURCE_SHA: 57e591d4d6481c5536858575ffc006cf5a41adbf
       PINNED_JOLT_VERSION: jolt v0.8.6-37-g57e591d4
-      MINIO_IMAGE: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned Jolt aspect compiler
@@ -56,4 +56,6 @@ jobs:
       - name: Qualify bounded-memory large checkpoints
         run: bash test/durable-large-checkpoint.sh jolt
       - name: Qualify against pinned MinIO
-        run: bash test/durable-s3-minio.sh jolt
+        run: |
+          bash test/durable-s3-minio-script-test.sh
+          bash test/durable-s3-minio.sh jolt
