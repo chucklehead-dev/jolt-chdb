@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Report valid local `scale-512` acceptance misses as categorical nonzero
+  results with the report path and observed p50/p99 versus the unchanged
+  targets. The artifact checker still enforces bounded, redacted report/log/time
+  receipts and positive RSS; only the known acceptance exception with a
+  qualified 500-sample failed receipt may carry GNU time exit status 1 (#203).
+
 - Skip exhaustive Durable model checks for an exact committed edit that adds
   validated test or bench aliases and at most one matching `jolt -M:<alias>`
   task. Existing tasks, different commands, and dependency changes still
@@ -95,7 +101,6 @@
   All ten measured WAL objects per arm had identical SHA-256 hashes across
   arms. Broader data.json value-shape parity remains governed by the fork's
   JVM/Jolt tests; this run does not qualify S3 or collector throughput.
-
 - Expose the existing option-bearing `publish-wal-file!` entry as an additive
   Durable aspect selector. The `publish-wal-bytes!` selector remains intact;
   this adds observation coverage for the writer's sealed-file WAL path without

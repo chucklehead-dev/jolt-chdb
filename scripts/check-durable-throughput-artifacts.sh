@@ -4,6 +4,15 @@ set -euo pipefail
 report=${1:?usage: check-durable-throughput-artifacts.sh REPORT LOG [TIME-V]}
 log=${2:?usage: check-durable-throughput-artifacts.sh REPORT LOG [TIME-V]}
 timing=${3:-}
+mode=${4:-normal}
+[[ $mode == normal || $mode == acceptance-miss ]] || {
+  echo "unsupported Durable artifact validation mode" >&2
+  exit 2
+}
+[[ $mode == normal || -n $timing ]] || {
+  echo "acceptance miss requires GNU time evidence" >&2
+  exit 2
+}
 
 fail() {
   echo "Durable throughput artifact contract failed" >&2
@@ -32,7 +41,11 @@ if [[ -n $timing ]]; then
   exit_status=$(awk -F: '/^\tExit status:/ { count++; value=$2 }
                          END { gsub(/^[[:space:]]+/, "", value); print count ":" value }' "$timing")
   [[ $rss =~ ^1:[1-9][0-9]*$ ]] || fail
-  [[ $exit_status == "1:0" ]] || fail
+  if [[ $mode == acceptance-miss ]]; then
+    [[ $exit_status == "1:1" ]] || fail
+  else
+    [[ $exit_status == "1:0" ]] || fail
+  fi
 fi
 
 canary_names=(
@@ -54,5 +67,10 @@ for name in "${canary_names[@]}"; do
     fi
   fi
 done
+
+if [[ $mode == acceptance-miss ]]; then
+  LC_ALL=C grep -Fq ':type :jdbc.chdb-durable-throughput/acceptance-target-missed' "$log" || fail
+  python3 "$(dirname "${BASH_SOURCE[0]}")/check-durable-512-acceptance.py" "$report" miss || fail
+fi
 
 echo "Durable throughput artifacts passed bounded redaction checks"

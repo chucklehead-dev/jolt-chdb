@@ -157,12 +157,19 @@ set -e
 if "$forensics_enabled"; then
   forensic_event "artifact-validation-about-to-start"
 fi
+if [[ "$selector" == scale-512 && "$run_status" -eq 1 ]]; then
+  scripts/check-durable-throughput-artifacts.sh "$report" "$log" "$timing" acceptance-miss
+  if "$forensics_enabled"; then
+    forensic_event "artifact-validation-passed"
+  fi
+  exit 1
+fi
 scripts/check-durable-throughput-artifacts.sh "$report" "$log" "$timing"
 # The 512 selector is an acceptance gate.  Check the persisted structured
 # receipt before propagating Jolt's nonzero status, so a miss never looks like
 # an unqualified launcher failure and the timing/RSS receipt remains intact.
 if [[ "$selector" == scale-512 ]]; then
-  grep -Eq ':encoding-inclusive-512-acceptance[[:space:]]+\{:status :passed' "$report" || {
+  python3 scripts/check-durable-512-acceptance.py "$report" pass || {
     echo "Durable encoding-inclusive 512 acceptance receipt is not passing" >&2
     exit 1
   }
