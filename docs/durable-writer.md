@@ -17,7 +17,9 @@ The writer operations are:
 - `query-bytes!`: apply the same read-only gate, then return an owned bounded
   Arrow or Parquet result through the neutral `db.export` SPI;
 - `execute!`: reject oversize or inadmissible SQL before execution, execute one
-  contained non-secret mutation locally, then append its JSONL record;
+  contained non-secret mutation locally, then append its JSONL record. Once
+  enqueued, the caller waits through interruption for that worker result and
+  regains interrupt status on return or error. This is not a persistence ack;
 - `try-admit-buffered!`: opt-in, nonblocking admission of a fully materialized
   SQL mutation through a Durable JDBC writer. `:admitted` provides a local
   ticket and live-writer ordinal, not an execution or persistence receipt.
@@ -32,7 +34,9 @@ The writer operations are:
   reconciled publication receipt that covers that caller's mutation. Earlier
   pending work can also be included, so this does not grant an exclusive WAL
   segment. This is the safe composition boundary for a shared writer; it is
-  not equivalent to separately calling `execute!` and `flush!`;
+  not equivalent to separately calling `execute!` and `flush!`. An interrupted
+  caller likewise waits for the admitted worker request to settle and regains
+  interrupt status on return or error;
 - `flush!`: publish the complete pending WAL under a fresh UUIDv4 key, or a full
   checkpoint when a bound mutation requires it; commit its reference with head
   CAS, and clear pending recovery state only after confirmed or reconciled
@@ -73,8 +77,14 @@ object-store calls may block in ways that pin a shared fiber carrier.
 Admission and the transition to closing share one lock, so an operation cannot
 pass the open check and enter behind the close request. `status` exposes only
 the lifecycle, local writability, pending counts, and whether a checkpoint is
-required. A second owned OS thread renews the lease independently of long
-queued engine work. It remains active after close admission while earlier FIFO
+required. Raw `execute!` and `execute-and-flush!` settle an already-enqueued
+request before releasing the caller, even if its wait is interrupted; the
+worker's exact result or error remains primary. Interruption before queue
+admission can still reject without a result, and neither operation changes
+FIFO, full-queue, or close ownership. The older `*-settled!` names remain
+compatibility aliases for caller-owned integrations. A second owned OS thread
+renews the lease independently of long queued engine work. It remains active
+after close admission while earlier FIFO
 work drains and while close flushes. Close then signals and positively joins
 the heartbeat before lease release, native close, and scratch cleanup. This
 ordering prevents renewal after release. Every mutation and flush also checks
