@@ -13,8 +13,10 @@
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.core :as jdbc]
-            [jolt.ffi :as ffi])
-  (:import [java.util Arrays]))
+            [jolt.ffi :as ffi]
+            [jolt.process :as process])
+  (:import [java.io File]
+           [java.util Arrays]))
 
 (def failures (atom 0))
 
@@ -25,6 +27,14 @@
       (swap! failures inc)
       (println "  FAIL" label "- expected" (pr-str expected)
                "got" (pr-str actual)))))
+
+(defn- check-private [label expected actual]
+  ;; The native qualification log must not include SQL, row values, object
+  ;; paths, or other private fixture contents even if this regression fails.
+  (if (= expected actual)
+    (println "  ok  " label)
+    (do (swap! failures inc)
+        (println "  FAIL" label))))
 
 (defn- rejected [f]
   (try (f) nil (catch Throwable error error)))
@@ -316,6 +326,143 @@
 
 (defn- scratch-options []
   {:scratch-parent (required-env "JOLT_CHDB_NATIVE_SCRATCH_ROOT")})
+
+(defn- run-fault-reader-child! [phase]
+  (let [binary (required-env "JOLT_CHDB_NATIVE_JOLT_BIN")
+        wrapper (some-> (System/getenv "JOLT_CHDB_NATIVE_JOLT_WRAPPER")
+                        str/trim not-empty)
+        scratch (File. (required-env "JOLT_CHDB_NATIVE_SCRATCH_ROOT"))
+        stdout (File. scratch (str phase ".stdout"))
+        stderr (File. scratch (str phase ".stderr"))
+        command (into (cond-> [] wrapper (conj wrapper))
+                      [binary "-M:durable-native-test" phase])
+        child (process/process command {:out stdout :err stderr})
+        terminal (deref child 60000 ::timeout)]
+    (when (= ::timeout terminal)
+      (process/destroy-tree child))
+    (check-private (str phase " child exits successfully") 0 (:exit terminal))
+    (check-private (str phase " child finished its assertions")
+                   true (str/includes? (slurp stdout)
+                                       (str "all Durable native checks passed " phase)))))
+
+(defn- run-append-failure-checkpoint-e2e [phase]
+  (println "Durable post-native WAL-append fault checkpoint recovery" phase)
+  (let [{:keys [namespace store]} (process-store "native-append-fault")
+        object-id "native-append-fault"
+        options (merge {:namespace-backend namespace :object-id object-id}
+                       (scratch-options))]
+    (case phase
+      :writer
+      (let [injected (atom 0)
+            fail-checkpoint? (atom true)
+            opened (durable/open-writer!
+                    (merge options
+                           {:owner "append-fault-writer"
+                            :instance "append-fault-instance"
+                            :database "append_fault"
+                            :lease-ttl-ms 30000
+                            :operations
+                            {:publish-checkpoint!
+                             (fn [store token path]
+                               (if (and (pos? @injected)
+                                        (compare-and-set! fail-checkpoint? true false))
+                                 (throw (ex-info "injected checkpoint publication failure"
+                                                 {:type ::checkpoint-publish-failed}))
+                                 (control/publish-checkpoint-file! store token path)))}}))
+            append-var (ns-resolve 'jdbc.chdb.durable.writer 'append-wal!)]
+        (try
+          (writer/execute!
+           opened
+           "CREATE TABLE entries (id UInt32, value String) ENGINE = MergeTree ORDER BY id")
+          (check-private "initial table checkpoint commits"
+                         :committed (:status (writer/checkpoint! opened)))
+          (writer/execute! opened "INSERT INTO entries VALUES (1, 'earlier')")
+          (let [error
+                (with-redefs-fn
+                  {append-var
+                   (fn [_ _]
+                     (swap! injected inc)
+                     (throw (ex-info "injected append failure"
+                                     {:type ::append-failed})))}
+                  #(rejected
+                    (fn [] (writer/execute!
+                            opened "INSERT INTO entries VALUES (2, 'faulted')"))))]
+            (check-private "public execute reports the injected append failure"
+                           ::append-failed (:type (ex-data error))))
+          (check-private "fault occurred exactly once after native success"
+                         1 @injected)
+          (check-private "live native handle has both distinct mutations"
+                         [[1 "earlier"] [2 "faulted"]]
+                         (-> (writer/query! opened
+                                            "SELECT id, value FROM entries ORDER BY id")
+                             :rows))
+          (check-private "fault retains earlier WAL and checkpoint obligation"
+                         [true 1 true]
+                         (let [status (writer/status opened)]
+                           [(:checkpoint-required? status)
+                            (:pending-statements status)
+                            (pos? (:pending-wal-bytes status))]))
+          (check-private "preflush head has only the original checkpoint"
+                         [1 true []]
+                         (let [head (:head (control/read-head-read-only! store))]
+                           [(get-in head ["manifest" "seq"])
+                            (boolean (get-in head ["manifest" "base"]))
+                            (get-in head ["manifest" "wal"])]))
+          (run-fault-reader-child! "fault-preflush-reader")
+          (check-private "failed checkpoint publication reaches the caller"
+                         ::checkpoint-publish-failed
+                         (:type (ex-data (rejected #(writer/flush! opened)))))
+          (check-private "failed checkpoint keeps the recovery obligation"
+                         [true 1 true]
+                         (let [status (writer/status opened)]
+                           [(:checkpoint-required? status)
+                            (:pending-statements status)
+                            (pos? (:pending-wal-bytes status))]))
+          (check-private "failed checkpoint does not advance the head"
+                         [1 true []]
+                         (let [head (:head (control/read-head-read-only! store))]
+                           [(get-in head ["manifest" "seq"])
+                            (boolean (get-in head ["manifest" "base"]))
+                            (get-in head ["manifest" "wal"])]))
+          ;; Test-only negative control: make the wrong WAL-only route appear
+          ;; eligible. The same head and fresh-reader assertions below must
+          ;; fail because that WAL omits the successful faulted mutation.
+          (when (= "partial-wal" (System/getenv "JOLT_CHDB_194_MUTANT"))
+            (swap! (:wal-state opened) assoc :checkpoint-required? false))
+          (check-private "flush selects and confirms full checkpoint"
+                         :committed (:status (writer/flush! opened)))
+          (check-private "checkpoint head excludes incomplete WAL"
+                         [2 true []]
+                         (let [head (:head (control/read-head-read-only! store))]
+                           [(get-in head ["manifest" "seq"])
+                            (boolean (get-in head ["manifest" "base"]))
+                            (get-in head ["manifest" "wal"])]))
+          (check-private "confirmed head clears recovery obligations"
+                         [false 0 0]
+                         (let [status (writer/status opened)]
+                           [(:checkpoint-required? status)
+                            (:pending-statements status)
+                            (:pending-wal-bytes status)]))
+          (finally (writer/close! opened))))
+
+      :preflush-reader
+      (let [opened (durable/open-reader! options)]
+        (try
+          (check-private "fresh preflush reader excludes both pending mutations"
+                         [] (-> (reader/query!
+                                 opened "SELECT id, value FROM entries ORDER BY id" [])
+                                :rows))
+          (finally (reader/close! opened))))
+
+      :reader
+      (let [opened (durable/open-reader! options)]
+        (try
+          (check-private "fresh postflush reader restores both rows exactly once"
+                         [[1 "earlier"] [2 "faulted"]]
+                         (-> (reader/query!
+                              opened "SELECT id, value FROM entries ORDER BY id" [])
+                             :rows))
+          (finally (reader/close! opened)))))))
 
 (defn- force-managed-wal? []
   (= "1" (System/getenv "JOLT_CHDB_FORCE_MANAGED_WAL")))
@@ -844,6 +991,9 @@
                (run-core-native-checks))
     "object-writer" (run-durable-object-e2e :writer)
     "object-reader" (run-durable-object-e2e :reader)
+    "fault-writer" (run-append-failure-checkpoint-e2e :writer)
+    "fault-preflush-reader" (run-append-failure-checkpoint-e2e :preflush-reader)
+    "fault-reader" (run-append-failure-checkpoint-e2e :reader)
     "json-rows-writer" (run-durable-json-rows-e2e :writer)
     "json-rows-reader" (run-durable-json-rows-e2e :reader)
     "wal-writer" (run-durable-local-recovery-e2e :wal-writer)

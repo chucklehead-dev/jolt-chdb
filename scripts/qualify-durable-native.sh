@@ -32,6 +32,14 @@ else
   fi
 fi
 
+# Local callers can pass the workspace's pinned-Chez wrapper for the nested
+# fresh-reader process. CI's selected Jolt already carries its own toolchain.
+if [[ -n ${JOLT_CHDB_NATIVE_JOLT_WRAPPER:-} &&
+      ! -x ${JOLT_CHDB_NATIVE_JOLT_WRAPPER} ]]; then
+  echo "JOLT_CHDB_NATIVE_JOLT_WRAPPER must name an executable file" >&2
+  exit 69
+fi
+
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     asset=linux-x86_64-libchdb.tar.gz
@@ -175,22 +183,53 @@ mkdir -p "$object_root" "$core_root"
 run_phase() {
   local phase=$1
   local scratch_root="$process_root/scratch-$phase"
-  mkdir -p "$scratch_root"
-  stage "run Jolt Durable phase $phase"
+  mkdir -p "$scratch_root" || return
   JOLT_CHDB_LIB="$library_path" \
   JOLT_CHDB_NATIVE_OBJECT_ROOT="$object_root" \
   JOLT_CHDB_NATIVE_CORE_ROOT="$core_root" \
   JOLT_CHDB_NATIVE_SCRATCH_ROOT="$scratch_root" \
+  JOLT_CHDB_NATIVE_JOLT_BIN="$jolt_bin" \
+  JOLT_CHDB_NATIVE_JOLT_WRAPPER="${JOLT_CHDB_NATIVE_JOLT_WRAPPER:-}" \
     "$jolt_bin" -M:durable-native-test "$phase"
 }
 
 for phase in \
   core \
-  object-writer object-reader \
+  object-writer object-reader fault-writer fault-reader \
   json-rows-writer json-rows-reader \
   wal-writer wal-reader checkpoint-writer checkpoint-reader \
   secret-mutation secret-read
 do
-  run_phase "$phase"
+  stage "run Jolt Durable phase $phase"
+  case "$phase" in
+    fault-writer|fault-reader)
+      if ! run_phase "$phase" >"$process_root/$phase.stdout" 2>&1; then
+        fail "Jolt Durable phase $phase failed; private output retained"
+      fi
+      ;;
+    *) run_phase "$phase" ;;
+  esac
 done
+
+# A deliberately wrong WAL-only route must be rejected by both the head-shape
+# assertion and fresh-process exact readback. Keep all mutant output private;
+# neither SQL nor row values belong in CI logs, including on failure.
+stage "run WAL-only recovery negative control"
+object_root="$process_root/negative-objects"
+mkdir -p "$object_root"
+if JOLT_CHDB_194_MUTANT=partial-wal run_phase fault-writer \
+    >"$process_root/negative-writer.stdout" 2>&1; then
+  fail "WAL-only recovery negative control unexpectedly passed"
+fi
+if ! grep -Fq 'FAIL checkpoint head excludes incomplete WAL' \
+    "$process_root/negative-writer.stdout"; then
+  fail "WAL-only recovery negative control missed the head assertion"
+fi
+if run_phase fault-reader >"$process_root/negative-reader.stdout" 2>&1; then
+  fail "WAL-only recovery negative reader unexpectedly passed"
+fi
+if ! grep -Fq 'FAIL fresh postflush reader restores both rows exactly once' \
+    "$process_root/negative-reader.stdout"; then
+  fail "WAL-only recovery negative control missed fresh-reader assertion"
+fi
 completion=true

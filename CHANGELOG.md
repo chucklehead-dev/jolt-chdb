@@ -2,12 +2,17 @@
 
 ## Unreleased
 
+- Qualify the native Durable recovery path after a successful mutation whose
+  exact WAL append fails: an earlier staged row stays invisible to a fresh
+  pre-flush reader, failed checkpoint publication retains its obligation,
+  retry confirms a full checkpoint rather than partial WAL, and a fresh
+  process restores both rows exactly once (#194).
+
 - Report valid local `scale-512` acceptance misses as categorical nonzero
   results with the report path and observed p50/p99 versus the unchanged
   targets. The artifact checker still enforces bounded, redacted report/log/time
   receipts and positive RSS; only the known acceptance exception with a
   qualified 500-sample failed receipt may carry GNU time exit status 1 (#203).
-
 - Skip exhaustive Durable model checks for an exact committed edit that adds
   validated test or bench aliases and at most one matching `jolt -M:<alias>`
   task. Existing tasks, different commands, and dependency changes still
