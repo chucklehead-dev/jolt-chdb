@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Settle already-enqueued raw Durable `execute!` and `execute-and-flush!`
+  worker requests through caller interruption, preserving the exact result or
+  error and restoring interrupt status (#213). Pre-admission interruption may
+  still reject; local execution remains distinct from confirmed publication.
+  The existing `*-settled!` names remain compatibility seams.
+
 - Qualify the native Durable recovery path after a successful mutation whose
   exact WAL append fails: an earlier staged row stays invisible to a fresh
   pre-flush reader, failed checkpoint publication retains its obligation,

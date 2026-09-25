@@ -1002,33 +1002,38 @@
   (enqueue-open! writer {:op :query-bytes :sql sql :params params
                          :options options :result (promise)}))
 
-(defn execute! [writer sql]
-  (enqueue-open! writer {:op :execute :sql sql :result (promise)}))
-
-(defn execute-settled!
-  "Internal-use opt-in seam for a caller-owned context: wait for a raw execute
-  request's worker result even if its waiting thread is interrupted. This is
-  still local admission, not a persisted acknowledgement."
+(defn execute!
+  "Settle an admitted raw mutation's worker result through interruption, then
+  restore the caller's interrupt status. Interruption before queue admission
+  may still reject the request; this result is local, not persisted."
   [writer sql]
   (enqueue-open-settled! writer {:op :execute :sql sql :result (promise)}))
+
+(defn execute-settled!
+  "Compatibility seam for caller-owned contexts; raw `execute!` now provides
+  the same post-admission settlement guarantee. Neither is persisted ack."
+  [writer sql]
+  (execute! writer sql))
 
 (defn execute-and-flush!
   "Execute one fully materialized Durable mutation and publish its recovery
   state as one serialized writer request.
 
   The returned value is the confirmed or reconciled publication receipt. A
-  failure retains the pending recovery work exactly as `flush!` does. This is
-  the caller-atomic alternative to separately calling `execute!` then `flush!`
-  on a shared writer."
-  [writer sql]
-  (enqueue-open! writer {:op :execute-and-flush :sql sql :result (promise)}))
-
-(defn execute-and-flush-settled!
-  "Internal-use opt-in seam: settle this atomic execute-and-flush request
-  before its caller-owned context releases the in-flight gate."
+  failure retains the pending recovery work exactly as `flush!` does. After
+  admission, interruption cannot release this caller before the worker result
+  settles; the interrupt status is restored on return or error. This is the
+  caller-atomic alternative to separately calling `execute!` then `flush!` on
+  a shared writer."
   [writer sql]
   (enqueue-open-settled!
    writer {:op :execute-and-flush :sql sql :result (promise)}))
+
+(defn execute-and-flush-settled!
+  "Compatibility seam for caller-owned contexts; raw `execute-and-flush!` now
+  provides the same post-admission settlement guarantee."
+  [writer sql]
+  (execute-and-flush! writer sql))
 
 (defn sql! [writer sql params]
   (enqueue-open! writer {:op :sql :sql sql :params params :result (promise)}))

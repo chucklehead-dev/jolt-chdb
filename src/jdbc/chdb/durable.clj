@@ -1269,15 +1269,17 @@
   FIFO. A successful return is local execution with pending recovery state,
   NOT a persistence acknowledgement. Call `flush!` or `checkpoint!` before
   acknowledging the write externally. The existing classifier, policy and WAL
-  gate still apply. Other driver types and read-only connections fail closed."
+  gate still apply. Once the request is enqueued, caller interruption waits
+  for the worker result and restores interrupt status on return or error;
+  interruption before admission may still reject. Other driver types and
+  read-only connections fail closed."
   [connection sql]
   (shim/extension-operation
    #(writer/execute! (jdbc-writer-handle connection) sql)))
 
 (defn execute-settled!
-  "Internal-use opt-in seam for caller-owned submission contexts. Like
-  `execute!`, this is local admission only; it retains request ownership until
-  its writer worker settles even if the waiting caller is interrupted."
+  "Compatibility seam for caller-owned submission contexts. Raw `execute!`
+  now provides the same post-admission settlement; neither is persisted ack."
   [connection sql]
   (shim/extension-operation
    #(writer/execute-settled! (jdbc-writer-handle connection) sql)))
@@ -1308,16 +1310,17 @@
 
   The returned value is the confirmed or reconciled publication receipt. This
   extension is for integrations that must not let another connection user run
-  between mutation admission and its persistence barrier. Other driver types
-  and read-only Durable connections fail closed."
+  between mutation admission and its persistence barrier. Once enqueued, an
+  interrupted caller waits for the worker result and regains interrupt status
+  on return or error; interruption before admission may still reject. Other
+  driver types and read-only Durable connections fail closed."
   [connection sql]
   (shim/extension-operation
    #(writer/execute-and-flush! (jdbc-writer-handle connection) sql)))
 
 (defn execute-and-flush-settled!
-  "Internal-use opt-in seam for caller-owned submission contexts. Retains
-  request ownership through the same atomic publication as
-  `execute-and-flush!` even if the waiting caller is interrupted."
+  "Compatibility seam for caller-owned submission contexts. Raw
+  `execute-and-flush!` now provides the same post-admission settlement."
   [connection sql]
   (shim/extension-operation
    #(writer/execute-and-flush-settled!
