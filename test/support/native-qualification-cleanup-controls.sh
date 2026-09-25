@@ -29,6 +29,21 @@ if [[ "$1" == -M:run ]]; then
   echo 'PASS typed process-exit anchor closed before host teardown'
 elif [[ "$1" == -M:durable-native-test ]]; then
   printf '%s\n' "${JOLT_CHDB_NATIVE_SCRATCH_ROOT%/scratch-*}" > "$LEDGER/root"
+  if [[ "$2" == fault-writer || "$2" == fault-reader ]]; then
+    echo "PRIVATE_FAULT_SQL=INSERT INTO entries VALUES (2, 'faulted')"
+    echo "PRIVATE_FAULT_PATH=$JOLT_CHDB_NATIVE_OBJECT_ROOT" >&2
+  fi
+  if [[ "$2" == fault-writer && "$CASE" == fault-phase-fail ]]; then exit 7; fi
+  if [[ "$2" == fault-reader && "$CASE" == fault-reader-fail ]]; then exit 7; fi
+  if [[ "$2" == fault-writer && "${JOLT_CHDB_194_MUTANT:-}" == partial-wal ]]; then
+    echo '  FAIL checkpoint head excludes incomplete WAL'
+    exit 1
+  fi
+  if [[ "$2" == fault-reader &&
+        "$JOLT_CHDB_NATIVE_OBJECT_ROOT" == */negative-objects ]]; then
+    echo '  FAIL fresh postflush reader restores both rows exactly once'
+    exit 1
+  fi
   if [[ "$2" == checkpoint-reader && "$CASE" == phase-fail ]]; then exit 7; fi
   if [[ "$2" == checkpoint-reader && "$CASE" == signal && "$CONTROL_KIND" == qualification ]]; then
     printf '%s\n' "$$" > "$LEDGER/child"
@@ -128,6 +143,9 @@ run_case() (
     ! kill -0 "$child" 2>/dev/null || exit 1
   fi
   fixture=$(< "$LEDGER/root")
+  if [[ "$kind" == qualification ]]; then
+    ! grep -Fq 'PRIVATE_FAULT_' "$LEDGER/output" || exit 1
+  fi
   if [[ "$case_name" == success ]]; then
     [[ "$status" == 0 && ! -e "$fixture" ]] || exit 1
     if [[ "$kind" == qualification ]]; then
@@ -137,9 +155,22 @@ run_case() (
       grep -Fqx 'durable-native qualification: compile upstream oracle chdbDurableAbiTest.c' "$LEDGER/output"
       grep -Fqx 'durable-native qualification: run upstream oracle chdbDurableAbiTest.c' "$LEDGER/output"
       grep -Fqx 'durable-native qualification: run Jolt Durable phase secret-read' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: run Jolt Durable phase fault-writer' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: run Jolt Durable phase fault-reader' "$LEDGER/output"
+      grep -Fqx 'durable-native qualification: run WAL-only recovery negative control' "$LEDGER/output"
     fi
   else
     [[ "$status" != 0 && -d "$fixture" ]] || exit 1
+    if [[ "$kind" == qualification && "$case_name" == fault-phase-fail ]]; then
+      grep -Fqx 'durable-native qualification: Jolt Durable phase fault-writer failed; private output retained' "$LEDGER/output"
+      grep -Fq 'PRIVATE_FAULT_SQL=' "$fixture/fault-writer.stdout"
+      grep -Fq 'PRIVATE_FAULT_PATH=' "$fixture/fault-writer.stdout"
+    fi
+    if [[ "$kind" == qualification && "$case_name" == fault-reader-fail ]]; then
+      grep -Fqx 'durable-native qualification: Jolt Durable phase fault-reader failed; private output retained' "$LEDGER/output"
+      grep -Fq 'PRIVATE_FAULT_SQL=' "$fixture/fault-reader.stdout"
+      grep -Fq 'PRIVATE_FAULT_PATH=' "$fixture/fault-reader.stdout"
+    fi
   fi
   printf 'PASS kind=%s case=%s status=%s fixture-contract-confirmed\n' "$kind" "$case_name" "$status"
   printf '%s:%s\n' "$kind" "$case_name" >> "$root/pass-receipts"
@@ -156,7 +187,7 @@ invoke_case() {
   fi
 }
 for case_name in success nonzero missing timeout signal kill-grace; do invoke_case typed "$case_name"; done
-for case_name in success phase-fail signal; do invoke_case qualification "$case_name"; done
+for case_name in success phase-fail fault-phase-fail fault-reader-fail signal; do invoke_case qualification "$case_name"; done
 fetch_failure_control() (
   set -euo pipefail
   local ledger="$root/qualification-fetch-fail" status
@@ -199,8 +230,8 @@ fetch_interrupt_control() (
   echo 'PASS qualification interrupt removes the in-flight partial download'
 )
 fetch_interrupt_control
-expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:signal qualification:fetch-fail qualification:fetch-interrupt | sort)
+expected=$(printf '%s\n' typed:success typed:nonzero typed:missing typed:timeout typed:signal typed:kill-grace qualification:success qualification:phase-fail qualification:fault-phase-fail qualification:fault-reader-fail qualification:signal qualification:fetch-fail qualification:fetch-interrupt | sort)
 actual=$(sort "$root/pass-receipts")
-[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 11 ]] || exit 1
+[[ "$actual" == "$expected" && "$(sort -u "$root/pass-receipts" | wc -l)" == 13 ]] || exit 1
 echo 'PASS all shell retention controls (setup mocked; no native qualification)'
 # Retain the complete owned control ledger for review; no deletion on failure.
