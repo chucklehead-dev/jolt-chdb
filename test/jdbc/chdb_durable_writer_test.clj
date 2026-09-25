@@ -143,6 +143,98 @@
      :retry retry
      :attempts attempts}))
 
+(defn- run-raw-interrupt-settlement-checks! []
+  ;; Native entry proves the raw request passed queue admission. Interrupt the
+  ;; caller while its worker is still blocked, then release that exact request.
+  ;; Each operation must retain the worker's result/error rather than letting
+  ;; interruption turn an already-enqueued mutation into an unknown outcome.
+  (doseq [[operation execute!]
+          [[:local writer/execute!]
+           [:confirmed writer/execute-and-flush!]]
+          fail-native? [false true]]
+    (let [calls (atom [])
+          closes (atom 0)
+          trace (atom [])
+          worker-held? (atom false)
+          entered (promise)
+          release (promise)
+          terminal (ex-info "raw native failure"
+                            {:type ::raw-interrupt-native-failure})
+          sql "INSERT INTO t VALUES (213)"
+          operations (assoc (model-checkpoint-operations calls closes)
+                            :execute-native!
+                            (fn [_ statement _]
+                              (reset! worker-held? true)
+                              (swap! trace conj :native-entered)
+                              (deliver entered true)
+                              @release
+                              (swap! trace conj :native-released)
+                              (reset! worker-held? false)
+                              (try
+                                (if fail-native?
+                                  (throw terminal)
+                                  (do (swap! calls conj [:execute statement])
+                                      {:sql statement}))
+                                (finally
+                                  (swap! trace conj :native-settled)))))
+          {:keys [writer store]} (new-writer calls closes operations)
+          caller (owned-thread/completion)
+          label (str "raw " (name operation) " "
+                     (if fail-native? "error" "success"))]
+      (try
+        (owned-thread/start!
+         caller
+         #(do
+            (swap! trace conj :caller-request-entered)
+            (let [outcome (try {:value (execute! writer sql)}
+                               (catch Throwable error {:error error}))]
+              (swap! trace conj :caller-result)
+              (assoc outcome :interrupted?
+                     (.isInterrupted (Thread/currentThread))))))
+        (check (str label " enters native after queue admission")
+               true (deref entered 1000 false))
+        (.interrupt ^Thread @(:thread caller))
+        (check (str label " does not abandon admitted request on interrupt")
+               ::pending (deref (:outcome caller) 20 ::pending))
+        (check (str label " interrupt occurs while native work is held")
+               [true false] [@worker-held? (realized? release)])
+        (swap! trace conj :interrupt-while-native-held)
+        (deliver release true)
+        (let [outcome (deref (:outcome caller) 1000 ::timeout)
+              result (:value outcome)
+              error (:error result)]
+          (check (str label " caller completes") false (= ::timeout outcome))
+          (check (str label " restores interrupt status")
+                 true (:interrupted? result))
+          (check (str label " causal request-to-result trace")
+                 [:caller-request-entered :native-entered
+                  :interrupt-while-native-held :native-released
+                  :native-settled :caller-result]
+                 @trace)
+          (if fail-native?
+            (check (str label " retains exact worker error")
+                   true (identical? terminal error))
+            (check (str label " returns worker result")
+                   (if (= :local operation)
+                     {:sql sql}
+                     :committed)
+                   (if (= :local operation)
+                     (:value result)
+                     (get-in result [:value :status]))))
+          (check (str label " keeps local/confirmed persistence boundary")
+                 (if (and (= :confirmed operation) (not fail-native?))
+                   [1 false 0]
+                   [0 fail-native? (if fail-native? 0 1)])
+                 [(get-in (:head (control/read-head! store))
+                          ["manifest" "seq"])
+                  (:checkpoint-required? (writer/status writer))
+                  (:pending-statements (writer/status writer))]))
+        (finally
+          (deliver release true)
+          (when @(:thread caller)
+            (owned-thread/join! caller))
+          (writer/close! writer))))))
+
 (defn- run-buffered-ticket-checks! []
   (let [try-admit (ns-resolve 'jdbc.chdb.durable.writer 'try-admit-buffered!)
         await-local (ns-resolve 'jdbc.chdb.durable.writer
@@ -2422,6 +2514,7 @@
 (defn run-checks! []
   (reset! failures 0)
   (run-admission-offer-compatibility-checks!)
+  (run-raw-interrupt-settlement-checks!)
   (run-buffered-ticket-checks!)
   (run-full-queue-worker-failure-checks!)
   (run-full-queue-close-failure-checks!)
