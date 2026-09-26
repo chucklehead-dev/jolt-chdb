@@ -197,43 +197,65 @@
   parameter vector.  The empty-parameter path only needs to reject an
   executable `?`; literals and comments can retain the caller's exact string.
   Keep the two state machines in lockstep when adding SQL lexical contexts."
-  [sql]
-  (let [n (count sql)]
-    (loop [i 0 mode :code block-depth 0]
+  [^String sql]
+  (let [n (.length sql)]
+    ;; Quoted spans dominate JSONEachRow SQL. Search their delimiters in the
+    ;; String implementation instead of dispatching once per payload character.
+    ;; Retain both lookaheads until consumed: searching for the next quote anew
+    ;; at every backslash (or vice versa) would repeatedly scan the same suffix.
+    (loop [i (long 0) mode :code block-depth (long 0)
+           slash (.indexOf sql "\\") quote-position (long -1)]
       (if (= i n)
         false
-        (let [c (nth sql i)
-              next-c (when (< (inc i) n) (nth sql (inc i)))]
-          (case mode
-            :code
-            (cond
-              (= c \?) true
-              (= c \') (recur (inc i) :single 0)
-              (= c \u0022) (recur (inc i) :double 0)
-              (= c \`) (recur (inc i) :backtick 0)
-              (and (= c \-) (= next-c \-)) (recur (+ i 2) :line 0)
-              (and (= c \/) (= next-c \*)) (recur (+ i 2) :block 1)
-              :else (recur (inc i) :code 0))
+        (case mode
+          :code
+          (let [c (int (.charAt sql i))]
+            (case c
+              63 true
+              ;; In quote mode the state is the quote's character code.
+              (39 34 96)
+              (recur (inc i) c 0 slash (.indexOf sql c (inc i)))
+              45
+              (if (and (< (inc i) n) (= 45 (int (.charAt sql (inc i)))))
+                (let [newline (.indexOf sql "\n" (+ i 2))]
+                  (if (= -1 newline) false
+                      (recur (inc newline) :code 0 slash -1)))
+                (recur (inc i) :code 0 slash -1))
+              47
+              (if (and (< (inc i) n) (= 42 (int (.charAt sql (inc i)))))
+                (recur (+ i 2) :block 1 slash -1)
+                (recur (inc i) :code 0 slash -1))
+              (recur (inc i) :code 0 slash -1)))
 
-            :line
-            (recur (inc i) (if (= c \newline) :code :line) 0)
-
-            :block
+          :block
+          (let [c (int (.charAt sql i))
+                next-c (if (< (inc i) n) (int (.charAt sql (inc i))) -1)]
             (cond
-              (and (= c \/) (= next-c \*))
-              (recur (+ i 2) :block (inc block-depth))
-              (and (= c \*) (= next-c \/))
+              (and (= c 47) (= next-c 42))
+              (recur (+ i 2) :block (inc block-depth) slash -1)
+              (and (= c 42) (= next-c 47))
               (let [depth (dec block-depth)]
-                (recur (+ i 2) (if (zero? depth) :code :block) depth))
-              :else (recur (inc i) :block block-depth))
+                (recur (+ i 2) (if (zero? depth) :code :block) depth slash -1))
+              :else (recur (inc i) :block block-depth slash -1)))
 
-            ;; All remaining modes are quoted identifiers or string literals.
-            (let [quote (case mode :single \' :double \u0022 :backtick \`)]
+          ;; An unterminated quoted context cannot expose a code placeholder.
+          ;; Otherwise skip the earlier of backslash escape and closing quote.
+          (if (= -1 quote-position)
+            false
+            (let [slash (if (and (not= -1 slash) (< slash i))
+                          (.indexOf sql "\\" i) slash)]
               (cond
-                (and (= c \\) next-c) (recur (+ i 2) mode block-depth)
-                (and (= c quote) (= next-c quote)) (recur (+ i 2) mode block-depth)
-                (= c quote) (recur (inc i) :code 0)
-                :else (recur (inc i) mode block-depth)))))))))
+                (and (not= -1 slash) (< slash quote-position))
+                (let [next-i (+ slash 2)]
+                  (recur next-i mode block-depth (.indexOf sql "\\" next-i)
+                         (if (< quote-position next-i)
+                           (.indexOf sql (int mode) next-i) quote-position)))
+                (and (< (inc quote-position) n)
+                     (= mode (int (.charAt sql (inc quote-position)))))
+                (recur (+ quote-position 2) mode block-depth slash
+                       (.indexOf sql (int mode) (+ quote-position 2)))
+                :else
+                (recur (inc quote-position) :code 0 slash -1)))))))))
 
 (defn- rewrite-placeholders [sql params]
   (if (empty? params)

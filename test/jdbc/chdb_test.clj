@@ -6,6 +6,7 @@
             [db.export :as export]
             [honey.sql :as sql]
             [jdbc.chdb :as chdb]
+            [jdbc.chdb-placeholder-scan-test]
             [jdbc.chdb-json-rows-test :as json-rows]
             [jdbc.chdb-json-each-row-test]
             [jdbc.chdb-production-json-encode-test]
@@ -688,6 +689,8 @@
 (defn -main [& _]
   (reset! failures 0)
   (json-rows/run check)
+  (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-placeholder-scan-test)]
+    (swap! failures + fail error))
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-json-each-row-test)]
     (swap! failures + fail error))
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-production-json-encode-test)]
