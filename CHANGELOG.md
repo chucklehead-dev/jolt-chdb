@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a benchmark-only native Chez JSON encoder experiment with real Jolt
+  collection traversal, exact-byte edge-case controls, cross-host batch-size
+  measurements, and local Durable confirmed-write/fresh-reader checks (#190).
+  Production encoding and acknowledgement contracts are unchanged.
+
 - Settle already-enqueued raw Durable `execute!` and `execute-and-flush!`
   worker requests through caller interruption, preserving the exact result or
   error and restoring interrupt status (#213). Pre-admission interruption may
