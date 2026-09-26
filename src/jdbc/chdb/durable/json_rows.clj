@@ -48,10 +48,10 @@
     (try
       ;; Validate identifiers before encoding or touching the Durable writer.
       (let [prefix (chdb/json-rows-insert-prefix table columns)
-            {:keys [payload]} (encoder/encode-rows! (:encoder context) rows)]
+            payload (encoder/encode-text! (:encoder context) rows)]
         ;; The raw writer classifies, prepares its exact SQL WAL line, executes,
-        ;; and stages that line. The encoder's separate UTF-8 bytes are not a
-        ;; substitute for a classified, replayable Durable statement.
+        ;; and stages that line. Only text is needed here; separate payload
+        ;; bytes would not replace the classified, replayable SQL statement.
         (submit! (:connection context) (str prefix payload)))
       (finally (release! context operation)))))
 

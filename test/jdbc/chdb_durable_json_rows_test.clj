@@ -9,6 +9,7 @@
             [jdbc.chdb.durable.json-rows :as rows]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb.json-each-row :as encoder]
             [jdbc.chdb-durable-open-test-support :as support]
             [jdbc.chdb-durable-writer-test-support :as writer-support]
             [jdbc.core :as jdbc]
@@ -81,6 +82,30 @@
                    context "events" ["id"] [{"id" 1} {"id" 2}]))))
           (is (= 1 (count (get-in (:head (control/read-head! store))
                                   ["manifest" "wal"]))))
+          (finally (rows/close! context)))))))
+
+(deftest durable-submission-skips-payload-utf8-materialization
+  (with-connection
+    "row-text-only" {:execute-native! (fn [& _] {:count 1})}
+    (fn [connection _ _]
+      (let [context (rows/open-writer connection {:parallelism 4})
+            materialize-var (ns-resolve 'jdbc.chdb.json-each-row 'materialize-utf8)
+            error (ex-info "unused payload bytes requested" {:canary :utf8})
+            calls (atom 0)]
+        (try
+          (with-redefs-fn
+            {materialize-var (fn [_] (swap! calls inc) (throw error))}
+            (fn []
+              ;; Nonvacuity: the canary still intercepts the byte-producing API.
+              (is (identical? error
+                             (try (encoder/encode-rows! (:encoder context) []) nil
+                                  (catch Throwable caught caught))))
+              (is (= {:count 1}
+                     (rows/admit-rows! context "events" ["id"] [{"id" 1}])))
+              (is (= :committed
+                     (:status (rows/insert-rows-and-flush!
+                               context "events" ["id"] [{"id" 2}]))))
+              (is (= 1 @calls) "neither Durable route requests payload bytes")))
           (finally (rows/close! context)))))))
 
 (deftest invalid-input-and-classifier-failure-do-not-execute

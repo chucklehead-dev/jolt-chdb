@@ -163,6 +163,33 @@
          worker-error (throw worker-error)
          :else (apply str (mapv :value (:outcomes joined)))))))
 
+(defn- materialize-utf8 [payload]
+  (let [bytes (.getBytes payload "UTF-8")]
+    {:payload payload :utf8 bytes :byte-count (alength bytes)}))
+
+(defn- encode-with! [encoder rows materialize]
+  (let [batch (admit! encoder)
+        settled? (atom false)]
+    (try
+      (when-not (vector? rows)
+        (reset! settled? true)
+        (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
+      (let [payload #?(:jolt (if (= 4 (:effective-parallelism encoder))
+                                (parallel-payload rows settled?)
+                                (serial-payload rows))
+                       :bb (serial-payload rows)
+                       :clj (serial-payload rows))
+            _ (reset! settled? true)]
+        ;; Result materialization remains part of the admitted operation.
+        (materialize payload))
+      (finally
+        ;; An unexpected fiber join failure leaves the context busy rather
+        ;; than admitting another batch while worker liveness is unknown.
+        #?(:jolt (when (or (= 1 (:effective-parallelism encoder)) @settled?)
+                   (release! encoder batch))
+           :bb (release! encoder batch)
+           :clj (release! encoder batch))))))
+
 (defn encode-rows!
   "Encode an ordered vector as JSONEachRow: one JSON value and newline per
   row. Jolt/JVM use data.json; Babashka uses native Cheshire, preserving row
@@ -176,24 +203,13 @@
   finish before the error is rethrown. An
   interrupted waiting caller likewise waits for worker settlement first."
   [encoder rows]
-  (let [batch (admit! encoder)
-        settled? (atom false)]
-    (try
-      (when-not (vector? rows)
-        (reset! settled? true)
-        (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
-      (let [payload #?(:jolt (if (= 4 (:effective-parallelism encoder))
-                                (parallel-payload rows settled?)
-                                (serial-payload rows))
-                       :bb (serial-payload rows)
-                       :clj (serial-payload rows))
-            _ (reset! settled? true)
-            bytes (.getBytes payload "UTF-8")]
-        {:payload payload :utf8 bytes :byte-count (alength bytes)})
-      (finally
-        ;; An unexpected fiber join failure leaves the context busy rather
-        ;; than admitting another batch while worker liveness is unknown.
-        #?(:jolt (when (or (= 1 (:effective-parallelism encoder)) @settled?)
-                   (release! encoder batch))
-           :bb (release! encoder batch)
-           :clj (release! encoder batch))))))
+  (encode-with! encoder rows materialize-utf8))
+
+(defn encode-text!
+  "Encode an ordered vector as immutable JSONEachRow text, without creating
+  the UTF-8 result of encode-rows!. Uses the same host writer, admission,
+  errors, and worker-settlement lifetime as encode-rows!. Its finite-value
+  and CPU-only, nonparking parallel-serializer requirements also apply.
+  No SQL prefix is added."
+  [encoder rows]
+  (encode-with! encoder rows identity))
