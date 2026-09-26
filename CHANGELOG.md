@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Skip quoted spans and line comments with String searches when checking
+  empty-parameter SQL for placeholders. Cached escape lookahead keeps the scan
+  linear; quotes, nested comments, unbound-placeholder errors, and the original
+  SQL object retain their existing behavior.
+
 - Settle already-enqueued raw Durable `execute!` and `execute-and-flush!`
   worker requests through caller interruption, preserving the exact result or
   error and restoring interrupt status (#213). Pre-admission interruption may
