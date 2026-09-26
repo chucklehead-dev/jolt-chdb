@@ -1,8 +1,8 @@
 # Ordered JSONEachRow encoder
 
 `jdbc.chdb.json-each-row` provides a caller-owned, opt-in encoder for batches
-of JSONEachRow values. It only produces text and UTF-8 bytes. It does not send
-SQL, admit a Durable write, publish a WAL entry, or confirm persistence.
+of JSONEachRow values. It produces text, optionally with UTF-8 bytes. It does
+not send SQL, admit a Durable write, publish a WAL entry, or confirm persistence.
 
 ```clojure
 (require '[jdbc.chdb.json-each-row :as json-rows])
@@ -15,6 +15,13 @@ SQL, admit a Durable write, publish a WAL entry, or confirm persistence.
       payload)
     (finally (json-rows/close! encoder))))
 ```
+
+Use `(json-rows/encode-text! encoder rows)` when only text is needed. It returns
+the same immutable JSONEachRow string as `:payload` from `encode-rows!`, without
+materializing its UTF-8 result. Both APIs share the same admission, errors,
+worker settlement, and close contract. `encode-rows!` still creates its byte
+array before releasing the active operation and retains its existing result
+shape.
 
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
@@ -75,8 +82,8 @@ closing the encoder; the caller retains ownership of the Durable connection.
 The consumer validates simple ASCII table/column names, constructs exact SQL,
 then uses the existing Durable classifier, policy, statement WAL and writer
 queue. It does not use native streaming or change the Durable wire format.
-The encoder's UTF-8 byte result does not directly enter the native query path:
-the complete SQL string is encoded at the existing native boundary. Therefore
-this wiring makes no claim that parallel encoding improves admitted or
+The consumer uses `encode-text!`, avoiding an unused payload-only UTF-8 result;
+the complete SQL string is still encoded at the existing native boundary.
+Therefore this wiring makes no claim that parallel encoding improves admitted or
 confirmed throughput or p99 latency on a given host; measure the complete
 persistence path independently.

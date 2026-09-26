@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `json-each-row/encode-text!` and use it for Durable row submission,
+  avoiding an unused payload-only UTF-8 result. The existing `encode-rows!`
+  result, encoder lifetime, exact SQL/WAL bytes, and persistence barriers are
+  unchanged.
+
 - Skip quoted spans and line comments with String searches when checking
   empty-parameter SQL for placeholders. Cached escape lookahead keeps the scan
   linear; quotes, nested comments, unbound-placeholder errors, and the original
