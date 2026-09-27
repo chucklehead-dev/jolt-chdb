@@ -405,10 +405,15 @@
      (when (> byte-count max-head-bytes)
        (limit! "head.json exceeds the 1 MiB limit" []))
      (when (and (>= byte-count 3)
-                (= [-17 -69 -65] (subvec (vec bytes) 0 3)))
+                (= -17 (aget ^bytes bytes 0))
+                (= -69 (aget ^bytes bytes 1))
+                (= -65 (aget ^bytes bytes 2)))
        (corrupt! "head.json must not contain a UTF-8 byte-order mark" []))
      (let [text (String. bytes "UTF-8")]
-       (when-not (= (vec bytes) (vec (.getBytes text "UTF-8")))
+       ;; Keep the exact round trip: lossy decoding can otherwise change a
+       ;; stored value. Array equality avoids boxing both complete byte arrays.
+       (when-not (java.util.Arrays/equals ^bytes bytes
+                                         ^bytes (.getBytes text "UTF-8"))
          (corrupt! "head.json is not canonical UTF-8" []))
        (let [[start end] (single-json-value-bounds text)
              head (try

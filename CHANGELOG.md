@@ -6,6 +6,9 @@
   pairs every measured latency with the existing counter snapshots, without
   adding timed probes, to investigate GC and other tail-latency changes.
 
+- Check Durable head BOM and UTF-8 round-trip bytes without materializing
+  full byte vectors (#242). Size limits, byte-for-byte validation, error ordering and
+  redacted diagnostics are unchanged; this is not a measured throughput claim.
 
 - Replace two nested shorthand functions in Durable publication verification
   with explicit closures so the control namespace loads on JVM Clojure (#239).

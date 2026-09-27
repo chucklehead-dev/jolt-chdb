@@ -20,6 +20,9 @@
     nil
     (catch Throwable error (:type (ex-data error)))))
 
+(defn- caught-error [f]
+  (try (f) nil (catch Throwable error error)))
+
 (defn- fixture-bytes [document leading trailing]
   (byte-array (concat leading (.getBytes document "UTF-8") trailing)))
 
@@ -42,6 +45,76 @@
                       {:requested byte-count})))
     (str prefix field-prefix (apply str (repeat padding "x")) suffix)))
 
+(defn- run-byte-validation-checks [document expected]
+  ;; Carry forward the short-input/BOM/non-ASCII corpus from the preserved
+  ;; byte-comparison experiment, with portable error and final-byte controls.
+  (doseq [[label values] [["empty" []] ["one byte" [32]] ["two bytes" [32 32]]
+                          ["one-byte BOM prefix" [-17]]
+                          ["two-byte BOM prefix" [-17 -69]]]]
+    (check (str label " rejects without an array-bounds exception")
+           ::head/corrupt
+           (error-type #(head/decode (byte-array values) :writer))))
+  (doseq [bytes [(byte-array [-17 -69 -65])
+                (fixture-bytes document [-17 -69 -65] [])]]
+    (let [error (caught-error #(head/decode bytes :writer))]
+      (check "complete BOM rejects as corrupt" ::head/corrupt
+             (:type (ex-data error)))
+      (check "BOM rejection precedes JSON parsing"
+             "head.json must not contain a UTF-8 byte-order mark"
+             (some-> error .getMessage))))
+  (let [unicode-head (assoc expected "future-text" "λ😀")
+        unicode-json (json/write-str unicode-head :escape-unicode false)]
+    (check "valid multibyte and astral bytes survive validation"
+           unicode-head (head/decode (.getBytes unicode-json "UTF-8") :writer))
+    (check "string input retains the same Unicode value"
+           unicode-head (head/decode unicode-json :writer)))
+  (doseq [[label values] [["invalid continuation" [-61 40]]
+                          ["truncated three-byte sequence" [-30 -126]]
+                          ["truncated four-byte sequence" [-16 -97 -104]]
+                          ["overlong sequence" [-64 -81]]]]
+    (let [error (caught-error #(head/decode (byte-array values) :writer))]
+      (check (str label " is corrupt") ::head/corrupt (:type (ex-data error)))
+      (check (str label " rejects before JSON parsing")
+             "head.json is not canonical UTF-8" (some-> error .getMessage))))
+  (let [sentinel "head-byte-test-private-marker"
+        prefix (str (subs document 0 (dec (count document)))
+                    ",\"future-text\":\"" sentinel)
+        malformed (byte-array (concat (.getBytes prefix "UTF-8") [-61 40]
+                                      (.getBytes "\"}" "UTF-8")))
+        error (caught-error #(head/decode malformed :writer))]
+    (check "malformed bytes inside otherwise valid JSON are corrupt"
+           ::head/corrupt (:type (ex-data error)))
+    (check "malformed field rejects at the exact-byte guard"
+           "head.json is not canonical UTF-8" (some-> error .getMessage))
+    (check "UTF-8 diagnostics do not disclose input text"
+           false (str/includes? (str error (ex-data error)) sentinel)))
+  (let [bytes (fixture-bytes document [] [32])
+        changed (aclone bytes)
+        last-index (dec (alength bytes))]
+    (check "array equality accepts an independent exact copy" true
+           (java.util.Arrays/equals ^bytes bytes ^bytes changed))
+    (aset-byte changed last-index (byte 9))
+    (check "array equality detects only the final byte changing" false
+           (java.util.Arrays/equals ^bytes bytes ^bytes changed))
+    (check "different valid trailing whitespace still decodes identically"
+           expected (head/decode changed :writer))
+    (aset-byte changed last-index (byte -1))
+    (check "malformed final byte does not bypass the round-trip guard"
+           "head.json is not canonical UTF-8"
+           (some-> (caught-error #(head/decode changed :writer)) .getMessage)))
+  ;; Size rejection must precede both BOM detection and UTF-8 conversion.
+  (doseq [bom? [false true]]
+    (let [oversize (byte-array (inc head/max-head-bytes))]
+      (aset-byte oversize 0 (byte -17))
+      (when bom?
+        (aset-byte oversize 1 (byte -69))
+        (aset-byte oversize 2 (byte -65)))
+      (let [error (caught-error #(head/decode oversize :writer))]
+        (check "size limit precedes BOM and malformed UTF-8"
+               ::head/limit-exceeded (:type (ex-data error)))
+        (check "size error keeps its redacted diagnostic"
+               "head.json exceeds the 1 MiB limit" (some-> error .getMessage))))))
+
 (defn run-checks! []
   (reset! failures 0)
   (println "Durable V1 independent JSON whitespace corpus")
@@ -57,6 +130,8 @@
       (check (str (name id) " accepts one raw-byte JSON value")
              expected
              (head/decode (fixture-bytes document leading trailing) :writer)))
+
+    (run-byte-validation-checks document expected)
 
     (let [duplicate-owner
           (str/replace-first document "\"owner\":null"
