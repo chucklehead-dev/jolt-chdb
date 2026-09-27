@@ -307,9 +307,15 @@
       (recur (inc index)))))
 
 (defn- decode-json-key [text start end]
-  ;; Delegate escape and surrogate handling to the same parser used below, so
-  ;; spellings such as "owner" and "ow\u006eer" compare as the same key.
-  (json/read-str (subs text start end)))
+  ;; A plain token's decoded key is its literal contents. Avoid starting a
+  ;; separate JSON parser for every field before parsing the whole document.
+  ;; Search only this key, not the remaining document (which would be O(n^2)).
+  ;; Escaped spellings still use the authoritative parser, so "owner" and
+  ;; "ow\u006eer" compare equally. The full-document parse remains mandatory.
+  (let [key (subs text (inc start) (dec end))]
+    (if (neg? (.indexOf ^String key "\\"))
+      key
+      (json/read-str (subs text start end)))))
 
 (defn- scan-json-object [text start depth]
   (loop [index (skip-json-whitespace text (inc start))

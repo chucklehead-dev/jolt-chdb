@@ -7,6 +7,11 @@
   Older runtimes retain legacy registration. JDBC objects and Durable
   publication, replay and acknowledgement semantics are unchanged.
 
+- Avoid separately JSON-parsing plain head field names during duplicate-key
+  detection. Escaped keys still use the existing parser; full-document parsing,
+  duplicate rejection, UTF-8 checks, and lease/manifest validation are retained.
+  An independent parse-count test guards the repeated-parser regression.
+
 - Check Durable head BOM and UTF-8 round-trip bytes without materializing
   full byte vectors (#242). Size limits, byte-for-byte validation, error ordering and
   redacted diagnostics are unchanged; this is not a measured throughput claim.

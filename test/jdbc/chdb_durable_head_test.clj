@@ -79,6 +79,30 @@
 
 (defn- run-deterministic-checks []
   (println "Durable V1 head.json contract")
+  (let [document (json/write-str valid-head)
+        original json/read-str
+        calls (atom 0)
+        decoded (with-redefs [json/read-str
+                             (fn [& args]
+                               (swap! calls inc)
+                               (apply original args))]
+                  (head/decode document :writer))]
+    (check "plain keys retain exact head values" valid-head decoded)
+    (check "plain keys require only the full-document JSON parse" 1 @calls))
+  (let [document (str/replace (json/write-str valid-head)
+                              "\"owner\":" "\"own\\u0065r\":")]
+    (check "escaped key still uses JSON escape semantics"
+           valid-head (head/decode document :writer)))
+  (let [extended (assoc valid-head "β😀" "opaque")]
+    (check "plain Unicode unknown keys remain unchanged"
+           extended (head/decode (json/write-str extended) :writer)))
+  (let [document (str "{\"bad" (char 1) "key\":1,"
+                      (subs (json/write-str valid-head) 1))]
+    ;; The selected parser currently admits this raw control character. Keep
+    ;; this optimization parity-only; strict lexical hardening is separate work.
+    (check "raw control key handling preserves the existing parser semantics"
+           (head/validate! (json/read-str document :bigdec true) :writer)
+           (head/decode document :writer)))
   (check "provenance pins the exact normative protocol revision"
          expected-source head/protocol-source)
   (check "valid head returns unchanged from writer validation"
