@@ -624,7 +624,7 @@
                   (:status result)
                   #(observed-phase observe! :wal-immutable-verify
                                    (get reference "size")
-                                   #(verify-byte-reference! store reference))
+                                   (fn [] (verify-byte-reference! store reference)))
                   true options)
          :reference reference
          :etag (:etag result)}
@@ -676,7 +676,7 @@
                     (:status result)
                     #(observed-phase observe! :wal-immutable-verify
                                      (get reference "size")
-                                     #(verify-file-reference! store reference))
+                                     (fn [] (verify-file-reference! store reference)))
                     true options)
            :reference reference
            :etag (:etag result)}

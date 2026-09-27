@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replace two nested shorthand functions in Durable publication verification
+  with explicit closures so the control namespace loads on JVM Clojure (#239).
+  Add a native-chDB-free JVM publication gate covering byte/file readback,
+  observer failures and verified-witness commit reuse. This does not extend
+  Babashka's documented head-codec support or change publication semantics.
+
 - Add optional direct stored-body hashing for local Durable immutable-object
   verification (#237), avoiding its scratch copy/fsync/reread while retaining
   independent source and stored-byte hashes, size checks, locking and fencing.
