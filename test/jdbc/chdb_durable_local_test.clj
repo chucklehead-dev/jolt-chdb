@@ -59,7 +59,7 @@
   (with-exclusive-lock [_ _ f]
     (locking lock
       (swap! events conj :lock)
-      (f)))
+      (try (f) (finally (swap! events conj :unlock)))))
   (sync-file! [_ _]
     (swap! events conj :sync-file))
   (sync-directory! [_ _]
@@ -68,13 +68,16 @@
     (Files/createDirectory path (into-array FileAttribute []))
     true)
   (create-private-temp-file! [_ parent]
+    (swap! events conj :create-temp)
     (Files/createTempFile parent ".jchdb-" ".tmp"
                           (into-array FileAttribute [])))
   (create-private-file! [_ path]
+    (swap! events conj :create-file)
     (if (Files/exists path (make-array java.nio.file.LinkOption 0))
       false
       (do (Files/createFile path (into-array FileAttribute [])) true)))
   (copy-file-range! [_ source target source-offset target-offset]
+    (swap! events conj :copy)
     (test-copy-file-range! source target source-offset target-offset)))
 
 (deftype FailFileSyncDurability [lock]
@@ -252,6 +255,138 @@
     (throw (ex-info (str @failures " Durable local checks failed")
                     {:failures @failures})))
   (println "all Durable local shared-provider checks passed")
+  true)
+
+(defn run-digest-checks!
+  "Optional digest/control checks, deliberately separate from the native-free
+  backend-only runner. The focused digest test invokes this entrypoint."
+  []
+  (reset! failures 0)
+  (let [resolve-var #'clojure.core/requiring-resolve
+        resolve! @resolve-var
+        hash-symbol 'jdbc.chdb.durable.digest/hash+count-input-stream
+        hash-var (requiring-resolve hash-symbol)
+        hash-input @hash-var
+        hash-bytes (requiring-resolve 'jdbc.chdb.durable.digest/sha256-bytes)
+        verify (requiring-resolve 'jdbc.chdb.durable.control/verify-file-reference!)
+        root (Files/createTempDirectory "jchdb-direct-digest-"
+                                        (into-array FileAttribute []))
+        events (atom [])
+        store (backend/local-backend root (TestDurability. (Object.) events))
+        captured (atom nil)]
+    (try
+      (doseq [length [0 3 (+ (* 2 65536) 17)]]
+        (let [payload (patterned-bytes length)
+              key (str "wal/" length ".bin")
+              reference {"key" key "size" length
+                         "sha256" (if (zero? length)
+                                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                                    (hash-bytes payload))}]
+          (backend/put-bytes-if-absent! store key payload)
+          (reset! events [])
+          (check "direct verification reads stored body without copy/create/sync"
+                 reference
+                 (with-redefs-fn
+                   {resolve-var (fn [symbol]
+                                  (when (= hash-symbol symbol)
+                                    (check "digest resolution occurs before lock"
+                                           [] @events)
+                                    (swap! events conj :resolve))
+                                  (resolve! symbol))
+                    hash-var (fn [input]
+                               (check "digest executes under the provider lock"
+                                      :lock (last @events))
+                               (swap! events conj :hash)
+                               (reset! captured input)
+                               (hash-input input))}
+                   #(verify store reference)))
+          (check "direct verification has no scratch materialization events"
+                 [:resolve :lock :hash :unlock] @events)
+          (check "backend closes the borrowed digest stream" true
+                 (some? (caught #(.read @captured))))
+          (check "direct summary has independent size and consumed count"
+                 {:status :digested :size length :byte-count length
+                  :sha256 (get reference "sha256")}
+                 (backend/digest-object store key))))
+      (let [key "wal/3.bin"
+            reference {"key" key "size" 3
+                       "sha256" (hash-bytes (patterned-bytes 3))}
+            object (.resolve (.resolve root "objects") key)
+            original (Files/readAllBytes object)
+            corrupt (aclone original)]
+        (aset-byte corrupt 44 (byte 17))
+        (doseq [[label bytes]
+                [["same-sized stored corruption" corrupt]
+                 ["extra stored body byte" (byte-array (concat original [42]))]
+                 ["truncated stored body" (byte-array (take 46 original))]]]
+          (Files/write object bytes (into-array OpenOption []))
+          (check label :jdbc.chdb.durable.control/object-unverified
+                 (error-type #(verify store reference))))
+        (Files/write object original (into-array OpenOption []))
+        (reset! events [])
+        (check "resolution failure occurs without taking the provider lock"
+               [::resolve-failed []]
+               [(with-redefs-fn
+                  {resolve-var (fn [symbol]
+                                 (if (= hash-symbol symbol)
+                                   (throw (ex-info "injected resolution failure"
+                                                   {:type ::resolve-failed}))
+                                   (resolve! symbol)))}
+                  #(error-type (fn [] (verify store reference))))
+                @events])
+        (let [failure (ex-info "injected digest read failure" {:type ::injected-read})]
+          (reset! events [])
+          (check "digest error propagates without a successful result" failure
+                 (with-redefs-fn {hash-var (fn [input]
+                                           (reset! captured input)
+                                           (throw failure))}
+                   #(caught (fn [] (verify store reference)))))
+          (check "digest error releases the provider lock" :unlock (last @events))
+          (check "digest error closes its input" true
+                 (some? (caught #(.read @captured))))
+          (check "verification works after a failed digest" reference
+                 (verify store reference)))
+        (let [error (with-redefs-fn
+                      {hash-var (fn [_] (throw (java.io.IOException. (str root))))}
+                      #(caught (fn [] (verify store reference))))]
+          (check "untyped digest I/O failure is sanitized" ::backend/local-io-failed
+                 (:type (ex-data error)))
+          (check "digest failure does not disclose provider path" false
+                 (.contains (str (ex-message error) (pr-str (ex-data error)))
+                            (str root))))
+        (Files/write object (byte-array [1 2 3]) (into-array OpenOption []))
+        (check "direct digest rejects a truncated envelope" ::backend/invalid-envelope
+               (error-type #(backend/digest-object store key)))
+        (aset-byte original 8 (byte (int \z)))
+        (Files/write object original (into-array OpenOption []))
+        (check "direct digest validates envelope ETag" ::backend/invalid-envelope
+               (error-type #(backend/digest-object store key))))
+      (let [alpha (backend/object-backend store "alpha")
+            beta (backend/object-backend store "beta")]
+        (backend/put-bytes-if-absent! alpha "body" (byte-array [5]))
+        (check "scoped direct digest uses the prefixed object" 1
+               (:byte-count (backend/digest-object alpha "body")))
+        (check "scoped digest cannot observe its sibling" {:status :not-found}
+               (backend/digest-object beta "body"))
+        (check "scoped unsupported backend stays explicit" {:status :unsupported}
+               (backend/digest-object
+                (backend/object-backend (backend/memory-backend) "a") "body")))
+      (check "direct digest missing object is explicit" {:status :not-found}
+             (backend/digest-object store "missing"))
+      (check "direct digest rejects unsafe keys" ::backend/invalid-key
+             (error-type #(backend/digest-object store "../outside")))
+      (let [target (.resolve root "outside")
+            link (.resolve (.resolve root "objects") "linked")]
+        (Files/write target (byte-array [1]) (into-array OpenOption []))
+        (Files/createSymbolicLink link target (into-array FileAttribute []))
+        (try
+          (check "direct digest rejects symbolic links" ::backend/unsafe-local-root
+                 (error-type #(backend/digest-object store "linked")))
+          (finally (Files/deleteIfExists link))))
+      (finally (delete-tree! (File. (str root))))))
+  (when-not (zero? @failures)
+    (throw (ex-info "Durable direct digest checks failed" {:failures @failures})))
+  (println "all Durable direct digest checks passed")
   true)
 
 (defn -main [& _]

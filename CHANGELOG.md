@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add optional direct stored-body hashing for local Durable immutable-object
+  verification (#237), avoiding its scratch copy/fsync/reread while retaining
+  independent source and stored-byte hashes, size checks, locking and fencing.
+  Unsupported backends retain the existing download verifier; the frozen six
+  operations, recovery downloads and publication/CAS semantics are unchanged.
+  This is not a measured throughput or standalone AOT qualification claim.
+
 - Add an opt-in per-batch commitment boundary to the ordered Durable benchmark.
   It times the existing row-encoding and confirmed-publication API, retains
   fresh-reader checks, and distinguishes produced WAL from empty pending state.

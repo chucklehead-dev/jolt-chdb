@@ -703,8 +703,7 @@
                {:reason :integrity})))
     reference))
 
-(defn verify-file-reference!
-  "Stream a backend object to private scratch and verify size plus SHA-256."
+(defn- verify-downloaded-file-reference!
   [store reference]
   (let [scratch (Files/createTempDirectory
                  "jolt-chdb-verify-" private-directory-attributes)
@@ -728,6 +727,33 @@
       (finally
         (Files/deleteIfExists path)
         (Files/deleteIfExists scratch)))))
+
+(defn verify-file-reference!
+  "Independently verify stored size and SHA-256, using an optional direct digest
+  or the portable private-scratch download. No expected-byte/hash shortcut."
+  [store reference]
+  (let [result (if (satisfies? backend/ObjectDigest store)
+                 (backend/digest-object store (get reference "key"))
+                 {:status :unsupported})]
+    (case (:status result)
+      :unsupported (verify-downloaded-file-reference! store reference)
+      :not-found (fail! ::object-unverified
+                        "The immutable Durable file object is missing"
+                        {:reason :missing})
+      :digested
+      (if (and (integer? (:size result)) (<= 0 (:size result))
+               (integer? (:byte-count result)) (<= 0 (:byte-count result))
+               (string? (:sha256 result))
+               (re-matches #"[0-9a-f]{64}" (:sha256 result))
+               (= (get reference "size") (:size result) (:byte-count result))
+               (= (get reference "sha256") (:sha256 result)))
+        reference
+        (fail! ::object-unverified
+               "The immutable Durable file object could not be verified"
+               {:reason :integrity}))
+      (fail! ::object-unverified
+             "The backend returned an invalid Durable file digest result"
+             {:reason :integrity}))))
 
 (defn publish-checkpoint-file!
   "Conditionally publish one full checkpoint archive from a local file."
