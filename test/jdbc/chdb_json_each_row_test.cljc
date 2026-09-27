@@ -53,7 +53,7 @@
 #?(:jolt
    (defn- gated-worker [chunk entered release]
      ;; Gate a child before row serialization, never inside data.json/mapv.
-     (let [serialize @(ns-resolve 'jdbc.chdb.json-each-row 'serial-payload)]
+     (let [serialize @(ns-resolve 'jdbc.chdb.json-each-row 'chunk-texts)]
        (fibers/spawn
         (fn []
           (deliver entered :entered)
@@ -67,6 +67,9 @@
                 [{"a" "é\n\"\\"}]
                 [{"a" [nil true 42] "b" {"x" "β"}}
                  {"a" "😀" "b" "\u2028"}]
+                (mapv (fn [i] {"ordinal" i}) (range 3))
+                (mapv (fn [i] {"ordinal" i}) (range 5))
+                (mapv (fn [i] {"ordinal" i}) (range 7))
                 (mapv (fn [i] {"ordinal" i "nested" {"x" (str "v" i)}})
                       (range 512))]]
     (try
@@ -82,6 +85,46 @@
                          (mapv #(json/parse-string %)
                                (remove empty? (str/split-lines payload))))))))
       (finally (is (= :closed (encoder/close! context)))))))
+
+#?(:jolt
+   (deftest parallel-skips-intermediate-chunk-payloads
+     ;; The old worker called serial-payload four times per batch. Its exact
+     ;; parent is the causal red: output remains correct but the zero-call
+     ;; assertion fails. Observe only this private seam, not core str/data.json.
+     (let [serial-var (ns-resolve 'jdbc.chdb.json-each-row 'serial-payload)
+           original @serial-var
+           calls (atom 0)
+           serial (encoder/open-encoder {:parallelism 1})
+           parallel (encoder/open-encoder {:parallelism 4})]
+       (try
+         (with-redefs-fn
+           {serial-var (fn [rows] (swap! calls inc) (original rows))}
+           (fn []
+             (is (= "true\n" (encoder/encode-text! serial [true])))
+             (is (= 1 @calls) "positive canary observes serial assembly")
+             (doseq [rows [[] [true] [nil true false]
+                          (mapv (fn [i] {"ordinal" i}) (range 7))]
+                     encode [encoder/encode-rows! encoder/encode-text!]]
+               (reset! calls 0)
+               (is (= (serial-payload rows)
+                      (result-text (encode parallel rows))))
+               (is (zero? @calls)
+                   "parallel workers must not build intermediate payloads"))))
+         (finally
+           (is (= :closed (encoder/close! serial)))
+           (is (= :closed (encoder/close! parallel))))))))
+
+#?(:jolt
+   (deftest parallel-worker-retains-individual-row-texts
+     (let [spawn @(ns-resolve 'jdbc.chdb.json-each-row 'spawn-chunk)]
+       (doseq [rows [[] [nil] [true false nil]
+                    (mapv (fn [i] {"ordinal" i}) (range 7))]]
+         (let [outcome (fibers/join (spawn rows))
+               texts (:value outcome)]
+           (is (nil? (:error outcome)))
+           (is (vector? texts))
+           (is (= (count rows) (count texts)))
+           (is (= (mapv #(serial-payload [%]) rows) texts)))))))
 
 #?(:bb
    (deftest babashka-native-unicode-and-finite-values

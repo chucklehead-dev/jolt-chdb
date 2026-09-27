@@ -110,12 +110,17 @@
   (apply str (mapv row-text rows)))
 
 #?(:jolt
+   (defn- chunk-texts [rows]
+     ;; Keep each completed row immutable; assemble the batch after settlement.
+     (mapv row-text rows)))
+
+#?(:jolt
    (defn- spawn-chunk [rows]
      ;; Worker exceptions are values, so join exceptions identify interruption
      ;; of the waiting caller rather than an InterruptedException from a row.
      (fibers/spawn
       (fn []
-        (try {:value (serial-payload rows)}
+        (try {:value (chunk-texts rows)}
              (catch Throwable error {:error error}))))))
 
 #?(:jolt
@@ -161,7 +166,9 @@
          spawn-error (throw spawn-error)
          interruption (throw interruption)
          worker-error (throw worker-error)
-         :else (apply str (mapv :value (:outcomes joined)))))))
+         ;; Concatenate only row-string references here, not chunk payloads.
+         ;; No row writer runs after the workers have settled.
+         :else (apply str (reduce into [] (mapv :value (:outcomes joined))))))))
 
 (defn- materialize-utf8 [payload]
   (let [bytes (.getBytes payload "UTF-8")]
