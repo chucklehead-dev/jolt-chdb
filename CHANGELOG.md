@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid separately JSON-parsing plain head field names during duplicate-key
+  detection. Escaped keys still use the existing parser; full-document parsing,
+  duplicate rejection, UTF-8 checks, and lease/manifest validation are retained.
+  An independent parse-count test guards the repeated-parser regression.
+
 - Add an opt-in confirmed-batch counter ledger to the Durable benchmark. It
   pairs every measured latency with the existing counter snapshots, without
   adding timed probes, to investigate GC and other tail-latency changes.
