@@ -903,6 +903,23 @@
       (check "confirmed mode rejects either pending statements or bytes"
              :jdbc.chdb-durable-throughput/pending-wal-count-mismatch
              (rejected-type #(collect! (assoc options :batches 1) (fn [_] nil) (fn [] pending)))))
+    (let [boundary-error
+          (fn [configuration pending]
+            (try
+              (collect! configuration (fn [_] nil) (fn [] pending))
+              nil
+              (catch Throwable error (ex-data error))))
+          pending {:pending-statements 0 :pending-wal-bytes 1}]
+      (check "confirmed byte-only mismatch reports the offending byte count"
+             {:type :jdbc.chdb-durable-throughput/pending-wal-count-mismatch
+              :expected 0 :actual 0
+              :expected-pending-wal-bytes 0 :actual-pending-wal-bytes 1}
+             (boundary-error (assoc options :batches 1) pending))
+      (check "admission-only count mismatch retains its existing error data"
+             {:type :jdbc.chdb-durable-throughput/pending-wal-count-mismatch
+              :expected 1 :actual 0}
+             (boundary-error (dissoc (assoc options :batches 1) :ack-boundary)
+                             pending)))
     (with-redefs-fn
       {#'throughput/owned-trial!
        (fn [kind forwarded]

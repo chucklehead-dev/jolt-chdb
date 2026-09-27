@@ -678,11 +678,13 @@
 (defn- collect-measured-batches!
   "Run fixed batches or stop after measured pending WAL reaches the target.
 
-  `step!` owns one complete production-path admission or confirmed batch. `status!` is sampled
-  after that admission, so target selection never estimates WAL from row
-  counts. The writer's frozen segment guard remains the final authority and is
-  checked again here before returning evidence. Per-batch commitment requires
-  fixed batches and empty pending WAL rather than accumulating a WAL target."
+  `step!` owns one complete production-path admission or confirmed batch.
+  WAL-target mode samples `status!` after each admission, so target selection
+  never estimates WAL from row counts. Fixed-batch mode samples it only once,
+  after all batches. The writer's frozen segment guard remains the final
+  authority and is checked again before returning evidence. Per-batch
+  commitment requires fixed batches and empty pending WAL rather than
+  accumulating a WAL target."
   [{:keys [batches target-wal-bytes] :as options} step! status!]
   (when-not (or (and (integer? batches) (pos? batches)
                      (nil? target-wal-bytes))
@@ -699,9 +701,13 @@
                            (:pending-statements pending))
                         (or (not confirmed?) (zero? (:pending-wal-bytes pending))))
             (throw (ex-info "Durable pending WAL count mismatch"
-                            {:type ::pending-wal-count-mismatch
-                             :expected (if confirmed? 0 completed)
-                             :actual (:pending-statements pending)})))
+                            (cond-> {:type ::pending-wal-count-mismatch
+                                     :expected (if confirmed? 0 completed)
+                                     :actual (:pending-statements pending)}
+                              confirmed?
+                              (assoc :expected-pending-wal-bytes 0
+                                     :actual-pending-wal-bytes
+                                     (:pending-wal-bytes pending))))))
           (when (> (:pending-wal-bytes pending) writer/max-wal-segment-bytes)
             (throw (ex-info "Durable pending WAL crossed its frozen limit"
                             {:type ::wal-limit-crossed})))
