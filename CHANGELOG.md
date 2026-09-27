@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an opt-in confirmed-batch counter ledger to the Durable benchmark. It
+  pairs every measured latency with the existing counter snapshots, without
+  adding timed probes, to investigate GC and other tail-latency changes.
+
+
 - Replace two nested shorthand functions in Durable publication verification
   with explicit closures so the control namespace loads on JVM Clojure (#239).
   Add a native-chDB-free JVM publication gate covering byte/file readback,
