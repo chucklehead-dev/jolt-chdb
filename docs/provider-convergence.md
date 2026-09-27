@@ -2,11 +2,14 @@
 
 jolt-chdb and Samizdat share one database/JDBC implementation. The canonical
 library key is `jolt-lang/db`; jolt-chdb resolves that key to the integrated
-`casselc/db` revision `9e8c82a59ec63a36e86a758ff39ca9c5a9c3d165`.
+`casselc/db` revision `cb06349c7ffe55e423021e402d4f182f4a27bcf7`.
 
 This is ancestry, not a resolver substitution. The reviewed revision extends
 the original convergence baseline with the canonical time-provider repair and
-the read-only JDBC context used by the Durable persistence observation:
+the read-only JDBC context used by the Durable persistence observation. The
+current pin additionally scopes class callbacks to host tables on domain-capable
+runtimes, with legacy registration retained. Its reviewed callback-domain
+commits `69f1d1b` and `a2870917` descend from the following retained baseline:
 
 ```text
 9e8c82a5  reject a nil native handle while opening a JDBC connection
@@ -48,7 +51,7 @@ Use only the canonical key:
 ```clojure
 jolt-lang/db
 {:git/url "https://github.com/casselc/db.git"
- :git/sha "9e8c82a59ec63a36e86a758ff39ca9c5a9c3d165"}
+ :git/sha "cb06349c7ffe55e423021e402d4f182f4a27bcf7"}
 ```
 
 Remove `io.github.casselc/db` from a graph that already has `jolt-lang/db`.
@@ -78,7 +81,7 @@ resolved `-Stree` and `-Spath` text should be retained as build evidence.
 
 The green graph combines Samizdat commit
 `22be90ddf9b05ba8406d6ec231d2748a4da22d8e` with the current jolt-chdb
-checkout. Its `jolt -Stree` must select `jolt-lang/db 9e8c82a`; its
+checkout. Its `jolt -Stree` must select `jolt-lang/db cb06349`; its
 `jolt -Spath` must expose exactly one physical source root for every shared
 `db.*` and `next.jdbc.*` namespace path derived from that provider tree. Two
 fresh Jolt processes then each keep a Samizdat SQLite connection open. The
@@ -95,7 +98,7 @@ control; dependency order is never treated as coexistence evidence.
 
 The qualifier creates run-scoped `JOLT_CACHE_DIR` and `JOLT_GITLIBS_DIR`
 trees. It derives the complete `db/**/*.clj` and `next/**/*.clj` inventory from
-the resolved `9e8c82a59ec63a36e86a758ff39ca9c5a9c3d165` provider root rather
+the resolved `cb06349c7ffe55e423021e402d4f182f4a27bcf7` provider root rather
 than a hand-maintained list, and its causal control proves that a newly added
 namespace is checked. `-Stree` abbreviates git revisions and is only a graph
 diagnostic; the full-SHA gate is the exact revision embedded in the resolved
