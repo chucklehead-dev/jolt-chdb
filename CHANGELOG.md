@@ -7,6 +7,10 @@
   Older runtimes retain legacy registration. JDBC objects and Durable
   publication, replay and acknowledgement semantics are unchanged.
 
+- Check Durable head BOM and UTF-8 round-trip bytes without materializing
+  full byte vectors (#242). Size limits, byte-for-byte validation, error ordering and
+  redacted diagnostics are unchanged; this is not a measured throughput claim.
+
 - Replace two nested shorthand functions in Durable publication verification
   with explicit closures so the control namespace loads on JVM Clojure (#239).
   Add a native-chDB-free JVM publication gate covering byte/file readback,
