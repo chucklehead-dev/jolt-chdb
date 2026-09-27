@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in per-batch commitment boundary to the ordered Durable benchmark.
+  It times the existing row-encoding and confirmed-publication API, retains
+  fresh-reader checks, and distinguishes produced WAL from empty pending state.
+  Existing benchmark defaults and library behavior are unchanged; short runs
+  report descriptive latency only, not p99 qualification.
+
 - Assemble four-fiber JSONEachRow output once from completed immutable row
   strings, avoiding intermediate worker chunk strings. Per-row serialization,
   newline bytes, serial encoding, and worker/error/close settlement are unchanged.

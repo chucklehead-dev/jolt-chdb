@@ -2,6 +2,10 @@
   (:require [clojure.string :as str]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.json-each-row :as encoder]
+            [jdbc.chdb.durable :as durable]
+            [jdbc.chdb.durable.json-rows :as durable-rows]
+            [jdbc.chdb.durable.writer :as writer]
+            [jdbc.core :as jdbc]
             [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
             [jdbc.chdb-durable-throughput :as throughput]))
 
@@ -128,13 +132,15 @@
                 (clojure.edn/read-string (slurp receipt))))
         (finally (.delete receipt))))
     (let [selector-wrapper (slurp "scripts/run-durable-throughput-selector.sh")
+          acceptance-helper (slurp "scripts/check-durable-512-acceptance.py")
           matched-wrapper (slurp "scripts/benchmark-durable-matched-provider.sh")
           aws-workflow (slurp ".github/workflows/durable-aws.yml")]
       (check "local 512 wrapper verifies the persisted acceptance receipt before exit"
              true
              (and (str/includes? selector-wrapper "selector\" == scale-512")
                   (str/includes? selector-wrapper
-                                 ":encoding-inclusive-512-acceptance")
+                                 "python3 scripts/check-durable-512-acceptance.py \"$report\" pass")
+                  (str/includes? acceptance-helper ":encoding-inclusive-512-acceptance")
                   (str/includes? selector-wrapper
                                  "scripts/check-durable-throughput-artifacts.sh \"$report\" \"$log\" \"$timing\"")))
       (check "manual selector wrapper admits the isolated ordered local trial"
@@ -815,6 +821,180 @@
            (rejected-type #( #'throughput/provider-descriptor!
                              {:backend-context! (fn [_] nil)} "/tmp/owned")))))
 
+(defn- commit-inclusive-checks! []
+  (let [options {:selector :ordered-durable-local-512 :ack-boundary :per-batch-commit
+                 :batch-size 5000 :batches 12 :warmup-batches 2 :parallelism 4}
+        committed {:status :committed
+                   :head {"manifest" {"wal" [{"size" 999} {"size" 31}]}}}
+        reconciled (assoc committed :status :reconciled)
+        confirmed? #'throughput/per-batch-commit?
+        wal-bytes #'throughput/confirmed-batch-wal-bytes
+        final-receipt #'throughput/ordered-flush-receipt!
+        collect! #'throughput/collect-measured-batches!]
+    (check "confirmed acknowledgement option crosses the owned worker boundary"
+           options (#'throughput/worker-options options))
+    (check "report configuration names the confirmed acknowledgement boundary"
+           options (#'throughput/report-configuration options))
+    (check "absent acknowledgement option retains admission-only default"
+           false (confirmed? (dissoc options :ack-boundary)))
+    (doseq [bad [(assoc options :ack-boundary :unknown)
+                 (assoc options :selector :scale-5000)
+                 (assoc options :modes [:durable-preencoded])
+                 (assoc options :target-wal-bytes 100)]]
+      (check "unsupported acknowledgement combinations fail before worker launch"
+             :jdbc.chdb-durable-throughput/invalid-ack-boundary
+             (rejected-type #( #'throughput/worker-options bad))))
+    (doseq [kind [:instrumented :native :diagnostic]]
+      (check "confirmed option rejects a worker that would use another route"
+             :jdbc.chdb-durable-throughput/invalid-ack-boundary
+             (rejected-type #( #'throughput/owned-trial! kind options))))
+    (check "receipt WAL size is the newly appended reference, not total manifest bytes"
+           [31 31] [(wal-bytes committed) (wal-bytes reconciled)])
+    (doseq [receipt [{:status :empty} {:status :executed-local} nil]]
+      (check "unconfirmed batch cannot produce a successful observation"
+             :jdbc.chdb-durable-throughput/unconfirmed-batch
+             (rejected-type #(wal-bytes receipt))))
+    (doseq [receipt [{:status :committed}
+                     (assoc-in committed [:head "manifest" "wal"] [{"size" 0}])]]
+      (check "confirmed status without a positive WAL reference fails closed"
+             :jdbc.chdb-durable-throughput/invalid-commit-receipt
+             (rejected-type #(wal-bytes receipt))))
+    (check "empty final audit preserves the exact last real commit receipt"
+           true (identical? reconciled (final-receipt true {:status :empty} reconciled)))
+    (check "default final flush still returns its confirmed receipt"
+           true (identical? committed (final-receipt false committed nil)))
+    (check "unexpected final publication cannot hide missing per-batch commits"
+           :jdbc.chdb-durable-throughput/unexpected-final-flush
+           (rejected-type #(final-receipt true committed reconciled)))
+    (check "empty audit cannot substitute for an actual committed batch"
+           :jdbc.chdb-durable-throughput/unconfirmed-batch
+           (rejected-type #(final-receipt true {:status :empty} nil)))
+    (check "admission-only mode still rejects an empty final flush"
+           :jdbc.chdb-durable-throughput/flush-failed
+           (rejected-type #(final-receipt false {:status :empty} nil)))
+    (let [seen (atom []) context {:encoder {:effective-parallelism 4}} rows [{"id" 1}]
+          rejected (ex-info "controlled admission rejection" {:type ::rejected})]
+      (with-redefs [durable-rows/admit-rows!
+                    (fn [& args] (swap! seen conj [:admit args]) :local)
+                    durable-rows/insert-rows-and-flush!
+                    (fn [& args] (swap! seen conj [:confirmed args]) committed)]
+        (check "default ordered submission keeps the actual admission API"
+               :local (#'throughput/submit-ordered-batch! false context rows))
+        (check "confirmed ordered submission preserves the public receipt"
+               true (identical? committed
+                                (#'throughput/submit-ordered-batch! true context rows)))
+        (check "both routes receive the same four-fiber context/table/columns/rows"
+               [[:admit [context "otel_logs" @#'throughput/log-columns rows]]
+                [:confirmed [context "otel_logs" @#'throughput/log-columns rows]]]
+               (mapv (fn [[mode args]] [mode (vec args)]) @seen)))
+      (with-redefs [durable-rows/insert-rows-and-flush! (fn [& _] (throw rejected))]
+        (check "public submission rejection propagates without a fabricated receipt"
+               true (identical? rejected
+                                (try (#'throughput/submit-ordered-batch! true context rows)
+                                     nil (catch Throwable error error))))))
+    (let [steps (atom 0)]
+      (check "confirmed fixed batches finish with zero pending WAL"
+             {:batches 12 :pending {:pending-statements 0 :pending-wal-bytes 0}}
+             (collect! options (fn [_] (swap! steps inc))
+                       (fn [] {:pending-statements 0 :pending-wal-bytes 0})))
+      (check "confirmed batch count is not inferred from empty pending WAL" 12 @steps))
+    (doseq [pending [{:pending-statements 1 :pending-wal-bytes 0}
+                     {:pending-statements 0 :pending-wal-bytes 1}]]
+      (check "confirmed mode rejects either pending statements or bytes"
+             :jdbc.chdb-durable-throughput/pending-wal-count-mismatch
+             (rejected-type #(collect! (assoc options :batches 1) (fn [_] nil) (fn [] pending)))))
+    (with-redefs-fn
+      {#'throughput/owned-trial!
+       (fn [kind forwarded]
+         (check "confirmed config uses the same owned uninstrumented writer"
+                [:uninstrumented :per-batch-commit 4]
+                [kind (:ack-boundary forwarded) (:parallelism forwarded)])
+         {:mode :durable-ordered-consumer :measured-rows 3
+          :persisted-ms 3.0 :persisted-rows-per-second 1000.0
+          :jdbc.chdb-durable-throughput/batch-latency-samples [1000000 2000000]})}
+      (fn []
+        (let [summary (get-in (#'throughput/run-config
+                              (assoc options :trials 1 :modes [:durable-ordered-consumer]))
+                             [:summaries :durable-ordered-consumer])]
+          (check "confirmed summary names its boundary" :per-batch-commit (:ack-boundary summary))
+          (check "confirmed summary never relabels commit-inclusive time as admission"
+                 false (contains? summary :admission))
+          (check "confirmed summary retains persisted rates" true (contains? summary :persisted)))))))
+
+(defn- commit-inclusive-result-check! []
+  ;; Exercise actual trial execution/report assembly and the owned parent merge.
+  ;; Only database/publication/process seams are controlled; no native DB opens.
+  (let [root (java.io.File/createTempFile "confirmed-result-contract-" "")
+        _ (.delete root) _ (.mkdirs root)
+        calls (atom 0) flushes (atom 0)
+        options {:selector :ordered-durable-local-512 :ack-boundary :per-batch-commit
+                 :batch-size 2 :batches 2 :warmup-batches 1 :parallelism 4 :trial 1
+                 :question-mark? false}]
+    (try
+      (let [result
+            (with-redefs-fn
+              {#'throughput/persistent-evidence-root! (fn [] root)
+               #'throughput/provider-descriptor!
+               (fn [_ path] {:root path :provider-kind :local-posix :object-id "controlled"})
+               #'throughput/runtime-metadata (fn [] {:scheme-version "10.4.1"})
+               #'throughput/redact-worker-receipt! (fn [& _] nil)
+               #'throughput/trial-context!
+               (fn [_] {:namespace-backend :controlled :object-id "controlled"
+                        :provider-kind :local-posix :cleanup! (fn [] nil)})
+               #'throughput/run-worker!
+               (fn [_ role request]
+                 (case role
+                   :writer
+                   (binding [throughput/*worker-descriptor* (:descriptor request)]
+                     {:value (#'throughput/ordered-consumer-trial (:options request))})
+                   :reader
+                   (let [handoff (:handoff request)]
+                     (check "reader handoff preserves the final actual confirmation"
+                            :reconciled (:flush-outcome handoff))
+                     (check "reader inventory includes warmup and measured rows"
+                            6 (get-in handoff [:expected :n]))
+                     {:value {:recovery {:expected (:expected handoff)
+                                         :result (:expected handoff)}}})))
+               #'durable/writer-dbspec identity
+               #'jdbc/connection (fn [_] (java.io.StringWriter.))
+               #'jdbc/execute! (fn [& _] nil)
+               #'durable/flush! (fn [_] {:status (if (= 1 (swap! flushes inc)) :committed :empty)})
+               #'durable-rows/open-writer (fn [_ opts] {:encoder opts})
+               #'durable-rows/close! (fn [_] nil)
+               #'durable-rows/admit-rows! (fn [& _] (throw (ex-info "Wrong admission route" {})))
+               #'durable-rows/insert-rows-and-flush!
+               (fn [context _ _ _]
+                 (check "assembled trial retains four-fiber encoder selection"
+                        4 (get-in context [:encoder :parallelism]))
+                 (let [n (swap! calls inc)]
+                   {:status (if (= n 3) :reconciled :committed)
+                    :head {"manifest" {"wal" (mapv #(hash-map "size" %)
+                                                    (take n [7 31 47]))}}}))
+               #'throughput/durable-handle identity
+               #'writer/status (fn [_] {:pending-statements 0 :pending-wal-bytes 0})}
+              #( #'throughput/owned-trial! :uninstrumented options))]
+        (check "assembled trial counts every warmup and measured public commit" 3 @calls)
+        (check "confirmed WAL remains positive despite zero pending WAL"
+               [{:total-bytes 78 :records 2} 47 {:pending-statements 0 :pending-wal-bytes 0}]
+               [(:wal-growth result) (:maximum-committed-wal-bytes result)
+                (:pending-before-flush result)])
+        (check "assembled confirmations exclude warmup and preserve reconciliation"
+               {:committed 1 :reconciled 1} (:confirmations result))
+        (check "empty final audit does not replace the last real status"
+               [:reconciled :empty] [(:last-confirmed-status result) (:post-measurement-flush-status result)])
+        (check "persisted time is exactly the commit-inclusive sample total"
+               (:commit-inclusive-ms result) (:persisted-ms result))
+        (check "assembled result contains no admission-only fields"
+               {} (select-keys result [:ingest-ms :ingest-rows-per-second :ingest-counters]))
+        (check "assembled boundaries do not retain the old admission label"
+               [false false :public-insert-rows-and-flush-return]
+               [(contains? (:measurement-boundaries result) :admission)
+                (boolean (some #{:jdbc-return-not-crash-safe-ack} (vals (:measurement-boundaries result))))
+                (get-in result [:measurement-boundaries :sample])])
+        (check "the default admission boundary constant is unchanged"
+               :jdbc-return-not-crash-safe-ack (:admission @#'throughput/measurement-boundaries)))
+      (finally (#'throughput/delete-tree! root)))))
+
 (defn- worker-failure-receipt-checks! []
   ;; Mutation-level child contract: the writer branch may fail anywhere in the
   ;; actual Durable trial, but must rethrow that same throwable after placing
@@ -938,6 +1118,8 @@
   (reset! failures 0)
   (run-checks!)
   (worker-contract-checks!)
+  (commit-inclusive-checks!)
+  (commit-inclusive-result-check!)
   (worker-failure-receipt-checks!)
   (worker-launch-command-checks!)
   (orchestration-contract-checks!)

@@ -43,6 +43,37 @@ fresh Durable snapshot. This selector does not change the serial/default
 consumer or the existing five-trial acceptance gate. Its single empirical p99
 is useful diagnosis, not qualification of the 20k rows/s tail target.
 
+### Encoding-inclusive per-batch commitment diagnostic
+
+The ordered consumer's benchmark configuration also accepts
+`:ack-boundary :per-batch-commit`. This is an explicit harness option, not a
+change to the selector's default or the library. For a small local diagnostic,
+use the existing owned trial with `:selector :ordered-durable-local-512`,
+`:batch-size 5000`, `:batches 12`, `:warmup-batches 2`, `:parallelism 4`, and that
+acknowledgement option. Run it alone with the usual source/runtime, native-route,
+worker-settlement and fresh-reader controls; a 250 MB evidence cap and 180-second
+process bound are intended for this first diagnostic, not a larger sweep.
+
+Each sample calls `json-rows/insert-rows-and-flush!`: encoding, native execution,
+WAL publication and the confirmed/reconciled head commit are all inside the
+timer. Input construction, expected-value folding and receipt accounting remain
+outside. Every batch must return a confirmed receipt; the final untimed `flush!`
+must be empty and cannot replace the last real commit acknowledgement. The fresh
+reader still independently checks all warmup and measured rows after writer exit.
+
+Results name `:batch-latency-boundary :public-insert-rows-and-flush-return` and
+`:persisted-rate-semantics :per-batch-confirmed-publication`. Commit-inclusive
+time/counters are not reported as admission-only time, and there is no separate
+timed final-flush charge. `:wal-growth` sums each measured receipt's newly appended
+WAL reference size; zero pending WAL after commitment does not mean zero WAL
+produced. The harness does not enable automatic rotation or checkpoints.
+
+For 5,000 rows, 200 ms corresponds to 25k rows/s and 250 ms to 20k rows/s at this
+confirmed boundary. Twelve samples give a descriptive median and observed maximum;
+their nearest-rank p99 is only the maximum, not tail qualification or an acceptance
+claim. This option rejects WAL-target accumulation and unrelated selectors. The
+separate S3 `confirmed-10000` lane below excludes encoding and is not interchangeable.
+
 Staged recovery diagnostics use `recovery-512-10`, `recovery-512-25`, and
 `recovery-512-50`. These run one pre-encoded trial of exactly 10, 25, or 50
 512-row WAL records with no warmup rows, then close the writer, open a fresh
@@ -69,7 +100,10 @@ The report keeps these measurements separate:
 - persisted throughput with one explicitly reported flush cadence; and
 - ordinary JDBC and direct prepared/native controls.
 
-The persisted rate amortizes one flush across the reported number of batches.
+The opt-in ordered per-batch mode instead reports encoding-inclusive confirmed
+publication latency without an admission-only summary.
+
+In the admission profiles, the persisted rate amortizes one flush across the reported number of batches.
 It is not a claim of per-batch durability. Single-row inserts and remote
 per-batch flushes are separate ceilings and cannot qualify the primary target.
 

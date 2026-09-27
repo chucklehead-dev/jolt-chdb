@@ -179,6 +179,46 @@
 (defn- successful-flush? [result]
   (contains? successful-flush-statuses (:status result)))
 
+(defn- per-batch-commit? [{:keys [ack-boundary selector target-wal-bytes modes]}]
+  (when-not (or (nil? ack-boundary)
+                (and (= :per-batch-commit ack-boundary)
+                     (= :ordered-durable-local-512 selector)
+                     (or (nil? modes) (= [:durable-ordered-consumer] modes))
+                     (nil? target-wal-bytes)))
+    (throw (ex-info "Unsupported benchmark acknowledgement boundary"
+                    {:type ::invalid-ack-boundary})))
+  (= :per-batch-commit ack-boundary))
+
+(defn- confirmed-batch-wal-bytes [receipt]
+  ;; Public execute-and-flush returns the confirmed head, not a native row count.
+  ;; This lane does not configure checkpoint rotation; each batch appends one WAL.
+  (when-not (successful-flush? receipt)
+    (throw (ex-info "Ordered batch did not confirm publication"
+                    {:type ::unconfirmed-batch})))
+  (let [size (get (peek (get-in receipt [:head "manifest" "wal"])) "size")]
+    (when-not (and (integer? size) (pos? size))
+      (throw (ex-info "Confirmed batch has no WAL size receipt"
+                      {:type ::invalid-commit-receipt})))
+    size))
+
+(defn- submit-ordered-batch! [confirmed? context rows]
+  ((if confirmed? durable-rows/insert-rows-and-flush! durable-rows/admit-rows!)
+   context "otel_logs" log-columns rows))
+
+(defn- ordered-flush-receipt! [confirmed? audit last-commit]
+  (if confirmed?
+    (do
+      (when-not (= :empty (:status audit))
+        (throw (ex-info "Confirmed batches left an unexpected final publication"
+                        {:type ::unexpected-final-flush})))
+      (confirmed-batch-wal-bytes last-commit)
+      last-commit)
+    (do
+      (when-not (successful-flush? audit)
+        (throw (ex-info "Ordered Durable measured flush did not persist"
+                        {:type ::flush-failed})))
+      audit)))
+
 (defn- recovery-memory-observation [before after]
   {:immediately-before-reader-open before
    :after-open-and-reconciliation after
@@ -632,17 +672,18 @@
   ;; execution-only and must never enter bounded EDN or progress output.
   (select-keys configuration
                [:label :selector :batch-size :batches :warmup-batches :trials
-                :parallelism
+                :parallelism :ack-boundary
                 :question-mark? :provider-kind :target-wal-bytes]))
 
 (defn- collect-measured-batches!
   "Run fixed batches or stop after measured pending WAL reaches the target.
 
-  `step!` owns one complete production-path admission. `status!` is sampled
+  `step!` owns one complete production-path admission or confirmed batch. `status!` is sampled
   after that admission, so target selection never estimates WAL from row
   counts. The writer's frozen segment guard remains the final authority and is
-  checked again here before returning evidence."
-  [{:keys [batches target-wal-bytes]} step! status!]
+  checked again here before returning evidence. Per-batch commitment requires
+  fixed batches and empty pending WAL rather than accumulating a WAL target."
+  [{:keys [batches target-wal-bytes] :as options} step! status!]
   (when-not (or (and (integer? batches) (pos? batches)
                      (nil? target-wal-bytes))
                 (and (integer? target-wal-bytes)
@@ -651,12 +692,15 @@
                      (nil? batches)))
     (throw (ex-info "trial requires fixed batches or one bounded WAL target"
                     {:type ::invalid-measurement-boundary})))
-  (let [checked-boundary
+  (let [confirmed? (per-batch-commit? options)
+        checked-boundary
         (fn [completed pending]
-          (when-not (= completed (:pending-statements pending))
+          (when-not (and (= (if confirmed? 0 completed)
+                           (:pending-statements pending))
+                        (or (not confirmed?) (zero? (:pending-wal-bytes pending))))
             (throw (ex-info "Durable pending WAL count mismatch"
                             {:type ::pending-wal-count-mismatch
-                             :expected completed
+                             :expected (if confirmed? 0 completed)
                              :actual (:pending-statements pending)})))
           (when (> (:pending-wal-bytes pending) writer/max-wal-segment-bytes)
             (throw (ex-info "Durable pending WAL crossed its frozen limit"
@@ -835,16 +879,19 @@
         (cleanup!)))))
 
 (defn- ordered-consumer-trial
-  "One opt-in, admission-only product-context trial. A scalar payload-size
+  "One opt-in product-context trial; admission-only unless ack-boundary selects
+  per-batch commitment. A scalar payload-size
   ledger is prepared before the measured window and discarded before GC; it
   never substitutes preencoded SQL for the real ordered consumer call."
   [{:keys [batch-size batches warmup-batches question-mark? trial parallelism]
     :as options}]
-  (let [{:keys [namespace-backend object-id provider-kind cleanup!]}
+  (let [confirmed? (per-batch-commit? options)
+        {:keys [namespace-backend object-id provider-kind cleanup!]}
         (trial-context! options)
         expected (atom empty-expected-aggregates)
         trial-result (atom nil)
         flush-outcome (atom nil)
+        last-commit (atom nil)
         configuration {:namespace-backend namespace-backend :object-id object-id
                        :scratch-parent (:root *worker-descriptor*)
                        :owner "durable-throughput-benchmark"
@@ -861,8 +908,10 @@
              log-row batch-size warmup-batches question-mark? 0 nil
              (fn [_ _ rows]
                (swap! expected accumulate-expected-batch rows question-mark?)
-               (durable-rows/admit-rows!
-                row-context "otel_logs" log-columns rows)))
+               (let [receipt (submit-ordered-batch! confirmed? row-context rows)]
+                 (when confirmed?
+                   (confirmed-batch-wal-bytes receipt)
+                   (reset! last-commit receipt)))))
             (durable/flush! connection)
             (let [size-ledger
                   (mapv
@@ -882,6 +931,8 @@
                   (atom {:samples [] :payload-bytes 0 :statement-bytes 0
                          :maximum-batch-payload-bytes 0
                          :maximum-batch-statement-bytes 0
+                         :confirmations {} :confirmed-wal-bytes 0
+                         :maximum-committed-wal-bytes 0
                          :counter-deltas {}})
                   boundary
                   (collect-measured-batches!
@@ -896,10 +947,12 @@
                               question-mark?)
                        (let [before (counter-sample)
                              batch-start (System/nanoTime)
-                             _ (durable-rows/admit-rows!
-                                row-context "otel_logs" log-columns rows)
+                             receipt (submit-ordered-batch! confirmed? row-context rows)
                              elapsed (- (System/nanoTime) batch-start)
-                             after (counter-sample)]
+                             after (counter-sample)
+                             wal-bytes (when confirmed?
+                                         (confirmed-batch-wal-bytes receipt))]
+                         (when confirmed? (reset! last-commit receipt))
                          (swap! measured
                                 (fn [acc]
                                   (-> acc
@@ -912,6 +965,10 @@
                                               (:payload-bytes sizes))
                                       (update :maximum-batch-statement-bytes max
                                               (:statement-bytes sizes))
+                                      (cond-> confirmed?
+                                        (update-in [:confirmations (:status receipt)] (fnil inc 0))
+                                        confirmed? (update :confirmed-wal-bytes + wal-bytes)
+                                        confirmed? (update :maximum-committed-wal-bytes max wal-bytes))
                                       (update :counter-deltas add-counter-delta
                                               (counter-delta before after))))))))
                    #(writer/status (durable-handle connection)))
@@ -920,15 +977,13 @@
                   samples (:samples measured)
                   ingest-nanos (reduce + 0 samples)
                   pending (:pending boundary)
-                  flush-before (counter-sample)
-                  flush-start (System/nanoTime)
+                  flush-before (when-not confirmed? (counter-sample))
+                  flush-start (when-not confirmed? (System/nanoTime))
                   flush-result (durable/flush! connection)
-                  flush-nanos (- (System/nanoTime) flush-start)
-                  flush-after (counter-sample)]
-              (when-not (successful-flush? flush-result)
-                (throw (ex-info "Ordered Durable measured flush did not persist"
-                                {:type ::flush-failed})))
-              (reset! flush-outcome (:status flush-result))
+                  flush-nanos (if confirmed? 0 (- (System/nanoTime) flush-start))
+                  flush-after (when-not confirmed? (counter-sample))
+                  receipt (ordered-flush-receipt! confirmed? flush-result @last-commit)]
+              (reset! flush-outcome (:status receipt))
               (reset! trial-result
                       (merge
                        {:trial trial :provider-kind provider-kind
@@ -955,12 +1010,32 @@
                         (/ (double (* batch-size completed 1000000000))
                            (+ ingest-nanos flush-nanos))
                         :ingest-counters (:counter-deltas measured)
-                        :flush-counters (counter-delta flush-before flush-after)
+                        :flush-counters (when-not confirmed?
+                                          (counter-delta flush-before flush-after))
                         :pending-before-flush pending
                         :payload-size-source :serial-data-json-parity-ledger
                         :payload-bytes (:payload-bytes measured)
                         :statement-bytes (:statement-bytes measured)}
-                       (wal-size-observation pending measured))))
+                       (wal-size-observation pending measured)))
+              (when confirmed?
+                (swap! trial-result
+                       #(-> %
+                            (dissoc :ingest-ms :ingest-rows-per-second :ingest-counters
+                                    :flush-ms :flush-counters :flush-cadence-bytes)
+                            (assoc :ack-boundary :per-batch-commit
+                                   :batch-latency-boundary :public-insert-rows-and-flush-return
+                                   :commit-inclusive-ms (ms ingest-nanos)
+                                   :commit-inclusive-counters (:counter-deltas measured)
+                                   :confirmations (:confirmations measured)
+                                   :last-confirmed-status (:status receipt)
+                                   :post-measurement-flush-status (:status flush-result)
+                                   :flush-cadence-batches 1 :flush-cadence-rows batch-size
+                                   :persisted-rate-semantics :per-batch-confirmed-publication
+                                   :wal-growth {:total-bytes (:confirmed-wal-bytes measured)
+                                                :records completed}
+                                   :wal-growth-source :confirmed-receipt-last-wal-reference
+                                   :maximum-committed-wal-bytes
+                                   (:maximum-committed-wal-bytes measured))))))
             (finally (durable-rows/close! row-context)))))
       {:result @trial-result :expected @expected
        :flush-outcome @flush-outcome}
@@ -1640,7 +1715,9 @@
   ;; selectors must cross the process boundary so the real child installs its
   ;; observation-only WAL/control phase hook; otherwise stage reports silently
   ;; omit those child phases while claiming an instrumented profile.
+  (per-batch-commit? options)
   (select-keys options [:selector :batch-size :batches :warmup-batches :question-mark?
+                       :ack-boundary
                        :encode-included? :target-wal-bytes :trial :parallelism]))
 
 (defn- provider-descriptor! [options root]
@@ -1949,6 +2026,9 @@
     (File. root)))
 
 (defn- owned-trial! [kind options]
+  (when (and (per-batch-commit? options) (not= :uninstrumented kind))
+    (throw (ex-info "Confirmed ordered batches require the uninstrumented worker"
+                    {:type ::invalid-ack-boundary})))
   (let [options (if (= kind :diagnostic)
                   {:batch-size 512 :batches 1 :warmup-batches 1 :question-mark? false}
                   options)
@@ -1976,12 +2056,18 @@
                          [{:phase :reopened-and-reconciled
                            :data (:recovery (:value reader-receipt))}
                           {:phase :complete :data {:status :ok}}]))
-               :measurement-boundaries measurement-boundaries
+               :measurement-boundaries
+               (cond-> measurement-boundaries
+                 (per-batch-commit? options)
+                 (dissoc :admission)
+                 (per-batch-commit? options)
+                 (assoc :sample :public-insert-rows-and-flush-return))
                :worker-evidence (.getAbsolutePath root)
                :worker-runtime {:writer (:runtime writer-receipt)
                                 :reader (:runtime reader-receipt)})))))
 
 (defn- run-config [configuration]
+  (per-batch-commit? configuration)
   (let [{:keys [trials modes]} configuration
         measured-results
         (reduce
@@ -2017,6 +2103,9 @@
                                  :mode :batch-size :batches :target-wal-bytes
                                  :question-mark-every-row? :batch-latency
                                  :ingest-ms :ingest-rows-per-second :flush-ms
+                                 :ack-boundary :batch-latency-boundary
+                                 :commit-inclusive-ms :commit-inclusive-counters
+                                 :confirmations :post-measurement-flush-status
                                  :persisted-ms :persisted-rows-per-second
                                  :payload-bytes :statement-bytes
                                  :maximum-batch-payload-bytes
@@ -2038,11 +2127,18 @@
                         (latency-summary
                          (mapcat ::batch-latency-samples selected))]
                     [mode
-                     (if (= mode :ordinary-native-preencoded)
+                     (cond
+                       (= mode :ordinary-native-preencoded)
                        (assoc
                         (trial-rate-summary selected :ingest-rows-per-second
                                             :ingest-ms)
                         :batch-latency-across-trials batch-latency)
+                       (per-batch-commit? configuration)
+                       {:ack-boundary :per-batch-commit
+                        :persisted (trial-rate-summary selected :persisted-rows-per-second
+                                                       :persisted-ms)
+                        :batch-latency-across-trials batch-latency}
+                       :else
                        {:admission
                         (trial-rate-summary selected :ingest-rows-per-second
                                             :ingest-ms)
