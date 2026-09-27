@@ -93,9 +93,12 @@
                               "\"owner\":" "\"own\\u0065r\":")]
     (check "escaped key still uses JSON escape semantics"
            valid-head (head/decode document :writer)))
-  (let [extended (assoc valid-head "β😀" "opaque")]
+  (let [extended (assoc valid-head "β😀" "opaque")
+        document (json/write-str extended :escape-unicode false)]
+    (check "Unicode key fixture reaches the plain-key scanner"
+           true (str/includes? document "\"β😀\":"))
     (check "plain Unicode unknown keys remain unchanged"
-           extended (head/decode (json/write-str extended) :writer)))
+           extended (head/decode document :writer)))
   (let [document (str "{\"bad" (char 1) "key\":1,"
                       (subs (json/write-str valid-head) 1))]
     ;; The selected parser currently admits this raw control character. Keep
