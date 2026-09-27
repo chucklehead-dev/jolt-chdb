@@ -25,6 +25,10 @@ shape.
 
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
+Each worker retains its completed immutable row strings; after every worker
+settles, the caller assembles one payload without intermediate chunk strings.
+Each row still has its own host writer and newline, and completed row strings
+remain live until batch assembly. No writer is shared across rows or workers.
 Parallel rows should be fully realized, CPU-only JSON values. Nothing in row
 serialization—including custom writers, lazy value/key realization, or value
 transforms—may park, block, or perform I/O inside a worker. Some Jolt builds

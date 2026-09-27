@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Assemble four-fiber JSONEachRow output once from completed immutable row
+  strings, avoiding intermediate worker chunk strings. Per-row serialization,
+  newline bytes, serial encoding, and worker/error/close settlement are unchanged.
+  This does not change Durable admission or persistence acknowledgement.
+
 - Add `json-each-row/encode-text!` and use it for Durable row submission,
   avoiding an unused payload-only UTF-8 result. The existing `encode-rows!`
   result, encoder lifetime, exact SQL/WAL bytes, and persistence barriers are
