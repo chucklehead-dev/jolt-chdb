@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Update the maintained JDBC provider to scope class callbacks to host tables
+  on domain-capable Jolt runtimes, avoiding scalar JSON classification work.
+  Older runtimes retain legacy registration. JDBC objects and Durable
+  publication, replay and acknowledgement semantics are unchanged.
+
 - Replace two nested shorthand functions in Durable publication verification
   with explicit closures so the control namespace loads on JVM Clojure (#239).
   Add a native-chDB-free JVM publication gate covering byte/file readback,
