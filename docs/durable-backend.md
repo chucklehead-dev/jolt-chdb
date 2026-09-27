@@ -117,6 +117,38 @@ publishes it at the final scratch location. The backend cannot do that content
 verification itself because the expected digest belongs to the manifest/state
 machine layer rather than the object-store operation.
 
+### Optional direct stored-body digest
+
+The separate `ObjectDigest/digest-object` capability leaves the six-operation
+`ObjectBackend` protocol unchanged. It returns `:digested` with an independent
+`:size`, consumed `:byte-count`, and freshly read full lowercase `:sha256`, or
+`:not-found`/`:unsupported`. The control layer still compares both sizes and
+the digest against the manifest. An ETag, cached checksum, or hash of intended
+upload bytes is not evidence of the stored object's contents.
+
+The local provider checks the key and envelope, then hashes the body from the
+same open stream while holding its existing cross-process lock. It owns and
+closes that stream and exposes no path or borrowed handle. The private-root and
+cooperating-process trust boundary is unchanged. This avoids the verifier's
+scratch copy, scratch fsync, and reread; both source and stored-object hashes
+remain. Longer lock-held hashing versus lock-held copying must be measured;
+no throughput benefit is claimed here.
+
+Object scoping forwards the capability with the same key prefix. Memory, S3,
+custom decorators and other unsupported providers keep the existing scratch
+download verifier. Only an absent capability or explicit `:unsupported` selects
+fallback; errors, malformed summaries, missing objects and corruption cannot
+silently downgrade. Recovery downloads and their ownership/cleanup are unchanged.
+
+The backend namespace does not require digest/crypto. The local optional method
+resolves the digest helper before taking the lock. The ordinary control path
+already statically requires digest, and `sha256-file` directly calls its shared
+bounded hash/count helper. Source-CLI tests do not qualify compiled consumers:
+the normal public path needs application-build verification. Standalone compiled
+backend-only direct-digest use additionally requires explicit digest/native
+provider inclusion and reachability qualification; it is not currently claimed
+supported. Backend-only use of the original six operations remains unaffected.
+
 The manual `:durable-file-allocation` alias measures
 `jolt.host/bytes-allocated + jolt.host/gc-bytes` around isolated operations; it
 is evidence rather than a GC-sensitive CI gate. Before changing the transfer

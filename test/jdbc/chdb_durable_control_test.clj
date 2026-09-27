@@ -5,6 +5,8 @@
             [hegel.trace :as ht]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.digest :as digest]
+            [jdbc.chdb-durable-digest-test :as digest-tests]
             [jdbc.chdb.durable.head :as head]
             [jolt.fibers :as fibers]))
 
@@ -1443,10 +1445,91 @@
       (swap! failures inc)
       (println "  FAIL lease/head property" (pr-str result)))))
 
+(defn- digest-backend [delegate summary reads downloads]
+  (reify
+    backend/ObjectBackend
+    (get-bytes [_ key] (backend/get-bytes delegate key))
+    (get-with-etag [_ key] (backend/get-with-etag delegate key))
+    (put-file-if-absent! [_ key path]
+      (backend/put-file-if-absent! delegate key path))
+    (put-bytes-if-absent! [_ key bytes]
+      (backend/put-bytes-if-absent! delegate key bytes))
+    (replace-if-match! [_ key bytes etag]
+      (backend/replace-if-match! delegate key bytes etag))
+    (download-to-file! [_ key path]
+      (swap! downloads inc)
+      (backend/download-to-file! delegate key path))
+    backend/ObjectDigest
+    (digest-object [_ key]
+      (swap! reads inc)
+      (summary key))))
+
+(defn- run-direct-digest-checks! []
+  (let [delegate (backend/memory-backend)
+        reference {"key" "body" "size" 3 "sha256" abc-digest}
+        good {:status :digested :size 3 :byte-count 3 :sha256 abc-digest}
+        summary (atom good)
+        reads (atom 0)
+        downloads (atom 0)
+        store (digest-backend delegate (fn [_] @summary) reads downloads)]
+    (backend/put-bytes-if-absent! delegate "body" (.getBytes "abc" "UTF-8"))
+    (check "direct verifier uses one digest and no download" [reference 1 0]
+           [(control/verify-file-reference! store reference) @reads @downloads])
+    (doseq [bad [(assoc good :size 2) (assoc good :byte-count 2)
+                 (assoc good :sha256 (apply str (repeat 64 "0")))
+                 (dissoc good :byte-count) {:status :downloaded} nil]]
+      (reset! summary bad)
+      (check "malformed or inconsistent direct digest fails without fallback"
+             [::control/object-unverified 0]
+             [(error-type #(control/verify-file-reference! store reference))
+              @downloads]))
+    (reset! summary {:status :not-found})
+    (check "direct missing result preserves reconciliation classification" :missing
+           (get-in (error-data #(control/verify-file-reference! store reference))
+                   [:data :reason]))
+    (reset! summary {:status :unsupported})
+    (check "explicit unsupported result exercises real download fallback"
+           [reference 1]
+           [(control/verify-file-reference! store reference) @downloads])
+    (let [scoped (backend/object-backend delegate "scope")]
+      (backend/put-bytes-if-absent! scoped "body" (.getBytes "abc" "UTF-8"))
+      (check "scoped memory capability falls back without losing prefix" reference
+             (control/verify-file-reference! scoped reference))))
+  (doseq [put-mode [:created :conflict :ambiguous]]
+    (let [delegate (backend/memory-backend)
+          token (:token (control/acquire! delegate base-options))
+          old-reads (atom 0) reads (atom 0) downloads (atom 0) cas-count (atom 0)
+          wrapped (wal-readback-backend delegate put-mode nil old-reads cas-count)
+          store (digest-backend
+                 wrapped
+                 (fn [key]
+                   (let [bytes (backend/get-bytes delegate key)]
+                     {:status :digested :size (alength bytes)
+                      :byte-count (alength bytes) :sha256 (digest/sha256-bytes bytes)}))
+                 reads downloads)
+          path (java.nio.file.Files/createTempFile
+                "jchdb-direct-witness-" ".jsonl"
+                (make-array java.nio.file.attribute.FileAttribute 0))]
+      (try
+        (java.nio.file.Files/write path (.getBytes "abc" "UTF-8")
+                                  (make-array java.nio.file.OpenOption 0))
+        (let [publication (control/publish-wal-file! store token path)]
+          (control/commit-reference!
+           store token {:kind :wal :reference (:reference publication)
+                        :verified-publication publication
+                        :verify-reference! control/verify-file-reference!})
+          (check "direct stored read preserves all publication witness routes"
+                 [(case put-mode :created :published :conflict :already-published
+                                 :ambiguous :reconciled) 1 0 0 1]
+                 [(:status publication) @reads @downloads @old-reads @cas-count]))
+        (finally (java.nio.file.Files/deleteIfExists path))))))
+
 (defn run-checks! []
   (reset! failures 0)
   (run-deterministic-checks!)
   (run-wal-witness-checks!)
+  (run-direct-digest-checks!)
+  (digest-tests/run-checks!)
   (run-stateful-property!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable control checks failed")

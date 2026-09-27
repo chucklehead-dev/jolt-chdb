@@ -27,6 +27,15 @@
     "Stream key into a caller-owned unique local path without overwriting it,
     returning {:status :downloaded :byte-count n}, or {:status :not-found}."))
 
+(defprotocol ObjectDigest
+  (digest-object [backend key]
+    "Optional independent read of the stored body, returning {:status :digested
+    :size independent-body-size :byte-count consumed-bytes :sha256 lowercase-hex},
+    {:status :not-found}, or {:status :unsupported}. Never use a cached/provider
+    checksum or the intended upload bytes. Own the read's snapshot and lifetime;
+    do not expose a provider path or stream. Expected-reference checks remain
+    the control layer's responsibility."))
+
 (defprotocol LocalDurability
   (with-exclusive-lock [platform lock-path f]
     "Run f while holding the provider's cross-process exclusive lock.")
@@ -209,7 +218,13 @@
   (replace-if-match! [_ key bytes etag]
     (replace-if-match! delegate (str prefix (checked-key key)) bytes etag))
   (download-to-file! [_ key local-path]
-    (download-to-file! delegate (str prefix (checked-key key)) local-path)))
+    (download-to-file! delegate (str prefix (checked-key key)) local-path))
+  ObjectDigest
+  (digest-object [_ key]
+    (let [scoped-key (str prefix (checked-key key))]
+      (if (satisfies? ObjectDigest delegate)
+        (digest-object delegate scoped-key)
+        {:status :unsupported}))))
 
 (defn object-backend
   "Scope a namespace backend to one Durable object id.
@@ -484,6 +499,28 @@
           (fn []
             (if-let [source (existing-object-path objects key)]
               (download-local! platform source target)
+              {:status :not-found})))))))
+
+  ObjectDigest
+  (digest-object [_ key]
+    (checked-key key)
+    (local-io
+     :digest-object
+     (fn []
+       ;; Keep backend-only/memory use free of digest/crypto initialization.
+       ;; Resolve before flock; the normal control caller statically requires
+       ;; digest, whose sha256-file also retains the helper's direct call edge.
+       (let [hash-input (requiring-resolve
+                         'jdbc.chdb.durable.digest/hash+count-input-stream)]
+         (with-exclusive-lock
+          platform lock-path
+          (fn []
+            (if-let [source (existing-object-path objects key)]
+              (let [size (- (Files/size source) envelope-header-bytes)]
+                (with-open [input (Files/newInputStream source no-open-options)]
+                  (decode-envelope
+                   (read-exact! input (byte-array envelope-header-bytes)))
+                  (assoc (hash-input input) :status :digested :size size)))
               {:status :not-found}))))))))
 
 (defn local-backend
