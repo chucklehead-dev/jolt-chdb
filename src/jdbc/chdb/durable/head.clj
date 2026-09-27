@@ -307,9 +307,15 @@
       (recur (inc index)))))
 
 (defn- decode-json-key [text start end]
-  ;; Delegate escape and surrogate handling to the same parser used below, so
-  ;; spellings such as "owner" and "ow\u006eer" compare as the same key.
-  (json/read-str (subs text start end)))
+  ;; A plain token's decoded key is its literal contents. Avoid starting a
+  ;; separate JSON parser for every field before parsing the whole document.
+  ;; Search only this key, not the remaining document (which would be O(n^2)).
+  ;; Escaped spellings still use the authoritative parser, so "owner" and
+  ;; "ow\u006eer" compare equally. The full-document parse remains mandatory.
+  (let [key (subs text (inc start) (dec end))]
+    (if (neg? (.indexOf ^String key "\\"))
+      key
+      (json/read-str (subs text start end)))))
 
 (defn- scan-json-object [text start depth]
   (loop [index (skip-json-whitespace text (inc start))
@@ -405,10 +411,15 @@
      (when (> byte-count max-head-bytes)
        (limit! "head.json exceeds the 1 MiB limit" []))
      (when (and (>= byte-count 3)
-                (= [-17 -69 -65] (subvec (vec bytes) 0 3)))
+                (= -17 (aget ^bytes bytes 0))
+                (= -69 (aget ^bytes bytes 1))
+                (= -65 (aget ^bytes bytes 2)))
        (corrupt! "head.json must not contain a UTF-8 byte-order mark" []))
      (let [text (String. bytes "UTF-8")]
-       (when-not (= (vec bytes) (vec (.getBytes text "UTF-8")))
+       ;; Keep the exact round trip: lossy decoding can otherwise change a
+       ;; stored value. Array equality avoids boxing both complete byte arrays.
+       (when-not (java.util.Arrays/equals ^bytes bytes
+                                         ^bytes (.getBytes text "UTF-8"))
          (corrupt! "head.json is not canonical UTF-8" []))
        (let [[start end] (single-json-value-bounds text)
              head (try
