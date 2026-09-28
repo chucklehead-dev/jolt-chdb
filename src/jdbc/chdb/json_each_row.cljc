@@ -100,7 +100,7 @@
 (defn- row-text [row]
   #?(:bb (do (check-native-value! row)
              (str (bb-json/generate-string row) "\n"))
-     :jolt (let [sink (java.io.StringWriter.)]
+     :jolt (let [^java.io.StringWriter sink (java.io.StringWriter.)]
              (json/write row sink)
              (.append sink "\n")
              (.toString sink))
