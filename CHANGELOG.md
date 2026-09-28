@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reuse a validated head decode across the two fresh storage reads within one
+  reference commit only when their bytes are identical. Keep the new read's
+  ETag, ownership checks, reconciliation and intended-head wire roundtrip.
+
 - Avoid allocating tiny character-lookup sets while scanning Durable head JSON.
   Keep the exact whitespace/delimiter vocabulary, duplicate-key rejection,
   full JSON parsing, UTF-8 checks and validation. This is not a throughput claim.

@@ -156,6 +156,26 @@
     {:head (head/decode bytes :read-only)
      :etag etag}))
 
+(defn- read-commit-head!
+  "Fresh storage read with one operation-local, exact-byte decode witness.
+
+  Neither an ETag nor an intended write is a decode witness. Retain a private
+  owned byte copy only after successful writer decoding; reuse only that same
+  document for identical newly read bytes. Always return the new read's ETag.
+  This witness never escapes a single commit or substitutes for ownership/CAS."
+  [store previous]
+  (when-let [{:keys [bytes etag]} (backend/get-with-etag store head-key)]
+    (let [same? (and previous (bytes? bytes) (bytes? (:bytes previous))
+                     (java.util.Arrays/equals ^bytes bytes ^bytes (:bytes previous)))
+          document (if same? (:head previous) (head/decode bytes :writer))
+          owned (if same?
+                  (:bytes previous)
+                  (when (bytes? bytes)
+                    (let [copy (byte-array (alength bytes))]
+                      (System/arraycopy bytes 0 copy 0 (alength bytes))
+                      copy)))]
+      {:head document :etag etag :bytes owned})))
+
 (defn fresh-head
   "Construct the generation-one active head for a new Durable object."
   [{:keys [owner instance expires-at database engine-version backup-format
@@ -970,7 +990,7 @@
   ;; the immutable object. Verification may block, so it deliberately happens
   ;; without locally excluding the writer's heartbeat.
   (let [observe! (when (= :wal kind) (:phase-observe! options))
-        initial (or (read-head! store)
+        initial (or (read-commit-head! store nil)
                     (fail! ::lease-fenced "The Durable head no longer exists"))
         initial-current (assert-owned! (:head initial) token)]
     (reference-transition initial-current token kind reference engine-metadata)
@@ -991,7 +1011,7 @@
       (retry-budget! (assoc options :max-attempts max-attempts))
       {:phase :cas
        :phase-observe! observe!
-       :snapshot (or (read-head! store)
+       :snapshot (or (read-commit-head! store initial)
                      (fail! ::lease-fenced
                             "The Durable head no longer exists"))}
       (fn [_ snapshot]
