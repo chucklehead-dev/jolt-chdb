@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid allocating tiny character-lookup sets while scanning Durable head JSON.
+  Keep the exact whitespace/delimiter vocabulary, duplicate-key rejection,
+  full JSON parsing, UTF-8 checks and validation. This is not a throughput claim.
+
 - On Jolt, append each JSONEachRow newline before extracting the row string,
   avoiding a second full-row copy. Preserve a separate writer for every row,
   exact ordering, custom JSON dispatch and worker settlement. JVM/Babashka

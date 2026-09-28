@@ -288,7 +288,8 @@
 (declare scan-json-value)
 
 (defn- json-whitespace? [character]
-  (contains? #{\space \tab \newline \return} character))
+  ;; A fixed character vocabulary does not need a freshly built lookup set.
+  (case character (\space \tab \newline \return) true false))
 
 (defn- skip-json-whitespace [text start]
   (loop [index start]
@@ -363,7 +364,7 @@
 (defn- scan-json-primitive [text start]
   (loop [index start]
     (if (or (>= index (count text))
-            (contains? #{\, \] \}} (.charAt text index))
+            (case (.charAt text index) (\, \] \}) true false)
             (json-whitespace? (.charAt text index)))
       index
       (recur (inc index)))))
