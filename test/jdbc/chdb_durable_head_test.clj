@@ -4,6 +4,7 @@
             [hegel.core :as h]
             [hegel.generator :as g]
             [jdbc.chdb.durable.head :as head]
+            [jdbc.chdb-durable-head-character-test :as character-test]
             [jdbc.chdb.durable.time-domain :as time-domain]))
 
 (def failures (atom 0))
@@ -357,6 +358,7 @@
 (defn run-checks! []
   (reset! failures 0)
   (run-deterministic-checks)
+  (character-test/run-checks!)
   (run-unknown-field-property!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable head checks failed")
