@@ -19,7 +19,7 @@
       (is (= (count text) (#'head/scan-json-primitive text 0)))))
   (is (= 0 (#'head/scan-json-primitive "" 0))))
 
-(deftest character-classification-does-not-build-lookup-sets
+(deftest character-classification-uses-direct-cases
   ;; Jolt compiles contains? intrinsically, so redefining that var is not a
   ;; meaningful allocation oracle. Check the selected source's literal sets.
   ;; This does not constrain duplicate detection's per-object `seen` set.

@@ -288,7 +288,7 @@
 (declare scan-json-value)
 
 (defn- json-whitespace? [character]
-  ;; A fixed character vocabulary does not need a freshly built lookup set.
+  ;; A fixed character vocabulary does not need general set membership dispatch.
   (case character (\space \tab \newline \return) true false))
 
 (defn- skip-json-whitespace [text start]
