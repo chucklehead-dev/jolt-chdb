@@ -7,6 +7,7 @@
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb-durable-digest-test :as digest-tests]
+            [jdbc.chdb-durable-head-reuse-test :as head-reuse-tests]
             [jdbc.chdb.durable.head :as head]
             [jolt.fibers :as fibers]))
 
@@ -1530,6 +1531,7 @@
   (run-wal-witness-checks!)
   (run-direct-digest-checks!)
   (digest-tests/run-checks!)
+  (head-reuse-tests/run-checks!)
   (run-stateful-property!)
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " Durable control checks failed")
