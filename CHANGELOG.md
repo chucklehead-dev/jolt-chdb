@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- On Jolt, append each JSONEachRow newline before extracting the row string,
+  avoiding a second full-row copy. Preserve a separate writer for every row,
+  exact ordering, custom JSON dispatch and worker settlement. JVM/Babashka
+  paths and Durable publication semantics are unchanged.
+
 - Avoid separately JSON-parsing plain head field names during duplicate-key
   detection. Escaped keys still use the existing parser; full-document parsing,
   duplicate rejection, UTF-8 checks, and lease/manifest validation are retained.
