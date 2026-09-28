@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reduce allocation from character-set lookups while scanning Durable head JSON.
+  Keep the exact whitespace/delimiter vocabulary, duplicate-key rejection,
+  full JSON parsing, UTF-8 checks and validation. This is not a throughput claim.
+
 - Update the maintained JDBC provider to scope class callbacks to host tables
   on domain-capable Jolt runtimes, avoiding scalar JSON classification work.
   Older runtimes retain legacy registration. JDBC objects and Durable
