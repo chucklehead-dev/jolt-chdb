@@ -984,6 +984,10 @@
 (defn -main [& [mode]]
   (reset! failures 0)
   (check-runtime!)
+  (when (= "true" (System/getenv "JOLT_CHDB_REQUIRE_WAL_CHUNKS"))
+    (when-not (wal/native-prepared-enabled?)
+      (throw (ex-info "Required owned WAL chunk codec is unavailable" {})))
+    (println "  ok   required owned WAL chunk codec passed byte parity"))
   (case mode
     "core" (do (run-shared-query-buffer-checks)
                (run-buffered-admission-checks)

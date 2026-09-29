@@ -6,7 +6,8 @@
   implementation only after it produces the same bytes for the complete
   Durable record corpus.  The probe is deliberately behavioral: a compiler
   version or an advertised method name is not a correctness contract."
-  (:require [clojure.data.json :as json])
+  (:require [clojure.data.json :as json]
+            #?(:jolt [jdbc.chdb.durable.wal-chunks :as chunks]))
   (:import [java.io StringWriter]))
 
 (defn- portable-line
@@ -94,6 +95,64 @@
   "Expose the established portable oracle for cross-host corpus tests only."
   [sql]
   (portable-line sql))
+
+(defn prepared-size
+  "Internal byte count for a complete prepared record or legacy byte array."
+  [prepared]
+  (if (map? prepared) (:byte-count prepared) (alength prepared)))
+
+(defn write-prepared!
+  "Internal spool write. Counters advance only after this entire call succeeds."
+  [output prepared]
+  (if (map? prepared)
+    (doseq [[bytes used] (:chunks prepared)]
+      (.write ^java.io.OutputStream output bytes 0 used))
+    (.write ^java.io.OutputStream output prepared)))
+
+#?(:jolt
+   (defn- native-prepared-line [sql]
+     (let [[total segments] (chunks/encode sql)
+           valid? (and (integer? total) (pos? total) (vector? segments)
+                       (seq segments)
+                       (every? (fn [[bytes used]]
+                                 (and (integer? used)
+                                      (<= 1 used (alength bytes) 65536)))
+                               segments)
+                       (= total (reduce + 0 (map second segments))))]
+       (when-not valid?
+         (throw (ex-info "Invalid prepared WAL chunk descriptor" {})))
+       {:byte-count total :chunks segments})))
+
+#?(:jolt
+   (defn- probe-native-prepared? []
+     (try
+       (every? (fn [sql]
+                 (let [out (java.io.ByteArrayOutputStream.)]
+                   (write-prepared! out (native-prepared-line sql))
+                   (java.util.Arrays/equals (portable-line sql) (.toByteArray out))))
+               (concat (native-probe-sql)
+                       (map #(str (apply str (repeat % "a")) "😀\"/\\\nβ")
+                            [65512 65524 65535 65536 131071])))
+       (catch Throwable _ false))))
+
+(def ^:private native-prepared-capable?
+  #?(:jolt (delay (probe-native-prepared?)) :clj (delay false)))
+
+(defn native-prepared-enabled?
+  "Internal observability; source/host availability alone never admits a codec."
+  [] @native-prepared-capable?)
+
+(defn prepared-line
+  "Internal complete pre-execution record. Public `line` still returns bytes.
+
+  The source-only native codec is selected only after complete behavioral
+  parity. JVM and Babashka keep the existing byte-array path; unavailable codec
+  support at the behavioral probe also falls back. Standalone/AOT qualification
+  is outstanding. This changes representation, never acknowledgement or WAL
+  bytes, and does not authorize replay of an unverified prefix."
+  [sql]
+  #?(:jolt (if (native-prepared-enabled?) (native-prepared-line sql) (line sql))
+     :clj (line sql)))
 
 #?(:jolt
    (defn native-line-bytes

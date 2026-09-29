@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
+  avoiding a full output-buffer assembly. Keep the public WAL byte encoder,
+  behavioral fallback, complete pre-execution preparation, limits, checkpoint
+  requirement after partial append failure, and stored-object verification.
+  This is not a measured Durable throughput or standalone/AOT qualification.
+
 - Reuse a validated head decode across the two fresh storage reads within one
   reference commit only when their bytes are identical. Keep the new read's
   ETag, ownership checks, reconciliation and intended-head wire roundtrip.

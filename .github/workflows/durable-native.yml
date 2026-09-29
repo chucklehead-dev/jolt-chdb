@@ -8,6 +8,7 @@ on:
       - .github/workflows/durable-native.yml
       - deps.edn
       - resources/jdbc/chdb/abi.edn
+      - resources/jdbc/chdb/wal_chunks.ss
       - scripts/qualify-durable-native.sh
       - scripts/check-native-process-lifecycle.sh
       - scripts/check-native-typed-process-exit.sh
