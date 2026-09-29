@@ -941,12 +941,13 @@
 (defn- commit-inclusive-result-check! []
   ;; Exercise actual trial execution/report assembly and the owned parent merge.
   ;; Only database/publication/process seams are controlled; no native DB opens.
-  (let [root (java.io.File/createTempFile "confirmed-result-contract-" "")
+  (doseq [ledger? [false true]]
+   (let [root (java.io.File/createTempFile "confirmed-result-contract-" "")
         _ (.delete root) _ (.mkdirs root)
-        calls (atom 0) flushes (atom 0)
+        calls (atom 0) flushes (atom 0) counter-reads (atom 0)
         options {:selector :ordered-durable-local-512 :ack-boundary :per-batch-commit
                  :batch-size 2 :batches 2 :warmup-batches 1 :parallelism 4 :trial 1
-                 :question-mark? false}]
+                 :question-mark? false :batch-counter-ledger? ledger?}]
     (try
       (let [result
             (with-redefs-fn
@@ -954,6 +955,9 @@
                #'throughput/provider-descriptor!
                (fn [_ path] {:root path :provider-kind :local-posix :object-id "controlled"})
                #'throughput/runtime-metadata (fn [] {:scheme-version "10.4.1"})
+               #'throughput/counter-sample
+               (fn [] (zipmap @#'throughput/counter-keys
+                              (repeat (* 10 (swap! counter-reads inc)))))
                #'throughput/redact-worker-receipt! (fn [& _] nil)
                #'throughput/trial-context!
                (fn [_] {:namespace-backend :controlled :object-id "controlled"
@@ -966,6 +970,9 @@
                      {:value (#'throughput/ordered-consumer-trial (:options request))})
                    :reader
                    (let [handoff (:handoff request)]
+                     (check "counter ledger is absent from reader handoff"
+                            false (contains? (:result handoff)
+                                             :jdbc.chdb-durable-throughput/batch-counter-ledger))
                      (check "reader handoff preserves the final actual confirmation"
                             :reconciled (:flush-outcome handoff))
                      (check "reader inventory includes warmup and measured rows"
@@ -991,6 +998,29 @@
                #'writer/status (fn [_] {:pending-statements 0 :pending-wal-bytes 0})}
               #( #'throughput/owned-trial! :uninstrumented options))]
         (check "assembled trial counts every warmup and measured public commit" 3 @calls)
+        (check "counter ledger adds no snapshots and excludes warmup" 4 @counter-reads)
+        (check "counter ledger opt-in controls presence" ledger?
+               (contains? result :jdbc.chdb-durable-throughput/batch-counter-ledger))
+        (when ledger?
+          (let [ledger (:jdbc.chdb-durable-throughput/batch-counter-ledger result)
+                samples (:samples ledger)
+                expected-delta (assoc (zipmap @#'throughput/counter-keys (repeat 10))
+                                      :scheme-heap-bytes-allocated 20)]
+            (check "ledger names its diagnostic limits" [true false]
+                   [(:diagnostic-only? ledger) (:target-qualification? ledger)])
+            (check "ledger pairs every measured latency in acquisition order"
+                   (:jdbc.chdb-durable-throughput/batch-latency-samples result)
+                   (mapv :latency-nanos samples))
+            (check "ledger excludes warmup indices" [0 1] (mapv :batch-index samples))
+            (check "ledger retains actual scripted deltas" [expected-delta expected-delta]
+                   (mapv :counter-deltas samples))
+            (check "retained deltas exactly sum to aggregate counters"
+                   (:commit-inclusive-counters result)
+                   (reduce #'throughput/add-counter-delta {} (map :counter-deltas samples)))
+            (check "ledger contains only index latency and scalar counters"
+                   true (every? #(and (= #{:batch-index :latency-nanos :counter-deltas}
+                                         (set (keys %)))
+                                      (every? number? (vals (:counter-deltas %)))) samples))))
         (check "confirmed WAL remains positive despite zero pending WAL"
                [{:total-bytes 78 :records 2} 47 {:pending-statements 0 :pending-wal-bytes 0}]
                [(:wal-growth result) (:maximum-committed-wal-bytes result)
@@ -1010,7 +1040,43 @@
                 (get-in result [:measurement-boundaries :sample])])
         (check "the default admission boundary constant is unchanged"
                :jdbc-return-not-crash-safe-ack (:admission @#'throughput/measurement-boundaries)))
-      (finally (#'throughput/delete-tree! root)))))
+      (finally (#'throughput/delete-tree! root))))))
+
+(defn- counter-ledger-contract-checks! []
+  (let [options {:selector :ordered-durable-local-512 :ack-boundary :per-batch-commit
+                 :batch-size 5000 :batches 100 :warmup-batches 2
+                 :parallelism 4 :trials 1 :modes [:durable-ordered-consumer]
+                 :batch-counter-ledger? true}
+        ledger {:diagnostic-only? true :target-qualification? false
+                :samples [{:batch-index 0 :latency-nanos 1 :counter-deltas {:gc-count 1}}]}
+        private-key :jdbc.chdb-durable-throughput/batch-counter-ledger]
+    (check "ledger option crosses worker boundary" true
+           (:batch-counter-ledger? (#'throughput/worker-options options)))
+    (doseq [bad [(assoc options :batch-counter-ledger? :yes)
+                 (assoc options :batches 10001)
+                 (dissoc options :ack-boundary)]]
+      (check "unsupported counter ledger is rejected before worker launch"
+             :jdbc.chdb-durable-throughput/invalid-counter-ledger
+             (rejected-type #( #'throughput/worker-options bad))))
+    (doseq [value [{:safe 1 private-key ledger}
+                   {:result {:safe 1 private-key ledger} :expected {:n 1}}]]
+      (let [redacted (#'throughput/redact-batch-samples value)]
+        (check "counter samples are removed from retained worker evidence"
+               false (contains? (or (:result redacted) redacted) private-key))))
+    (with-redefs-fn
+      {#'throughput/owned-trial!
+       (fn [_ _] {:mode :durable-ordered-consumer :measured-rows 5000 :persisted-ms 1
+                  :persisted-rows-per-second 5000000 private-key ledger
+                  :jdbc.chdb-durable-throughput/batch-latency-samples [1]})}
+      (fn []
+        (let [report (#'throughput/run-config options)
+              result (first (:results report))]
+          (check "final diagnostic report exposes the labeled ledger" ledger
+                 (:batch-counter-ledger result))
+          (check "final report does not duplicate private counter samples" false
+                 (contains? result private-key))
+          (check "report configuration records the diagnostic opt-in" true
+                 (get-in report [:configuration :batch-counter-ledger?])))))))
 
 (defn- worker-failure-receipt-checks! []
   ;; Mutation-level child contract: the writer branch may fail anywhere in the
@@ -1137,6 +1203,7 @@
   (worker-contract-checks!)
   (commit-inclusive-checks!)
   (commit-inclusive-result-check!)
+  (counter-ledger-contract-checks!)
   (worker-failure-receipt-checks!)
   (worker-launch-command-checks!)
   (orchestration-contract-checks!)

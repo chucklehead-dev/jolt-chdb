@@ -45,6 +45,18 @@ is useful diagnosis, not qualification of the 20k rows/s tail target.
 
 ### Encoding-inclusive per-batch commitment diagnostic
 
+For tail diagnosis, add `:batch-counter-ledger? true` to a confirmed ordered
+configuration with 1–10,000 fixed batches. The final report includes a labeled
+`:batch-counter-ledger` containing every measured batch index, latency and
+counter delta. It reuses the snapshots already read around each batch; warmup
+batches are excluded. The reader handoff and retained worker receipts omit
+this series. The option is off by default.
+
+Retention happens after the batch timer and counter read. Its allocations can
+still affect later collections, so use this report for diagnosis and repeat
+throughput qualification with the option off. Calling-thread CPU excludes
+worker CPU; a GC delta alone does not explain all latency in that batch.
+
 The ordered consumer's benchmark configuration also accepts
 `:ack-boundary :per-batch-commit`. This is an explicit harness option, not a
 change to the selector's default or the library. For a small local diagnostic,

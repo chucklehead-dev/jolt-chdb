@@ -87,6 +87,23 @@
       (finally (is (= :closed (encoder/close! context)))))))
 
 #?(:jolt
+   (deftest row-newline-is-written-before-single-string-extraction
+     (let [context (encoder/open-encoder)
+           sinks (atom [])
+           value (reify json/JSONWriter
+                   (-write [_ sink _]
+                     (swap! sinks conj [sink (.toString sink)])
+                     (.append sink "true")))]
+       (try
+         (with-redefs-fn
+           {#'json/write-str (fn [& _] (throw (Exception. "intermediate-row-string")))}
+           #(is (= "true\ntrue\n" (encoder/encode-text! context [value value]))))
+         (is (= ["" ""] (mapv second @sinks)))
+         (is (not (identical? (ffirst @sinks) (first (second @sinks))))
+             "each row retains its own initially empty writer")
+         (finally (is (= :closed (encoder/close! context))))))))
+
+#?(:jolt
    (deftest parallel-skips-intermediate-chunk-payloads
      ;; The old worker called serial-payload four times per batch. Its exact
      ;; parent is the causal red: output remains correct but the zero-call

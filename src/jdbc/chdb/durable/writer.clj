@@ -140,7 +140,7 @@
 (defn- wal-line [sql]
   ;; Retain this narrow seam: writer tests inject an encoding failure here so
   ;; they cover the native and portable selectors without coupling to data.json.
-  (wal/line sql))
+  (wal/prepared-line sql))
 
 (defn- ensure-open-wal-spool!
   "Allocate the current append target before native execution.
@@ -165,15 +165,15 @@
     ;; Write first, then advance scalar counters. A write exception leaves the
     ;; record uncounted and lets the caller require a checkpoint for the
     ;; already-successful native mutation.
-    (.write ^BufferedOutputStream (:output spool) line)
+    (wal/write-prepared! (:output spool) line)
     (swap! (:wal-state writer)
            (fn [state]
              (-> state
-                 (update :byte-count + (alength line))
+                 (update :byte-count + (wal/prepared-size line))
                  (update :statement-count inc)
                  (update :spool
                          #(-> %
-                              (update :byte-count + (alength line))
+                              (update :byte-count + (wal/prepared-size line))
                               (update :statement-count inc))))))))
 
 (defn- seal-wal! [writer]
@@ -293,7 +293,7 @@
                        "A sealed Durable WAL spool cannot accept another statement"))
             line (wal-line sql)
             next-segment-bytes (+ (:byte-count @(:wal-state writer))
-                                  (alength line))]
+                                  (wal/prepared-size line))]
         (when (> next-segment-bytes max-wal-segment-bytes)
           (fail! ::limit-exceeded "Durable WAL segment would exceed 128 MiB"))
         line))))
@@ -355,7 +355,7 @@
     (if line
       (try
         (observed-writer-phase
-         (:writer-phase! (:operations writer)) :wal-append (alength line)
+         (:writer-phase! (:operations writer)) :wal-append (wal/prepared-size line)
          #(append-wal! writer line))
         (catch Throwable error
           ;; Native execution has returned, but the exact replay line is not
