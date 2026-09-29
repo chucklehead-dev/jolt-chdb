@@ -11,6 +11,26 @@ permissions:
   contents: read
 
 jobs:
+  owned-wal-chunks:
+    name: Required native owned WAL chunks
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/../jolt-cache-wal-chunks-a6c6aeb8
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/../jolt-gitlibs-wal-chunks-a6c6aeb8
+      JOLT_CHDB_REQUIRE_WAL_CHUNKS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install immutable native-capable canonical aspect compiler
+        uses: ./.github/actions/install-jolt-aspects
+        with:
+          source-sha: a6c6aeb8e48c1137a37e1a1b7623636c1d374a99
+          version: v0.8.6-aspects-ga6c6aeb8
+      - name: Require codec selection and run ownership and fault tests
+        run: jolt -Srepro -M:durable-wal-chunks-test
+      - name: Require codec selection in fresh-process native recovery
+        run: bash scripts/qualify-durable-native.sh "$RUNNER_TEMP/chdb-durable-wal-chunks"
+
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)
     runs-on: ubuntu-latest
@@ -119,6 +139,11 @@ jobs:
           -M -m jdbc.chdb-json-each-row-test
       - name: Test ordered JSONEachRow encoder on Babashka
         run: bb -cp src:test -m jdbc.chdb-json-each-row-test
+      - name: Test prepared WAL portable fallback on JVM Clojure
+        run: >-
+          clojure -Srepro
+          -Sdeps '{:aliases {:wal-fallback-test {:replace-paths ["src" "resources" "test"] :replace-deps {org.clojure/clojure {:mvn/version "1.12.2"} org.clojure/data.json {:mvn/version "2.5.2"}}}}}'
+          -M:wal-fallback-test -m jdbc.chdb-durable-wal-chunks-test
       - name: Test portable Durable publication on JVM Clojure
         timeout-minutes: 3
         run: >-
@@ -162,6 +187,10 @@ jobs:
         run: bash scripts/qualify-ffi-runtimes.sh jolt
       - name: Install pinned Hegel native library
         run: jolt -A:test -m hegel.install
+      - name: Test prepared WAL capability selector and failure contract
+        # Old pinned runtimes may select the portable fallback. Native candidate
+        # qualification must additionally require JOLT_CHDB_REQUIRE_WAL_CHUNKS.
+        run: jolt -M:durable-wal-chunks-test
       - name: Test Durable owned threads with one Jolt carrier
         run: jolt -M:durable-thread-test
       - name: Test Durable operation-worker close joins

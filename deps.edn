@@ -80,6 +80,9 @@
            :durable-wal-encoder-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-wal-encoder-test"]}
+           :durable-wal-chunks-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-wal-chunks-test"]}
            :durable-writer-concurrency-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-writer-concurrency-test"]}

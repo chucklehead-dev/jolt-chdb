@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
+  avoiding a full output-buffer assembly. Keep the public WAL byte encoder,
+  behavioral fallback, complete pre-execution preparation, limits, checkpoint
+  requirement after partial append failure, and stored-object verification.
+  This is not a measured Durable throughput or standalone/AOT qualification.
+  A separate immutable-compiler CI lane requires native selection in both
+  focused ownership/fault tests and fresh-process recovery, rejecting skips.
+
 - Reuse a validated head decode across the two fresh storage reads within one
   reference commit only when their bytes are identical. Keep the new read's
   ETag, ownership checks, reconciliation and intended-head wire roundtrip.
@@ -14,11 +22,19 @@
   on domain-capable Jolt runtimes, avoiding scalar JSON classification work.
   Older runtimes retain legacy registration. JDBC objects and Durable
   publication, replay and acknowledgement semantics are unchanged.
+- On Jolt, append each JSONEachRow newline before extracting the row string,
+  avoiding a second full-row copy. Preserve a separate writer for every row,
+  exact ordering, custom JSON dispatch and worker settlement. JVM/Babashka
+  paths and Durable publication semantics are unchanged.
 
 - Avoid separately JSON-parsing plain head field names during duplicate-key
   detection. Escaped keys still use the existing parser; full-document parsing,
   duplicate rejection, UTF-8 checks, and lease/manifest validation are retained.
   An independent parse-count test guards the repeated-parser regression.
+
+- Add an opt-in confirmed-batch counter ledger to the Durable benchmark. It
+  pairs every measured latency with the existing counter snapshots, without
+  adding timed probes, to investigate GC and other tail-latency changes.
 
 - Check Durable head BOM and UTF-8 round-trip bytes without materializing
   full byte vectors (#242). Size limits, byte-for-byte validation, error ordering and

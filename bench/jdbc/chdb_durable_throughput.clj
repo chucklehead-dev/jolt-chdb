@@ -189,6 +189,17 @@
                     {:type ::invalid-ack-boundary})))
   (= :per-batch-commit ack-boundary))
 
+(defn- batch-counter-ledger? [{:keys [batch-counter-ledger? batches] :as options}]
+  (when-not (or (nil? batch-counter-ledger?) (boolean? batch-counter-ledger?))
+    (throw (ex-info "batch-counter-ledger? must be Boolean"
+                    {:type ::invalid-counter-ledger})))
+  (when (and batch-counter-ledger?
+             (not (and (per-batch-commit? options)
+                       (integer? batches) (<= 1 batches 10000))))
+    (throw (ex-info "Counter ledger requires 1–10000 confirmed ordered batches"
+                    {:type ::invalid-counter-ledger})))
+  (true? batch-counter-ledger?))
+
 (defn- confirmed-batch-wal-bytes [receipt]
   ;; Public execute-and-flush returns the confirmed head, not a native row count.
   ;; This lane does not configure checkpoint rotation; each batch appends one WAL.
@@ -672,7 +683,7 @@
   ;; execution-only and must never enter bounded EDN or progress output.
   (select-keys configuration
                [:label :selector :batch-size :batches :warmup-batches :trials
-                :parallelism :ack-boundary
+                :parallelism :ack-boundary :batch-counter-ledger?
                 :question-mark? :provider-kind :target-wal-bytes]))
 
 (defn- collect-measured-batches!
@@ -892,6 +903,7 @@
   [{:keys [batch-size batches warmup-batches question-mark? trial parallelism]
     :as options}]
   (let [confirmed? (per-batch-commit? options)
+        ledger? (batch-counter-ledger? options)
         {:keys [namespace-backend object-id provider-kind cleanup!]}
         (trial-context! options)
         expected (atom empty-expected-aggregates)
@@ -934,12 +946,13 @@
                    (range batches))
                   _ (System/gc)
                   measured
-                  (atom {:samples [] :payload-bytes 0 :statement-bytes 0
+                  (atom (cond-> {:samples [] :payload-bytes 0 :statement-bytes 0
                          :maximum-batch-payload-bytes 0
                          :maximum-batch-statement-bytes 0
                          :confirmations {} :confirmed-wal-bytes 0
                          :maximum-committed-wal-bytes 0
-                         :counter-deltas {}})
+                         :counter-deltas {}}
+                          ledger? (assoc :batch-counter-ledger [])))
                   boundary
                   (collect-measured-batches!
                    options
@@ -956,6 +969,7 @@
                              receipt (submit-ordered-batch! confirmed? row-context rows)
                              elapsed (- (System/nanoTime) batch-start)
                              after (counter-sample)
+                             delta (counter-delta before after)
                              wal-bytes (when confirmed?
                                          (confirmed-batch-wal-bytes receipt))]
                          (when confirmed? (reset! last-commit receipt))
@@ -975,8 +989,12 @@
                                         (update-in [:confirmations (:status receipt)] (fnil inc 0))
                                         confirmed? (update :confirmed-wal-bytes + wal-bytes)
                                         confirmed? (update :maximum-committed-wal-bytes max wal-bytes))
-                                      (update :counter-deltas add-counter-delta
-                                              (counter-delta before after))))))))
+                                      (update :counter-deltas add-counter-delta delta)
+                                      (cond-> ledger?
+                                        (update :batch-counter-ledger conj
+                                                {:batch-index batch
+                                                 :latency-nanos elapsed
+                                                 :counter-deltas delta}))))))))
                    #(writer/status (durable-handle connection)))
                   measured @measured
                   completed (:batches boundary)
@@ -1023,6 +1041,12 @@
                         :payload-bytes (:payload-bytes measured)
                         :statement-bytes (:statement-bytes measured)}
                        (wal-size-observation pending measured)))
+              (when ledger?
+                (swap! trial-result assoc ::batch-counter-ledger
+                       {:diagnostic-only? true :target-qualification? false
+                        :boundary :public-insert-rows-and-flush-return
+                        :counter-source :existing-before-after-snapshots
+                        :samples (:batch-counter-ledger measured)}))
               (when confirmed?
                 (swap! trial-result
                        #(-> %
@@ -1722,8 +1746,9 @@
   ;; observation-only WAL/control phase hook; otherwise stage reports silently
   ;; omit those child phases while claiming an instrumented profile.
   (per-batch-commit? options)
+  (batch-counter-ledger? options)
   (select-keys options [:selector :batch-size :batches :warmup-batches :question-mark?
-                       :ack-boundary
+                       :ack-boundary :batch-counter-ledger?
                        :encode-included? :target-wal-bytes :trial :parallelism]))
 
 (defn- provider-descriptor! [options root]
@@ -1862,8 +1887,8 @@
   ;; summary. Worker receipts and reader requests are retained evidence, so
   ;; they must not retain that raw series after its aggregate has been formed.
   (if (contains? value :result)
-    (update value :result dissoc ::batch-latency-samples)
-    (dissoc value ::batch-latency-samples)))
+    (update value :result dissoc ::batch-latency-samples ::batch-counter-ledger)
+    (dissoc value ::batch-latency-samples ::batch-counter-ledger)))
 
 (defn- redact-worker-receipt! [root role receipt]
   (spit (File. root (str (name role) "-result.edn"))
@@ -2122,7 +2147,11 @@
                   (conj acc result)))
               acc ordered-modes)))
          [] (range 1 (inc trials)))
-        results (mapv #(dissoc % ::batch-latency-samples) measured-results)]
+        results (mapv (fn [result]
+                        (cond-> (dissoc result ::batch-latency-samples ::batch-counter-ledger)
+                          (contains? result ::batch-counter-ledger)
+                          (assoc :batch-counter-ledger (::batch-counter-ledger result))))
+                      measured-results)]
     {:configuration (report-configuration configuration)
      :results results
      :summaries
