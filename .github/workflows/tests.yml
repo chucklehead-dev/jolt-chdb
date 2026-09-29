@@ -11,6 +11,26 @@ permissions:
   contents: read
 
 jobs:
+  owned-wal-chunks:
+    name: Required native owned WAL chunks
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/../jolt-cache-wal-chunks-a6c6aeb8
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/../jolt-gitlibs-wal-chunks-a6c6aeb8
+      JOLT_CHDB_REQUIRE_WAL_CHUNKS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install immutable native-capable canonical aspect compiler
+        uses: ./.github/actions/install-jolt-aspects
+        with:
+          source-sha: a6c6aeb8e48c1137a37e1a1b7623636c1d374a99
+          version: v0.8.6-aspects-ga6c6aeb8
+      - name: Require codec selection and run ownership and fault tests
+        run: jolt -Srepro -M:durable-wal-chunks-test
+      - name: Require codec selection in fresh-process native recovery
+        run: bash scripts/qualify-durable-native.sh "$RUNNER_TEMP/chdb-durable-wal-chunks"
+
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)
     runs-on: ubuntu-latest

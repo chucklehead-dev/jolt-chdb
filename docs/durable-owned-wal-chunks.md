@@ -48,7 +48,12 @@ reject silent fallback. The native qualification parent is
 `scripts/qualify-durable-native.sh DIRECTORY`; its child alias requires a
 phase argument and is not a standalone aggregate command.
 
-The ordinary pinned CI lane may qualify fallback only. Performance comparisons
+The ordinary pinned CI lane may qualify fallback only. A separate immutable
+canonical-compiler lane requires native selection in both the focused tests
+and fresh-process native recovery; failure to select is a failure, not a skip.
+This functional lane is separate from the modern cumulative performance
+baseline and does not change consumer compiler pins.
+Performance comparisons
 must use identical runtime/GC settings, confirmed commits and fresh-process
 readback, and must record whether the new selector is active. Preparation-only
 timings do not establish end-to-end throughput, p99, S3 or recovery targets.
