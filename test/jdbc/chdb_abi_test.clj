@@ -185,6 +185,54 @@
        (sort-by first)
        vec))
 
+(defn- yaml-child-lines [lines]
+  ;; Narrow, fail-closed parser for this action/workflow's two-space layout.
+  ;; Do not admit a value merely because it occurs elsewhere in the document.
+  (take-while #(or (str/blank? %) (> (yaml-space-indent %) 2)) lines))
+
+(defn- action-default-input? [action input expected]
+  (let [inputs (->> (str/split-lines action)
+                    (drop-while #(not= "inputs:" %)) rest
+                    (take-while #(or (str/blank? %) (pos? (yaml-space-indent %)))))
+        field (drop-while #(not= (str "  " input ":") %) inputs)]
+    (boolean
+     (and (seq field)
+          (some #(= (str "default: " expected) (str/trim %))
+                (yaml-child-lines (rest field)))))))
+
+(defn- parameterized-action-links? [action]
+  (and
+   (= 2 (count (filter #(= "ACTION_JOLT_SOURCE_SHA: ${{ inputs.source-sha }}" (str/trim %))
+                       (str/split-lines action))))
+   (= 2 (count (filter #(= "ACTION_JOLT_VERSION: ${{ inputs.version }}" (str/trim %))
+                       (str/split-lines action))))
+   (every? #(str/includes? action %)
+           ["path: ${{ runner.tool_cache }}/jolt-aspects/${{ inputs.source-sha }}"
+            "key: jolt-aspects-${{ runner.os }}-${{ runner.arch }}-${{ inputs.source-sha }}"
+            "fetch --depth 1 origin \"$ACTION_JOLT_SOURCE_SHA\""
+            "test \"$(git -C \"$source_dir\" rev-parse HEAD)\" = \"$ACTION_JOLT_SOURCE_SHA\""
+            "JOLT_VERSION=\"$ACTION_JOLT_VERSION\""
+            "test \"$actual_version\" = \"jolt $ACTION_JOLT_VERSION\""
+            "install_dir=\"$RUNNER_TOOL_CACHE/jolt-aspects/$ACTION_JOLT_SOURCE_SHA\""
+            "echo \"source-sha=$ACTION_JOLT_SOURCE_SHA\" >> \"$GITHUB_OUTPUT\""])))
+
+(defn- native-wal-job-pin-matches? [pins workflow]
+  (let [{:keys [line commit version job cache-namespace]}
+        (get-in pins [:jolt :native-wal-chunks-compiler])
+        body-lines (->> (str/split-lines workflow)
+                        (drop-while #(not= (str "  " job ":") %)) rest
+                        yaml-child-lines)
+        body (str/join "\n" body-lines)]
+    (and (= "integration/aspects" line)
+         (every? string? [commit version job cache-namespace])
+         (re-matches #"[0-9a-f]{40}" commit)
+         (workflow-uses-hosted-jolt-action? body)
+         (every? #(str/includes? body %)
+                 [(str "source-sha: " commit) (str "version: v" version)
+                  cache-namespace "JOLT_CHDB_REQUIRE_WAL_CHUNKS: 'true'"
+                  "jolt -Srepro -M:durable-wal-chunks-test"
+                  "bash scripts/qualify-durable-native.sh"]))))
+
 (defn- hosted-jolt-pin-matches?
   [pins action workflows]
   (let [{:keys [line commit version]} (get-in pins [:jolt :compiler])
@@ -199,11 +247,9 @@
          cache-namespace]]
     (and (= "integration/aspects" line)
          (every? string? [commit version])
-         (str/includes? action commit)
-         (str/includes? action (str "JOLT_VERSION=\"v" version "\""))
-         (str/includes? action
-                        (str "test \"$actual_version\" = \"jolt v"
-                             version "\""))
+         (action-default-input? action "source-sha" commit)
+         (action-default-input? action "version" (str "v" version))
+         (parameterized-action-links? action)
          (every? (fn [workflow]
                    (and (workflow-uses-hosted-jolt-action? workflow)
                         (every? #(str/includes? workflow %) workflow-guards)))
@@ -404,8 +450,50 @@
     (check "active hosted pins contain no obsolete compiler revision"
            false (str/includes? active-jolt-pin-text (str "fd216" "943")))
     (check "active hosted pins require the strict-decoder compiler banner"
-           true (every? #(str/includes? % "jolt v0.8.6-37-g57e591d4")
-                        (cons jolt-action jolt-workflows)))
+           true (and (action-default-input? jolt-action "version" "v0.8.6-37-g57e591d4")
+                     (every? #(str/includes? % "jolt v0.8.6-37-g57e591d4") jolt-workflows)))
+    (check "strict native WAL lane has its separately recorded immutable compiler"
+           true (native-wal-job-pin-matches? pins workflow))
+    (check "native WAL override source drift turns its guard red"
+           false (native-wal-job-pin-matches?
+                  pins (str/replace workflow
+                                    (get-in pins [:jolt :native-wal-chunks-compiler :commit])
+                                    (apply str (repeat 40 "0")))))
+    (check "native WAL override version drift turns its guard red"
+           false (native-wal-job-pin-matches?
+                  pins (str/replace workflow "version: v0.8.6-aspects-ga6c6aeb8"
+                                    "version: v0.8.6-aspects-g00000000")))
+    (check "native WAL capability requirement cannot silently disappear"
+           false (native-wal-job-pin-matches?
+                  pins (str/replace workflow "JOLT_CHDB_REQUIRE_WAL_CHUNKS: 'true'"
+                                    "JOLT_CHDB_REQUIRE_WAL_CHUNKS: 'false'")))
+    (check "native WAL cache-namespace drift turns its guard red"
+           false (native-wal-job-pin-matches?
+                  pins (str/replace workflow "wal-chunks-a6c6aeb8" "wal-chunks-stale")))
+    (check "native WAL phase command cannot silently disappear"
+           false (native-wal-job-pin-matches?
+                  pins (str/replace workflow "bash scripts/qualify-durable-native.sh"
+                                    "echo native-unqualified")))
+    (check "action default source drift turns the guard red"
+           false (hosted-jolt-pin-matches?
+                  pins (str/replace jolt-action
+                                    (str "default: " (get-in pins [:jolt :compiler :commit]))
+                                    (str "default: " (apply str (repeat 40 "0"))))
+                  jolt-workflows))
+    (check "action default version drift turns the guard red"
+           false (hosted-jolt-pin-matches?
+                  pins (str/replace jolt-action "default: v0.8.6-37-g57e591d4"
+                                    "default: v0.8.6-0-g00000000") jolt-workflows))
+    (check "broken action input binding turns the guard red"
+           false (parameterized-action-links?
+                  (str/replace-first jolt-action
+                                     "ACTION_JOLT_SOURCE_SHA: ${{ inputs.source-sha }}"
+                                     "ACTION_JOLT_SOURCE_SHA: ${{ inputs.version }}")))
+    (check "broken action runtime version check turns the guard red"
+           false (parameterized-action-links?
+                  (str/replace jolt-action
+                               "test \"$actual_version\" = \"jolt $ACTION_JOLT_VERSION\""
+                               "test \"$actual_version\" = \"jolt stale\"")))
     (check "user docs distinguish the Durable compiler from the base floor"
            true
            (every? #(and (str/includes? % "57e591d4")

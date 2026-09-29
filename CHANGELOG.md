@@ -9,6 +9,9 @@
   This is not a measured Durable throughput or standalone/AOT qualification.
   A separate immutable-compiler CI lane requires native selection in both
   focused ownership/fault tests and fresh-process recovery, rejecting skips.
+  Preserve compiler provenance guards across the parameterized installer:
+  validate default inputs, build/check/cache links and the separately pinned
+  native lane, with negative controls for drift and missing capability gates.
 
 - Reuse a validated head decode across the two fresh storage reads within one
   reference commit only when their bytes are identical. Keep the new read's
