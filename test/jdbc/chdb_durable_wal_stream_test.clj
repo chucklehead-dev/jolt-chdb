@@ -259,15 +259,16 @@
         end (str/index-of source "(defn- visit-wal!" start)
         scan-source (subs source start end)
         visit-end (str/index-of source "(defn- extend-replay-plan" end)
-        visit-source (subs source end visit-end)]
-    (check "typed LF finder retains the intended source shape"
+        visit-source (subs source end visit-end)
+        portable-source (slurp "src/jdbc/chdb/byte_range.cljc")]
+    (check "LF finder delegates exact unsigned target to generic range scanner"
            true
            (and (str/includes? scan-source
                                "[^bytes chunk ^long start ^long end]")
-                (str/includes? scan-source
-                               "(bit-and 255 (aget chunk index))")
-                (str/includes? scan-source "(unchecked-inc index)")
-                (not (str/includes? scan-source "(byte 10)"))))
+                (str/includes? scan-source "(byte-range/index-of-byte chunk 10 start end)")
+                (str/includes? portable-source "[^bytes bytes target ^long start ^long end]")
+                (str/includes? portable-source "(bit-and 255 (aget bytes index))")
+                (str/includes? portable-source "(unchecked-inc index)")))
     (check "WAL visitation reaches only the typed LF finder through observation"
            true
            (and (str/includes? scan-source
