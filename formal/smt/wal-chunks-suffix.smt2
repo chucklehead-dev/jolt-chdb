@@ -1,0 +1,8 @@
+(declare-const cap Int)(declare-const n Int)(declare-const i Int)(declare-const at Int)(declare-const width Int)(declare-const mode Int)(declare-const reserve Int)(declare-const start Int)(declare-const nexti Int)(declare-const nextat Int)(declare-const violation Bool)
+(assert (! (and (<= 256 cap) (<= cap 65536) (<= 0 n) (<= n 96076792050570580) (<= 0 i) (<= i n) (<= 0 at) (<= at cap) (or (= mode 0) (= mode 1))) :named domain))
+(assert (! (ite (= mode 0) (and (< i n) (or (= width 1) (= width 2) (= width 6) (= width 12))) (and (= i n) (= width 3))) :named branch))
+(assert (= start (ite (> at (- cap (ite (= mode 0) reserve 3))) 0 at)))
+(assert (= nexti (ite (= mode 0) (+ i 1) i)))
+(assert (= nextat (+ start width)))
+(assert (= violation (or (< start 0) (>= (- nextat 1) cap) (< nextat 0) (> nextat cap) (< nexti 0) (> nexti n) (>= 7 cap))))
+(assert (= reserve 12))(assert (= mode 1))(assert (= at (- cap 3)))(assert (not violation))

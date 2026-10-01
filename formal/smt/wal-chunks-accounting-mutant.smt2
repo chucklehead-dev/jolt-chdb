@@ -1,0 +1,8 @@
+(declare-const n Int)(declare-const i Int)(declare-const total Int)(declare-const at Int)(declare-const mode Int)(declare-const width Int)(declare-const nexti Int)(declare-const sum Int)(declare-const violation Bool)
+(assert (! (and (<= 0 n) (<= n 96076792050570581) (<= 0 i) (<= i n) (<= 0 total) (<= 0 at) (<= (+ total at) (+ (* 12 i) 8)) (<= 0 mode) (<= mode 2)) :named entry))
+(assert (! (ite (= mode 0) (and (< i n) (<= 1 width) (<= width 12)) (ite (= mode 1) (= width 0) (and (= i n) (= width 3)))) :named operation))
+(assert (= nexti (ite (= mode 0) (+ i 1) i)))
+(assert (= sum (+ total at width)))
+(assert (= violation (or (> sum 1152921504606846975) (> (+ n 11) 1152921504606846975) (ite (= mode 2) (> sum (+ (* 12 n) 11)) (> sum (+ (* 12 nexti) 8))))))
+(assert (! violation :named counterexample))
+(assert (= mode 2))(assert (= n 96076792050570581))(assert (= i n))(assert (= (+ total at) (+ (* 12 i) 8)))

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compile the internal owned WAL encoder with locally scoped Chez optimization,
+  behind a checked string/size guard. Preserve exact bytes, independent chunk
+  ownership, behavioral fallback and Durable publication semantics. Add bounded
+  index/accounting checks and maximum-escape boundary regressions; this is not
+  an end-to-end throughput or S3 qualification.
+
 - Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
   avoiding a full output-buffer assembly. Keep the public WAL byte encoder,
   behavioral fallback, complete pre-execution preparation, limits, checkpoint

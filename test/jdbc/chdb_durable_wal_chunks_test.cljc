@@ -5,7 +5,30 @@
             #?(:jolt [jdbc.chdb.durable.backend :as backend])
             #?(:jolt [jdbc.chdb.durable.control :as control])
             #?(:jolt [jdbc.chdb-durable-writer-test-support :as support])
+            #?(:jolt [jolt.scheme :as scheme])
             #?(:jolt [jdbc.chdb.durable.wal-chunks :as chunks])))
+
+#?(:jolt
+   (deftest optimized-kernel-has-checked-input-and-local-optimization
+     (let [level (scheme/eval-string "(optimize-level)")]
+       (chunks/encode "checked")
+       (is (= level (scheme/eval-string "(optimize-level)")))
+       (doseq [invalid [nil 1 [] {}]]
+         (is (thrown? Throwable (chunks/encode invalid))))
+       (is (= level (scheme/eval-string "(optimize-level)"))))))
+
+(declare written-bytes)
+
+(deftest maximum-escape-and-suffix-boundaries
+  ;; Twelve-byte astral escapes reach/cross the minimum and full chunk ends.
+  ;; ASCII lengths exercise suffix-only flush and the inclusive reserve edge.
+  (doseq [s (concat (for [n [19 20 21 22 5459 5460 5461 10922]]
+                     (apply str (repeat n "😀")))
+                   (for [n [233 234 235 236 237 65512 65513 65514 65524 65525]]
+                     (str (apply str (repeat n "a")) "😀")))]
+    (let [prepared (wal/prepared-line s) expected (wal/portable-line-bytes s)]
+      (is (= (alength expected) (wal/prepared-size prepared)))
+      (is (java.util.Arrays/equals expected (written-bytes prepared))))))
 
 (defn- written-bytes [prepared]
   (let [out (java.io.ByteArrayOutputStream.)]
