@@ -36,6 +36,11 @@ Chiasmus/Z3 verification on 2026-09-30, after structural lint:
   width=3, nextat=256, violation=false.
 - `wal-chunks-accounting.smt2`: UNSAT for output accounting/fixnum overflow
   given the entry invariant and checked input bound.
+- `wal-chunks-accounting-mutant.smt2`: SAT when that input bound increases
+  by one; worst-case final output exceeds greatest-fixnum.
+- `wal-chunks-accounting-boundary.smt2`: SAT for the maximum admitted length
+  with worst-case output and violation=false. This is an arithmetic control,
+  not an actually allocated string or physically reachable buffer fixture.
 
 The transition model overapproximates loop states; it is not a multistep
 reachability model. The accounting model abstracts writes by their width.
