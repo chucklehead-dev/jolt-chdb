@@ -98,6 +98,9 @@
            :durable-observation-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-observation-test"]}
+           :byte-range-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-byte-range-test"]}
            :durable-wal-stream-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
