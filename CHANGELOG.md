@@ -8,6 +8,11 @@
   index/accounting checks and maximum-escape boundary regressions; this is not
   an end-to-end throughput or S3 qualification.
 
+- Use a behavior-qualified generic byte-range scanner for Durable LF framing
+  on supported source-mode Jolt hosts. Retain portable and boxed-backing reads,
+  exact byte boundaries, strict decoding, limits and verification-before-replay.
+  No new compiler-owned WAL primitive; standalone/AOT remains unqualified.
+
 - Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
   avoiding a full output-buffer assembly. Keep the public WAL byte encoder,
   behavioral fallback, complete pre-execution preparation, limits, checkpoint
