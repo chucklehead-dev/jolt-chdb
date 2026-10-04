@@ -13,6 +13,7 @@
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb.utf8 :as utf8]
             [jdbc.chdb-durable-open-test-support :as support])
   (:import [java.nio ByteBuffer]
            [java.nio.charset CharacterCodingException Charset CodingErrorAction]
@@ -409,12 +410,22 @@
              [true [:ok "�"]]
              [(not= -1 (.indexOf (String. replacement "UTF-8") (int 0xfffd)))
               (decode-outcome decode! replacement)]))
-    ;; Causal source control: ordinary records use the native String decoder,
-    ;; while only text containing U+FFFD reaches the strict decoder. Restoring
-    ;; either an unconditional strict decode or the old re-encode turns it red.
+    ;; Qualified direct decoding precedes the original replacement-sentinel
+    ;; fallback. Malformed bytes must decline and still hit strict rejection.
+    (check "qualified native UTF-8 rejection keeps the original corruption outcome"
+           [nil ::durable/corrupt]
+           [(utf8/try-decode (raw-bytes [0xc0 0xaf]))
+            (error-type #(decode! (raw-bytes [0xc0 0xaf])))])
+    (with-redefs [utf8/try-decode (constantly nil)]
+      (check "disabled generic decoder keeps scalar and corrupt-byte outcomes"
+             [[:ok "β�😀"] ::durable/corrupt]
+             [(decode-outcome decode! (.getBytes "β�😀" "UTF-8"))
+              (error-type #(decode! (raw-bytes [0xc0 0xaf])))]))
+    ;; Restoring unconditional strict decode or the old re-encode turns this red.
     (check "WAL decoding uses guarded native decode without UTF-8 re-encoding"
            true
-           (and (str/includes? decode-source "(String. bytes \"UTF-8\")")
+           (and (str/includes? decode-source "(utf8/try-decode bytes)")
+                (str/includes? decode-source "(String. bytes \"UTF-8\")")
                 (str/includes? decode-source ".indexOf text (int 0xfffd)")
                 (str/includes? decode-source "(strict-decode-wal-text! bytes)")
                 (not (str/includes? decode-source ".getBytes"))
