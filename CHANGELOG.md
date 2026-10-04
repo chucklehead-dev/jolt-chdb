@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Combine behavior-qualified native UTF-8 validation and decoding during WAL
+  recovery, avoiding a byte snapshot and a separate replacement-sentinel scan
+  on supported Jolt hosts. Unsupported backings, malformed bytes and leading
+  BOMs retain the existing codec/error path. Verification-before-replay,
+  limits, ownership and error precedence are unchanged. Source-mode only;
+  sustained, S3 and standalone/AOT performance remains unqualified.
+
 - Compile the internal owned WAL encoder with locally scoped Chez optimization,
   behind a checked string/size guard. Preserve exact bytes, independent chunk
   ownership, behavioral fallback and Durable publication semantics. Add bounded

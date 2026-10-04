@@ -7,6 +7,7 @@
             [db.jdbc-shim :as shim]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.byte-range :as byte-range]
+            [jdbc.chdb.utf8 :as utf8]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.compatibility :as compatibility]
             [jdbc.chdb.durable.control :as control]
@@ -518,16 +519,21 @@
       (fail! ::corrupt "A Durable WAL is not canonical UTF-8"))))
 
 (defn- decode-wal-text! [bytes]
+  ;; The generic helper combines validation and native decoding without copying
+  ;; borrowed bytes or scanning decoded text for a replacement sentinel. It must
+  ;; decline unsupported or malformed input; the original strict/error path stays
+  ;; authoritative for every decline, including a leading BOM.
   ;; Jolt's String byte constructor reaches Chez's native UTF-8 decoder, while
   ;; CharsetDecoder deliberately models the JVM's incremental per-code-point
   ;; loop. The constructor exposes every malformed sequence as U+FFFD. A record
   ;; without that sentinel is therefore canonical immediately; a record with
   ;; it takes the strict path so a legitimate encoded U+FFFD remains accepted
   ;; while replacement caused by malformed input is still rejected.
-  (let [text (String. bytes "UTF-8")]
-    (if (= -1 (.indexOf text (int 0xfffd)))
-      text
-      (strict-decode-wal-text! bytes))))
+  (or (utf8/try-decode bytes)
+      (let [text (String. bytes "UTF-8")]
+        (if (= -1 (.indexOf text (int 0xfffd)))
+          text
+          (strict-decode-wal-text! bytes)))))
 
 (defn- exact-statement-bytes-exceed? [sql limit]
   (> (alength (.getBytes sql "UTF-8")) limit))

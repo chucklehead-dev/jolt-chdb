@@ -101,6 +101,9 @@
            :byte-range-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-byte-range-test"]}
+           :utf8-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-utf8-test"]}
            :durable-wal-stream-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
