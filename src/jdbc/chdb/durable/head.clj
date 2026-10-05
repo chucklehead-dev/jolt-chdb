@@ -87,10 +87,16 @@
     (do
       (when (>= depth max-json-depth)
         (corrupt! "head.json exceeds the JSON nesting limit" path))
-      (let [element-schema (when (vector? schema) (first schema))]
-        (doseq [[index child] (map-indexed vector value)]
-          (valid-json-value! child (conj path index) element-schema
-                             (inc depth)))))
+      (let [element-schema (when (vector? schema) (first schema))
+            size (count value)]
+        ;; Validation visits every element with the same indexed error path,
+        ;; without allocating a lazy sequence and an [index child] vector for
+        ;; every entry of the growing WAL manifest.
+        (loop [index 0]
+          (when (< index size)
+            (valid-json-value! (nth value index) (conj path index) element-schema
+                               (inc depth))
+            (recur (inc index))))))
 
     (integer? value)
     (when-not (safe-integer? value)

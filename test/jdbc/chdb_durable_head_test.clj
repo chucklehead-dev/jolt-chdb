@@ -310,6 +310,20 @@
            false (str/includes? (str secret-key-error) sentinel))
     (check "unknown field name is absent from public error data"
            false (str/includes? (str (ex-data secret-key-error)) sentinel)))
+  (doseq [index [0 1 2]]
+    (let [values (assoc [nil true "valid"] index (inc head/max-safe-integer))
+          known-error (error-data #(head/validate!
+                                    (assoc-in valid-head ["protocol" "reader_features"] values)
+                                    :writer))
+          unknown-error (error-data #(head/validate!
+                                      (assoc valid-head "private-array" values) :writer))]
+      (check (str "known vector visits invalid element at index " index)
+             ["protocol" "reader_features" index] (:path known-error))
+      (check (str "unknown vector preserves redacted indexed path " index)
+             ["<redacted-object-field>" index] (:path unknown-error))))
+  (check "empty unknown vector remains valid"
+         (assoc valid-head "empty-array" [])
+         (head/validate! (assoc valid-head "empty-array" []) :writer))
   (check "invalid UTF-8 is corrupt"
          ::head/corrupt
          (:type (error-data #(head/decode (byte-array [-61 40])))))

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove intermediate index/value pairs from Durable head vector validation.
+  All elements, nesting limits and indexed/redacted error paths remain checked.
+  The component allocation saving is small; no Durable throughput gain is claimed.
+
 - Avoid allocating an unused UTF-8 byte array for each bounded JSONEachRow
   size check on the qualified Jolt source runtime. Count scalar encoded length
   in an immutable-string kernel; declined characters and other hosts retain
