@@ -666,6 +666,19 @@ The integrated encoder source SHA-256 was
 Local bounded receipts: `evidence/exporter-key-cache-integrated-20261005.edn`
 and its `.recovery.edn` companion. Encoding qualification passed the generic
 18-test/202-assertion suite and actual native 1-test/21-assertion suite.
+
+A subsequent 10 x 5,000-item screen with the same integrated sources reached
+15,424.13 physical rows/s over 250,000 rows in 16.208 seconds. Allocation was
+10,629,602,928 Scheme bytes (~42,518 bytes per physical row, versus ~51,172
+at 512). A fresh-process reader recovered 50,000 service rows in each of the
+five tables. Mean measured export latency by signal was ~352ms for spans,
+~296ms for logs, and ~972ms for metrics (three physical tables). With only ten
+samples, reported p99 equals the maximum and is not a qualified tail estimate.
+The lower per-row allocation and higher throughput support larger-batch
+amortization, not attribution of the difference to the key cache. This is still
+below the collector throughput target and is neither matched Rust/S3 nor a
+full-row recovery check. Receipts:
+`evidence/exporter-key-cache-integrated-5k-20261005.edn` and `.recovery.edn`.
 Standalone/AOT native loading remains unqualified. Public-path throughput,
 exporter/Oscope integration and S3 qualification are still pending: opting in
 does not itself demonstrate the performance targets or change persistence
