@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add serial `encode-limited-text!` for incremental UTF-8 payload budgets.
+  Preserve per-row sinks and stop requesting rows after the first over-budget
+  result. Supports the same configured/native backend without global bindings;
+  a single row and lazy input realization remain caller-trusted costs.
+
 - Expose explicit caller-owned `:json-backend :native-guarded` selection for
   JSONEachRow encoding and Durable row submission, with bounded configuration
   diagnostics. Bind the selected writer once per batch/worker, preserve custom

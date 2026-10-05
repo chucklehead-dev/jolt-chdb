@@ -486,6 +486,40 @@
                (is (identical? error (:error (finish-thread! owned))))
                (is (= :closed (encoder/close! context))))))))))
 
+(deftest bounded-output-checks-utf8-newlines-and-releases
+  (let [context (encoder/open-encoder)
+        rows [{"text" "😀é"} false nil]
+        text (serial-payload rows)
+        size (alength (.getBytes text "UTF-8"))]
+    (try
+      (is (= text (encoder/encode-limited-text! context rows size)))
+      (is (= :jdbc.chdb.json-each-row/output-limit
+             (failure-type #(encoder/encode-limited-text! context rows (dec size)))))
+      (is (= "" (encoder/encode-limited-text! context nil 0)))
+      (is (= :jdbc.chdb.json-each-row/invalid-limit
+             (failure-type #(encoder/encode-limited-text! context [] -1))))
+      (is (= :jdbc.chdb.json-each-row/invalid-rows
+             (failure-type #(encoder/encode-limited-text! context {} 10))))
+      (is (= "true\n" (encoder/encode-limited-text! context [true] 5)))
+      (finally (encoder/close! context)))))
+
+#?(:bb nil :default
+   (deftest bounded-output-does-not-run-later-serializers
+     (let [context (encoder/open-encoder)
+           calls (atom [])
+           value (fn [index]
+                   (reify json/JSONWriter
+                     (-write [_ out _]
+                       (swap! calls conj index)
+                       (.append out "true"))))]
+       (try
+         (is (= :jdbc.chdb.json-each-row/output-limit
+                (failure-type #(encoder/encode-limited-text!
+                                 context [(value 1) (value 2) (value 3)] 5))))
+         (is (= [1 2] @calls))
+         (is (= "false\n" (encoder/encode-limited-text! context [false] 6)))
+         (finally (encoder/close! context))))))
+
 (defn -main [& _]
   (let [result (run-tests 'jdbc.chdb-json-each-row-test)]
     (when (pos? (+ (:fail result) (:error result)))

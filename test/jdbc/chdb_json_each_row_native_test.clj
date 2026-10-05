@@ -22,6 +22,23 @@
                 :effective-parallelism parallelism :source-only? true}
                (encoder/encoder-info context)))
         (is (= expected (encoder/encode-text! context rows)))
+        (when (= 1 parallelism)
+          (is (= expected (encoder/encode-limited-text!
+                            context rows (alength (.getBytes expected "UTF-8")))))
+          (let [effects (atom [])
+                value (fn [n] (reify json/JSONWriter
+                                (-write [_ out _]
+                                  (swap! effects conj n) (.append out "true"))))
+                error (try (encoder/encode-limited-text! context
+                             [(value 1) (value 2) (value 3)] 5)
+                           nil (catch Throwable e e))]
+            (is (= :jdbc.chdb.json-each-row/output-limit (:type (ex-data error))))
+            (is (= [1 2] @effects))
+            (is (= "false\n" (encoder/encode-limited-text! context [false] 6)))))
+        (when (= 4 parallelism)
+          (let [error (try (encoder/encode-limited-text! context [] 0)
+                           nil (catch Throwable e e))]
+            (is (= :jdbc.chdb.json-each-row/serial-required (:type (ex-data error))))))
         (is (= (vec (.getBytes expected "UTF-8"))
                (vec (:utf8 (encoder/encode-rows! context rows)))))
         (is (= "{\"n\":42}\n"

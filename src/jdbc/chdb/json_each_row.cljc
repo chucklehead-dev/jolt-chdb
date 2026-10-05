@@ -272,3 +272,36 @@
   No SQL prefix is added."
   [encoder rows]
   (encode-with! encoder rows identity))
+
+(defn encode-limited-text!
+  "Encode sequential rows with a UTF-8 output budget including each newline.
+  Always serial: requires effective parallelism 1. Check every completed row
+  before appending, and do not request the next row after exceeding the budget.
+  Lazy input may itself realize chunks; arbitrary user serialization remains a
+  trusted operation, and a single row may allocate before its size is known.
+  The context retains no payload after return/error. This is encoding only,
+  not admission or persistence."
+  [encoder rows max-bytes]
+  (let [batch (admit! encoder)]
+    (try
+      (when-not (= 1 (:effective-parallelism encoder))
+        (fail! ::serial-required "Bounded JSONEachRow encoding requires serial parallelism"))
+      (when-not (and (integer? max-bytes) (not (neg? max-bytes)))
+        (fail! ::invalid-limit "JSONEachRow byte limit must be a nonnegative integer"))
+      (when-not (or (nil? rows) (sequential? rows))
+        (fail! ::invalid-rows "Bounded JSONEachRow encoding requires sequential rows"))
+      (let [operation
+            (fn []
+              (loop [remaining max-bytes rows (seq rows) out (StringBuilder.)]
+                (if (seq rows)
+                  (let [encoded (row-text (first rows))
+                        size (alength (.getBytes encoded "UTF-8"))]
+                    (when (> size remaining)
+                      (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
+                    (.append out encoded)
+                    (recur (- remaining size) (next rows) out))
+                  (.toString out))))]
+        #?(:jolt (with-selected-writer (:native-writer encoder) operation)
+           :bb (operation)
+           :clj (operation)))
+      (finally (release! encoder batch)))))
