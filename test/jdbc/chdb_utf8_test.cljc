@@ -4,8 +4,26 @@
             #?(:jolt [clojure.java.io :as io])
             #?(:jolt [jolt.scheme :as scheme])))
 
+(deftest exact-utf8-byte-count-preserves-host-codec
+  (doseq [text ["" "ASCII\n\u0000" "\u007f\u0080\u07ff\u0800"
+               "\ud7ff\ue000\uffff" "éβ€😀" "\ufeff" "a\ufeffb"
+               (apply str (repeat 200 "xé😀"))]]
+    (is (= (alength (.getBytes text "UTF-8")) (utf8/byte-count text)))))
+
 #?(:jolt
    (do
+     (deftest exact-native-length-resource-and-decline
+       (is (= (slurp (io/resource "jdbc/chdb/utf8_length.ss"))
+              @#'jdbc.chdb.utf8/length-code))
+       (is (ifn? (force @#'jdbc.chdb.utf8/native-length)))
+       (let [size (scheme/eval-string (slurp (io/resource "jdbc/chdb/utf8_length.ss")))]
+         (is (false? (size 42)))
+         (doseq [codepoint [0 127 128 2047 2048 55295 57344 65535 65536 1114111]]
+           (let [text (str (char codepoint))]
+             (is (= (alength (.getBytes text "UTF-8")) (size text))))))
+       (with-redefs [jdbc.chdb.utf8/native-length (delay (constantly false))]
+         (is (= 11 (utf8/byte-count "éβ€😀")))))
+
      (deftest current-native-resource-is-selected
        (is (= (slurp (io/resource "jdbc/chdb/utf8_decode.ss")) @#'jdbc.chdb.utf8/source))
        (is (true? (utf8/native-enabled?))))

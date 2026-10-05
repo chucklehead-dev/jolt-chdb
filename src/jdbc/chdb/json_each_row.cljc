@@ -4,6 +4,7 @@
   (:require #?(:bb [cheshire.core :as bb-json]
                :jolt [clojure.data.json :as json]
                :clj [clojure.data.json :as json])
+            [jdbc.chdb.utf8 :as utf8]
             #?(:jolt [jolt.fibers :as fibers])))
 
 (def ^:private pending :pending)
@@ -295,7 +296,7 @@
               (loop [remaining max-bytes rows (seq rows) out (StringBuilder.)]
                 (if (seq rows)
                   (let [encoded (row-text (first rows))
-                        size (alength (.getBytes encoded "UTF-8"))]
+                        size (utf8/byte-count encoded)]
                     (when (> size remaining)
                       (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
                     (.append out encoded)

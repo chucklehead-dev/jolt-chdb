@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Avoid allocating an unused UTF-8 byte array for each bounded JSONEachRow
+  size check on the qualified Jolt source runtime. Count scalar encoded length
+  in an immutable-string kernel; declined characters and other hosts retain
+  the existing codec. Payload bytes, limits, writer effects and persistence
+  semantics are unchanged. End-to-end throughput gain remains to be measured.
+
 - Add serial `encode-limited-text!` for incremental UTF-8 payload budgets.
   Preserve per-row sinks and stop requesting rows after the first over-budget
   result. Supports the same configured/native backend without global bindings;
