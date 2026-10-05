@@ -86,6 +86,37 @@ their nearest-rank p99 is only the maximum, not tail qualification or an accepta
 claim. This option rejects WAL-target accumulation and unrelated selectors. The
 separate S3 `confirmed-10000` lane below excludes encoding and is not interchangeable.
 
+### Current-source local 5k diagnostic (2026-10-05)
+
+Two one-trial runs at source `cdf37842` used 100 encoding-inclusive confirmed
+5,000-row commits, four encoding fibers and two warmup batches. Both fresh
+reader processes verified 510,000 rows and the expected aggregate values.
+The selected composed Jolt was `976dd9d1` (0.8.17-based), Chez 10.4.1 and
+libchdb 26.7.3. data.json remained pinned at `56db146`; the configured encoder
+inherited an explicit guarded-native writer binding. `:configured` alone does
+not describe that effective binding. There were no publication-operation
+overrides and no automatic checkpoints.
+
+| Nursery configuration | Mean confirmed rows/s | p50 batch ms | p99 batch ms | Measured GC seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed 16 MiB | 30,853 | 156.32 | 252.02 | 2.34 |
+| Runtime adaptive default | 27,604 | 168.42 | 337.11 | 1.04 |
+
+At 5,000 rows the observed p99s correspond to approximately 19.84k and 14.83k
+rows/s respectively. Neither run establishes the 20k tail target. The adaptive
+run collected less often (86 versus 477 measured collections) but had a slower
+end-to-end result. These sequential runs do not establish a causal regression
+or justify a general nursery recommendation. Record GC configuration when
+comparing results: `JOLT_GC_TRIP_BYTES` pins the nursery and disables this
+compiler's adaptive policy. GC time alone cannot explain the whole pipeline.
+
+This is not the primary 512-row/five-trial gate, S3 qualification, typed-value
+equivalence, Rust parity, or a performance guarantee. Independent fresh-reader
+open/reconciliation took 26.33 seconds (fixed) and 23.38 seconds (adaptive),
+excluding reader startup; these are not Rust-matched recovery measurements.
+Whole-command GNU time peak RSS was approximately 784 and 800 MiB, respectively,
+not a recovery-only or steady-state memory measurement.
+
 Staged recovery diagnostics use `recovery-512-10`, `recovery-512-25`, and
 `recovery-512-50`. These run one pre-encoded trial of exactly 10, 25, or 50
 512-row WAL records with no warmup rows, then close the writer, open a fresh
