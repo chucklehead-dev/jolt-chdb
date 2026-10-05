@@ -108,3 +108,17 @@ as a backend or published as a production optimization. The useful conclusion
 is narrower: do not spend the next slice optimizing default key normalization;
 any protocol-site optimization must preserve live dispatch and will not, alone,
 close the collector gap.
+
+The second key/dispatch receipt (`json-key-dispatch-cost-screen-20261005-v2.edn`)
+also counts selected methods on one untimed payload: 3,072 map, 4,352 array,
+8,448 string, 4,864 plain-number/Boolean and 1,792 double selections; no unknown
+methods. There is no hidden unknown-writer fallback in these metric rows.
+
+Finally, `json-scratch-port-cost-screen-20261005.clj` compares stock row-local
+scratch ports against an unsafe fixture-only shared port. Stock took
+283.6/265.8 ms and 202.12 MB; shared took 263.8/259.0 ms and 200.35 MB, with
+exact fixture parity. This is only about 0.9% less allocation and a small noisy
+time difference. It does not justify adding scratch-pool ownership complexity
+to the public writer. Nested/custom writers would require independent leases
+and bounded retained capacity; none of those guarantees is claimed by this
+diagnostic.
