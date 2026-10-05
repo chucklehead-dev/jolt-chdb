@@ -306,16 +306,66 @@
 
 (deftest option-and-close-contract
   (is (= :jdbc.chdb.json-each-row/invalid-options
+         (failure-type #(encoder/open-encoder {:json-backend :unknown}))))
+  (is (= :jdbc.chdb.json-each-row/invalid-options
          (failure-type #(encoder/open-encoder {:parallelism 8}))))
   (is (= :jdbc.chdb.json-each-row/invalid-options
          (failure-type #(encoder/open-encoder {:queue-size 100}))))
   (let [context (encoder/open-encoder)]
     (is (= 1 (:effective-parallelism context)))
+    (is (= {:json-backend :configured :requested-parallelism 1
+            :effective-parallelism 1 :source-only? false}
+           (encoder/encoder-info context)))
     (is (= :jdbc.chdb.json-each-row/invalid-timeout
            (failure-type #(encoder/close! context -1))))
     (is (= :closed (encoder/close! context)))
     (is (= :jdbc.chdb.json-each-row/closed
            (failure-type #(encoder/encode-rows! context []))))))
+
+#?(:jolt
+   (deftest invalid-backend-does-not-initialize-loader
+     (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer!)]
+       ;; Invalid backend names are rejected before any loading is attempted.
+       (with-redefs-fn {loader (fn [] (throw (ex-info "unexpected loader" {})))}
+         #(is (= :jdbc.chdb.json-each-row/invalid-options
+                 (failure-type (fn [] (encoder/open-encoder
+                                       {:json-backend :unknown})))))))))
+
+#?(:jolt
+   (deftest explicit-native-backend-keeps-extensions-and-worker-selection
+     (doseq [parallelism [1 4]]
+       (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer!)
+             calls (atom 0)
+             callback (fn [value sink options stock]
+                        (swap! calls inc)
+                        ((first stock) value sink options))
+             context (with-redefs-fn {loader (fn [] callback)}
+                       #(encoder/open-encoder {:parallelism parallelism
+                                               :json-backend :native-guarded}))
+             custom (reify json/JSONWriter
+                      (-write [_ out _] (.append out "42")))
+             error (ex-info "custom writer failure" {:canary :same})]
+         (try
+           (is (= :native-guarded (:json-backend (encoder/encoder-info context))))
+           ;; An explicit backend wins over the caller binding in every worker.
+           (binding [json/*experimental-native-writer*
+                     (fn [& _] (throw (ex-info "wrong backend" {})))]
+             (is (= "{\"n\":42}\n{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
+                    (encoder/encode-text! context
+                                          [{"n" custom} {"n" 1} {"n" 2} {"n" 3}]))))
+           (is (= 4 @calls) "selected callback is reached once per row")
+           (let [observed (try (encoder/encode-text! context
+                                [{"n" (throwing-value error)}])
+                               nil (catch Throwable e e))]
+             (is (identical? error observed)))
+           (is (= "{\"n\":1}\n" (encoder/encode-text! context [{"n" 1}])))
+           (finally (encoder/close! context)))))))
+
+#?(:jolt nil
+   :default
+   (deftest native-backend-rejects-unsupported-host
+     (is (= :jdbc.chdb.json-each-row/native-unavailable
+            (failure-type #(encoder/open-encoder {:json-backend :native-guarded}))))))
 
 #?(:jolt
    (deftest parallel-chunks-finish-out-of-order-but-emit-in-row-order

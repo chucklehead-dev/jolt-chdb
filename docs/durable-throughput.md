@@ -597,14 +597,31 @@ The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
 The active dependency is `casselc/data.json`
-`1b0716268232a79dd2b2fdb968cca171414bd589`. It carries the maintained
+`56db146d5b3d4edcb8db59ccee05db1945ea39fd`. It carries the maintained
 String-backed reader ordinary-run improvements, Jolt-specialized
-codepoint-decoder access, and the map-entry-sequence writer reuse. Durable's
+codepoint-decoder access, and the map-entry-sequence writer reuse. It also
+contains explicit, guarded native writer and token-reader loaders; neither is
+enabled globally by the dependency repin. Durable's
 validation-before-replay ordering, strict UTF-8, wire bytes, record order,
 checksums, and engine-effect vocabulary do not
 change, so the correctness models and trace schema require no transition
 update. The active pin must still be measured by the current Durable matrix;
 this historical reader diagnostic is not evidence that it improves admission.
+
+For source-run Jolt applications using the qualified compiler, the public
+JSONEachRow encoder accepts `{:json-backend :native-guarded :parallelism 4}`.
+The same options can be passed to `jdbc.chdb.durable.json-rows/open-writer`.
+This selects the native writer without application-level data.json bindings;
+`jdbc.chdb.json-each-row/encoder-info` reports bounded configuration details.
+The default `:json-backend :configured` continues to use the host writer and
+caller configuration. An explicit native request fails on JVM/Babashka or
+when the required Jolt runtime helper cannot load; it does not silently fall
+back. Custom JSONWriter extensions retain their dispatch. Parallel serializers
+must remain CPU-only and nonparking. No global carrier count is changed.
+Standalone/AOT native loading remains unqualified. Public-path throughput,
+exporter/Oscope integration and S3 qualification are still pending: opting in
+does not itself demonstrate the performance targets or change persistence
+acknowledgments.
 
 A frozen one-record diagnostic over a 385,750-character WAL record containing
 40,449 simple escapes reduced full `read-str` p50 from 111.78 ms to 18.62 ms

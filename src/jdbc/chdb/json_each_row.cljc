@@ -11,6 +11,27 @@
 (defn- fail! [kind message]
   (throw (ex-info message {:type kind})))
 
+#?(:jolt
+   (defn- load-native-writer! []
+     (try
+       (require 'clojure.data.json.jolt-native)
+       (let [writer ((ns-resolve 'clojure.data.json.jolt-native 'load-writer!))]
+         (when-not (ifn? writer)
+           (fail! ::native-unavailable "Native JSON writer was not initialized"))
+         writer)
+       (catch Throwable _
+         ;; Do not expose paths, input values, or arbitrary loader diagnostics.
+         (fail! ::native-unavailable
+                "Native JSON encoding requires the qualified compiler-bearing Jolt runtime")))))
+
+#?(:jolt (def ^:dynamic ^:private *selected-writer* nil))
+
+#?(:jolt
+   (defn- with-selected-writer [writer operation]
+     (if writer
+       (binding [json/*experimental-native-writer* writer] (operation))
+       (operation))))
+
 (defn open-encoder
   "Create one caller-owned encoder. `:parallelism` defaults to 1; 4 is an
   explicit Jolt-only optimization. JVM and Babashka always encode serially.
@@ -18,18 +39,43 @@
   A context admits one batch at a time and rejects a concurrent call. Share
   one context across application callers to keep that bound meaningful;
   separate contexts can oversubscribe the machine. No global carrier setting
-  is read or modified."
+  is read or modified.
+
+  `:json-backend` defaults to `:configured`, preserving the host writer and
+  caller's data.json bindings. `:native-guarded` explicitly selects the guarded
+  Jolt writer, overriding that caller binding without changing JSONWriter
+  extensions. It requires a compiler-bearing qualified runtime; standalone/AOT
+  is not qualified. Unsupported hosts/loading fail rather than silently falling
+  back. This option does not change admission or persistence guarantees."
   ([] (open-encoder {}))
   ([options]
    (when-not (and (map? options)
-                  (every? #{:parallelism} (keys options))
-                  (contains? #{1 4} (get options :parallelism 1)))
-     (fail! ::invalid-options "JSONEachRow encoder accepts parallelism 1 or 4"))
-   {:state (atom {:phase :open :active nil})
-    :requested-parallelism (get options :parallelism 1)
-    :effective-parallelism #?(:jolt (get options :parallelism 1)
-                              :bb 1
-                              :clj 1)}))
+                  (every? #{:parallelism :json-backend} (keys options))
+                  (contains? #{1 4} (get options :parallelism 1))
+                  (contains? #{:configured :native-guarded}
+                             (get options :json-backend :configured)))
+     (fail! ::invalid-options "Invalid JSONEachRow encoder options"))
+   (let [backend (get options :json-backend :configured)
+         writer (when (= :native-guarded backend)
+                  #?(:jolt (load-native-writer!)
+                     :bb (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")
+                     :clj (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")))]
+     {:state (atom {:phase :open :active nil})
+      :json-backend backend
+      :native-writer writer
+      :requested-parallelism (get options :parallelism 1)
+      :effective-parallelism #?(:jolt (get options :parallelism 1)
+                                :bb 1
+                                :clj 1)})))
+
+(defn encoder-info
+  "Bounded configuration diagnostics; excludes callbacks, rows and handles.
+  :configured describes delegation, not the caller's effective writer binding."
+  [encoder]
+  {:json-backend (:json-backend encoder)
+   :requested-parallelism (:requested-parallelism encoder)
+   :effective-parallelism (:effective-parallelism encoder)
+   :source-only? (= :native-guarded (:json-backend encoder))})
 
 (defn- admit! [encoder]
   (let [batch {:done (promise)}]
@@ -121,10 +167,11 @@
    (defn- spawn-chunk [rows]
      ;; Worker exceptions are values, so join exceptions identify interruption
      ;; of the waiting caller rather than an InterruptedException from a row.
-     (fibers/spawn
-      (fn []
-        (try {:value (chunk-texts rows)}
-             (catch Throwable error {:error error}))))))
+     (let [writer *selected-writer*]
+       (fibers/spawn
+        (fn []
+          (try {:value (with-selected-writer writer #(chunk-texts rows))}
+               (catch Throwable error {:error error})))))))
 
 #?(:jolt
    (defn- join-uninterruptibly [job]
@@ -184,9 +231,11 @@
       (when-not (vector? rows)
         (reset! settled? true)
         (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
-      (let [payload #?(:jolt (if (= 4 (:effective-parallelism encoder))
+      (let [payload #?(:jolt (binding [*selected-writer* (:native-writer encoder)]
+                              (if (= 4 (:effective-parallelism encoder))
                                 (parallel-payload rows settled?)
-                                (serial-payload rows))
+                                (with-selected-writer *selected-writer*
+                                  #(serial-payload rows))))
                        :bb (serial-payload rows)
                        :clj (serial-payload rows))
             _ (reset! settled? true)]

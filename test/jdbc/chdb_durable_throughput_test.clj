@@ -223,12 +223,14 @@
                             :encode-included? false :trial 1
                             :backend-context! (fn [_] :not-serializable)
                             :modes [:durable-preencoded]}))
-    (check "ordered worker retains parallelism but not execution closures"
+    (check "ordered worker retains backend and parallelism but not execution closures"
            {:selector :ordered-durable-local-512 :batch-size 512 :batches 100
-            :warmup-batches 2 :question-mark? false :trial 1 :parallelism 4}
+            :warmup-batches 2 :question-mark? false :trial 1 :parallelism 4
+            :json-backend :native-guarded}
            (worker-options {:selector :ordered-durable-local-512
                             :batch-size 512 :batches 100 :warmup-batches 2
                             :question-mark? false :trial 1 :parallelism 4
+                            :json-backend :native-guarded
                             :backend-context! (fn [_] :not-serializable)
                             :modes [:durable-ordered-consumer]}))
     (let [rows (mapv #(log-row % false) (range 4))

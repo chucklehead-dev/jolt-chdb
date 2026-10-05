@@ -16,6 +16,7 @@
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.local-posix :as local]
             [jdbc.chdb.durable.json-rows :as durable-rows]
+            [jdbc.chdb.json-each-row :as encoder]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.writer :as writer]
@@ -683,7 +684,7 @@
   ;; execution-only and must never enter bounded EDN or progress output.
   (select-keys configuration
                [:label :selector :batch-size :batches :warmup-batches :trials
-                :parallelism :ack-boundary :batch-counter-ledger?
+                :parallelism :json-backend :ack-boundary :batch-counter-ledger?
                 :question-mark? :provider-kind :target-wal-bytes]))
 
 (defn- collect-measured-batches!
@@ -900,7 +901,7 @@
   per-batch commitment. A scalar payload-size
   ledger is prepared before the measured window and discarded before GC; it
   never substitutes preencoded SQL for the real ordered consumer call."
-  [{:keys [batch-size batches warmup-batches question-mark? trial parallelism]
+  [{:keys [batch-size batches warmup-batches question-mark? trial parallelism json-backend]
     :as options}]
   (let [confirmed? (per-batch-commit? options)
         ledger? (batch-counter-ledger? options)
@@ -920,7 +921,8 @@
         (jdbc/execute! connection logs-ddl)
         (durable/flush! connection)
         (let [row-context (durable-rows/open-writer
-                           connection {:parallelism parallelism})]
+                           connection {:parallelism parallelism
+                                       :json-backend (or json-backend :configured)})]
           (try
             (reduce-row-batches
              log-row batch-size warmup-batches question-mark? 0 nil
@@ -1013,6 +1015,7 @@
                        {:trial trial :provider-kind provider-kind
                         :mode :durable-ordered-consumer
                         :parallelism parallelism
+                        :encoder (encoder/encoder-info (:encoder row-context))
                         :instrumented? false
                         :measured-rows (* batch-size completed)
                         :batch-size batch-size :batches completed
@@ -1749,7 +1752,7 @@
   (batch-counter-ledger? options)
   (select-keys options [:selector :batch-size :batches :warmup-batches :question-mark?
                        :ack-boundary :batch-counter-ledger?
-                       :encode-included? :target-wal-bytes :trial :parallelism]))
+                       :encode-included? :target-wal-bytes :trial :parallelism :json-backend]))
 
 (defn- provider-descriptor! [options root]
   (let [factory (:backend-context! options)]

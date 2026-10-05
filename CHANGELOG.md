@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Expose explicit caller-owned `:json-backend :native-guarded` selection for
+  JSONEachRow encoding and Durable row submission, with bounded configuration
+  diagnostics. Bind the selected writer once per batch/worker, preserve custom
+  JSONWriter extensions and existing settlement, and reject unavailable native
+  backends rather than silently falling back. Repin data.json to include its
+  guarded source loader. Portable/configured defaults remain unchanged;
+  standalone/AOT, product throughput and S3 qualification remain pending.
+
 - Reuse one request-owned native SQL buffer for default WAL replay admission
   and execution. Preserve complete WAL validation before effects, per-statement
   authorization, exception-safe release and custom-operation seams. Recovery

@@ -10,6 +10,7 @@
 (defn open-writer
   "Bind a caller-owned Durable writer connection to one ordered row encoder.
   `:parallelism` is 1 by default; 4 is an explicit Jolt-only opt-in. The
+  `:json-backend` option is forwarded to json-each-row/open-encoder unchanged.
   connection remains owned by its caller and is never closed by this context."
   ([connection] (open-writer connection {}))
   ([connection options]
