@@ -23,6 +23,15 @@ worker settlement, and close contract. `encode-rows!` still creates its byte
 array before releasing the active operation and retains its existing result
 shape.
 
+On the qualified compiler-bearing Jolt runtime, opt in with
+`{:json-backend :native-guarded}`. Each serial payload (including bounded
+encoding) or parallel worker chunk obtains its own bounded escaped-key cache.
+An encoder reused across batches retains only the writer factory, not cached
+keys from the previous batch. Values and protocol methods are never cached;
+custom writer effects and per-row sinks remain unchanged. No mutable cache is
+shared between workers. This source-only backend is not standalone/AOT
+qualified and does not change the default `:configured` backend.
+
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
 Each worker retains its completed immutable row strings; after every worker

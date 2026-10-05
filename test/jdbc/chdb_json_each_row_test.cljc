@@ -324,7 +324,7 @@
 
 #?(:jolt
    (deftest invalid-backend-does-not-initialize-loader
-     (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer!)]
+     (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)]
        ;; Invalid backend names are rejected before any loading is attempted.
        (with-redefs-fn {loader (fn [] (throw (ex-info "unexpected loader" {})))}
          #(is (= :jdbc.chdb.json-each-row/invalid-options
@@ -334,12 +334,12 @@
 #?(:jolt
    (deftest explicit-native-backend-keeps-extensions-and-worker-selection
      (doseq [parallelism [1 4]]
-       (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer!)
+       (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)
              calls (atom 0)
              callback (fn [value sink options stock]
                         (swap! calls inc)
                         ((first stock) value sink options))
-             context (with-redefs-fn {loader (fn [] callback)}
+             context (with-redefs-fn {loader (fn [] (fn [] callback))}
                        #(encoder/open-encoder {:parallelism parallelism
                                                :json-backend :native-guarded}))
              custom (reify json/JSONWriter
@@ -359,6 +359,34 @@
                                nil (catch Throwable e e))]
              (is (identical? error observed)))
            (is (= "{\"n\":1}\n" (encoder/encode-text! context [{"n" 1}])))
+           (finally (encoder/close! context)))))))
+
+#?(:jolt
+   (deftest native-payload-writers-are-fresh-per-batch-and-worker
+     (doseq [parallelism [1 4]]
+       (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)
+             created (atom 0) observed (atom [])
+             factory (fn []
+                       (let [id (swap! created inc)]
+                         (fn [value sink options stock]
+                           (swap! observed conj id)
+                           ((first stock) value sink options))))
+             context (with-redefs-fn {loader (fn [] factory)}
+                       #(encoder/open-encoder {:parallelism parallelism
+                                               :json-backend :native-guarded}))
+             rows (mapv #(hash-map "ordinal" %) (range 8))
+             expected (apply str (mapv #(str (json/write-str %) "\n") rows))]
+         (try
+           (is (zero? @created) "context retains the factory, not a cache")
+           (dotimes [_ 2] (is (= expected (encoder/encode-text! context rows))))
+           (is (= (* 2 parallelism) @created))
+           (is (= (repeat (* 2 parallelism) (quot 8 parallelism))
+                  (sort (vals (frequencies @observed))))
+               "one serial writer per chunk, no writer reused across batches")
+           (when (= 1 parallelism)
+             (is (= expected (encoder/encode-limited-text!
+                               context rows (alength (.getBytes expected "UTF-8")))))
+             (is (= 3 @created) "bounded encoding obtains a fresh payload writer"))
            (finally (encoder/close! context)))))))
 
 #?(:jolt nil

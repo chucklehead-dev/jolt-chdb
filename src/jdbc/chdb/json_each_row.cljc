@@ -13,24 +13,24 @@
   (throw (ex-info message {:type kind})))
 
 #?(:jolt
-   (defn- load-native-writer! []
+   (defn- load-native-writer-factory! []
      (try
        (require 'clojure.data.json.jolt-native)
-       (let [writer ((ns-resolve 'clojure.data.json.jolt-native 'load-writer!))]
-         (when-not (ifn? writer)
+       (let [factory (ns-resolve 'clojure.data.json.jolt-native 'load-payload-writer!)]
+         (when-not (and (ifn? factory) (ifn? (factory)))
            (fail! ::native-unavailable "Native JSON writer was not initialized"))
-         writer)
+         factory)
        (catch Throwable _
          ;; Do not expose paths, input values, or arbitrary loader diagnostics.
          (fail! ::native-unavailable
                 "Native JSON encoding requires the qualified compiler-bearing Jolt runtime")))))
 
-#?(:jolt (def ^:dynamic ^:private *selected-writer* nil))
+#?(:jolt (def ^:dynamic ^:private *selected-writer-factory* nil))
 
 #?(:jolt
-   (defn- with-selected-writer [writer operation]
-     (if writer
-       (binding [json/*experimental-native-writer* writer] (operation))
+   (defn- with-selected-writer [factory operation]
+     (if factory
+       (binding [json/*experimental-native-writer* (factory)] (operation))
        (operation))))
 
 (defn open-encoder
@@ -45,7 +45,9 @@
   `:json-backend` defaults to `:configured`, preserving the host writer and
   caller's data.json bindings. `:native-guarded` explicitly selects the guarded
   Jolt writer, overriding that caller binding without changing JSONWriter
-  extensions. It requires a compiler-bearing qualified runtime; standalone/AOT
+  extensions. Each serial payload or parallel worker gets a fresh bounded
+  object-key cache; the context retains only its factory, never a payload cache.
+  It requires a compiler-bearing qualified runtime; standalone/AOT
   is not qualified. Unsupported hosts/loading fail rather than silently falling
   back. This option does not change admission or persistence guarantees."
   ([] (open-encoder {}))
@@ -57,13 +59,13 @@
                              (get options :json-backend :configured)))
      (fail! ::invalid-options "Invalid JSONEachRow encoder options"))
    (let [backend (get options :json-backend :configured)
-         writer (when (= :native-guarded backend)
-                  #?(:jolt (load-native-writer!)
+         factory (when (= :native-guarded backend)
+                  #?(:jolt (load-native-writer-factory!)
                      :bb (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")
                      :clj (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")))]
      {:state (atom {:phase :open :active nil})
       :json-backend backend
-      :native-writer writer
+      :native-writer-factory factory
       :requested-parallelism (get options :parallelism 1)
       :effective-parallelism #?(:jolt (get options :parallelism 1)
                                 :bb 1
@@ -168,10 +170,10 @@
    (defn- spawn-chunk [rows]
      ;; Worker exceptions are values, so join exceptions identify interruption
      ;; of the waiting caller rather than an InterruptedException from a row.
-     (let [writer *selected-writer*]
+     (let [factory *selected-writer-factory*]
        (fibers/spawn
         (fn []
-          (try {:value (with-selected-writer writer #(chunk-texts rows))}
+          (try {:value (with-selected-writer factory #(chunk-texts rows))}
                (catch Throwable error {:error error})))))))
 
 #?(:jolt
@@ -232,10 +234,10 @@
       (when-not (vector? rows)
         (reset! settled? true)
         (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
-      (let [payload #?(:jolt (binding [*selected-writer* (:native-writer encoder)]
+      (let [payload #?(:jolt (binding [*selected-writer-factory* (:native-writer-factory encoder)]
                               (if (= 4 (:effective-parallelism encoder))
                                 (parallel-payload rows settled?)
-                                (with-selected-writer *selected-writer*
+                                (with-selected-writer *selected-writer-factory*
                                   #(serial-payload rows))))
                        :bb (serial-payload rows)
                        :clj (serial-payload rows))
@@ -302,7 +304,7 @@
                     (.append out encoded)
                     (recur (- remaining size) (next rows) out))
                   (.toString out))))]
-        #?(:jolt (with-selected-writer (:native-writer encoder) operation)
+        #?(:jolt (with-selected-writer (:native-writer-factory encoder) operation)
            :bb (operation)
            :clj (operation)))
       (finally (release! encoder batch)))))

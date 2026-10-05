@@ -628,7 +628,7 @@ The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
 The active dependency is `casselc/data.json`
-`56db146d5b3d4edcb8db59ccee05db1945ea39fd`. It carries the maintained
+`993b906980c8bb148923996221d856ce00d0e047`. It carries the maintained
 String-backed reader ordinary-run improvements, Jolt-specialized
 codepoint-decoder access, and the map-entry-sequence writer reuse. It also
 contains explicit, guarded native writer and token-reader loaders; neither is
@@ -649,6 +649,23 @@ caller configuration. An explicit native request fails on JVM/Babashka or
 when the required Jolt runtime helper cannot load; it does not silently fall
 back. Custom JSONWriter extensions retain their dispatch. Parallel serializers
 must remain CPU-only and nonparking. No global carrier count is changed.
+The opt-in native encoder now obtains a fresh bounded escaped-key cache per
+serial payload or parallel worker chunk. A reused context retains the factory,
+not a previous payload cache; workers do not share the mutable cache. This
+integration itself is not a whole-pipeline throughput improvement claim.
+An integrated source-mode collector screen (exporter `8269c4e`, this encoder,
+data.json `993b906`, composed Jolt `976dd9d`, local POSIX Durable) measured
+8,217.22 physical rows/s and 2,619,996,832 allocated Scheme bytes for 20 x 512
+items across five tables. A separate fresh-process reader counted 10,240
+service rows in each table (51,200 total). Against the earlier sequential
+8,198.47 rows/s / 2,650,720,176-byte screen, allocation is approximately 1.16%
+lower; these separate screens do not establish a causal time improvement,
+tail qualification, S3 performance, full-row recovery, or target achievement.
+The integrated encoder source SHA-256 was
+`9138c0b182f33a63acd2fbe60b39579bac7ed0f024cc5238771ad539a7f2e0fc`.
+Local bounded receipts: `evidence/exporter-key-cache-integrated-20261005.edn`
+and its `.recovery.edn` companion. Encoding qualification passed the generic
+18-test/202-assertion suite and actual native 1-test/21-assertion suite.
 Standalone/AOT native loading remains unqualified. Public-path throughput,
 exporter/Oscope integration and S3 qualification are still pending: opting in
 does not itself demonstrate the performance targets or change persistence

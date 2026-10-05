@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scope the opt-in guarded JSON writer's bounded key cache to each serial
+  payload or parallel worker chunk. Reused encoder contexts retain a factory,
+  not a payload cache, and workers do not share a mutable writer. Repin the
+  data.json fork to its experimental payload loader. Configured/default
+  encoding, output limits, admission, settlement and persistence are unchanged.
+
 - Remove intermediate index/value pairs from Durable head vector validation.
   All elements, nesting limits and indexed/redacted error paths remain checked.
   The component allocation saving is small; no Durable throughput gain is claimed.
