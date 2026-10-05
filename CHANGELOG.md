@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reuse one request-owned native SQL buffer for default WAL replay admission
+  and execution. Preserve complete WAL validation before effects, per-statement
+  authorization, exception-safe release and custom-operation seams. Recovery
+  phase observers retain the same route; SQL-buffer allocation occurs before
+  the classification event. Performance qualification is pending.
+
 - Combine behavior-qualified native UTF-8 validation and decoding during WAL
   recovery, avoiding a byte snapshot and a separate replacement-sentinel scan
   on supported Jolt hosts. Unsupported backings, malformed bytes and leading

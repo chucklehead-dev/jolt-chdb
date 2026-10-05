@@ -58,6 +58,8 @@ jobs:
         run: jolt -Srepro -A:durable-wal-stream-test -m hegel.install
       - name: Preserve strict decoding and WAL replay error precedence
         run: jolt -Srepro -M:durable-wal-stream-test
+      - name: Preserve replay buffer ownership, authorization and override seams
+        run: jolt -Srepro -M:durable-replay-buffer-test
 
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)

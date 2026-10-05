@@ -720,12 +720,22 @@
 
 (defn- replay-statement!
   [sql operations handle logical-database record-wire-bytes observe!]
-  (observed-recovery-phase
-   observe! :wal-replay-classification record-wire-bytes
-   #((:analyze-execute! operations) handle sql logical-database))
-  (observed-recovery-phase
-   observe! :wal-replay-native record-wire-bytes
-   #((:execute-native! operations) handle sql [])))
+  (if-let [with-buffer! (:with-native-replay-buffer! operations)]
+    (with-buffer!
+     handle sql logical-database
+     (fn [authorize! execute!]
+       (observed-recovery-phase
+        observe! :wal-replay-classification record-wire-bytes authorize!)
+       (observed-recovery-phase
+        observe! :wal-replay-native record-wire-bytes execute!)))
+    ;; Custom native/admission operations retain their original seam.
+    (do
+      (observed-recovery-phase
+       observe! :wal-replay-classification record-wire-bytes
+       #((:analyze-execute! operations) handle sql logical-database))
+      (observed-recovery-phase
+       observe! :wal-replay-native record-wire-bytes
+       #((:execute-native! operations) handle sql [])))))
 
 (defn- replay-statements!
   [statements statement-wire-bytes operations handle logical-database observe!]
@@ -810,6 +820,17 @@
    :query-bytes-native! chdb/execute-query-bytes-handle
    :execute-native! (fn [handle sql params]
                       (chdb/execute-any handle sql params))
+   :with-native-replay-buffer!
+   (fn [handle sql database replay!]
+     ;; The lexical owner outlives classification, authorization and native
+     ;; result consumption. Neither closure nor pointer escapes replay!.
+     (native/with-query-buffer
+      sql
+      (fn [query-buffer]
+        (replay!
+         #(policy/authorize-execute!
+           (native/classify-query-buffer! handle query-buffer database))
+         #(chdb/execute-any-with-query-buffer handle sql query-buffer)))))
    :with-native-admitted-buffer!
    (fn [handle sql database execute-admitted!]
      (native/with-query-buffer
@@ -829,6 +850,18 @@
            handle prepared query-buffer)))))
    :execute-prepared-native! chdb/execute-prepared-any
    :recovery-event! (fn [_] nil)})
+
+(defn- configured-recovery-operations [configured]
+  (when (contains? configured :with-native-replay-buffer!)
+    (fail! ::invalid-options
+           "with-native-replay-buffer! is reserved for default recovery"))
+  (cond-> (validate-recovery-phase-observer!
+           (merge (default-open-operations) configured))
+    ;; Never bypass an embedding's admission/execution or native-handle seam.
+    ;; Observer-only overrides do not disable the production buffer route.
+    (some #(contains? configured %)
+          [:analyze-execute! :execute-native! :open-native!])
+    (dissoc :with-native-replay-buffer!)))
 
 (defn- epoch-ms->seconds
   "Convert the runtime wall-clock representation to the frozen V1 wire unit."
@@ -951,8 +984,7 @@
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
   (let [store (resolve-store! options)
-        operations (validate-recovery-phase-observer!
-                    (merge (default-open-operations) operations))]
+        operations (configured-recovery-operations operations)]
     (doseq [key (concat [:durable-capability :classification-sql!
                          :query-native!
                          :query-bytes-native!]
@@ -1046,8 +1078,7 @@
                        configured-prepared-execution?)
             (fail! ::invalid-options
                    "prepared-query operation overrides must be supplied together"))
-        operations (validate-recovery-phase-observer!
-                    (merge (default-open-operations) configured-operations))
+        operations (configured-recovery-operations configured-operations)
         ;; A test or embedding that replaces either legacy preparation or
         ;; execution operation must retain its old seam unless it explicitly
         ;; supplies the matching prepared pair as well.
