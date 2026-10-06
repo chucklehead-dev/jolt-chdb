@@ -56,6 +56,23 @@ The writer operations are:
   finishes, then restored and rethrown unless an earlier close failure is
   primary.
 
+## Bounding the WAL-reference list
+
+Pass `:checkpoint-wal-reference-threshold` as a positive integer to
+`writer-dbspec` or `open-writer!` to limit the number of WAL references retained
+between checkpoints. When publishing another WAL would reach that threshold,
+the same serialized worker publishes a full checkpoint instead. It clears the
+old WAL list only after confirmed or reconciled head publication. This counts
+physical WAL publications, not rows or logical telemetry requests.
+
+The option is omitted by default. A smaller threshold bounds manifest growth
+and recovery replay, but creating and uploading a full backup can add latency;
+measure that tradeoff on your storage backend. It does not weaken persistence
+acknowledgements or guarantee a latency/byte-size bound. In particular, unknown
+head fields still count toward the existing head-size limit.
+
+## Secret-bearing queries
+
 Reads that chdb-core classifies as secret-bearing remain allowed because they
 do not enter Durable recovery state. A successful result or encoded byte buffer
 is returned unchanged. If the engine throws, writer and immutable-reader query

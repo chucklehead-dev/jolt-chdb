@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Forward the explicit WAL-reference checkpoint threshold through JDBC writer
+  startup. Previously the dbspec accepted this option but the driver dropped
+  it. Add public-boundary and confirmed-checkpoint effect regressions (#250).
+
 - Add an experimental source-only `:native-guarded-byte-batch` JSONEachRow
   backend, preserving admission, incremental budgets, original custom errors
   and close/release lifetime. Require serial ownership and the callback-boundary
