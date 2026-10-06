@@ -13,17 +13,19 @@
   (throw (ex-info message {:type kind})))
 
 #?(:jolt
-   (defn- load-native-writer-factory! []
-     (try
-       (require 'clojure.data.json.jolt-native)
-       (let [factory (ns-resolve 'clojure.data.json.jolt-native 'load-payload-writer!)]
-         (when-not (and (ifn? factory) (ifn? (factory)))
-           (fail! ::native-unavailable "Native JSON writer was not initialized"))
-         factory)
-       (catch Throwable _
-         ;; Do not expose paths, input values, or arbitrary loader diagnostics.
-         (fail! ::native-unavailable
-                "Native JSON encoding requires the qualified compiler-bearing Jolt runtime")))))
+   (defn- load-native-writer-factory!
+     ([] (load-native-writer-factory! 'load-payload-writer!))
+     ([factory-name]
+      (try
+        (require 'clojure.data.json.jolt-native)
+        (let [factory (ns-resolve 'clojure.data.json.jolt-native factory-name)]
+          (when-not (and (ifn? factory) (ifn? (factory)))
+            (fail! ::native-unavailable "Native JSON writer was not initialized"))
+          factory)
+        (catch Throwable _
+          ;; Do not expose paths, input values, or arbitrary loader diagnostics.
+          (fail! ::native-unavailable
+                 "Native JSON encoding requires the qualified compiler-bearing Jolt runtime"))))))
 
 #?(:jolt (def ^:dynamic ^:private *selected-writer-factory* nil))
 
@@ -47,6 +49,9 @@
   Jolt writer, overriding that caller binding without changing JSONWriter
   extensions. Each serial payload or parallel worker gets a fresh bounded
   object-key cache; the context retains only its factory, never a payload cache.
+  `:native-guarded-string-cache` additionally retains bounded stock string
+  fragments within each payload/worker (128 entries, 65,536 input-plus-output
+  characters). Discarded with that writer; live extensions still run normally.
   It requires a compiler-bearing qualified runtime; standalone/AOT
   is not qualified. Unsupported hosts/loading fail rather than silently falling
   back. This option does not change admission or persistence guarantees."
@@ -55,12 +60,14 @@
    (when-not (and (map? options)
                   (every? #{:parallelism :json-backend} (keys options))
                   (contains? #{1 4} (get options :parallelism 1))
-                  (contains? #{:configured :native-guarded}
+                  (contains? #{:configured :native-guarded :native-guarded-string-cache}
                              (get options :json-backend :configured)))
      (fail! ::invalid-options "Invalid JSONEachRow encoder options"))
    (let [backend (get options :json-backend :configured)
-         factory (when (= :native-guarded backend)
-                  #?(:jolt (load-native-writer-factory!)
+         factory (when (not= :configured backend)
+                  #?(:jolt (if (= :native-guarded-string-cache backend)
+                             (load-native-writer-factory! 'load-payload-string-caching-writer!)
+                             (load-native-writer-factory!))
                      :bb (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")
                      :clj (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")))]
      {:state (atom {:phase :open :active nil})
@@ -78,7 +85,8 @@
   {:json-backend (:json-backend encoder)
    :requested-parallelism (:requested-parallelism encoder)
    :effective-parallelism (:effective-parallelism encoder)
-   :source-only? (= :native-guarded (:json-backend encoder))})
+   :source-only? (contains? #{:native-guarded :native-guarded-string-cache}
+                           (:json-backend encoder))})
 
 (defn- admit! [encoder]
   (let [batch {:done (promise)}]

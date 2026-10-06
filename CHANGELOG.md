@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add explicit source-only `:native-guarded-string-cache` row encoding, with
+  fresh bounded stock-string caches per payload/worker. Fail closed without
+  its matching data.json capability or on non-Jolt hosts; default/key-only
+  encoding, live extensions, admission and persistence remain unchanged.
+
 - Add an explicit `:operations :json-reader` context for serialized writer and
   heartbeat operations. Scope only data.json's opt-in reader binding; never
   inherit the caller's telemetry or other dynamic context. Default parsing,

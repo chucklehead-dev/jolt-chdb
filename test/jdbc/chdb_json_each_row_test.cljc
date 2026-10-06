@@ -333,20 +333,21 @@
 
 #?(:jolt
    (deftest explicit-native-backend-keeps-extensions-and-worker-selection
-     (doseq [parallelism [1 4]]
+     (doseq [parallelism [1 4] backend [:native-guarded :native-guarded-string-cache]]
        (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)
              calls (atom 0)
              callback (fn [value sink options stock]
                         (swap! calls inc)
                         ((first stock) value sink options))
-             context (with-redefs-fn {loader (fn [] (fn [] callback))}
+             context (with-redefs-fn {loader (fn [& _] (fn [] callback))}
                        #(encoder/open-encoder {:parallelism parallelism
-                                               :json-backend :native-guarded}))
+                                               :json-backend backend}))
              custom (reify json/JSONWriter
                       (-write [_ out _] (.append out "42")))
              error (ex-info "custom writer failure" {:canary :same})]
          (try
-           (is (= :native-guarded (:json-backend (encoder/encoder-info context))))
+           (is (= backend (:json-backend (encoder/encoder-info context))))
+           (is (true? (:source-only? (encoder/encoder-info context))))
            ;; An explicit backend wins over the caller binding in every worker.
            (binding [json/*experimental-native-writer*
                      (fn [& _] (throw (ex-info "wrong backend" {})))]
@@ -363,7 +364,7 @@
 
 #?(:jolt
    (deftest native-payload-writers-are-fresh-per-batch-and-worker
-     (doseq [parallelism [1 4]]
+     (doseq [parallelism [1 4] backend [:native-guarded :native-guarded-string-cache]]
        (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)
              created (atom 0) observed (atom [])
              factory (fn []
@@ -371,9 +372,9 @@
                          (fn [value sink options stock]
                            (swap! observed conj id)
                            ((first stock) value sink options))))
-             context (with-redefs-fn {loader (fn [] factory)}
+             context (with-redefs-fn {loader (fn [& _] factory)}
                        #(encoder/open-encoder {:parallelism parallelism
-                                               :json-backend :native-guarded}))
+                                               :json-backend backend}))
              rows (mapv #(hash-map "ordinal" %) (range 8))
              expected (apply str (mapv #(str (json/write-str %) "\n") rows))]
          (try
@@ -392,8 +393,42 @@
 #?(:jolt nil
    :default
    (deftest native-backend-rejects-unsupported-host
-     (is (= :jdbc.chdb.json-each-row/native-unavailable
-            (failure-type #(encoder/open-encoder {:json-backend :native-guarded}))))))
+     (doseq [backend [:native-guarded :native-guarded-string-cache]]
+       (is (= :jdbc.chdb.json-each-row/native-unavailable
+              (failure-type #(encoder/open-encoder {:json-backend backend})))))))
+
+#?(:jolt
+   (deftest string-cache-backend-selects-its-explicit-factory
+     (let [loader (ns-resolve 'jdbc.chdb.json-each-row 'load-native-writer-factory!)
+           selected (atom [])]
+       (with-redefs-fn {loader (fn [name]
+                                (swap! selected conj name)
+                                (fn [] (fn [value out options stock]
+                                         ((first stock) value out options))))}
+         #(let [context (encoder/open-encoder {:json-backend :native-guarded-string-cache})]
+            (try
+              (is (= "[\"repeat\",\"repeat\"]\n"
+                     (encoder/encode-text! context [["repeat" "repeat"]])))
+              (is (= ['load-payload-string-caching-writer!] @selected))
+              (finally (encoder/close! context))))))))
+
+#?(:jolt
+   (deftest string-cache-missing-capability-fails-closed
+     (require 'clojure.data.json.jolt-native)
+     (let [factory (ns-resolve 'clojure.data.json.jolt-native 'load-payload-string-caching-writer!)]
+       (letfn [(check! []
+                 (let [error (try (encoder/open-encoder {:json-backend :native-guarded-string-cache})
+                                  nil (catch Throwable error error))]
+                   (is (= {:type :jdbc.chdb.json-each-row/native-unavailable} (ex-data error)))
+                   (is (= "Native JSON encoding requires the qualified compiler-bearing Jolt runtime"
+                          (ex-message error)))
+                   (is (nil? (.getCause error)))))]
+         (if factory
+           (doseq [unavailable [nil (fn [] (throw (ex-info "secret loader detail" {:secret true})))]]
+             (with-redefs-fn {factory unavailable} check!))
+           ;; The optional factory need not exist in the default dependency.
+           ;; Its actual absence must fail explicitly, not select key-only JSON.
+           (check!))))))
 
 #?(:jolt
    (deftest parallel-chunks-finish-out-of-order-but-emit-in-row-order
