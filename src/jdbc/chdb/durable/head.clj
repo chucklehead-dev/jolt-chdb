@@ -254,21 +254,33 @@
                     (required manifest "seq" path) (conj path "seq"))
         base-parts (when-not (nil? base)
                      (reference-parts! :checkpoint base (conj path "base")))
-        wal-parts (mapv (fn [index reference]
-                          (reference-parts! :wal reference
-                                            (conj path "wal" index)))
-                        (range (count wal)) wal)
-        parts (cond-> [] base-parts (conj base-parts) true (into wal-parts))
-        sequences (mapv :seq parts)
-        expected-seq (if (seq sequences) (peek sequences) 0)]
+        ;; Validate every reference before reporting aggregate errors, just as
+        ;; the eager mapv did. Keep only scalar summaries rather than building
+        ;; parsed-reference, combined-reference and sequence collections.
+        [expected-seq ordered? future-generation?]
+        (loop [index 0
+               previous-seq (:seq base-parts)
+               ordered? true
+               future-generation? (and base-parts
+                                       (> (:generation base-parts) lease-generation))]
+          (if (< index (count wal))
+            (let [parts (reference-parts! :wal (nth wal index)
+                                          (conj path "wal" index))
+                  current-seq (:seq parts)]
+              (recur (inc index) current-seq
+                     (and ordered? (or (nil? previous-seq)
+                                       (< previous-seq current-seq)))
+                     (or future-generation?
+                         (> (:generation parts) lease-generation))))
+            [(or previous-seq 0) ordered? future-generation?]))]
     (nonblank-string! db (conj path "db"))
-    (when-not (every? true? (map < sequences (rest sequences)))
+    (when-not ordered?
       (corrupt! "head.json WAL references are not in strict replay order"
                 (conj path "wal")))
     (when-not (= expected-seq seq-number)
       (corrupt! "head.json manifest sequence does not name its final reference"
                 (conj path "seq")))
-    (when (some #(> (:generation %) lease-generation) parts)
+    (when future-generation?
       (corrupt! "head.json reference generation exceeds the lease generation"
                 path))))
 

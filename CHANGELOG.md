@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate Durable manifest ordering and generations in one indexed traversal,
+  without temporary parsed-reference and sequence collections. Keep eager
+  reference checks, aggregate error precedence, exact acceptance and unknown
+  fields; storage reads, lease/CAS and persistence ACKs are unchanged.
+
 - Forward the explicit WAL-reference checkpoint threshold through JDBC writer
   startup. Previously the dbspec accepted this option but the driver dropped
   it. Add public-boundary and confirmed-checkpoint effect regressions (#250).
