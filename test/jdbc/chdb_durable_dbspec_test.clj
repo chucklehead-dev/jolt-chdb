@@ -1,5 +1,7 @@
 (ns jdbc.chdb-durable-dbspec-test
   (:require [db.driver :as driver]
+            [clojure.test :as test]
+            [jdbc.chdb-durable-checkpoint-threshold-jdbc-test]
             [db.jdbc]
             [hegel.core :as h]
             [hegel.generator :as g]
@@ -399,6 +401,9 @@
 (defn run-checks! []
   (reset! failures 0)
   (run-validation-checks!)
+  (let [result (test/run-tests 'jdbc.chdb-durable-checkpoint-threshold-jdbc-test)]
+    (check "public JDBC checkpoint threshold handoff and effects pass"
+           0 (+ (:fail result) (:error result))))
   (run-provider-shape-checks!)
   (run-writer-property!)
   (when-not (zero? @failures)

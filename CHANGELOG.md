@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Forward the explicit WAL-reference checkpoint threshold through JDBC writer
+  startup. Previously the dbspec accepted this option but the driver dropped
+  it. Add public-boundary and confirmed-checkpoint effect regressions (#250).
+
 - Add a manual-only five-batch S3 connection-reuse comparison, pinned to reviewed
   benchmark/runtime/native/dependency commits. Run through the existing
   protected-main AWS environment with isolated prefixes and independent
