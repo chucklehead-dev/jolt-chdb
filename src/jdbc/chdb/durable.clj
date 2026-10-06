@@ -1405,7 +1405,7 @@
           (open-reader! common)
           (open-writer!
            (merge common
-                  {:owner (:owner spec)
+                  (cond-> {:owner (:owner spec)
                    :instance (:instance spec)
                    :database (:database spec)
                    :lease-ttl-ms (or (:lease-ttl-ms spec)
@@ -1418,7 +1418,10 @@
                    :retry-initial-backoff-ms
                    (:retry-initial-backoff-ms spec)
                    :retry-max-backoff-ms (:retry-max-backoff-ms spec)
-                   :force? (boolean (:force? spec))})))))
+                   :force? (boolean (:force? spec))}
+                    (contains? spec :checkpoint-wal-reference-threshold)
+                    (assoc :checkpoint-wal-reference-threshold
+                           (:checkpoint-wal-reference-threshold spec))))))))
     (close-handle [_ handle]
       (if (reader/reader? handle)
         (reader/close! handle)

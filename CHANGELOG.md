@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Forward the explicit WAL-reference checkpoint threshold through JDBC writer
+  startup. Previously the dbspec accepted this option but the driver dropped
+  it. Add public-boundary and confirmed-checkpoint effect regressions (#250).
+
 - Add explicit source-only `:native-guarded-string-cache` row encoding, with
   fresh bounded stock-string caches per payload/worker. Fail closed without
   its matching data.json capability or on non-Jolt hosts; default/key-only
