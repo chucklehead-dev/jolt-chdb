@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicit `:operations :json-reader` context for serialized writer and
+  heartbeat operations. Scope only data.json's opt-in reader binding; never
+  inherit the caller's telemetry or other dynamic context. Default parsing,
+  publication, admission and settlement remain unchanged. Native reader
+  qualification and integration review are required before consumer adoption.
+
 - Compile the two frozen Durable reference-key patterns once rather than for
   every base/WAL reference validation. Exact key grammar, indexed errors,
   unknown-field preservation and fresh ownership checks remain unchanged.

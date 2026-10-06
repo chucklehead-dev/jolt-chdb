@@ -852,6 +852,8 @@
    :recovery-event! (fn [_] nil)})
 
 (defn- configured-recovery-operations [configured]
+  (when (and (some? (:json-reader configured)) (not (fn? (:json-reader configured))))
+    (fail! ::invalid-options "json-reader must be a function"))
   (when (contains? configured :with-native-replay-buffer!)
     (fail! ::invalid-options
            "with-native-replay-buffer! is reserved for default recovery"))

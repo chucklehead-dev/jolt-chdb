@@ -35,9 +35,18 @@
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
 
+(defonce ^:private json-reader-var
+  ;; Resolve only for an explicitly configured backend. Default consumers need
+  ;; neither a new data.json API nor the source-only native loader.
+  (delay (requiring-resolve 'clojure.data.json/*experimental-native-reader*)))
+
 (defn- call-with-backend-context [writer f]
   (try
-    (backend/call-with-operation-context (:backend-context writer) f)
+    (backend/call-with-operation-context
+     (:backend-context writer)
+     (if-let [reader (:json-reader (:operations writer))]
+       (fn [] (with-bindings {@json-reader-var reader} (f)))
+       f))
     (catch Throwable error
       (if (= ::backend/operation-stopped (:type (ex-data error)))
         (do
@@ -968,6 +977,11 @@
     (when (and (some? (:writer-phase! operations))
                (not (fn? (:writer-phase! operations))))
       (fail! ::invalid-options "writer-phase! must be a function"))
+    (when (and (some? (:json-reader operations)) (not (fn? (:json-reader operations))))
+      (fail! ::invalid-options "json-reader must be a function"))
+    ;; Resolve before either owned thread starts: a missing opt-in API must not
+    ;; first fail when the worker needs to close and clean up its native handle.
+    (when (:json-reader operations) @json-reader-var)
     (when (and (some? (:with-native-admitted-buffer! operations))
                (not (fn? (:with-native-admitted-buffer! operations))))
       (fail! ::invalid-options "with-native-admitted-buffer! must be a function"))

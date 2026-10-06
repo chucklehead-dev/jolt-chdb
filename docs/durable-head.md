@@ -90,3 +90,21 @@ This slice does not compare chDB release precedence, apply `backup_format` or
 restore objects, or mutate `head.json`. Those gates belong after the decoder,
 before any engine or backend side effect. No Durable V1 conformance claim is
 made.
+# Experimental scoped JSON reader
+
+An experimental data.json whole-String backend can be supplied explicitly as
+`:operations {:json-reader (native/load-reader!)}` when constructing a writer.
+It requires the reviewed candidate data.json API and a compiler-bearing Jolt
+runtime; it is not enabled by default or qualified for AOT. The writer resolves
+the opt-in binding before starting its threads, then scopes only that binding
+around worker and heartbeat operations. Caller telemetry context is not copied.
+Startup/recovery and ordinary readers retain their normal caller/default codec;
+a caller may separately select the reader there with an explicit local binding.
+
+A binding around the caller alone does not prove the serialized worker used
+the backend. Qualification must count actual worker-path parses and verify
+persistence with a separate normal-decoder reader. Native parsing still retains
+the head byte, UTF-8, lexical, schema, ownership and publication checks. Loaded
+backend code is a trusted semantic implementation, not an arbitrary JSON parser
+extension or a new persistence format. Source review, broader integration and
+repeated/S3 performance gates remain before application adoption.
