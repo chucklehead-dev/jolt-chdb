@@ -67,6 +67,12 @@
            :durable-secret-conformance-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-secret-conformance-test"]}
+           :durable-reader-context-test
+           {:extra-paths ["test"]
+            :extra-deps {org.clojure/data.json
+                         {:git/url "https://github.com/casselc/data.json.git"
+                          :git/sha "bad53dc6eb44210fdc9ad8aa257f3d46f225c3b3"}}
+            :main-opts ["-m" "jdbc.chdb-durable-reader-context-test"]}
            :durable-writer-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel

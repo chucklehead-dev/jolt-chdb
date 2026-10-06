@@ -108,3 +108,7 @@ the head byte, UTF-8, lexical, schema, ownership and publication checks. Loaded
 backend code is a trusted semantic implementation, not an arbitrary JSON parser
 extension or a new persistence format. Source review, broader integration and
 repeated/S3 performance gates remain before application adoption.
+
+`jolt -M:durable-reader-context-test` runs the optional context contract with
+the exact candidate data.json dependency. The normal dependency/default reader
+is not repinned by that alias.
