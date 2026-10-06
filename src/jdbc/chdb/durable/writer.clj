@@ -38,7 +38,8 @@
 (defonce ^:private json-reader-var
   ;; Resolve only for an explicitly configured backend. Default consumers need
   ;; neither a new data.json API nor the source-only native loader.
-  (delay (requiring-resolve 'clojure.data.json/*experimental-native-reader*)))
+  (delay (or (requiring-resolve 'clojure.data.json/*experimental-native-reader*)
+             (fail! ::invalid-options "Configured JSON reader API is unavailable"))))
 
 (defn- call-with-backend-context [writer f]
   (try
