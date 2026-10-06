@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Compile the two frozen Durable reference-key patterns once rather than for
+  every base/WAL reference validation. Exact key grammar, indexed errors,
+  unknown-field preservation and fresh ownership checks remain unchanged.
+  Throughput qualification is pending.
+
 - Scope the opt-in guarded JSON writer's bounded key cache to each serial
   payload or parallel worker chunk. Reused encoder contexts retain a factory,
   not a payload cache, and workers do not share a mutable writer. Repin the
