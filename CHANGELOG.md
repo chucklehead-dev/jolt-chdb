@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Report p50/p90/p95/p99 latency in Durable phase benchmarks and include p90
+  in the cross-runtime JSON baseline. Sample-count support flags are explicit;
+  persistence timing and existing p50/p99 acceptance criteria are unchanged.
+
 - Validate Durable manifest ordering and generations in one indexed traversal,
   without temporary parsed-reference and sequence collections. Keep eager
   reference checks, aggregate error precedence, exact acceptance and unknown

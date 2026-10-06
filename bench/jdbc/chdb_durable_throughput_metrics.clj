@@ -199,10 +199,14 @@
         nanos (reduce + 0 ordered)]
     {:count count
      :p50-ms (/ (double (percentile ordered 0.50)) 1000000.0)
+     :p90-ms (/ (double (percentile ordered 0.90)) 1000000.0)
      :p95-ms (/ (double (percentile ordered 0.95)) 1000000.0)
+     :p99-ms (/ (double (percentile ordered 0.99)) 1000000.0)
      :max-ms (/ (double (peek ordered)) 1000000.0)
      :total-ms (/ (double nanos) 1000000.0)
      :p50-supported? (>= count 2)
+     :p90-supported? (>= count 10)
+     :p99-qualification? (>= count 100)
      :p95-supported? (>= count 20)}))
 
 (defn- summarized [observations]

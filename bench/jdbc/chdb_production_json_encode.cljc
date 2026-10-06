@@ -67,6 +67,7 @@
   (let [ordered (vec (sort samples))]
     {:count (count ordered)
      :p50-ns (percentile ordered 0.5)
+     :p90-ns (percentile ordered 0.90)
      :p95-ns (percentile ordered 0.95)
      :p99-ns (percentile ordered 0.99)
      :max-ns (peek ordered)}))

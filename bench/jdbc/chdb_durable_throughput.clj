@@ -99,10 +99,12 @@
   (let [ordered (vec (sort samples))]
     {:count (count ordered)
      :p50-supported? (>= (count ordered) 2)
+     :p90-supported? (>= (count ordered) 10)
      :p95-supported? (>= (count ordered) 20)
      :p99-qualification? (>= (count ordered) 100)
      :total-ms (ms (reduce + 0 ordered))
      :p50-ms (ms (percentile ordered 0.50))
+     :p90-ms (ms (percentile ordered 0.90))
      :p95-ms (ms (percentile ordered 0.95))
      :p99-ms (ms (percentile ordered 0.99))
      :max-ms (ms (peek ordered))}))

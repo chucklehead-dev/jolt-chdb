@@ -7,7 +7,9 @@
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.core :as jdbc]
             [jdbc.chdb-durable-cross-binding-recovery :as cross-binding]
-            [jdbc.chdb-durable-throughput :as throughput]))
+            [jdbc.chdb-durable-throughput :as throughput]
+            [jdbc.chdb-durable-throughput-metrics :as metrics]
+            [jdbc.chdb-production-json-encode :as json-benchmark]))
 
 (def failures (atom 0))
 
@@ -416,6 +418,23 @@
     (check "fewer than one hundred samples cannot qualify p99"
            false
            (:p99-qualification? (latency-summary (range 99))))
+    (check "all four latency percentiles use nearest rank on unsorted samples"
+           {:p50-ms 50.0 :p90-ms 90.0 :p95-ms 95.0 :p99-ms 99.0}
+           (select-keys (latency-summary
+                         (reverse (map #(* % 1000000) (range 1 101))))
+                        [:p50-ms :p90-ms :p95-ms :p99-ms]))
+    (check "p90 support begins at ten samples"
+           [false true]
+           (mapv #(:p90-supported? (latency-summary (range %))) [9 10]))
+    (let [samples (reverse (map #(* % 1000000) (range 1 101)))]
+      (check "Durable phase reports include all four nearest-rank percentiles"
+             [50.0 90.0 95.0 99.0]
+             ((juxt :p50-ms :p90-ms :p95-ms :p99-ms)
+              (#'metrics/latency-report samples)))
+      (check "cross-runtime JSON reports include all four percentiles in nanos"
+             [50000000 90000000 95000000 99000000]
+             ((juxt :p50-ns :p90-ns :p95-ns :p99-ns)
+              (#'json-benchmark/summary samples))))
     (check "admission percentile support is explicit at each sample boundary"
            [[false false] [true false] [true true]]
            (mapv (fn [samples]
