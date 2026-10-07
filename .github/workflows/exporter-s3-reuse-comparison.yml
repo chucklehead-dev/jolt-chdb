@@ -1,0 +1,156 @@
+name: bounded exporter S3 connection reuse
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: measured-exporter-storage
+  cancel-in-progress: false
+
+jobs:
+  matched-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: aws-durable-ci
+    env:
+      JOLT_AOT_CACHE: '0'
+      JOLT_NO_USER_DEPS: '1'
+      QUALIFIED_RUNTIME_PROFILE: bcb
+      QUALIFIED_RUNTIME_RUN_ID: '37650983199'
+      QUALIFIED_RUNTIME_RUN_ATTEMPT: '1'
+      QUALIFIED_RUNTIME_WORKFLOW_SHA: 2d0f4b59e068b269780b0a669e8bc06524ec98b1
+      QUALIFIED_RUNTIME_ARTIFACT_ID: '11497896255'
+      QUALIFIED_RUNTIME_ARTIFACT_SHA256: 6d7043b502ab7839fe4a91ae977b7be8be088ebe620ead6115d2d0afdb9819db
+      QUALIFIED_RUNTIME_BINARY_SHA256: 9f6e6b4a347ae006ba5810b3bb876b4bb2eca41b611afeadfb18d4feb9c03cf0
+      BENCH_BATCHES: '5'
+      BENCH_COMPARE_REUSE: 'true'
+    steps:
+      - name: Bound experimental reuse before artifact or AWS work
+        run: |
+          if [[ "$BENCH_COMPARE_REUSE" == true ]]; then
+            test "$BENCH_BATCHES" = 5
+          fi
+      - uses: actions/checkout@v4
+        with:
+          # Reviewed immutable benchmark source, never an arbitrary input ref.
+          ref: 91eacd89b229479b6a91a32d6edffd10194a2eac
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: chucklehead-dev/jolt-otel-clickhouse
+          ref: 715cf81509e007b3eb3cfe873c5edf311f49e278
+          path: .qualification/exporter
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: casselc/data.json
+          ref: 3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0
+          path: .qualification/json
+          persist-credentials: false
+      - name: Authenticate the exact green runtime artifact
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/fetch-qualified-durable-runtime.sh"
+          curl -fsSL --connect-timeout 15 --max-time 30 \
+            https://raw.githubusercontent.com/chucklehead-dev/jolt-otel-clickhouse/c9916a8e66c924120f225c3889c1dda8dcab7655/scripts/fetch-qualified-durable-runtime.sh \
+            -o "$helper"
+          printf '%s  %s\n' a20b0e9dc54446172a15d83cec64fd11039af659f54c8997cbeab533c607ff65 "$helper" | sha256sum -c -
+          TMPDIR=/tmp timeout --signal=TERM --kill-after=5s 240s bash "$helper" \
+            | tee "$RUNNER_TEMP/qualified-runtime.log"
+          test "$(grep -c '^QUALIFIED_RUNTIME_BIN=' "$RUNNER_TEMP/qualified-runtime.log")" = 1
+          task_bin=$(sed -n 's/^QUALIFIED_RUNTIME_BIN=//p' "$RUNNER_TEMP/qualified-runtime.log")
+          [[ "$task_bin" =~ ^/tmp/qualified-durable-runtime\.[A-Za-z0-9]+/jolt$ ]]
+          test -f "$task_bin" && test ! -L "$task_bin"
+          test "$(realpath "$task_bin")" = "$task_bin"
+          test "$(sha256sum "$task_bin" | cut -d ' ' -f1)" = "$QUALIFIED_RUNTIME_BINARY_SHA256"
+          # Standalone artifact embeds Chez; no separate interpreter selection.
+          (cd "$(dirname "$task_bin")" && "$task_bin" -Srepro -e \
+            '(require (quote jolt.host)) (assert (= "Chez Scheme Version 10.4.1" (jolt.host/scheme-version)))')
+          echo "BENCH_JOLT_BIN=$task_bin" >> "$GITHUB_ENV"
+          echo "BENCH_EXPECT_EXPORTER_ROOT=$GITHUB_WORKSPACE/.qualification/exporter" >> "$GITHUB_ENV"
+          echo "BENCH_EXPECT_JSON_ROOT=$GITHUB_WORKSPACE/.qualification/json" >> "$GITHUB_ENV"
+          # This launcher accepts only the selected checksum-verified standalone.
+          task_wrapper="$RUNNER_TEMP/measured-jolt-wrapper"
+          printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+            'test "$#" -ge 1' 'test "$1" = "$BENCH_JOLT_BIN"' \
+            'test "$(sha256sum "$1" | cut -d " " -f1)" = "$QUALIFIED_RUNTIME_BINARY_SHA256"' \
+            'exec "$@"' > "$task_wrapper"
+          chmod 755 "$task_wrapper"
+          echo "BENCH_JOLT_WRAPPER=$task_wrapper" >> "$GITHUB_ENV"
+      - name: Install and independently pin libchdb
+        run: |
+          set -euo pipefail
+          env -u JOLT_CHDB_LIB "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro -m jdbc.chdb.install
+          task_native="$HOME/.cache/jolt-chdb/26.7.3/linux-amd64/libchdb.so"
+          test -f "$task_native" && test ! -L "$task_native"
+          printf '%s  %s\n' 36ad4e999882821ef13cf2d0f52c93f48e6ee1b4498b35a201c23ce4b8d15bf5 "$task_native" | sha256sum -c -
+          echo "JOLT_CHDB_LIB=$task_native" >> "$GITHUB_ENV"
+      - name: Qualify the matching local workload first
+        run: |
+          set -euo pipefail
+          mkdir -p target/exporter-storage
+          task_root=$(mktemp -d /tmp/exporter-local-qualification.XXXXXXXX)
+          task_report="$GITHUB_WORKSPACE/target/exporter-storage/local.edn"
+          bash bench/run-exporter-storage-qualification.sh writer local "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          bash bench/run-exporter-storage-qualification.sh reader local "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+      - name: Validate existing AWS role configuration
+        env:
+          TASK_ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          TASK_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          TASK_REGION: ${{ vars.AWS_DURABLE_REGION }}
+        run: |
+          test -n "$TASK_ROLE_ARN"
+          test -n "$TASK_BUCKET"
+          test -n "$TASK_REGION"
+      - name: Assume the existing jolt-chdb CI role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          role-session-name: chdb-exporter-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ vars.AWS_DURABLE_REGION }}
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+      - name: Run committed S3 workload with fresh control and optional reuse
+        env:
+          JOLT_CHDB_S3_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/exporter-10k
+        run: |
+          set -euo pipefail
+          # Presence only: never echo credentials, headers or backend options.
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          test -n "$AWS_SESSION_TOKEN"
+          export JOLT_CHDB_S3_ENDPOINT="https://s3.${AWS_REGION}.amazonaws.com"
+          export JOLT_CHDB_S3_REGION="$AWS_REGION"
+          export JOLT_CHDB_S3_ACCESS_KEY="$AWS_ACCESS_KEY_ID"
+          export JOLT_CHDB_S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
+          export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
+          task_prefix="$JOLT_CHDB_S3_PREFIX"
+          task_modes=(fresh)
+          if [[ "$BENCH_COMPARE_REUSE" == true ]]; then task_modes+=(reuse); fi
+          for task_mode in "${task_modes[@]}"; do
+            export JOLT_CHDB_S3_PREFIX="$task_prefix/$task_mode"
+            export BENCH_REUSE_CURL=false
+            if [[ "$task_mode" == reuse ]]; then export BENCH_REUSE_CURL=true; fi
+            task_root=$(mktemp -d /tmp/exporter-s3-qualification.XXXXXXXX)
+            task_report="$GITHUB_WORKSPACE/target/exporter-storage/s3-$task_mode.edn"
+            bash bench/run-exporter-storage-qualification.sh writer s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+            bash bench/run-exporter-storage-qualification.sh reader s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          done
+      - name: Retain only bounded credential-free receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exporter-s3-reuse-5x10000
+          path: target/exporter-storage/*.edn*
+          if-no-files-found: warn
+          retention-days: 30
