@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional scalar curl timing/connection-count receipts to the owned
+  exporter storage profile process; keep request/payload/credential data out
+  of diagnostics. Do not change connection ownership or persistence behavior.
+
 - Reuse redacted logical/transport request metrics in exporter S3 profiles;
   offer a five-batch attribution run without claiming p99 qualification.
   Preserve production storage, publication, retry and committed ACK behavior.

@@ -2,7 +2,7 @@ name: measured exporter local and S3 qualification
 
 on:
   push:
-    branches: [bench/exporter-s3-qualification-20261007, bench/exporter-s3-attribution-20261007]
+    branches: [bench/exporter-s3-qualification-20261007, bench/exporter-s3-attribution-20261007, bench/exporter-s3-curl-timings-20261007]
     paths: [.github/workflows/exporter-storage-qualification.yml]
   workflow_dispatch:
     inputs:

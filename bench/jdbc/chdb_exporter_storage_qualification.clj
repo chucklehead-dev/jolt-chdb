@@ -18,6 +18,7 @@
             [jdbc.chdb.durable.s3-curl :as s3]
             [jdbc.chdb.durable.s3 :as semantic-s3]
             [jdbc.chdb-durable-throughput-metrics :as provider-metrics]
+            [jdbc.chdb-curl-timings :as curl-timings]
             [jdbc.core :as jdbc]
             [otel.exporter.chdb-benchmark :as benchmark]))
 
@@ -53,7 +54,8 @@
 
 (defn- namespace-backend
   ([kind root] (namespace-backend kind root nil))
-  ([kind root metrics]
+  ([kind root metrics] (namespace-backend kind root metrics nil))
+  ([kind root metrics curl-stats]
   (case kind
     "local" (local/local-backend (str root "/objects"))
     "s3" (let [prefix (required-env "JOLT_CHDB_S3_PREFIX")]
@@ -75,7 +77,8 @@
                  (semantic-s3/s3-backend
                    (assoc options :request!
                      (provider-metrics/instrument-transport
-                       metrics (s3/request-function options)))))
+                       metrics (curl-timings/instrument-request
+                                 curl-stats (s3/request-function options))))))
                (s3/s3-backend options)))))))
 
 (defn- writer! [kind options output items batches]
@@ -151,23 +154,28 @@
       (assert (and (integer? items) (pos? items) (<= items 10000)
                    (integer? batches) (pos? batches) (<= batches 200)))
       (let [metrics (when (= "s3" kind) (provider-metrics/recorder))
+            curl-stats (when metrics (curl-timings/recorder))
             _ (when metrics
                 (provider-metrics/set-phase! metrics
                   (if (= "writer" phase) :writer-run :reader-run)))
             scratch (str root "/scratch-" phase)
             _ (.mkdirs (io/file scratch))
-            options {:namespace-backend (namespace-backend kind root metrics)
+            options {:namespace-backend (namespace-backend kind root metrics curl-stats)
                      :object-id "telemetry" :scratch-parent scratch}]
-        (if (= phase "writer")
-          (do (provenance! output) (writer! kind options output items batches))
-          (reader! kind options output))
+        (curl-timings/observe! curl-stats
+          #(if (= phase "writer")
+             (do (provenance! output) (writer! kind options output items batches))
+             (reader! kind options output)))
         (when metrics
           (let [report (provider-metrics/report metrics)]
             (provider-metrics/assert-transport-coverage! report)
             (spit (str output "." phase "-provider.edn")
                   (pr-str (assoc report
                             :scope :whole-exporter-process-not-ingest-only
-                            :phase (keyword phase))))))))
+                            :phase (keyword phase)))))
+          (let [report (curl-timings/report curl-stats)]
+            (curl-timings/assert-coverage! report (provider-metrics/report metrics))
+            (spit (str output "." phase "-curl.edn") (pr-str report))))))
     (catch Throwable _
       ;; Provider errors/causes can contain sensitive material. Do not print them.
       (binding [*out* *err*] (prn {:qualification-failed true}))
