@@ -1,5 +1,7 @@
 (ns jdbc.chdb-exporter-storage-qualification-test
   (:require [clojure.test :refer [deftest is]]
+            [clojure.data.json.jolt-native :as native]
+            [clojure.string :as str]
             [jdbc.chdb-exporter-storage-qualification :as qualification]
             [jdbc.chdb.durable.local-posix :as local]
             [jdbc.chdb.durable.s3-curl :as s3]))
@@ -39,3 +41,18 @@
      #'s3/s3-backend (fn [_] (throw (ex-info "No provider calls" {})))}
     #(is (= "/tmp/test-only/objects"
             (#'qualification/namespace-backend "local" "/tmp/test-only")))))
+
+(deftest mismatched-loaded-source-is-rejected
+  (with-redefs-fn
+    {#'qualification/required-env (fn [_] "/tmp/qualification-unexpected-source-root")
+     #'native/load-writer! (fn [] nil)}
+    #(let [error (try
+                   (#'qualification/provenance!
+                     (str "/tmp/qualification-negative-" (java.util.UUID/randomUUID)))
+                   nil
+                   (catch AssertionError error error))]
+       (is (some? error))
+       ;; A later resource/hash failure must not make this source guard vacuous.
+       (is (and error
+                (str/includes? (str error)
+                               "Benchmark resolved a different source checkout"))))))
