@@ -5,6 +5,7 @@
                :jolt [clojure.data.json :as json]
                :clj [clojure.data.json :as json])
             [jdbc.chdb.utf8 :as utf8]
+            #?(:jolt [jdbc.chdb.row-fragments :as fragments])
             #?(:jolt [jolt.fibers :as fibers])))
 
 (def ^:private pending :pending)
@@ -305,11 +306,27 @@
             (fn []
               (loop [remaining max-bytes rows (seq rows) out (StringBuilder.)]
                 (if (seq rows)
-                  (let [encoded (row-text (first rows))
-                        size (utf8/byte-count encoded)]
+                  (let [row (first rows)
+                        ;; Preserve a distinct concrete row writer for custom
+                        ;; serializers. Only the explicitly selected native
+                        ;; backend experiments with fragment transfer.
+                        sink #?(:jolt (when (:native-writer-factory encoder)
+                                       (let [out (java.io.StringWriter.)]
+                                         (json/write row out)
+                                         (.append out "\n")
+                                         out))
+                                :default nil)
+                        transferred #?(:jolt (when sink
+                                               (fragments/append-row! sink out remaining))
+                                        :default nil)
+                        encoded (when-not (number? transferred)
+                                  #?(:jolt (if sink (.toString sink) (row-text row))
+                                     :default (row-text row)))
+                        size (if (number? transferred) transferred
+                                 (utf8/byte-count encoded))]
                     (when (> size remaining)
                       (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
-                    (.append out encoded)
+                    (when encoded (.append out encoded))
                     (recur (- remaining size) (next rows) out))
                   (.toString out))))]
         #?(:jolt (with-selected-writer (:native-writer-factory encoder) operation)

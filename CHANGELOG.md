@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Experiment with source-only row-fragment transfer for explicitly selected
+  native serial bounded JSON encoding. Preserve byte limits, per-row custom
+  writers, decline fallback and payload ownership; persistence is unchanged.
+
 - Report p50/p90/p95/p99 latency in Durable phase benchmarks and include p90
   in the cross-runtime JSON baseline. Sample-count support flags are explicit;
   persistence timing and existing p50/p99 acceptance criteria are unchanged.
