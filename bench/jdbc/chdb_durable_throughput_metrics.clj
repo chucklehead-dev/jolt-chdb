@@ -13,7 +13,7 @@
             [jdbc.chdb.durable.backend :as backend])
   (:import [java.nio.file Files Paths]))
 
-(def ^:private phases #{:setup :admission :flush :close :recovery})
+(def ^:private phases #{:setup :admission :flush :close :recovery :writer-run :reader-run})
 (def ^:private operations
   #{:get :get-with-etag :put-file-if-absent :put-bytes-if-absent
     :replace-if-match :download-to-file})

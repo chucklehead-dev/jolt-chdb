@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reuse redacted logical/transport request metrics in exporter S3 profiles;
+  offer a five-batch attribution run without claiming p99 qualification.
+  Preserve production storage, publication, retry and committed ACK behavior.
+
 - Add a matched local/S3 exporter qualification workflow using the authenticated
   green 0.8.17-lineage runtime and exact exporter/JSON/native pins. Run local
   readback before assuming the existing repo OIDC role; retain only bounded

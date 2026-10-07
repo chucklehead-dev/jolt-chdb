@@ -4,6 +4,8 @@
             [clojure.string :as str]
             [jdbc.chdb-exporter-storage-qualification :as qualification]
             [jdbc.chdb.durable.local-posix :as local]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb-durable-throughput-metrics :as metrics]
             [jdbc.chdb.durable.s3-curl :as s3]))
 
 (deftest invalid-s3-prefix-never-constructs-any-backend
@@ -56,3 +58,44 @@
        (is (and error
                 (str/includes? (str error)
                                "Benchmark resolved a different source checkout"))))))
+
+(deftest observed-s3-keeps-production-semantics-and-redacted-coverage
+  (let [recorder (metrics/recorder)
+        inputs (fn [name]
+                 (case name
+                   "JOLT_CHDB_S3_PREFIX" "ci/jolt-chdb/test-only"
+                   "JOLT_CHDB_S3_ENDPOINT" "https://synthetic-endpoint.invalid"
+                   "JOLT_CHDB_S3_REGION" "us-east-2"
+                   "synthetic-secret-canary"))
+        calls (atom 0)]
+    (metrics/set-phase! recorder :writer-run)
+    (with-redefs-fn
+      {#'qualification/required-env inputs
+       #'s3/request-function
+       (fn [_]
+         (fn [_]
+           (swap! calls inc)
+           {:status 200 :headers {"etag" "synthetic-etag-canary"}
+            :body (.getBytes "synthetic-body-canary" "UTF-8")}))
+       #'local/local-backend (fn [_] (throw (ex-info "Local fallback forbidden" {})))}
+      (fn []
+        (let [observed (#'qualification/namespace-backend "s3" "/tmp/not-used" recorder)]
+          (is (= "synthetic-body-canary"
+                 (String. (backend/get-bytes observed "synthetic-key-canary") "UTF-8"))))))
+    (let [report (metrics/report recorder)]
+      (is (= 1 @calls))
+      (is (= 1 (get-in report [:logical :writer-run :get :calls])))
+      (is (= 1 (get-in report [:transport :writer-run :get :calls])))
+      (is (nil? (metrics/assert-transport-coverage! report)))
+      (is (nil? (metrics/assert-redacted!
+                  report "" "" ["synthetic-secret-canary" "synthetic-etag-canary"
+                                 "synthetic-body-canary" "synthetic-key-canary"]))))))
+
+(deftest local-attribution-does-not-wrap-or-erase-provider-capabilities
+  (let [delegate (backend/memory-backend)]
+    (with-redefs-fn
+      {#'qualification/required-env (fn [_] (throw (ex-info "No provider env" {})))
+       #'local/local-backend (constantly delegate)}
+      #(is (identical? delegate
+                       (#'qualification/namespace-backend
+                         "local" "/tmp/not-used" (metrics/recorder)))))))

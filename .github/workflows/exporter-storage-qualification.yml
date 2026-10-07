@@ -2,9 +2,15 @@ name: measured exporter local and S3 qualification
 
 on:
   push:
-    branches: [bench/exporter-s3-qualification-20261007]
+    branches: [bench/exporter-s3-qualification-20261007, bench/exporter-s3-attribution-20261007]
     paths: [.github/workflows/exporter-storage-qualification.yml]
   workflow_dispatch:
+    inputs:
+      batches:
+        description: '5 for attribution; 100 for percentile qualification'
+        type: choice
+        options: ['5', '100']
+        default: '5'
 
 permissions:
   contents: read
@@ -30,6 +36,7 @@ jobs:
       QUALIFIED_RUNTIME_ARTIFACT_ID: '11497896255'
       QUALIFIED_RUNTIME_ARTIFACT_SHA256: 6d7043b502ab7839fe4a91ae977b7be8be088ebe620ead6115d2d0afdb9819db
       QUALIFIED_RUNTIME_BINARY_SHA256: 9f6e6b4a347ae006ba5810b3bb876b4bb2eca41b611afeadfb18d4feb9c03cf0
+      BENCH_BATCHES: ${{ inputs.batches || '5' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,8 +101,8 @@ jobs:
           mkdir -p target/exporter-storage
           task_root=$(mktemp -d /tmp/exporter-local-qualification.XXXXXXXX)
           task_report="$GITHUB_WORKSPACE/target/exporter-storage/local.edn"
-          bash bench/run-exporter-storage-qualification.sh writer local "$task_root" "$task_report" 10000 100
-          bash bench/run-exporter-storage-qualification.sh reader local "$task_root" "$task_report" 10000 100
+          bash bench/run-exporter-storage-qualification.sh writer local "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          bash bench/run-exporter-storage-qualification.sh reader local "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
       - name: Validate existing AWS role configuration
         env:
           TASK_ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
@@ -130,13 +137,13 @@ jobs:
           export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
           task_root=$(mktemp -d /tmp/exporter-s3-qualification.XXXXXXXX)
           task_report="$GITHUB_WORKSPACE/target/exporter-storage/s3.edn"
-          bash bench/run-exporter-storage-qualification.sh writer s3 "$task_root" "$task_report" 10000 100
-          bash bench/run-exporter-storage-qualification.sh reader s3 "$task_root" "$task_report" 10000 100
+          bash bench/run-exporter-storage-qualification.sh writer s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          bash bench/run-exporter-storage-qualification.sh reader s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
       - name: Retain only bounded credential-free receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: exporter-local-s3-100x10000
+          name: exporter-local-s3-${{ inputs.batches || '5' }}x10000
           path: target/exporter-storage/*.edn*
           if-no-files-found: warn
           retention-days: 30

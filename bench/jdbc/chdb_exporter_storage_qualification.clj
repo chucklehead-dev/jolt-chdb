@@ -16,6 +16,8 @@
             [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb.durable.local-posix :as local]
             [jdbc.chdb.durable.s3-curl :as s3]
+            [jdbc.chdb.durable.s3 :as semantic-s3]
+            [jdbc.chdb-durable-throughput-metrics :as provider-metrics]
             [jdbc.core :as jdbc]
             [otel.exporter.chdb-benchmark :as benchmark]))
 
@@ -49,7 +51,9 @@
                    :source-checkouts-confirmed true
                    :native-writer-sha256 hash}))))
 
-(defn- namespace-backend [kind root]
+(defn- namespace-backend
+  ([kind root] (namespace-backend kind root nil))
+  ([kind root metrics]
   (case kind
     "local" (local/local-backend (str root "/objects"))
     "s3" (let [prefix (required-env "JOLT_CHDB_S3_PREFIX")]
@@ -57,13 +61,22 @@
            (assert (and (str/starts-with? prefix "ci/jolt-chdb/")
                         (> (count prefix) (count "ci/jolt-chdb/")))
                    "S3 qualification requires an isolated CI prefix")
-           (s3/s3-backend
-             {:endpoint (required-env "JOLT_CHDB_S3_ENDPOINT")
+           (let [options {:endpoint (required-env "JOLT_CHDB_S3_ENDPOINT")
               :bucket (required-env "JOLT_CHDB_S3_BUCKET")
               :prefix prefix :region (required-env "JOLT_CHDB_S3_REGION")
               :access-key (required-env "JOLT_CHDB_S3_ACCESS_KEY")
               :secret-key (required-env "JOLT_CHDB_S3_SECRET_KEY")
-              :session-token (required-env "JOLT_CHDB_S3_SESSION_TOKEN")}))))
+              :session-token (required-env "JOLT_CHDB_S3_SESSION_TOKEN")}]
+             (if metrics
+               ;; The same production curl transport and S3 retry loop. Do not
+               ;; wrap local-posix: a generic wrapper would drop ObjectDigest.
+               (provider-metrics/instrument-backend
+                 metrics
+                 (semantic-s3/s3-backend
+                   (assoc options :request!
+                     (provider-metrics/instrument-transport
+                       metrics (s3/request-function options)))))
+               (s3/s3-backend options)))))))
 
 (defn- writer! [kind options output items batches]
   (let [reader (native/load-reader!)
@@ -137,13 +150,24 @@
       (assert (#{"local" "s3"} kind))
       (assert (and (integer? items) (pos? items) (<= items 10000)
                    (integer? batches) (pos? batches) (<= batches 200)))
-      (let [scratch (str root "/scratch-" phase)
+      (let [metrics (when (= "s3" kind) (provider-metrics/recorder))
+            _ (when metrics
+                (provider-metrics/set-phase! metrics
+                  (if (= "writer" phase) :writer-run :reader-run)))
+            scratch (str root "/scratch-" phase)
             _ (.mkdirs (io/file scratch))
-            options {:namespace-backend (namespace-backend kind root)
+            options {:namespace-backend (namespace-backend kind root metrics)
                      :object-id "telemetry" :scratch-parent scratch}]
         (if (= phase "writer")
           (do (provenance! output) (writer! kind options output items batches))
-          (reader! kind options output))))
+          (reader! kind options output))
+        (when metrics
+          (let [report (provider-metrics/report metrics)]
+            (provider-metrics/assert-transport-coverage! report)
+            (spit (str output "." phase "-provider.edn")
+                  (pr-str (assoc report
+                            :scope :whole-exporter-process-not-ingest-only
+                            :phase (keyword phase))))))))
     (catch Throwable _
       ;; Provider errors/causes can contain sensitive material. Do not print them.
       (binding [*out* *err*] (prn {:qualification-failed true}))
