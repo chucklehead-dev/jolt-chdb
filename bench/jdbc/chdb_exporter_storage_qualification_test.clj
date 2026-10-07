@@ -99,3 +99,58 @@
       #(is (identical? delegate
                        (#'qualification/namespace-backend
                          "local" "/tmp/not-used" (metrics/recorder)))))))
+
+(deftest observed-conditional-writes-keep-retry-and-ambiguity-boundaries
+  (doseq [[mode expected attempts] [[:created :created 1]
+                                  [:conflict :precondition-failed 1]
+                                  [:ambiguous :ambiguous 1]
+                                  [:not-sent-retry :created 2]
+                                  [:cas :replaced 1]]]
+    (let [recorder (metrics/recorder) calls (atom 0)
+          payload (.getBytes "synthetic-PUT-body" "UTF-8")
+          operation (if (= :cas mode) :replace-if-match :put-bytes-if-absent)
+          inputs (fn [name]
+                   (case name
+                     "JOLT_CHDB_S3_PREFIX" "ci/jolt-chdb/test-only"
+                     "JOLT_CHDB_S3_ENDPOINT" "https://synthetic-endpoint.invalid"
+                     "JOLT_CHDB_S3_REGION" "us-east-2"
+                     "synthetic-secret-canary"))]
+      (metrics/set-phase! recorder :writer-run)
+      (with-redefs-fn
+        {#'qualification/required-env inputs
+         #'s3/request-function
+         (fn [_]
+           (fn [request]
+             (let [attempt (swap! calls inc)]
+               (is (= :put (:method request)))
+               (is (= (vec payload) (vec (get-in request [:request-body :bytes]))))
+               (is (= (if (= :cas mode) "synthetic-etag-canary" "*")
+                      (get-in request [:headers (if (= :cas mode)
+                                                  "if-match" "if-none-match")])))
+               (cond
+                 (= :ambiguous mode)
+                 (throw (ex-info "synthetic-provider-canary"
+                                 {:category :transport :definitely-not-sent? false}))
+                 (and (= :not-sent-retry mode) (= 1 attempt))
+                 (throw (ex-info "synthetic-provider-canary"
+                                 {:category :transport :definitely-not-sent? true}))
+                 (= :conflict mode) {:status 412}
+                 :else {:status 200 :headers {"etag" "synthetic-etag-canary"}}))))}
+        (fn []
+          (let [observed (#'qualification/namespace-backend "s3" "/tmp/not-used" recorder)
+                result (if (= :cas mode)
+                         (backend/replace-if-match! observed "synthetic-key-canary"
+                                                    payload "synthetic-etag-canary")
+                         (backend/put-bytes-if-absent! observed "synthetic-key-canary" payload))]
+            (is (= expected (:status result))))))
+      (let [report (metrics/report recorder)]
+        (is (= attempts @calls))
+        (is (= 1 (get-in report [:logical :writer-run operation :calls])))
+        (is (= attempts (get-in report [:transport :writer-run operation :calls])))
+        (is (= (dec attempts)
+               (get-in report [:retry-amplification [:writer-run operation] :extra-attempts])))
+        (is (nil? (metrics/assert-transport-coverage! report)))
+        (is (nil? (metrics/assert-redacted!
+                    report "" "" ["synthetic-secret-canary" "synthetic-etag-canary"
+                                   "synthetic-PUT-body" "synthetic-key-canary"
+                                   "synthetic-provider-canary"])))))))
