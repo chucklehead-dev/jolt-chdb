@@ -25,7 +25,10 @@
 (def ^:dynamic ^:private *owned-request* nil)
 (defn- transport-mode [] (if *owned-request* :scoped-reuse :fresh-handle))
 (defn- selected-request [options]
-  (or *owned-request* (s3/request-function options)))
+  (if-let [request! *owned-request*]
+    (let [selected (select-keys options [:connect-timeout-ms :timeout-ms :max-response-bytes])]
+      (fn [request] (request! (merge selected request))))
+    (s3/request-function options)))
 
 (defn- required-env [name]
   (let [value (System/getenv name)]
@@ -109,6 +112,10 @@
                                (fn [opts]
                                  (assert (= 128 (:checkpoint-wal-reference-threshold opts))
                                          "JDBC omitted the checkpoint policy")
+                                 (assert (= 300000 (:heartbeat-interval-ms opts))
+                                         "JDBC omitted the benchmark heartbeat policy")
+                                 (assert (= 900000 (:lease-ttl-ms opts))
+                                         "JDBC omitted the benchmark lease policy")
                                  (swap! opens inc)
                                  (original opts))]
                    (benchmark/run!
@@ -196,6 +203,11 @@
 (defn -main [& args]
   (try
     (assert (contains? #{nil "true" "false"} (System/getenv "BENCH_REUSE_CURL")))
+    ;; A background heartbeat can issue independent S3 requests. This scoped,
+    ;; rejecting transport is an attribution experiment, not a general pool.
+    (when (= "true" (System/getenv "BENCH_REUSE_CURL"))
+      (assert (<= (parse-long (nth args 5)) 5)
+              "Experimental reuse is bounded to five measured batches"))
     (if (and (= "true" (System/getenv "BENCH_REUSE_CURL"))
              (= "s3" (second args)))
       (s3/with-reused-transport!

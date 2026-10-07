@@ -7,6 +7,9 @@
   readers. Keep defaults and ACK policy unchanged; local synthetic smoke is
   not AWS throughput qualification. Offer explicit fixture TCP_NODELAY only
   for benchmark diagnostics, leaving ordinary fixture behavior unchanged.
+  Bound rejecting single-handle reuse to five batches and a deadline below the
+  verified heartbeat interval; longer/concurrent application use needs an
+  independently owned renewal transport or bounded pool.
 
 - Add optional scalar curl timing/connection-count receipts to the owned
   exporter storage profile process; keep request/payload/credential data out

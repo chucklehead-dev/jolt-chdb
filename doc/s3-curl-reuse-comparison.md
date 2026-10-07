@@ -8,13 +8,24 @@ processes. Both S3 arms use identical library, exporter, JSON, native and
 runtime code. The sole transport selection is `BENCH_REUSE_CURL=true`.
 
 Start with `batches: 5`: attribution and custody, not p99 qualification. The
-100-batch option is retained for a later qualified run. Reuse does not batch
+100-batch option remains available only for the fresh-handle baseline. Reuse does not batch
 ACKs, skip verification, omit head reads or alter checkpoint policy. The
 existing OIDC role/environment, concurrency group, artifact checksum checks,
 timeouts and credential-free receipts remain in place. Curl receipts report
 actual connection counts by operation, and writer provenance checks loaded
 curl source and records its digest. Reader mode must match its writer receipt.
 No benchmark or provider options are appended to the sanitized db-spec.
+
+Source inspection confirmed an independent heartbeat thread can renew the
+lease while the writer is doing transport work. Therefore this rejecting
+single-handle prototype is NOT a generally safe drop-in backend: contention
+could reject renewal and fence an otherwise healthy writer. Reuse is limited
+to at most five measured batches, with a 240-second process timeout and
+five-second kill grace, before the confirmed 300-second heartbeat interval.
+The driver asserts the actual JDBC handoff includes that interval and the
+900-second lease. A future production path needs independent heartbeat
+transport ownership or a bounded owned pool; the long percentile lane must
+not quietly disable renewal or change lease semantics to make reuse pass.
 
 `bench/s3-reuse-loopback-smoke.sh <absolute-report-directory>` runs only the
 local synthetic S3 fixture, with 100 rows per signal and one measured batch;

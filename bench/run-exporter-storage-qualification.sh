@@ -30,8 +30,14 @@ case "$task_exporter$task_json$task_chdb" in
   *'"'*|*'\'*|*$'\n'*|*$'\r'*) exit 1 ;;
 esac
 task_deps="{:paths [\"src\" \"bench\" \"$task_chdb/bench\"] :aliases {:storage-driver {:extra-deps {io.github.chucklehead-dev/jolt-chdb {:local/root \"$task_chdb\"} org.clojure/data.json {:local/root \"$task_json\"}}}}}"
+task_deadline=()
+if [[ "${BENCH_REUSE_CURL:-false}" == true ]]; then
+  # Terminate before the 300s heartbeat interval, including kill grace. A real
+  # application needs separate heartbeat ownership or a bounded handle pool.
+  task_deadline=(timeout --signal=TERM --kill-after=5s 240s)
+fi
 cd "$task_exporter"
 exec env JOLT_AOT_CACHE=0 BENCH_EXPECT_CHDB_ROOT="$task_chdb" \
-  "$task_wrapper" "$task_jolt" -Srepro -Sdeps "$task_deps" \
+  "${task_deadline[@]}" "$task_wrapper" "$task_jolt" -Srepro -Sdeps "$task_deps" \
   -M:native-json-string-cache:storage-driver \
   -m jdbc.chdb-exporter-storage-qualification "$@"

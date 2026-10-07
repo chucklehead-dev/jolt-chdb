@@ -43,6 +43,11 @@ jobs:
       BENCH_BATCHES: ${{ inputs.batches || '5' }}
       BENCH_COMPARE_REUSE: ${{ inputs.reuse_comparison && 'true' || 'false' }}
     steps:
+      - name: Bound experimental reuse before artifact or AWS work
+        run: |
+          if [[ "$BENCH_COMPARE_REUSE" == true ]]; then
+            test "$BENCH_BATCHES" = 5
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
