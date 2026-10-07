@@ -1,7 +1,8 @@
 (ns jdbc.chdb-s3-curl-reuse-test
   (:require [clojure.test :as test :refer [deftest is]]
             [jdbc.chdb.durable.s3-curl :as curl]
-            [jolt.ffi :as ffi]))
+            [jolt.ffi :as ffi]
+            [jolt.fibers :as fibers]))
 
 (def ^:dynamic *endpoint* nil)
 
@@ -96,6 +97,100 @@
              (is (= true (:definitely-not-sent?
                           (ex-data (try (send changed) nil (catch Throwable e e)))))))
            (is (= 1 @performs)))))))
+
+(deftest failed-request-resets-and-next-request-uses-the-same-live-handle
+  (doseq [mode [:setup-error :perform-error :arena-error]]
+    (let [first? (atom true) inits (atom 0) resets (atom 0) cleanups (atom 0)
+          arena (atom nil) reset-states (atom [])
+          original-init @#'curl/curl-easy-init original-reset @#'curl/curl-easy-reset
+          original-cleanup @#'curl/curl-easy-cleanup
+          original-setopt @#'curl/curl-easy-setopt-string
+          original-arena ffi/shared-arena error (ex-info "synthetic arena failure" {})]
+      (with-redefs-fn
+        {#'curl/curl-easy-init (fn [] (swap! inits inc) (original-init))
+         #'curl/curl-easy-reset
+         (fn [h]
+           (swap! resets inc)
+           (swap! reset-states conj (if @arena (ffi/arena-open? @arena) :no-arena))
+           (original-reset h))
+         #'curl/curl-easy-cleanup (fn [h] (swap! cleanups inc) (original-cleanup h))
+         #'ffi/shared-arena
+         (fn []
+           (if (and (= :arena-error mode) (compare-and-set! first? true false))
+             (throw error)
+             (let [a (original-arena)] (reset! arena a) a)))
+         #'curl/curl-easy-perform
+         (fn [_] (if (and (= :perform-error mode) (compare-and-set! first? true false)) 7 0))
+         #'curl/curl-easy-setopt-string
+         (fn [h option value]
+           (if (and (= :setup-error mode) (compare-and-set! first? true false))
+             43 (original-setopt h option value)))
+         #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)}
+        #(curl/with-reused-transport!
+           (fn [send]
+             (let [failure (try (send (request :get)) nil (catch Throwable e e))]
+               (if (= :arena-error mode)
+                 (is (identical? error failure))
+                 (is (= :transport (:category (ex-data failure))))))
+             (is (= 200 (:status (send (request :get)))))
+             (is (zero? @cleanups)))))
+      (is (= 1 @inits))
+      (is (= 2 @resets))
+      (is (= 1 @cleanups))
+      (is (= (if (= :arena-error mode) [:no-arena true] [true true]) @reset-states)))))
+
+(deftest scope-exit-waits-for-admitted-worker-and-closes-admission
+  (let [entered (promise) release (promise) waiting (promise)
+        transfer-finished (promise) expected-done (atom nil) send (atom nil)
+        worker (atom nil) cleanups (atom 0) deferred-free (atom nil)
+        original-deref deref original-cas compare-and-set!
+        original-cleanup @#'curl/curl-easy-cleanup]
+    (with-redefs-fn
+      {#'clojure.core/compare-and-set!
+       (fn [cell before after]
+         (let [changed? (original-cas cell before after)]
+           (when (and changed? (map? before) (contains? before :active)
+                      (map? after) (= :closing (:phase after)))
+             (reset! expected-done (:done (:active before))))
+           changed?))
+       #'clojure.core/deref
+       (fn
+         ([value]
+          (when (identical? value (original-deref expected-done))
+            (deliver waiting :draining))
+          (original-deref value))
+         ([value timeout default] (original-deref value timeout default)))
+       #'curl/curl-easy-perform
+       (fn [_] (deliver entered true) @release (deliver transfer-finished true) 0)
+       #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)
+       #'curl/curl-easy-cleanup
+       (fn [handle]
+         (swap! cleanups inc)
+         (is (realized? transfer-finished) "cleanup cannot race an admitted transfer")
+         ;; Broken controls observe premature cleanup without freeing live
+         ;; native memory; physical free is deferred until the worker joins.
+         (if (realized? transfer-finished)
+           (original-cleanup handle)
+           (reset! deferred-free handle)))}
+      (fn []
+        (let [owner (fibers/spawn
+                      #(curl/with-reused-transport!
+                         (fn [request!]
+                           (reset! send request!)
+                           (reset! worker (fibers/spawn #(request! (request :get))))
+                           @entered
+                           :scope-result)))]
+          (try
+            (is (= :draining (original-deref waiting 2000 :timeout))
+                "causal hook must observe the actual active-ticket drain")
+            (is (zero? @cleanups))
+            (is (= true (:definitely-not-sent?
+                         (ex-data (try (@send (request :get)) nil (catch Throwable e e))))))
+            (finally (deliver release true)))
+          (is (= 200 (:status (fibers/join @worker))))
+          (is (= :scope-result (fibers/join owner)))
+          (when @deferred-free (original-cleanup @deferred-free))
+          (is (= 1 @cleanups)))))))
 
 (defn run-tests! [endpoint]
   (binding [*endpoint* endpoint]

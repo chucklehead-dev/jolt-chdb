@@ -25,18 +25,29 @@ The qualified bcb376a0 / Chez 10.4.1 synthetic native HTTP loopback lane passes:
   a retained request function;
 - reentrant rejection and reset before arena close;
 - origin/auth/region changes rejected without another native perform;
+- setup/perform/arena-construction failures reset the scoped handle and permit
+  a subsequent successful request without allocating another handle;
+- a deterministic two-fiber scope-exit gate observes the actual active-ticket
+  wait, rejects new admission during close, and proves transfer completion
+  precedes cleanup. Removing the wait produces three intended failures and
+  zero errors; the control defers physical free rather than causing native UAF;
 - all existing synthetic SigV4 transport checks and the parent cleanup
-  regression suite remain green: 2 tests / 14 assertions plus 4 reuse tests /
-  22 assertions.
+  regression suite remain green: 2 tests / 14 assertions plus 6 reuse tests /
+  50 assertions.
 
 This proves reuse of a synthetic local HTTP connection, not HTTPS/TLS reuse,
-S3 throughput, collector performance or recovery conformance. The asynchronous
-scope-exit/drain race still needs a deterministic focused gate and independent
-review before adoption. A persistent application/backend owner and its close
+S3 throughput, collector performance or recovery conformance. Read-only review
+of f4a6be5 found no logic counterexample; its two empirical coverage gaps are
+addressed by the failure and drain gates above. The new tests require review
+before adoption. A many-caller stress lane would be additional evidence, not a
+replacement for the deterministic gate. A persistent application/backend owner and its close
 integration are not implemented. Cookies/shares/alt-svc caches also survive
 reset, hence the explicit one-configuration ownership fence.
+STS token rotation also counts as a configuration change: close this scope and
+open another rather than silently refreshing credentials in the cached handle.
 
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
 [connection counter](https://curl.se/libcurl/c/CURLINFO_NUM_CONNECTS.html).
-Workspace receipt: evidence/chdb-s3-curl-owned-reuse-configuration-gate-20261007.log.
+Workspace receipts: evidence/chdb-s3-curl-owned-reuse-failure-drain-gate-20261007.log
+and evidence/chdb-s3-curl-reuse-drain-{green,red}-safe-20261007.log.
