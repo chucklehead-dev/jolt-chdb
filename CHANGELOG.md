@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a manual-only five-batch S3 connection-reuse comparison, pinned to reviewed
+  benchmark/runtime/native/dependency commits. Run through the existing
+  protected-main AWS environment with isolated prefixes and independent
+  readback; do not change production transport defaults or environment policy.
+
+
 - Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
   avoiding a full output-buffer assembly. Keep the public WAL byte encoder,
   behavioral fallback, complete pre-execution preparation, limits, checkpoint
