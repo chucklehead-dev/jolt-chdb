@@ -6,6 +6,8 @@
   committed physical-insert ACKs, effective checkpoint policy and separate-process
   count readback. Require exact loaded source/resource checks and isolated S3 CI
   prefixes; credentials and exception details are never written to receipts.
+  An explicit launcher verifies checkout/runtime identities and overrides the
+  exporter's transitive chDB/JSON pins rather than silently using defaults.
   S3 performance remains unqualified until actual provider runs complete.
 
 - Report p50/p90/p95/p99 latency in Durable phase benchmarks and include p90

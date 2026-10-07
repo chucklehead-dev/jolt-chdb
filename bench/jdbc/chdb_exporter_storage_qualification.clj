@@ -1,7 +1,10 @@
 (ns jdbc.chdb-exporter-storage-qualification
   "The same exporter workload and committed ACK boundary on local storage/S3.
   Invoke writer and reader in separate processes. Credentials are environment
-  inputs only; neither backend options nor exception details enter receipts."
+  inputs only; neither backend options nor exception details enter receipts.
+  Use bench/run-exporter-storage-qualification.sh with explicit exact exporter/
+  JSON checkouts and a pinned Jolt/Chez wrapper; default library deps are not
+  sufficient and dependency aliases do not propagate."
   (:require [clojure.data.json :as json]
             [clojure.data.json.jolt-native :as native]
             [clojure.edn :as edn]
