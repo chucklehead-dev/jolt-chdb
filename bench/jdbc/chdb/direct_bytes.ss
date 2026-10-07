@@ -86,7 +86,7 @@
                   ((string? x) (eq? impl (pvec-nth! stock 6)))
                   ((pmap? x) (eq? impl (pvec-nth! stock 7)))
                   ((pvec? x) (eq? impl (pvec-nth! stock 8)))
-                  (else #f))
+                  (else (error 'direct-bytes "unsupported diagnostic value")))
             (error 'direct-bytes "non-stock writer"))))
       (cond ((jolt-nil? x) (ascii! "null"))
             ((string? x) (string! x))

@@ -25,7 +25,10 @@
 
 (deftest explicit-diagnostic-boundary
   (doseq [rows [[{:keyword "unsupported"}] [(list 1 2)] [Double/NaN]]]
-    (is (thrown? Throwable (encode rows 100000))))
+    (is (thrown? Throwable (encode rows 100000)))
+    (is (thrown? Throwable (guarded-encode rows 100000))))
+  (is (thrown-with-msg? Throwable #"unsupported diagnostic value"
+                       (guarded-encode [(list 1 2)] 100000)))
   (is (= "[1]\n" (decode (encode [[1]] 100))))
   (is (= "[2]\n" (decode (encode [[2]] 100)))))
 

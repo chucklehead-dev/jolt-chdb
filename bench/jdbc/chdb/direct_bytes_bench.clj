@@ -11,6 +11,10 @@
   (binding [json/*experimental-native-writer* (native/load-payload-string-caching-writer!)]
     (.getBytes (#'exporter/json-each-row-payload rows) "UTF-8")))
 
+(defn portable [rows]
+  (binding [json/*experimental-native-writer* nil]
+    (.getBytes (#'exporter/json-each-row-payload rows) "UTF-8")))
+
 (defn candidate [rows] (kernel/encode rows (* 128 1024 1024)))
 (defn guarded [rows] (kernel/guarded-encode rows (* 128 1024 1024)))
 
@@ -46,15 +50,17 @@
                            (fn [[signal rows]]
                              (let [a (digest/sha256-bytes (baseline rows))
                                    b (digest/sha256-bytes (candidate rows))
-                                   c (digest/sha256-bytes (guarded rows))]
+                                   c (digest/sha256-bytes (guarded rows))
+                                   d (digest/sha256-bytes (portable rows))]
                                (assert (= a b) (str "wire mismatch: " signal))
                                (assert (= a c) (str "guarded wire mismatch: " signal))
+                               (assert (= a d) (str "portable wire mismatch: " signal))
                                [signal {:sha256 a
                                         :samples (mapv
                                                    (fn [arm]
-                                                     (assoc (sample (case arm :baseline baseline :candidate candidate :guarded guarded) rows)
+                                                     (assoc (sample (case arm :baseline baseline :candidate candidate :guarded guarded :portable portable) rows)
                                                             :arm arm))
-                                                   [:baseline :candidate :guarded :guarded :candidate :baseline])}])) signals))}]
+                                                   [:portable :baseline :candidate :guarded :guarded :candidate :baseline :portable])}])) signals))}]
     (spit output (pr-str report))
     (doseq [[signal result] (:signals report)]
       (prn {:signal signal :wire-match true
