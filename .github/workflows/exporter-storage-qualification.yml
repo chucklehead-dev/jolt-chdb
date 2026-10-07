@@ -60,7 +60,7 @@ jobs:
           printf '%s  %s\n' a20b0e9dc54446172a15d83cec64fd11039af659f54c8997cbeab533c607ff65 "$helper" | sha256sum -c -
           TMPDIR=/tmp timeout --signal=TERM --kill-after=5s 240s bash "$helper" \
             | tee "$RUNNER_TEMP/qualified-runtime.log"
-          test "$(rg -c '^QUALIFIED_RUNTIME_BIN=' "$RUNNER_TEMP/qualified-runtime.log")" = 1
+          test "$(grep -c '^QUALIFIED_RUNTIME_BIN=' "$RUNNER_TEMP/qualified-runtime.log")" = 1
           task_bin=$(sed -n 's/^QUALIFIED_RUNTIME_BIN=//p' "$RUNNER_TEMP/qualified-runtime.log")
           [[ "$task_bin" =~ ^/tmp/qualified-durable-runtime\.[A-Za-z0-9]+/jolt$ ]]
           test -f "$task_bin" && test ! -L "$task_bin"
