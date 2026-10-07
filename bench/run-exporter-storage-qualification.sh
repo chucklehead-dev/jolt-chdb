@@ -15,8 +15,10 @@ test "$(git -C "$task_exporter" rev-parse HEAD)" = 715cf81509e007b3eb3cfe873c5ed
 test "$(git -C "$task_json" rev-parse HEAD)" = 3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0
 git -C "$task_exporter" diff --quiet HEAD
 git -C "$task_json" diff --quiet HEAD
-git -C "$task_chdb" merge-base --is-ancestor ca7fc8a6ec1d65f8efb153e8b4c1935836f9440e HEAD
-git -C "$task_chdb" diff --quiet ca7fc8a6ec1d65f8efb153e8b4c1935836f9440e -- src resources deps.edn
+# Explicit reviewed prototype source, not the older fresh-handle source. Both
+# comparison arms use this identical library; only lexical reuse is selected.
+git -C "$task_chdb" merge-base --is-ancestor 7a95fd46fd44a9255e4b5268a5cb7104d226685d HEAD
+git -C "$task_chdb" diff --quiet 7a95fd46fd44a9255e4b5268a5cb7104d226685d -- src resources deps.edn
 task_version=$("$task_wrapper" "$task_jolt" --version)
 case "$task_version" in
   'jolt v0.8.17-37-gab9b8580'|'jolt v0.8.17-38-gf1116c53'|'jolt v0.8.17-39-gbcb376a0') ;;

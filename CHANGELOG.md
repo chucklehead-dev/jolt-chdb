@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in fresh/reused S3 transport comparison to the committed exporter
+  profile with isolated prefixes, exact prototype source custody and separate
+  readers. Keep defaults and ACK policy unchanged; local synthetic smoke is
+  not AWS throughput qualification. Offer explicit fixture TCP_NODELAY only
+  for benchmark diagnostics, leaving ordinary fixture behavior unchanged.
+
 - Add optional scalar curl timing/connection-count receipts to the owned
   exporter storage profile process; keep request/payload/credential data out
   of diagnostics. Do not change connection ownership or persistence behavior.

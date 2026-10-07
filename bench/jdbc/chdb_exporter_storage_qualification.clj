@@ -22,6 +22,11 @@
             [jdbc.core :as jdbc]
             [otel.exporter.chdb-benchmark :as benchmark]))
 
+(def ^:dynamic ^:private *owned-request* nil)
+(defn- transport-mode [] (if *owned-request* :scoped-reuse :fresh-handle))
+(defn- selected-request [options]
+  (or *owned-request* (s3/request-function options)))
+
 (defn- required-env [name]
   (let [value (System/getenv name)]
     (when (str/blank? value)
@@ -44,12 +49,20 @@
   (checked-source! (:file (meta #'durable/open-writer!))
                    (required-env "BENCH_EXPECT_CHDB_ROOT")
                    "src/jdbc/chdb/durable.clj")
+  (checked-source! (:file (meta #'s3/request!))
+                   (required-env "BENCH_EXPECT_CHDB_ROOT")
+                   "src/jdbc/chdb/durable/s3_curl.clj")
   (let [hash (digest/sha256-bytes (.getBytes @#'native/source "UTF-8"))]
     (assert (= "85204463ae6a7d5fcd89634b4947e83cdc85a1e29279039e05a404380d5d403a" hash)
             "Benchmark resolved a different native JSON writer resource")
     (spit (str output ".provenance.edn")
           (pr-str {:scope :loaded-source-before-timing
                    :source-checkouts-confirmed true
+                   :transport-mode (transport-mode)
+                   :curl-source-sha256
+                   (digest/sha256-bytes
+                     (.getBytes (slurp (io/file (required-env "BENCH_EXPECT_CHDB_ROOT")
+                                               "src/jdbc/chdb/durable/s3_curl.clj")) "UTF-8"))
                    :native-writer-sha256 hash}))))
 
 (defn- namespace-backend
@@ -78,8 +91,9 @@
                    (assoc options :request!
                      (provider-metrics/instrument-transport
                        metrics (curl-timings/instrument-request
-                                 curl-stats (s3/request-function options))))))
-               (s3/s3-backend options)))))))
+                                 curl-stats (selected-request options))))))
+               (semantic-s3/s3-backend
+                 (assoc options :request! (selected-request options)))))))))
 
 (defn- writer! [kind options output items batches]
   (let [reader (native/load-reader!)
@@ -120,7 +134,8 @@
                (get-in report [:workload :actual-counts])))
     ;; Benchmark/run! sanitizes db-spec to vendor only. Never append backend opts.
     (assert (= #{:vendor} (set (keys (get-in report [:configuration :db-spec])))))
-    (spit output (pr-str (assoc report :storage-kind (keyword kind))))
+    (spit output (pr-str (assoc report :storage-kind (keyword kind)
+                                     :transport-mode (transport-mode))))
     (spit (str output ".policy.edn")
           (pr-str {:scope :effective-jdbc-checkpoint-policy
                    :threshold 128 :writer-handoff-confirmed true
@@ -133,6 +148,7 @@
 (defn- reader! [kind options output]
   (let [report (edn/read-string (slurp output))
         _ (assert (= (keyword kind) (:storage-kind report)))
+        _ (assert (= (transport-mode) (:transport-mode report)))
         expected (get-in report [:workload :expected-counts])
         actual (with-open [connection (jdbc/connection (durable/snapshot-dbspec options))]
                  (#'benchmark/stored-counts connection
@@ -144,8 +160,7 @@
     (prn {:phase :reader :reader-counts-confirmed true
           :physical-rows (reduce + (vals actual))})))
 
-(defn -main [& args]
-  (try
+(defn- run-profile! [& args]
     (let [[phase kind root output items-text batches-text] args
           items (parse-long items-text) batches (parse-long batches-text)]
       (assert (= 6 (count args)))
@@ -175,7 +190,17 @@
                             :phase (keyword phase)))))
           (let [report (curl-timings/report curl-stats)]
             (curl-timings/assert-coverage! report (provider-metrics/report metrics))
-            (spit (str output "." phase "-curl.edn") (pr-str report))))))
+            (spit (str output "." phase "-curl.edn")
+                  (pr-str (assoc report :transport-mode (transport-mode)))))))))
+
+(defn -main [& args]
+  (try
+    (assert (contains? #{nil "true" "false"} (System/getenv "BENCH_REUSE_CURL")))
+    (if (and (= "true" (System/getenv "BENCH_REUSE_CURL"))
+             (= "s3" (second args)))
+      (s3/with-reused-transport!
+        #(binding [*owned-request* %] (apply run-profile! args)))
+      (apply run-profile! args))
     (catch Throwable _
       ;; Provider errors/causes can contain sensitive material. Do not print them.
       (binding [*out* *err*] (prn {:qualification-failed true}))

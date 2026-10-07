@@ -11,6 +11,10 @@ on:
         type: choice
         options: ['5', '100']
         default: '5'
+      reuse_comparison:
+        description: 'Also run scoped-reuse S3 after the fresh-handle control'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,6 +41,7 @@ jobs:
       QUALIFIED_RUNTIME_ARTIFACT_SHA256: 6d7043b502ab7839fe4a91ae977b7be8be088ebe620ead6115d2d0afdb9819db
       QUALIFIED_RUNTIME_BINARY_SHA256: 9f6e6b4a347ae006ba5810b3bb876b4bb2eca41b611afeadfb18d4feb9c03cf0
       BENCH_BATCHES: ${{ inputs.batches || '5' }}
+      BENCH_COMPARE_REUSE: ${{ inputs.reuse_comparison && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,7 +125,7 @@ jobs:
           aws-region: ${{ vars.AWS_DURABLE_REGION }}
           role-duration-seconds: 3600
           mask-aws-account-id: true
-      - name: Run the identical committed workload on S3
+      - name: Run committed S3 workload with fresh control and optional reuse
         env:
           JOLT_CHDB_S3_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
           JOLT_CHDB_S3_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/exporter-10k
@@ -135,10 +140,18 @@ jobs:
           export JOLT_CHDB_S3_ACCESS_KEY="$AWS_ACCESS_KEY_ID"
           export JOLT_CHDB_S3_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
           export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
-          task_root=$(mktemp -d /tmp/exporter-s3-qualification.XXXXXXXX)
-          task_report="$GITHUB_WORKSPACE/target/exporter-storage/s3.edn"
-          bash bench/run-exporter-storage-qualification.sh writer s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
-          bash bench/run-exporter-storage-qualification.sh reader s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          task_prefix="$JOLT_CHDB_S3_PREFIX"
+          task_modes=(fresh)
+          if [[ "$BENCH_COMPARE_REUSE" == true ]]; then task_modes+=(reuse); fi
+          for task_mode in "${task_modes[@]}"; do
+            export JOLT_CHDB_S3_PREFIX="$task_prefix/$task_mode"
+            export BENCH_REUSE_CURL=false
+            if [[ "$task_mode" == reuse ]]; then export BENCH_REUSE_CURL=true; fi
+            task_root=$(mktemp -d /tmp/exporter-s3-qualification.XXXXXXXX)
+            task_report="$GITHUB_WORKSPACE/target/exporter-storage/s3-$task_mode.edn"
+            bash bench/run-exporter-storage-qualification.sh writer s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+            bash bench/run-exporter-storage-qualification.sh reader s3 "$task_root" "$task_report" 10000 "$BENCH_BATCHES"
+          done
       - name: Retain only bounded credential-free receipts
         if: always()
         uses: actions/upload-artifact@v4

@@ -157,6 +157,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port_file = sys.argv[1]
+    # Explicit benchmark diagnostic only: ordinary transport tests retain the
+    # prior fixture behavior. Small split header/body writes otherwise expose
+    # the local server's Nagle/delayed-ACK interaction on persistent sockets.
+    Handler.disable_nagle_algorithm = "--tcp-nodelay" in sys.argv[2:]
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     with open(port_file, "w", encoding="ascii") as stream:
         stream.write(str(server.server_port))
