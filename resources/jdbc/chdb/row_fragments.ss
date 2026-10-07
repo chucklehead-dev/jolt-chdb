@@ -35,6 +35,10 @@
                   ;; Overflow is reported without appending. The caller owns
                   ;; the established output-limit exception and next-row rule.
                   (when (<= bytes limit)
+                    ;; Both pending lists are LAST-to-FIRST. New row's reverse
+                    ;; chunks precede its materialized base and older rows.
+                    ;; sb-str fills the final string from the end, retaining
+                    ;; intra-row AND inter-row order without reversing lists.
                     (vector-set! b 1
                       (append chunks
                               (if (zero? (string-length base)) '() (list base))

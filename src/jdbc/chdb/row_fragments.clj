@@ -29,6 +29,7 @@
 
 (defn append-row!
   "Return exact bytes, or false to decline. Overflow does not append anything.
-  Row and batch are caller-owned; no callbacks run in this operation."
+  Row and batch are caller-owned; no callbacks run in this operation. Transfer
+  is non-consuming: intentionally invoking it twice appends the row twice."
   [row batch remaining]
   (if-let [f @transfer] (f row batch remaining) false))

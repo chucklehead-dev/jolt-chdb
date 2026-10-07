@@ -24,6 +24,23 @@
     (is (false? (fragments/append-row! "not a writer" batch 100)))
     (is (= "" (.toString batch)))))
 
+(deftest direct-multiple-transfers-without-intermediate-materialization
+  (let [first-row (java.io.StringWriter.) second-row (java.io.StringWriter.)
+        batch (StringBuilder.)]
+    (.append batch "prefix:")
+    (.append first-row "é")
+    (.toString first-row)
+    (.append first-row "😀\n")
+    (.append second-row "second")
+    (.append second-row ":β\n")
+    (is (= 7 (fragments/append-row! first-row batch 100)))
+    (is (= 10 (fragments/append-row! second-row batch 100)))
+    ;; No batch toString occurred between transfers: older pending chunks
+    ;; must remain in order, as must each row's own base/pending fragments.
+    (is (= "prefix:é😀\nsecond:β\n" (.toString batch)))
+    (is (= 7 (fragments/append-row! first-row batch 100)))
+    (is (= "prefix:é😀\nsecond:β\né😀\n" (.toString batch)))))
+
 (deftest bounded-native-transfer-keeps-live-callbacks-and-row-boundaries
   (doseq [backend [:native-guarded :native-guarded-string-cache]]
     (let [context (encoder/open-encoder {:json-backend backend})
@@ -61,3 +78,20 @@
                  (encoder/encode-limited-text! context [first-row second-row] 11)))
           (is (= [:first :second] @effects)))
         (finally (encoder/close! context))))))
+
+(deftest callback-error-is-identical-and-releases-bounded-native-context
+  (doseq [backend [:native-guarded :native-guarded-string-cache]]
+    (let [context (encoder/open-encoder {:json-backend backend})
+          error (ex-info "synthetic writer failure" {:synthetic true})
+          effects (atom 0)
+          bad (reify json/JSONWriter
+                (-write [_ sink _]
+                  (swap! effects inc)
+                  (.append sink "partial")
+                  (throw error)))]
+      (try
+        (is (identical? error (try (encoder/encode-limited-text! context [bad] 100)
+                                  nil (catch Throwable e e))))
+        (is (= 1 @effects))
+        (is (= "true\n" (encoder/encode-limited-text! context [true] 5)))
+        (finally (is (= :closed (encoder/close! context))))))))
