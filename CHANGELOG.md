@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an experimental source-only `:native-guarded-byte-batch` JSONEachRow
+  backend, preserving admission, incremental budgets, original custom errors
+  and close/release lifetime. Require serial ownership and the callback-boundary
+  runtime helper. No default backend or Durable ACK policy changes.
+
 - Add an opt-in fresh/reused S3 transport comparison to the committed exporter
   profile with isolated prefixes, exact prototype source custody and separate
   readers. Keep defaults and ACK policy unchanged; local synthetic smoke is
