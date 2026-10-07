@@ -68,7 +68,7 @@ jobs:
           test "$(sha256sum "$task_bin" | cut -d ' ' -f1)" = "$QUALIFIED_RUNTIME_BINARY_SHA256"
           # Standalone artifact embeds Chez; no separate interpreter selection.
           (cd "$(dirname "$task_bin")" && "$task_bin" -Srepro -e \
-            '(require (quote jolt.host)) (assert (= "10.4.1" (jolt.host/scheme-version)))')
+            '(require (quote jolt.host)) (assert (= "Chez Scheme Version 10.4.1" (jolt.host/scheme-version)))')
           echo "BENCH_JOLT_BIN=$task_bin" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_EXPORTER_ROOT=$GITHUB_WORKSPACE/.qualification/exporter" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_JSON_ROOT=$GITHUB_WORKSPACE/.qualification/json" >> "$GITHUB_ENV"
