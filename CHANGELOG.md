@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an experimental source-only `:native-guarded-byte-batch` JSONEachRow
+  backend, preserving admission, incremental budgets, original custom errors
+  and close/release lifetime. Require serial ownership and the callback-boundary
+  runtime helper. No default backend or Durable ACK policy changes.
+
 - Integrate opt-in guarded JSONEachRow writer factories, payload-local caches
   and incremental UTF-8 output budgets from the measured performance branches.
   Keep configured encoding, current WAL ownership and ACKs unchanged. Update

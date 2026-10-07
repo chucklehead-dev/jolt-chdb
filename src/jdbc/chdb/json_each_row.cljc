@@ -30,6 +30,22 @@
 #?(:jolt (def ^:dynamic ^:private *selected-writer-factory* nil))
 
 #?(:jolt
+   (defn- load-native-batch-writer!
+     []
+     ;; Validate the runtime boundary at open, not after realizing input rows.
+     (load-native-writer-factory! 'load-payload-byte-buffer-writer!)
+     (let [write (ns-resolve 'clojure.data.json.jolt-native 'write-batch-text!)]
+       (when-not (ifn? write)
+         (fail! ::native-unavailable "Native JSON batch writer was not initialized"))
+       (fn [rows max-bytes]
+         (try (write rows max-bytes)
+              (catch Throwable error
+                (if (= :clojure.data.json.jolt-native/output-limit
+                       (:type (ex-data error)))
+                  (fail! ::output-limit "JSONEachRow output exceeds its byte limit")
+                  (throw error))))))))
+
+#?(:jolt
    (defn- with-selected-writer [factory operation]
      (if factory
        (binding [json/*experimental-native-writer* (factory)] (operation))
@@ -53,18 +69,30 @@
   fragments within each payload/worker (128 entries, 65,536 input-plus-output
   characters). Discarded with that writer; live extensions still run normally.
   It requires a compiler-bearing qualified runtime; standalone/AOT
-  is not qualified. Unsupported hosts/loading fail rather than silently falling
+  is not qualified. `:native-guarded-byte-batch` is an experimental source-only
+  serial collector that avoids warm stock row strings. It retains the real
+  row-local writer for observable/custom code, with a fresh buffer per batch.
+  Parallelism 4 is explicitly unsupported for this collector.
+  Unsupported hosts/loading fail rather than silently falling
   back. This option does not change admission or persistence guarantees."
   ([] (open-encoder {}))
   ([options]
    (when-not (and (map? options)
                   (every? #{:parallelism :json-backend} (keys options))
                   (contains? #{1 4} (get options :parallelism 1))
-                  (contains? #{:configured :native-guarded :native-guarded-string-cache}
+                  (contains? #{:configured :native-guarded :native-guarded-string-cache
+                               :native-guarded-byte-batch}
                              (get options :json-backend :configured)))
      (fail! ::invalid-options "Invalid JSONEachRow encoder options"))
    (let [backend (get options :json-backend :configured)
-         factory (when (not= :configured backend)
+         _ (when (and (= :native-guarded-byte-batch backend)
+                      (not= 1 (get options :parallelism 1)))
+             (fail! ::serial-required "Native JSON batch collection requires serial parallelism"))
+         batch-writer (when (= :native-guarded-byte-batch backend)
+                        #?(:jolt (load-native-batch-writer!)
+                           :bb (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")
+                           :clj (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")))
+         factory (when (contains? #{:native-guarded :native-guarded-string-cache} backend)
                   #?(:jolt (if (= :native-guarded-string-cache backend)
                              (load-native-writer-factory! 'load-payload-string-caching-writer!)
                              (load-native-writer-factory!))
@@ -73,6 +101,7 @@
      {:state (atom {:phase :open :active nil})
       :json-backend backend
       :native-writer-factory factory
+      :native-batch-writer batch-writer
       :requested-parallelism (get options :parallelism 1)
       :effective-parallelism #?(:jolt (get options :parallelism 1)
                                 :bb 1
@@ -85,7 +114,8 @@
   {:json-backend (:json-backend encoder)
    :requested-parallelism (:requested-parallelism encoder)
    :effective-parallelism (:effective-parallelism encoder)
-   :source-only? (contains? #{:native-guarded :native-guarded-string-cache}
+   :source-only? (contains? #{:native-guarded :native-guarded-string-cache
+                            :native-guarded-byte-batch}
                            (:json-backend encoder))})
 
 (defn- admit! [encoder]
@@ -243,10 +273,13 @@
         (reset! settled? true)
         (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
       (let [payload #?(:jolt (binding [*selected-writer-factory* (:native-writer-factory encoder)]
-                              (if (= 4 (:effective-parallelism encoder))
+                              (cond
+                                (:native-batch-writer encoder)
+                                ((:native-batch-writer encoder) rows Long/MAX_VALUE)
+                                (= 4 (:effective-parallelism encoder))
                                 (parallel-payload rows settled?)
-                                (with-selected-writer *selected-writer-factory*
-                                  #(serial-payload rows))))
+                                :else (with-selected-writer *selected-writer-factory*
+                                        #(serial-payload rows))))
                        :bb (serial-payload rows)
                        :clj (serial-payload rows))
             _ (reset! settled? true)]
@@ -312,7 +345,9 @@
                     (.append out encoded)
                     (recur (- remaining size) (next rows) out))
                   (.toString out))))]
-        #?(:jolt (with-selected-writer (:native-writer-factory encoder) operation)
+        #?(:jolt (if-let [write (:native-batch-writer encoder)]
+                   (write rows max-bytes)
+                   (with-selected-writer (:native-writer-factory encoder) operation))
            :bb (operation)
            :clj (operation)))
       (finally (release! encoder batch)))))
