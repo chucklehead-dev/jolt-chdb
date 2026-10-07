@@ -84,3 +84,7 @@
   (is (= :jdbc.chdb.json-each-row/serial-required
          (kind #(encoder/open-encoder {:json-backend :native-guarded-byte-batch
                                       :parallelism 4})))))
+
+(defn -main [& _]
+  (let [result (clojure.test/run-tests 'jdbc.chdb-json-each-row-byte-batch-test)]
+    (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1))))

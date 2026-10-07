@@ -55,6 +55,29 @@ Lazy input may realize its own chunks; custom serialization is trusted and can
 allocate a large row before its size is known. The budget is not persistence
 confirmation or a hard bound on arbitrary callback allocation.
 
+## Experimental byte-batch collector
+
+With the `:native-json-byte-batch` dependency alias and a qualified Jolt runtime
+containing the observable protocol-classification hook, you can select
+`{:json-backend :native-guarded-byte-batch :parallelism 1}`. This source-only
+experiment writes warm stock rows into one caller-owned byte buffer, avoiding
+their intermediate row strings. Cold classification and custom writers still
+receive a real row-local StringWriter and preserve mutations and errors.
+Each batch gets independent storage; completed text is immutable. Existing
+byte limits, admission, close/release and Durable ACK rules remain unchanged.
+Parallelism 4 is rejected rather than silently serialized.
+
+The compiled private runtime at core commit `1873df46` has passed a focused
+encoder gate and a committed local readback screen. An ordinary version label
+does not prove that hook exists. Missing dependency/runtime capabilities fail
+before row realization. This is not standalone/AOT or application-ingestion
+qualification, and it does not enable a writer globally.
+
+The held-stack experiment reduced cumulative allocation by about 7%, with a
+modest mean-throughput gain but no demonstrated tail improvement. Those numbers
+do not qualify this integration with current main's WAL implementation. Keep
+it opt-in pending a matched current-main benchmark and broader qualification.
+
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
 Each worker retains its completed immutable row strings; after every worker
