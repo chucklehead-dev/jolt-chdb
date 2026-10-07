@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an exporter storage-qualification driver for identical local/S3 workloads,
+  committed physical-insert ACKs, effective checkpoint policy and separate-process
+  count readback. Require exact loaded source/resource checks and isolated S3 CI
+  prefixes; credentials and exception details are never written to receipts.
+  S3 performance remains unqualified until actual provider runs complete.
+
 - Report p50/p90/p95/p99 latency in Durable phase benchmarks and include p90
   in the cross-runtime JSON baseline. Sample-count support flags are explicit;
   persistence timing and existing p50/p99 acceptance criteria are unchanged.
