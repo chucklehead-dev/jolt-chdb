@@ -986,3 +986,8 @@
   work on Jolt's shared fiber carriers.
 - Keep writer heartbeat active through close queue drain and final flush, then
   require its successful termination before lease release and native cleanup.
+# Diagnostic work
+
+- Add an opt-in, benchmark-only Chez byte-buffer JSONEachRow kernel and
+  source-matched component comparison. It is not a supported encoder backend
+  and does not change durable write or acknowledgement behavior.
