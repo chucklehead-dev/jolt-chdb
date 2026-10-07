@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a matched local/S3 exporter qualification workflow using the authenticated
+  green 0.8.17-lineage runtime and exact exporter/JSON/native pins. Run local
+  readback before assuming the existing repo OIDC role; retain only bounded
+  receipts, never credentials, backend options or persisted object contents.
+  Hosted consumer authentication and S3 throughput remain pending execution.
+
 - Add an exporter storage-qualification driver for identical local/S3 workloads,
   committed physical-insert ACKs, effective checkpoint policy and separate-process
   count readback. Require exact loaded source/resource checks and isolated S3 CI

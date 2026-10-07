@@ -19,7 +19,7 @@ git -C "$task_chdb" merge-base --is-ancestor ca7fc8a6ec1d65f8efb153e8b4c1935836f
 git -C "$task_chdb" diff --quiet ca7fc8a6ec1d65f8efb153e8b4c1935836f9440e -- src resources deps.edn
 task_version=$("$task_wrapper" "$task_jolt" --version)
 case "$task_version" in
-  'jolt v0.8.17-37-gab9b8580'|'jolt v0.8.17-38-gf1116c53') ;;
+  'jolt v0.8.17-37-gab9b8580'|'jolt v0.8.17-38-gf1116c53'|'jolt v0.8.17-39-gbcb376a0') ;;
   *) printf 'Unexpected benchmark runtime version\n' >&2; exit 1 ;;
 esac
 
