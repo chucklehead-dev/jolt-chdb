@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep the S3 transport callback arena alive through curl handle cleanup,
+  including setup/perform errors, and mark cleanup collect-safe. Free each
+  handle once; request, retry and persistence acknowledgement semantics stay
+  unchanged. This establishes cleanup ordering before future handle reuse.
+
 - Report p50/p90/p95/p99 latency in Durable phase benchmarks and include p90
   in the cross-runtime JSON baseline. Sample-count support flags are explicit;
   persistence timing and existing p50/p99 acceptance criteria are unchanged.
