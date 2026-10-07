@@ -24,6 +24,11 @@
   exporter's transitive chDB/JSON pins rather than silently using defaults.
   S3 performance remains unqualified until actual provider runs complete.
 
+- Add an explicit experimental lexical curl-reuse scope with serial admission,
+  configuration isolation and reset-before-arena-release. Default S3 transport
+  selection and Durable publication policy remain unchanged; synthetic HTTP
+  connection reuse is tested, not yet AWS throughput or application lifecycle.
+
 - Keep the S3 transport callback arena alive through curl handle cleanup,
   including setup/perform errors, and mark cleanup collect-safe. Free each
   handle once; request, retry and persistence acknowledgement semantics stay

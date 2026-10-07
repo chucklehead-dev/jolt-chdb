@@ -50,6 +50,7 @@
 
 (ffi/defcfn curl-global-init "curl_global_init" [:long] :int)
 (ffi/defcfn curl-easy-init "curl_easy_init" [] :pointer)
+(ffi/defcfn curl-easy-reset "curl_easy_reset" [:pointer] :void :blocking)
 (ffi/defcfn curl-easy-cleanup "curl_easy_cleanup" [:pointer] :void :blocking)
 (ffi/defcfn curl-easy-perform "curl_easy_perform" [:pointer] :int :blocking)
 (ffi/defcfn curl-easy-setopt-long
@@ -75,6 +76,17 @@
                         {:category :transport
                          :definitely-not-sent? true})))
       true)))
+
+;; Experimental lexical owner only; ordinary request! still owns a fresh
+;; handle. Never convey this binding to a worker or retain a request callback.
+(def ^:dynamic ^:private *reused-handle* nil)
+
+(defn- finish-handle! [handle]
+  (if *reused-handle*
+    ;; Clear callback/header/body options while their request arena is live.
+    ;; Connections and TLS/DNS caches remain owned by the lexical scope.
+    (curl-easy-reset handle)
+    (curl-easy-cleanup handle)))
 
 (defn- transport-failure!
   ([message definitely-not-sent?]
@@ -279,14 +291,14 @@
                    (integer? timeout-ms) (pos? timeout-ms)
                    (integer? max-response-bytes) (pos? max-response-bytes))
       (transport-failure! "invalid libcurl request options" true))
-    (let [handle (curl-easy-init)]
+    (let [handle (or *reused-handle* (curl-easy-init))]
       (when (ffi/null? handle)
         (transport-failure! "libcurl request allocation failed" true))
       (let [request-source
             (try
               (request-reader request-body)
               (catch Throwable error
-                (curl-easy-cleanup handle)
+                (finish-handle! handle)
                 (throw error)))
             response-sink
             (try
@@ -294,7 +306,7 @@
               (catch Throwable error
                 (when request-source
                   (try ((:close! request-source)) (catch Throwable _ nil)))
-                (curl-easy-cleanup handle)
+                (finish-handle! handle)
                 (throw error)))
             response-headers (atom {})
             callback-error (atom nil)
@@ -302,7 +314,7 @@
             cleaned? (atom false)
             cleanup! (fn []
                        (when (compare-and-set! cleaned? false true)
-                         (curl-easy-cleanup handle)))]
+                         (finish-handle! handle)))]
         (try
           (with-open [arena (ffi/shared-arena)]
             (try
@@ -411,6 +423,59 @@
             ;; Also covers failure to create an arena, before any callback
             ;; exists. Once-only prevents a second cleanup after normal close.
             (cleanup!)))))))
+
+(defn with-reused-transport!
+  "Experimental lexical connection-reuse scope. Calls operation with one
+  serial request function. Concurrent calls reject rather than queue; calls
+  after scope exit reject. Exit stops admission, drains admitted work, and
+  releases the handle exactly once. The first request binds the HTTP(S) origin,
+  region and auth configuration; changes reject before native work. This is
+  not a global cross-tenant pool. No Durable ACK policy change.
+  This is not enabled by request-function or s3-backend."
+  [operation]
+  @initialized
+  (let [handle (curl-easy-init)
+        state (atom {:phase :open :active nil})]
+    (when (ffi/null? handle)
+      (transport-failure! "libcurl scope allocation failed" true))
+    (try
+      (operation
+       (fn [request]
+         (let [origin (when (string? (:url request))
+                        (re-find #"^https?://[^/?#]+" (:url request)))
+               configuration [origin (:region request) (:auth request)]
+               ticket {:done (promise)}]
+           (when-not origin
+             (transport-failure! "libcurl reuse requires an HTTP origin" true))
+           (loop []
+             (let [before @state]
+               (when-not (= :open (:phase before))
+                 (transport-failure! "libcurl scope is closed" true))
+               (when (:active before)
+                 (transport-failure! "libcurl scope already has an active request" true))
+               (when (and (:configuration before)
+                          (not= (:configuration before) configuration))
+                 (transport-failure! "libcurl scope configuration changed" true))
+               (when-not (compare-and-set! state before
+                                          (assoc before :active ticket
+                                                        :configuration configuration))
+                 (recur))))
+           (try
+             (binding [*reused-handle* handle] (request! request))
+             (finally
+               (swap! state assoc :active nil)
+               (deliver (:done ticket) :settled))))))
+      (finally
+        (let [active (loop []
+                       (let [before @state]
+                         (if (compare-and-set! state before (assoc before :phase :closing))
+                           (:active before)
+                           (recur))))]
+          (when active @(:done active))
+          ;; Every admitted request has reset its native pointer-bearing options
+          ;; before settlement. The scope alone owns terminal handle cleanup.
+          (try (curl-easy-cleanup handle)
+               (finally (swap! state assoc :phase :closed :configuration nil))))))))
 
 (defn request-function
   "Create a transport function with optional timeout and byte-response bounds."
