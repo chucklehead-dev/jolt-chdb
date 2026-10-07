@@ -4,12 +4,36 @@
   (:require #?(:bb [cheshire.core :as bb-json]
                :jolt [clojure.data.json :as json]
                :clj [clojure.data.json :as json])
+            [jdbc.chdb.utf8 :as utf8]
             #?(:jolt [jolt.fibers :as fibers])))
 
 (def ^:private pending :pending)
 
 (defn- fail! [kind message]
   (throw (ex-info message {:type kind})))
+
+#?(:jolt
+   (defn- load-native-writer-factory!
+     ([] (load-native-writer-factory! 'load-payload-writer!))
+     ([factory-name]
+      (try
+        (require 'clojure.data.json.jolt-native)
+        (let [factory (ns-resolve 'clojure.data.json.jolt-native factory-name)]
+          (when-not (and (ifn? factory) (ifn? (factory)))
+            (fail! ::native-unavailable "Native JSON writer was not initialized"))
+          factory)
+        (catch Throwable _
+          ;; Do not expose paths, input values, or arbitrary loader diagnostics.
+          (fail! ::native-unavailable
+                 "Native JSON encoding requires the qualified compiler-bearing Jolt runtime"))))))
+
+#?(:jolt (def ^:dynamic ^:private *selected-writer-factory* nil))
+
+#?(:jolt
+   (defn- with-selected-writer [factory operation]
+     (if factory
+       (binding [json/*experimental-native-writer* (factory)] (operation))
+       (operation))))
 
 (defn open-encoder
   "Create one caller-owned encoder. `:parallelism` defaults to 1; 4 is an
@@ -18,18 +42,51 @@
   A context admits one batch at a time and rejects a concurrent call. Share
   one context across application callers to keep that bound meaningful;
   separate contexts can oversubscribe the machine. No global carrier setting
-  is read or modified."
+  is read or modified.
+
+  `:json-backend` defaults to `:configured`, preserving the host writer and
+  caller's data.json bindings. `:native-guarded` explicitly selects the guarded
+  Jolt writer, overriding that caller binding without changing JSONWriter
+  extensions. Each serial payload or parallel worker gets a fresh bounded
+  object-key cache; the context retains only its factory, never a payload cache.
+  `:native-guarded-string-cache` additionally retains bounded stock string
+  fragments within each payload/worker (128 entries, 65,536 input-plus-output
+  characters). Discarded with that writer; live extensions still run normally.
+  It requires a compiler-bearing qualified runtime; standalone/AOT
+  is not qualified. Unsupported hosts/loading fail rather than silently falling
+  back. This option does not change admission or persistence guarantees."
   ([] (open-encoder {}))
   ([options]
    (when-not (and (map? options)
-                  (every? #{:parallelism} (keys options))
-                  (contains? #{1 4} (get options :parallelism 1)))
-     (fail! ::invalid-options "JSONEachRow encoder accepts parallelism 1 or 4"))
-   {:state (atom {:phase :open :active nil})
-    :requested-parallelism (get options :parallelism 1)
-    :effective-parallelism #?(:jolt (get options :parallelism 1)
-                              :bb 1
-                              :clj 1)}))
+                  (every? #{:parallelism :json-backend} (keys options))
+                  (contains? #{1 4} (get options :parallelism 1))
+                  (contains? #{:configured :native-guarded :native-guarded-string-cache}
+                             (get options :json-backend :configured)))
+     (fail! ::invalid-options "Invalid JSONEachRow encoder options"))
+   (let [backend (get options :json-backend :configured)
+         factory (when (not= :configured backend)
+                  #?(:jolt (if (= :native-guarded-string-cache backend)
+                             (load-native-writer-factory! 'load-payload-string-caching-writer!)
+                             (load-native-writer-factory!))
+                     :bb (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")
+                     :clj (fail! ::native-unavailable "Native guarded JSON encoding requires Jolt")))]
+     {:state (atom {:phase :open :active nil})
+      :json-backend backend
+      :native-writer-factory factory
+      :requested-parallelism (get options :parallelism 1)
+      :effective-parallelism #?(:jolt (get options :parallelism 1)
+                                :bb 1
+                                :clj 1)})))
+
+(defn encoder-info
+  "Bounded configuration diagnostics; excludes callbacks, rows and handles.
+  :configured describes delegation, not the caller's effective writer binding."
+  [encoder]
+  {:json-backend (:json-backend encoder)
+   :requested-parallelism (:requested-parallelism encoder)
+   :effective-parallelism (:effective-parallelism encoder)
+   :source-only? (contains? #{:native-guarded :native-guarded-string-cache}
+                           (:json-backend encoder))})
 
 (defn- admit! [encoder]
   (let [batch {:done (promise)}]
@@ -121,10 +178,11 @@
    (defn- spawn-chunk [rows]
      ;; Worker exceptions are values, so join exceptions identify interruption
      ;; of the waiting caller rather than an InterruptedException from a row.
-     (fibers/spawn
-      (fn []
-        (try {:value (chunk-texts rows)}
-             (catch Throwable error {:error error}))))))
+     (let [factory *selected-writer-factory*]
+       (fibers/spawn
+        (fn []
+          (try {:value (with-selected-writer factory #(chunk-texts rows))}
+               (catch Throwable error {:error error})))))))
 
 #?(:jolt
    (defn- join-uninterruptibly [job]
@@ -184,9 +242,11 @@
       (when-not (vector? rows)
         (reset! settled? true)
         (fail! ::invalid-rows "JSONEachRow encoder requires a rows vector"))
-      (let [payload #?(:jolt (if (= 4 (:effective-parallelism encoder))
+      (let [payload #?(:jolt (binding [*selected-writer-factory* (:native-writer-factory encoder)]
+                              (if (= 4 (:effective-parallelism encoder))
                                 (parallel-payload rows settled?)
-                                (serial-payload rows))
+                                (with-selected-writer *selected-writer-factory*
+                                  #(serial-payload rows))))
                        :bb (serial-payload rows)
                        :clj (serial-payload rows))
             _ (reset! settled? true)]
@@ -223,3 +283,36 @@
   No SQL prefix is added."
   [encoder rows]
   (encode-with! encoder rows identity))
+
+(defn encode-limited-text!
+  "Encode sequential rows with a UTF-8 output budget including each newline.
+  Always serial: requires effective parallelism 1. Check every completed row
+  before appending, and do not request the next row after exceeding the budget.
+  Lazy input may itself realize chunks; arbitrary user serialization remains a
+  trusted operation, and a single row may allocate before its size is known.
+  The context retains no payload after return/error. This is encoding only,
+  not admission or persistence."
+  [encoder rows max-bytes]
+  (let [batch (admit! encoder)]
+    (try
+      (when-not (= 1 (:effective-parallelism encoder))
+        (fail! ::serial-required "Bounded JSONEachRow encoding requires serial parallelism"))
+      (when-not (and (integer? max-bytes) (not (neg? max-bytes)))
+        (fail! ::invalid-limit "JSONEachRow byte limit must be a nonnegative integer"))
+      (when-not (or (nil? rows) (sequential? rows))
+        (fail! ::invalid-rows "Bounded JSONEachRow encoding requires sequential rows"))
+      (let [operation
+            (fn []
+              (loop [remaining max-bytes rows (seq rows) out (StringBuilder.)]
+                (if (seq rows)
+                  (let [encoded (row-text (first rows))
+                        size (utf8/byte-count encoded)]
+                    (when (> size remaining)
+                      (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
+                    (.append out encoded)
+                    (recur (- remaining size) (next rows) out))
+                  (.toString out))))]
+        #?(:jolt (with-selected-writer (:native-writer-factory encoder) operation)
+           :bb (operation)
+           :clj (operation)))
+      (finally (release! encoder batch)))))

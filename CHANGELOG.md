@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Integrate opt-in guarded JSONEachRow writer factories, payload-local caches
+  and incremental UTF-8 output budgets from the measured performance branches.
+  Keep configured encoding, current WAL ownership and ACKs unchanged. Update
+  data.json to the measured guarded-writer revision required by the new APIs;
+  native selection remains explicit, and unsupported hosts or missing
+  capabilities fail. No default throughput or standalone/AOT claim.
+
 - Add a manual-only five-batch S3 connection-reuse comparison, pinned to reviewed
   benchmark/runtime/native/dependency commits. Run through the existing
   protected-main AWS environment with isolated prefixes and independent

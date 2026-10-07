@@ -23,6 +23,38 @@ worker settlement, and close contract. `encode-rows!` still creates its byte
 array before releasing the active operation and retains its existing result
 shape.
 
+On the qualified compiler-bearing Jolt runtime, opt in with
+`{:json-backend :native-guarded}`. Each serial payload (including bounded
+encoding) or parallel worker chunk obtains its own bounded escaped-key cache.
+An encoder reused across batches retains only the writer factory, not cached
+keys from the previous batch. Values and protocol methods are never cached;
+custom writer effects and per-row sinks remain unchanged. No mutable cache is
+shared between workers. This source-only backend is not standalone/AOT
+qualified and does not change the default `:configured` backend.
+
+For repeated short strings, `{:json-backend :native-guarded-string-cache}`
+additionally caches stock-encoded string fragments within each payload or
+worker. It retains at most 128 entries and 65,536 input-plus-output characters;
+strings over 256 characters bypass that cache. Each value still checks its
+live writer, and escaping options qualify every hit. This explicitly retains
+telemetry strings until the payload writer is discarded, never across batches.
+It requires a matching data.json factory and qualified source-run Jolt; missing
+capability or other hosts fail explicitly. It does not change default encoding,
+the key-only backend, admission, row limits, or persistence acknowledgement.
+
+The library pins the matching data.json revision, but does not enable a native
+writer by default. Native factory loading requires a qualified
+compiler-bearing Jolt runtime; JVM and Babashka continue to use their ordinary
+writers and reject native backend requests.
+
+Use `(json-rows/encode-limited-text! encoder rows max-bytes)` for a serial,
+incremental payload with a UTF-8 byte budget, including row newlines. Unlike
+the vector-only APIs, this accepts sequential or nil input. It checks each
+completed row before requesting the next row and releases admission on error.
+Lazy input may realize its own chunks; custom serialization is trusted and can
+allocate a large row before its size is known. The budget is not persistence
+confirmation or a hard bound on arbitrary callback allocation.
+
 The default `:parallelism` is 1. Jolt accepts an explicit 4 to encode four
 contiguous row chunks on fibers and concatenate them in original row order.
 Each worker retains its completed immutable row strings; after every worker
