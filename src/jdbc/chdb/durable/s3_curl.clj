@@ -50,7 +50,7 @@
 
 (ffi/defcfn curl-global-init "curl_global_init" [:long] :int)
 (ffi/defcfn curl-easy-init "curl_easy_init" [] :pointer)
-(ffi/defcfn curl-easy-cleanup "curl_easy_cleanup" [:pointer] :void)
+(ffi/defcfn curl-easy-cleanup "curl_easy_cleanup" [:pointer] :void :blocking)
 (ffi/defcfn curl-easy-perform "curl_easy_perform" [:pointer] :int :blocking)
 (ffi/defcfn curl-easy-setopt-long
   "curl_easy_setopt" [:pointer :int :& :long] :int)
@@ -298,9 +298,14 @@
                 (throw error)))
             response-headers (atom {})
             callback-error (atom nil)
-            slist (atom ffi/null)]
+            slist (atom ffi/null)
+            cleaned? (atom false)
+            cleanup! (fn []
+                       (when (compare-and-set! cleaned? false true)
+                         (curl-easy-cleanup handle)))]
         (try
           (with-open [arena (ffi/shared-arena)]
+            (try
             (let [read-callback
                   (ffi/callback
                    arena
@@ -390,7 +395,10 @@
                                       ((:result response-sink)))]
                     (when-not (= 200 status)
                       ((:cleanup! response-sink)))
-                    result)))))
+                    result))))
+              ;; curl cleanup may call registered callbacks. Keep the arena
+              ;; alive until the handle can no longer hold/use their pointers.
+              (finally (cleanup!))))
           (catch Throwable error
             (try ((:close! response-sink)) (catch Throwable _ nil))
             (try ((:cleanup! response-sink)) (catch Throwable _ nil))
@@ -400,7 +408,9 @@
               (try ((:close! request-source)) (catch Throwable _ nil)))
             (when-not (ffi/null? @slist)
               (curl-slist-free-all @slist))
-            (curl-easy-cleanup handle)))))))
+            ;; Also covers failure to create an arena, before any callback
+            ;; exists. Once-only prevents a second cleanup after normal close.
+            (cleanup!)))))))
 
 (defn request-function
   "Create a transport function with optional timeout and byte-response bounds."
