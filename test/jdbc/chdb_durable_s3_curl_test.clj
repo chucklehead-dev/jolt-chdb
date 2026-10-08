@@ -1,5 +1,9 @@
 (ns jdbc.chdb-durable-s3-curl-test
   (:require [clojure.string :as str]
+            [clojure.test :as test]
+            [jdbc.chdb-s3-curl-cleanup-test]
+            [jdbc.chdb-s3-curl-reuse-test :as reuse]
+            [jdbc.chdb-s3-curl-writer-overlap-test :as writer-overlap]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.s3 :as s3]
@@ -360,4 +364,10 @@
   (when-not (zero? @failures)
     (throw (ex-info (str @failures " libcurl transport checks failed")
                     {:failures @failures})))
+  (let [result (test/run-tests 'jdbc.chdb-s3-curl-cleanup-test)]
+    (when-not (zero? (+ (:fail result) (:error result)))
+      (throw (ex-info "libcurl cleanup lifecycle checks failed"
+                      {:failures (:fail result) :errors (:error result)}))))
+  (reuse/run-tests! endpoint)
+  (writer-overlap/run-tests! endpoint)
   (println "all Durable libcurl transport checks passed"))

@@ -2,10 +2,37 @@
 
 ## Unreleased
 
+- Add an opt-in real-native S3 writer qualification script: hold a WAL upload
+  on the loopback provider, renew through a separate scoped transport, retain
+  confirmed publication, and recover exact rows in a fresh process. Controlled
+  heartbeat timing and test-only composition do not change production defaults.
+
 - Allow an explicitly supplied JSON reader in owned writer/heartbeat operation
   contexts. Default parsing, startup/recovery and caller bindings are unchanged;
   the experimental API is resolved before owned threads start. Opt-in requires
   a separately qualified data.json candidate, not the normal dependency pin.
+
+- Exercise the real writer heartbeat loop during a server-held HTTP data
+  transfer. Separate experimental scopes permit renewal; one shared scope
+  rejects it. Verify lease-time conversion, orderly writer/thread shutdown,
+  released ownership and handle cleanup. Native database work is stubbed and
+  heartbeat ticks are controlled; defaults and acknowledgement policy do not change.
+
+- Add a native synthetic-S3 causal test comparing one shared curl scope with
+  independent data/renewal scopes. Verify real lease CAS during an admitted,
+  deliberately held data request, plus joined workers and exact cleanup counts.
+  No default transport, credential-rotation or writer-lifecycle change.
+
+- Add an explicit experimental lexical curl-reuse scope with serial admission,
+  configuration isolation and reset-before-arena-release. Default S3 transport
+  selection and Durable publication policy remain unchanged; synthetic HTTP
+  connection reuse is tested, not yet AWS throughput or application lifecycle.
+
+- Keep the S3 transport callback arena alive through curl handle cleanup,
+  including setup/perform errors, and mark cleanup collect-safe. Free each
+  handle once; request, retry and persistence acknowledgement semantics stay
+  unchanged. This establishes cleanup ordering before future handle reuse.
+
 
 - Forward the explicit WAL-reference checkpoint threshold through JDBC writer
   startup. Previously the dbspec accepted this option but the driver dropped

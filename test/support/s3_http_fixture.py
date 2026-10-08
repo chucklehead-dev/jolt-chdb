@@ -14,6 +14,12 @@ AFTER_CAS_TIMEOUTS = set()
 LOCK = threading.Lock()
 REQUEST_COUNTS = {"authenticated_requests": 0, "gets": 0, "puts": 0}
 ITF_NAMESPACES = set()
+WRITER_OVERLAPS = {}
+
+
+def writer_overlap(name):
+    with LOCK:
+        return WRITER_OVERLAPS.setdefault(name, (threading.Event(), threading.Event()))
 
 
 def record_request(method, path):
@@ -73,6 +79,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.authenticated():
             self.answer(403)
             return
+        overlap = re.fullmatch(r"/__fixture__/writer-overlap/(shared|split|native)/(entered|release|arm)", self.key())
+        if overlap:
+            entered, release = writer_overlap(overlap.group(1))
+            if overlap.group(2) == "arm":
+                entered.clear()
+                release.clear()
+                with LOCK:
+                    OBJECTS["native-overlap-armed"] = True
+                self.answer(200)
+            elif overlap.group(2) == "release":
+                release.set()
+                self.answer(200)
+            else:
+                self.answer(200 if entered.is_set() else 202)
+            return
         if self.key() == "/__fixture__/stats":
             with LOCK:
                 report = {
@@ -107,6 +128,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
+        if key.startswith("/bucket/writer-native-overlap/object/wal/"):
+            with LOCK:
+                armed = OBJECTS.pop("native-overlap-armed", False)
+            if armed:
+                entered, release = writer_overlap("native")
+                entered.set()
+                if not release.wait(10):
+                    self.answer(504)
+                    return
+        overlap = re.fullmatch(r"/__fixture__/writer-overlap/(shared|split)/data", key)
+        if overlap:
+            entered, release = writer_overlap(overlap.group(1))
+            entered.set()
+            # Bound failures so a broken test cannot strand a server thread.
+            self.answer(200 if release.wait(10) else 504)
+            return
         if (
             "/timeout-before-cas/object/head.json" in key
             and self.headers.get("If-Match") is not None
