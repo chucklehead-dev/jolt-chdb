@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicit experimental lexical S3 writer owner with independent data
+  and renewal transports, joined close before handle retirement, and primary
+  callback-error preservation. A validated protocol-seconds renewal composition
+  hook preserves the public open layer's time conversions. No default transport,
+  acknowledgement or automatic credential-rotation change.
+
 - Add an opt-in real-native S3 writer qualification script: hold a WAL upload
   on the loopback provider, renew through a separate scoped transport, retain
   confirmed publication, and recover exact rows in a fresh process. Controlled

@@ -91,6 +91,14 @@ Public lease and skew options are milliseconds; the interoperable
 The adapter accepts only whole public milliseconds and bounds both forms to the
 JavaScript-safe millisecond magnitude; this is a local cross-runtime safety
 policy rather than a new Protocol V1 requirement.
+
+An opt-in [scoped S3 writer](doc/s3-curl-reuse-spike.md#experimental-library-owner)
+reuses connections while giving lease renewal its own transport. It closes
+the writer before releasing either transport. Real-native loopback tests cover
+renewal during a held WAL upload and fresh-process recovery; sustained AWS/TLS,
+credential rotation and interrupted-close qualification remain open. Ordinary
+S3 startup still uses fresh handles.
+
 Recovery downloads each WAL segment into its private scratch directory and
 checks the declared size and digest before decoding. It then validates the
 complete JSONL segment in one bounded streaming pass before a second bounded

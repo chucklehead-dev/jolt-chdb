@@ -121,19 +121,64 @@ allows normal verification/head CAS and a confirmed receipt. The writer closes
 inside both scopes and releases its lease. A second OS process, with stock
 parsing and fresh curl handles, restores/replays and checks every sorted row.
 
-The test routes the raw writer's existing renewal operation to the second
-backend by intercepting `writer/start!` only in this test. It retains the public
-open layer's existing milliseconds/seconds conversion, retry options, all real
-native execution, WAL preparation, confirmation and close operations. It is not
-an application-facing persistent-backend owner API. Routing back to the guarded
-busy data backend fails at the renewal assertion without unsafe shared use.
+The test now calls the experimental library owner described below; it no longer
+intercepts `writer/start!` or replaces native execution/publication operations.
+The public open layer retains its milliseconds/seconds conversion and retry
+options. Routing renewal back to the guarded busy data backend fails without
+unsafe shared native use. The original test-only composition remains recorded
+at commit 295d53e as earlier evidence, not the current implementation.
 
 This gate passes on chDB 26.7.3 and the cumulative 56bf8968 runtime. It qualifies
 this deterministic native publication/recovery scenario, not sustained
 throughput, TLS, real AWS, wall-clock scheduling, credential rotation or every
 shutdown/interruption path. The script removes its own fixture directory and
 server after both processes settle; no persistent provider or credentials are
-used. A production composition seam and review remain prerequisites to adoption.
+used. Review and sustained qualification remain prerequisites to adoption.
+
+## Experimental library owner
+
+`jdbc.chdb.durable.s3-writer/with-writer!` owns two serial curl scopes for one
+S3 namespace and object. Use it explicitly; ordinary Durable/S3 APIs still
+select fresh handles. The callback receives the normal Durable writer:
+
+```clojure
+(require '[jdbc.chdb.durable.s3-writer :as s3-writer]
+         '[jdbc.chdb.durable.writer :as writer])
+
+(s3-writer/with-writer!
+  s3-options
+  {:object-id "telemetry" :owner "collector" :instance "run-1"
+   :database "otel" :scratch-parent scratch-parent}
+  (fn [w]
+    ;; Run the writer's normal operations, or keep an application inside this
+    ;; scope until its own producers have stopped and joined.
+    (writer/execute-and-flush! w sql)))
+```
+
+The helper builds both backends from the same options, installs dedicated
+renewal routing, and closes/joins the writer before retiring either transport.
+The data backend retains normal recovery, publication, verification and head
+CAS operations. Callback errors remain primary if close also fails; otherwise
+close failure propagates. Startup failure unwinds both transport scopes.
+Do not return a live writer or launch unjoined producers beyond the callback.
+Manual early close is safe through the writer's existing idempotent close.
+
+The helper reserves `:request!`, `:store`, `:namespace-backend` and the
+`:operations/:renew-control!` hook so callers cannot accidentally route to a
+different object. Other ordinary writer options remain available. The public
+open seam validates that renewal hook before storage effects and uses it for
+startup and heartbeat with protocol-seconds arguments; the open layer alone
+converts raw writer milliseconds. Direct custom hook implementations are trusted
+to honor the same lease/CAS contract, just as other explicit operation overrides
+are trusted; the helper itself calls the existing control/renew! implementation.
+
+There is no automatic credential rotation: configuration changes reject before
+native work, and require a new owner scope. This is not a generic shared pool
+or an exporter/JDBC lifetime adapter. Library composition is implemented and
+the native controlled-overlap/recovery gate uses it, but AWS/TLS, long-run
+performance, rotating credentials and interrupted-close qualification remain
+open. Existing protocol models retain their prior publication/lease scope;
+they do not prove curl resource lifetime or service availability.
 
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
