@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Exercise the real writer heartbeat loop during a server-held HTTP data
+  transfer. Separate experimental scopes permit renewal; one shared scope
+  rejects it. Verify lease-time conversion, orderly writer/thread shutdown,
+  released ownership and handle cleanup. Native database work is stubbed and
+  heartbeat ticks are controlled; defaults and acknowledgement policy do not change.
+
 - Add a native synthetic-S3 causal test comparing one shared curl scope with
   independent data/renewal scopes. Verify real lease CAS during an admitted,
   deliberately held data request, plus joined workers and exact cleanup counts.

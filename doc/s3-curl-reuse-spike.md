@@ -68,6 +68,38 @@ or AWS throughput. Default selection and production sources are unchanged.
 It supports dedicated renewal ownership as the next implementation direction;
 it does not close the broader adoption/lifecycle requirements in issue #251.
 
+## Writer heartbeat during a held HTTP transfer
+
+The next test wires separate senders into the existing raw writer composition
+seam: its data backend uses the first sender, while its `:renew!` operation
+uses an independently owned backend with the same object namespace and token.
+No writer API, transport default, retry, or persistence policy is changed.
+The operation converts raw writer milliseconds to V1 wire seconds and back,
+as required by the existing public open layer.
+
+The actual writer worker calls a fake native query hook that starts a signed
+HTTP data request. The fixture server reads that request and withholds its
+response until a separate release request arrives. Only after the server
+confirms entry does the test trigger one heartbeat tick. The writer's owned
+heartbeat thread runs its real renewal loop and performs GET plus conditional
+PUT while the data call remains blocked in native libcurl. Separate handles
+advance wire expiry from 200 to 250, keep generation unchanged, and update
+the writer's local millisecond expiry. One shared handle rejects the renewal.
+
+The test then releases the data response, joins the caller, closes the writer
+inside both transport scopes, checks that worker and heartbeat completed,
+verifies released lease fields with the generation retained, and checks exact
+init/cleanup balance. A safe wrong-routing control produces five intended
+failures and zero errors; correct routing passes 29 assertions. The older
+cleanup and reuse suites remain green at 14 and 62 assertions respectively.
+
+This is real simultaneous on-wire transport activity and a real heartbeat-loop
+renewal, but its tick is deterministic rather than wall-clock scheduling.
+Database execution is stubbed: it does not prove native mutation, WAL/manifest
+publication, persisted acknowledgements, independent database recovery, TLS,
+credential rotation, interruption during close, or long-running AWS throughput.
+Adoption still requires those relevant lifecycle and product integration gates.
+
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
 [connection counter](https://curl.se/libcurl/c/CURLINFO_NUM_CONNECTS.html).
