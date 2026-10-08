@@ -13,6 +13,7 @@
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb.byte-range :as byte-range]
             [jdbc.chdb.utf8 :as utf8]
             [jdbc.chdb-durable-open-test-support :as support])
   (:import [java.nio ByteBuffer]
@@ -300,7 +301,42 @@
     (check "all LF matches in one chunk are causally required"
            [0 2 4]
            (scanned-lf-offsets next-lf! [[10 65 10 66 10]]))
-    (run-lf-framing-property! next-lf!))
+    (run-lf-framing-property! next-lf!)
+    (when-let [native-var (ns-resolve 'jdbc.chdb.byte-range 'native-search)]
+      (with-redefs-fn
+        {native-var (delay nil)}
+        (fn []
+          (check "forced-off scanner capability really declines" false
+                 (byte-range/native-enabled?))
+          (check "forced-off scanner retains every LF and CRLF boundary"
+                 [0 2 4 7]
+                 (scanned-lf-offsets next-lf! [[10 65 10] [66 10 13] [67 10]]))
+          (let [sql-values ["INSERT INTO t VALUES (1)"
+                            (str "SELECT '" (apply str (repeat 70000 "x")) "'")
+                            "SELECT 'β'"]]
+            (attempt-open
+             (wal-bytes sql-values)
+             (fn [open! calls _ _]
+               (let [opened (open!)]
+                 (try
+                   (check "forced-off scanner replays exact cross-block statements"
+                          sql-values
+                          (mapv second (filter #(= :execute (first %)) @calls)))
+                   (finally (reader/close! opened)))))))
+          (doseq [[label payload]
+                  [["malformed tail"
+                    (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"])
+                                  (.getBytes "{bad-tail}\n" "UTF-8"))]
+                   ["missing final LF"
+                    (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"])
+                                  (.getBytes "{}" "UTF-8"))]]]
+            (attempt-open
+             payload
+             (fn [open! calls _ _]
+               (check-recovery-failure!
+                (str "forced-off scanner rejects " label) ::durable/corrupt open!)
+               (check (str "forced-off scanner applies no prefix for " label)
+                      [] (engine-effects @calls)))))))))
 
   (let [decoder-capability-var
         (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)

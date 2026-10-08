@@ -15,21 +15,22 @@
        (when-let [resource (io/resource "jdbc/chdb/byte_range.ss")]
          (slurp resource)))
      (def ^:private source (native-source))
+     (defn- qualified-search [search]
+       (let [bytes (byte-array (map unchecked-byte [0 10 127 128 255 10]))]
+         (when (every? (fn [[target start end]]
+                         (= (portable-index bytes target start end)
+                            (search bytes target start end)))
+                       [[0 0 6] [10 0 6] [10 2 6] [127 0 6]
+                        [128 0 6] [255 0 6] [1 0 6] [10 2 2]
+                        [10 6 6]])
+           search)))
      (def ^:private native-search
        (delay
          (try
            (when (string? source)
              ;; Record accessors are Chez syntax, not scheme/proc bindings.
              ;; Compile the whole resource and qualify actual calls instead.
-             (let [search (scheme/eval-string source)
-                   bytes (byte-array (map unchecked-byte [0 10 127 128 255 10]))]
-               (when (every? (fn [[target start end]]
-                               (= (portable-index bytes target start end)
-                                  (search bytes target start end)))
-                             [[0 0 6] [10 0 6] [10 2 6] [127 0 6]
-                              [128 0 6] [255 0 6] [1 0 6] [10 2 2]
-                              [10 6 6]])
-                 search)))
+             (qualified-search (scheme/eval-string source)))
            (catch Throwable _ nil))))))
 
 (defn native-enabled?

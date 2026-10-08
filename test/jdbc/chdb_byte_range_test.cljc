@@ -58,6 +58,18 @@
     (is (= 1 (scan/index-of-byte bytes 11 0 3)))))
 
 #?(:jolt
+   (deftest qualification-rejects-bad-searches
+     (let [native (deref @#'jdbc.chdb.byte-range/native-search)]
+       (is (some? native))
+       (is (identical? native (#'jdbc.chdb.byte-range/qualified-search native)))
+       (is (nil? (#'jdbc.chdb.byte-range/qualified-search
+                   (fn [_ _ _ end] end))) "always-miss implementation declines")
+       (is (nil? (#'jdbc.chdb.byte-range/qualified-search
+                   (fn [bytes target _ end]
+                     (#'jdbc.chdb.byte-range/portable-index bytes target 0 end))))
+           "ignoring the start boundary declines"))))
+
+#?(:jolt
    (deftest selected-and-boxed-backing-paths-are-live
      (is (true? (scan/native-enabled?)))
      (let [boxed ((scheme/eval-string
