@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reserve output capacity per block in the source-only owned WAL codec rather
+  than checking capacity for every scalar. Preserve exact JSONL bytes, fresh
+  chunk ownership, size accounting and pre-execution preparation.
+
 - Allow an explicitly supplied JSON reader in owned writer/heartbeat operation
   contexts. Default parsing, startup/recovery and caller bindings are unchanged;
   the experimental API is resolved before owned threads start. Opt-in requires

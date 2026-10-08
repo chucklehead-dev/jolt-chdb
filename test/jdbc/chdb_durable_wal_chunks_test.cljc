@@ -39,6 +39,19 @@
       (is (java.util.Arrays/equals prepared (wal/line "fallbackβ😀")))
       (is (= (alength prepared) (wal/prepared-size prepared))))))
 
+(deftest reservation-boundaries-preserve-worst-case-escapes
+  ;; Twelve output bytes is the maximum per Scheme scalar (a surrogate pair).
+  ;; Sweep the smaller initial chunk and the full 64KiB boundary with mixes of
+  ;; one/two/six/twelve-byte encodings, not merely long ASCII records.
+  (doseq [n [0 1 19 20 21 22 23 24 245 246 247 248 255 256
+            65512 65523 65524 65525 65535 65536 65537]
+          tail ["😀" "\"/\\\nβ" "\u0000😀\u001f"]]
+    (let [sql (str (apply str (repeat n "a")) tail)
+          prepared (wal/prepared-line sql)
+          expected (wal/portable-line-bytes sql)]
+      (is (= (alength expected) (wal/prepared-size prepared)))
+      (is (java.util.Arrays/equals expected (written-bytes prepared))))))
+
 (deftest independent-owned-chunk-results
   (when (wal/native-prepared-enabled?)
     (let [a (wal/prepared-line "owned") b (wal/prepared-line "owned")

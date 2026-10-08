@@ -44,23 +44,33 @@
         ((fx= i n) (finish! at))
         ((fx> at (fx- capacity 12)) (flush! at) (loop i 0))
         (else
-         (let* ((cp (char->integer (string-ref s i)))
-                (escape (if (fx< cp 128)
-                            (bytevector-u8-ref durable-wal-ascii-escape cp) 1)))
-           (cond
-             ((fx= escape 0)
-              (bytevector-u8-set! buffer at cp)
-              (loop (fx+ i 1) (fx+ at 1)))
-             ((not (fx= escape 1))
-              (bytevector-u8-set! buffer at 92)
-              (bytevector-u8-set! buffer (fx+ at 1) escape)
-              (loop (fx+ i 1) (fx+ at 2)))
-             ((fx<= cp #xffff)
-              (hex! at cp) (loop (fx+ i 1) (fx+ at 6)))
-             (else
-              (let ((rest (fx- cp #x10000)))
-                (hex! at (fx+ #xd800 (fxquotient rest #x400)))
-                (hex! (fx+ at 6) (fx+ #xdc00 (fxmodulo rest #x400)))
-                (loop (fx+ i 1) (fx+ at 12)))))))))))
+         ;; Reserve the maximum twelve bytes per scalar for a whole block.
+         ;; The inner loop therefore needs no per-character capacity check;
+         ;; outer iterations retain the original sealing/ownership boundaries.
+         (let ((end (fxmin n (fx+ i (fxquotient (fx- capacity at) 12)))))
+           (let-values
+               (((next-i next-at)
+                 (let block ((i i) (at at))
+                   (if (fx= i end)
+                       (values i at)
+                       (let* ((cp (char->integer (string-ref s i)))
+                              (escape (if (fx< cp 128)
+                                          (bytevector-u8-ref durable-wal-ascii-escape cp) 1)))
+                         (cond
+                           ((fx= escape 0)
+                            (bytevector-u8-set! buffer at cp)
+                            (block (fx+ i 1) (fx+ at 1)))
+                           ((not (fx= escape 1))
+                            (bytevector-u8-set! buffer at 92)
+                            (bytevector-u8-set! buffer (fx+ at 1) escape)
+                            (block (fx+ i 1) (fx+ at 2)))
+                           ((fx<= cp #xffff)
+                            (hex! at cp) (block (fx+ i 1) (fx+ at 6)))
+                           (else
+                            (let ((rest (fx- cp #x10000)))
+                              (hex! at (fx+ #xd800 (fxquotient rest #x400)))
+                              (hex! (fx+ at 6) (fx+ #xdc00 (fxmodulo rest #x400)))
+                              (block (fx+ i 1) (fx+ at 12))))))))))
+             (loop next-i next-at))))))))
 
 )
