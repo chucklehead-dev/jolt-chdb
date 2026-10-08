@@ -6,7 +6,8 @@
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-curl :as curl]
             [jdbc.chdb.durable.s3-writer :as owner]
-            [jdbc.chdb.durable.writer :as writer]))
+            [jdbc.chdb.durable.writer :as writer]
+            [jdbc.core :as jdbc]))
 
 (defn- thrown [f]
   (try (f) nil (catch Throwable error error)))
@@ -95,3 +96,22 @@
                       (thrown #(durable/open-writer!
                                  {:operations {:renew-control! false}}))))))
       (is (zero? @reads)))))
+
+(deftest jdbc-owner-uses-normal-driver-and-closes-before-scopes
+  (let [events (atom []) captured (atom nil)
+        connection (reify java.io.Closeable
+                     (close [_] (swap! events conj :connection-close)))]
+    (with-redefs
+      [curl/with-reused-transport!
+       (fn [f] (swap! events conj :enter)
+         (try (f identity) (finally (swap! events conj :exit))))
+       s3/s3-backend identity
+       backend/object-backend (fn [_ _] :renewal-store)
+       durable/writer-dbspec (fn [opts] (reset! captured opts) (assoc opts :vendor :chdb-durable))
+       jdbc/connection (fn [spec] (is (= :chdb-durable (:vendor spec))) connection)]
+      (is (= :done (owner/with-connection!
+                    {:bucket "bucket"} {:object-id "object"}
+                    (fn [c] (is (identical? connection c))
+                      (swap! events conj :callback) :done))))
+      (is (fn? (get-in @captured [:operations :renew-control!])))
+      (is (= [:enter :enter :callback :connection-close :exit :exit] @events)))))

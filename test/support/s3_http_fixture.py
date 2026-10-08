@@ -3,6 +3,7 @@ import hashlib
 import http.server
 import json
 import re
+import socket
 import sys
 import threading
 import time
@@ -37,6 +38,13 @@ def etag(body):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        if "--tcp-nodelay" in sys.argv[2:]:
+            # Optional profiling control: do not charge Python's split
+            # header/body writes and delayed ACK interaction to the library.
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     def log_message(self, _format, *_args):
         pass

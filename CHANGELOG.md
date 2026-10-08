@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an opt-in scoped S3 JDBC connection helper for consumers that already
+  accept borrowed connections. Keep exporter shutdown inside the callback;
+  outer connection close joins the writer before data/renewal handles retire.
+
 - Add an explicit experimental lexical S3 writer owner with independent data
   and renewal transports, joined close before handle retirement, and primary
   callback-error preservation. A validated protocol-seconds renewal composition

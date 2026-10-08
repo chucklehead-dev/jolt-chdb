@@ -180,6 +180,42 @@ performance, rotating credentials and interrupted-close qualification remain
 open. Existing protocol models retain their prior publication/lease scope;
 they do not prove curl resource lifetime or service availability.
 
+### Borrowing a JDBC connection for the exporter
+
+`s3-writer/with-connection!` uses the same owner but gives the callback an ordinary
+Durable JDBC connection. Existing consumers can borrow it without knowing about
+curl. For the chDB OTel exporter:
+
+```clojure
+(s3-writer/with-connection!
+  s3-options writer-options
+  (fn [connection]
+    (let [e (chdb-exporter/exporter
+              {:connection connection :durable? true
+               :signals #{:spans :logs :metrics}})]
+      (try
+        ;; Configure/use the application's SDK and stop/join its producers here.
+        (run-application e)
+        (finally
+          (export/shutdown-exporter! e)
+          (export/shutdown-metric-exporter! e)
+          (logs/shutdown-log-exporter! e))))))
+```
+
+Here `chdb-exporter` is `otel.exporter.chdb`, `export` is `otel.sdk.export`, and
+`logs` is `otel.sdk.logs`. Check shutdown results according to the application's
+error policy. Borrowed exporter shutdown does not close the connection; the
+outer owner closes it and joins the writer after the callback finishes.
+Do not let an exporter, SDK producer or live connection escape this scope.
+
+A real five-table exporter integration using the current cumulative runtime and
+JSON candidates verifies confirmed inserts, ordinary clock-driven renewal,
+borrowed shutdown ownership and fresh-process counts. This remains local HTTP
+qualification, not hosted S3 or Oscope lifecycle qualification. The profiling
+fixture has an explicit `--tcp-nodelay` option to avoid charging Python's split
+header/body writes and delayed-ACK interaction to the library; default regression
+tests are unchanged. Small sample percentiles are descriptive, not p99 proof.
+
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
 [connection counter](https://curl.se/libcurl/c/CURLINFO_NUM_CONNECTS.html).
