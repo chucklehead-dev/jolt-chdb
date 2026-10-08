@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use bounded direct reads in the private owned-ASCII placeholder scan, keeping
+  all lexical and word-skip guards unchanged. Numeric bounds checks, portable
+  lexical parity and a checked lookahead-boundary mutant accompany the change.
+
 - Use bounded direct byte access inside experimental owned-ASCII WAL encoding.
   Keep input/table indices and output capacity explicitly guarded, with bounded
   SMT access/value/loop checks and a checked replay of a broken-reserve control.

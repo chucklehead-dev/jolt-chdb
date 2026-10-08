@@ -64,6 +64,22 @@
       (is (owned/statement? statement))
       (is (= 17 (owned/byte-count statement))))))
 
+(deftest bounded-placeholder-lookahead-and-word-tails
+  (doseq [padding (range 9)
+          suffix ["" "a" "?" "'?'" "\"?\"" "`?`" "--?" "--?\n?"
+                  "/*?*/" "/*/*?*/?*/" "'\\'?'" "'a''?b'" "/" "-" "\\"]]
+    (let [sql (str (apply str (repeat padding "a")) suffix)
+          statement (owned/try-snapshot (.getBytes sql "UTF-8"))]
+      (is (= (@#'chdb/portable-code-placeholder? sql) (owned/code-placeholder? statement)))))
+  ;; Replay the lookahead <= mutant only with checked reads. The solver's
+  ;; witness n=1/i=0 must throw, not perform an unsafe out-of-range access.
+  (let [source (-> (slurp (io/resource "jdbc/chdb/owned_ascii_placeholder.ss"))
+                   (string/replace "#3%bytevector-u8-ref" "bytevector-u8-ref")
+                   (string/replace "#3%bytevector-u32-native-ref" "bytevector-u32-native-ref")
+                   (string/replace "(fx<? next-i n)" "(fx<=? next-i n)"))
+        scan (scheme/eval-string source)]
+    (is (thrown? Throwable (scan (.getBytes "a" "UTF-8"))))))
+
 (deftest caller-alias-mutant-is-detected
   ;; Deliberately replace the copy boundary locally. A marker/class check alone
   ;; would accept this broken ownership implementation; content witnesses don't.

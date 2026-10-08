@@ -30,12 +30,13 @@
       (if (fx>=? i n) #f
         (if (and (fixnum? #x80808080) (fx=? (fxand i 3) 0)
                  (fx<=? (fx+ i 4) n)
-                 (not (interesting? (bytevector-u32-native-ref input i) mode)))
+                 ;; Private <=64MiB snapshot; aligned, complete word only.
+                 (not (interesting? (#3%bytevector-u32-native-ref input i) mode)))
             (loop (fx+ i 4) mode depth)
-        (let* ((c (bytevector-u8-ref input i))
+        (let* ((c (#3%bytevector-u8-ref input i))
                (next-i (fx+ i 1))
                (next (if (fx<? next-i n)
-                         (bytevector-u8-ref input next-i) -1)))
+                         (#3%bytevector-u8-ref input next-i) -1)))
           (cond
             ((fx=? mode 0)
              (cond
