@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Allow an explicitly supplied JSON reader in owned writer/heartbeat operation
+  contexts. Default parsing, startup/recovery and caller bindings are unchanged;
+  the experimental API is resolved before owned threads start. Opt-in requires
+  a separately qualified data.json candidate, not the normal dependency pin.
+
 - Forward the explicit WAL-reference checkpoint threshold through JDBC writer
   startup. Previously the dbspec accepted this option but the driver dropped
   it. Add public-boundary and confirmed-checkpoint effect regressions (#250).

@@ -15,7 +15,13 @@
         jolt-lang/jolt-crypto
         {:git/url "https://github.com/casselc/jolt-crypto.git"
          :git/sha "649c993780a0f269938c9c6afa3bae7e9709bb48"}}
- :aliases {:setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
+ :aliases {:durable-reader-context-test
+           {:extra-paths ["test"]
+            :extra-deps {org.clojure/data.json
+                         {:git/url "https://github.com/casselc/data.json.git"
+                          :git/sha "fa2f6d620655272ef1480690ec3ba9d6dfd1e332"}}
+            :main-opts ["-m" "jdbc.chdb-durable-reader-context-test"]}
+           :setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
            :native-lifecycle-test
@@ -256,6 +262,7 @@
          durable-worker-join-test "jolt -M:durable-worker-join-test"
          durable-open-test "jolt -M:durable-open-test"
          durable-wal-stream-test "jolt -M:durable-wal-stream-test"
+         durable-reader-context-test "jolt -M:durable-reader-context-test"
          durable-compatibility-test "jolt -M:durable-compatibility-test"
          durable-epoch-seconds-test "jolt -M:durable-epoch-seconds-test"
          durable-time-domain-test "jolt -M:durable-time-domain-test"

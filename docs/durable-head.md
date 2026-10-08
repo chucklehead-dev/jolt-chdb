@@ -90,3 +90,29 @@ This slice does not compare chDB release precedence, apply `backup_format` or
 restore objects, or mutate `head.json`. Those gates belong after the decoder,
 before any engine or backend side effect. No Durable V1 conformance claim is
 made.
+
+## Experimental scoped JSON reader
+
+An explicitly selected, trusted data.json backend can be supplied as
+`:operations {:json-reader reader}` when constructing a writer. The ordinary
+dependency pin does not expose this experimental API: opt-in consumers must
+explicitly select candidate data.json `fa2f6d620655272ef1480690ec3ba9d6dfd1e332`
+or a separately qualified successor. The `:durable-reader-context-test` alias
+pins that candidate for testing only; it does not change normal consumers.
+On a compatible source-mode Jolt runtime, obtain the backend by requiring
+`[clojure.data.json.jolt-native :as native-json]` from that dependency and calling
+`(native-json/load-reader!)`. This loader is not part of chDB itself.
+The writer resolves the opt-in API before
+starting either owned thread and scopes that binding around worker and heartbeat
+operations only. It does not copy caller telemetry or arbitrary dynamic bindings.
+Callbacks invoked inside those operations also see the selected reader.
+
+Startup/recovery and ordinary readers keep their caller/default codec. A caller
+may separately select a recovery reader using an explicit local binding; choosing
+the worker reader alone does not speed up startup. Native parsing does not remove
+head byte, UTF-8, lexical, schema, ownership or publication checks, change the WAL
+format, or alter the meaning of a confirmed persistence receipt.
+
+The focused queue test uses real owned threads and memory-backed head publication
+but substitutes native engine execution. Native/AOT, independent full-data
+readback and S3 qualification are separate gates; this is not enabled by default.

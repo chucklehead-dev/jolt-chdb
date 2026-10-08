@@ -102,6 +102,9 @@
   (throw (ex-info message {:type type})))
 
 (defn- validate-recovery-phase-observer! [operations]
+  (when (and (some? (:json-reader operations))
+             (not (fn? (:json-reader operations))))
+    (fail! ::invalid-options "json-reader must be a function"))
   (let [observe! (:recovery-phase! operations)]
     (when (and (some? observe!) (not (fn? observe!)))
       (fail! ::invalid-options "recovery-phase! must be a function")))
