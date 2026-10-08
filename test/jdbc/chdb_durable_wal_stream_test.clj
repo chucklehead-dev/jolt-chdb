@@ -13,6 +13,8 @@
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb.byte-range :as byte-range]
+            [jdbc.chdb.utf8 :as utf8]
             [jdbc.chdb-durable-open-test-support :as support])
   (:import [java.nio ByteBuffer]
            [java.nio.charset CharacterCodingException Charset CodingErrorAction]
@@ -259,15 +261,16 @@
         end (str/index-of source "(defn- visit-wal!" start)
         scan-source (subs source start end)
         visit-end (str/index-of source "(defn- extend-replay-plan" end)
-        visit-source (subs source end visit-end)]
-    (check "typed LF finder retains the intended source shape"
+        visit-source (subs source end visit-end)
+        portable-source (slurp "src/jdbc/chdb/byte_range.cljc")]
+    (check "LF finder delegates exact unsigned target to generic range scanner"
            true
            (and (str/includes? scan-source
                                "[^bytes chunk ^long start ^long end]")
-                (str/includes? scan-source
-                               "(bit-and 255 (aget chunk index))")
-                (str/includes? scan-source "(unchecked-inc index)")
-                (not (str/includes? scan-source "(byte 10)"))))
+                (str/includes? scan-source "(byte-range/index-of-byte chunk 10 start end)")
+                (str/includes? portable-source "[^bytes bytes target ^long start ^long end]")
+                (str/includes? portable-source "(bit-and 255 (aget bytes index))")
+                (str/includes? portable-source "(unchecked-inc index)")))
     (check "WAL visitation reaches only the typed LF finder through observation"
            true
            (and (str/includes? scan-source
@@ -298,7 +301,45 @@
     (check "all LF matches in one chunk are causally required"
            [0 2 4]
            (scanned-lf-offsets next-lf! [[10 65 10 66 10]]))
-    (run-lf-framing-property! next-lf!))
+    (run-lf-framing-property! next-lf!)
+    (let [native-var (ns-resolve 'jdbc.chdb.byte-range 'native-search)]
+      (check "scanner fallback control requires its real selector" true
+             (some? native-var))
+      (when native-var
+       (with-redefs-fn
+        {native-var (delay nil)}
+        (fn []
+          (check "forced-off scanner capability really declines" false
+                 (byte-range/native-enabled?))
+          (check "forced-off scanner retains every LF and CRLF boundary"
+                 [0 2 4 7]
+                 (scanned-lf-offsets next-lf! [[10 65 10] [66 10 13] [67 10]]))
+          (let [sql-values ["INSERT INTO t VALUES (1)"
+                            (str "SELECT '" (apply str (repeat 70000 "x")) "'")
+                            "SELECT 'β'"]]
+            (attempt-open
+             (wal-bytes sql-values)
+             (fn [open! calls _ _]
+               (let [opened (open!)]
+                 (try
+                   (check "forced-off scanner replays exact cross-block statements"
+                          sql-values
+                          (mapv second (filter #(= :execute (first %)) @calls)))
+                   (finally (reader/close! opened)))))))
+          (doseq [[label payload]
+                  [["malformed tail"
+                    (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"])
+                                  (.getBytes "{bad-tail}\n" "UTF-8"))]
+                   ["missing final LF"
+                    (concat-bytes (wal-bytes ["INSERT INTO t VALUES (1)"])
+                                  (.getBytes "{}" "UTF-8"))]]]
+            (attempt-open
+             payload
+             (fn [open! calls _ _]
+               (check-recovery-failure!
+                (str "forced-off scanner rejects " label) ::durable/corrupt open!)
+               (check (str "forced-off scanner applies no prefix for " label)
+                      [] (engine-effects @calls))))))))))
 
   (let [decoder-capability-var
         (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
@@ -408,12 +449,22 @@
              [true [:ok "�"]]
              [(not= -1 (.indexOf (String. replacement "UTF-8") (int 0xfffd)))
               (decode-outcome decode! replacement)]))
-    ;; Causal source control: ordinary records use the native String decoder,
-    ;; while only text containing U+FFFD reaches the strict decoder. Restoring
-    ;; either an unconditional strict decode or the old re-encode turns it red.
+    ;; Qualified direct decoding precedes the original replacement-sentinel
+    ;; fallback. Malformed bytes must decline and still hit strict rejection.
+    (check "qualified native UTF-8 rejection keeps the original corruption outcome"
+           [nil ::durable/corrupt]
+           [(utf8/try-decode (raw-bytes [0xc0 0xaf]))
+            (error-type #(decode! (raw-bytes [0xc0 0xaf])))])
+    (with-redefs [utf8/try-decode (constantly nil)]
+      (check "disabled generic decoder keeps scalar and corrupt-byte outcomes"
+             [[:ok "β�😀"] ::durable/corrupt]
+             [(decode-outcome decode! (.getBytes "β�😀" "UTF-8"))
+              (error-type #(decode! (raw-bytes [0xc0 0xaf])))]))
+    ;; Restoring unconditional strict decode or the old re-encode turns this red.
     (check "WAL decoding uses guarded native decode without UTF-8 re-encoding"
            true
-           (and (str/includes? decode-source "(String. bytes \"UTF-8\")")
+           (and (str/includes? decode-source "(utf8/try-decode bytes)")
+                (str/includes? decode-source "(String. bytes \"UTF-8\")")
                 (str/includes? decode-source ".indexOf text (int 0xfffd)")
                 (str/includes? decode-source "(strict-decode-wal-text! bytes)")
                 (not (str/includes? decode-source ".getBytes"))

@@ -11,6 +11,18 @@
   protected-main AWS environment with isolated prefixes and independent
   readback; do not change production transport defaults or environment policy.
 
+- Combine behavior-qualified native UTF-8 validation and decoding during WAL
+  recovery, avoiding a byte snapshot and a separate replacement-sentinel scan
+  on supported Jolt hosts. Unsupported backings, malformed bytes and leading
+  BOMs retain the existing codec/error path. Verification-before-replay,
+  limits, ownership and error precedence are unchanged. Source-mode only;
+  sustained, S3 and standalone/AOT performance remains unqualified.
+
+
+- Use a behavior-qualified generic byte-range scanner for Durable LF framing
+  on supported source-mode Jolt hosts. Retain portable and boxed-backing reads,
+  exact byte boundaries, strict decoding, limits and verification-before-replay.
+  No new compiler-owned WAL primitive; standalone/AOT remains unqualified.
 
 - Qualify an internal owned-chunk WAL preparation path on supported Jolt hosts,
   avoiding a full output-buffer assembly. Keep the public WAL byte encoder,

@@ -28,8 +28,32 @@ jobs:
           version: v0.8.6-aspects-ga6c6aeb8
       - name: Require codec selection and run ownership and fault tests
         run: jolt -Srepro -M:durable-wal-chunks-test
+      - name: Require generic native byte-range selection and fallback tests
+        run: jolt -Srepro -M:byte-range-test
       - name: Require codec selection in fresh-process native recovery
         run: bash scripts/qualify-durable-native.sh "$RUNNER_TEMP/chdb-durable-wal-chunks"
+
+  native-utf8:
+    name: Required native UTF-8 recovery selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      JOLT_AOT_CACHE: '0'
+      JOLT_CACHE_DIR: ${{ github.workspace }}/../jolt-cache-utf8-976dd9d1
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/../jolt-gitlibs-utf8-976dd9d1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install immutable composed UTF-8-capable compiler
+        uses: ./.github/actions/install-jolt-aspects
+        with:
+          source-sha: 976dd9d15245b40d447c9ec920e15f119f297c02
+          version: v0.8.17-23-g976dd9d1
+      - name: Require native selection, output ownership and live qualification controls
+        run: jolt -Srepro -M:utf8-test
+      - name: Install libhegel for WAL streaming property tests
+        run: jolt -Srepro -A:durable-wal-stream-test -m hegel.install
+      - name: Preserve strict decoding and WAL replay error precedence
+        run: jolt -Srepro -M:durable-wal-stream-test
 
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)
@@ -139,6 +163,13 @@ jobs:
           -M -m jdbc.chdb-json-each-row-test
       - name: Test ordered JSONEachRow encoder on Babashka
         run: bb -cp src:test -m jdbc.chdb-json-each-row-test
+      - name: Test generic byte-range portable path on JVM Clojure
+        run: >-
+          clojure -Srepro
+          -Sdeps '{:aliases {:byte-range-portable {:replace-paths ["src" "test"] :replace-deps {org.clojure/clojure {:mvn/version "1.12.2"}}}}}'
+          -M:byte-range-portable -m jdbc.chdb-byte-range-test
+      - name: Test generic byte-range portable path on Babashka
+        run: bb -cp src:test -m jdbc.chdb-byte-range-test
       - name: Test prepared WAL portable fallback on JVM Clojure
         run: >-
           clojure -Srepro
