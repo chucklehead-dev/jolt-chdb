@@ -91,6 +91,47 @@
       (is (= (alength expected) (wal/prepared-size (owned/prepared-wal statement))))
       (is (java.util.Arrays/equals expected actual)))))
 
+(deftest bounded-wal-byte-access-control-positions-and-capacity-witness
+  (doseq [padding (range 8) cp (range 128)]
+    (let [sql (str (apply str (repeat padding "a")) (char cp) "ordinary-tail")]
+      (is (java.util.Arrays/equals
+            (wal/portable-line-bytes sql)
+            (emitted (owned/try-snapshot (.getBytes sql "UTF-8")))))))
+  (doseq [n [65518 65519 65520 65521 65522 65523 65524 65525 65526 65527 65528
+             65529 65530 65531 65532 65533 65534 65535 65536 65537 131071 131072]
+          escaped ["\"" "\\" "/" "\n" "\u0000"]]
+    (let [sql (str (apply str (repeat n "a")) escaped "tail")
+          statement (owned/try-snapshot (.getBytes sql "UTF-8"))
+          prepared (owned/prepared-wal statement)]
+      (is (java.util.Arrays/equals (wal/portable-line-bytes sql) (emitted statement)))
+      (is (= (alength (emitted statement)) (:byte-count prepared)))
+      (is (every? (fn [[bytes used]] (<= 1 used (alength bytes) 65536)) (:chunks prepared)))))
+  ;; Replay the SAT witness safely: mutation is applied ONLY to checked byte
+  ;; primitives. Never run an out-of-bounds unchecked-memory mutant.
+  ;; 28*6 + 4*2 + 68*1 = 244 body bytes, plus prefix8 -> at252/capacity256;
+  ;; the last NUL needs six more bytes. A four-byte reserve is insufficient.
+  (let [sql (str (apply str (repeat 28 "\u0000"))
+                 (apply str (repeat 4 "\"")) (apply str (repeat 68 "a")) "\u0000")
+        bytes (.getBytes sql "UTF-8")
+        checked-source (string/replace
+                         (slurp (io/resource "jdbc/chdb/owned_ascii_wal.ss"))
+                         "#3%bytevector-u8-" "bytevector-u8-")
+        mutant (scheme/eval-string
+                 (string/replace checked-source "(fx- capacity 12)" "(fx- capacity 4)"))]
+    (is (= 101 (alength bytes)))
+    (is (java.util.Arrays/equals (wal/portable-line-bytes sql)
+                                (emitted (owned/try-snapshot bytes))))
+    (is (thrown? Throwable (mutant bytes))))
+  ;; Reach the real inclusive capacity-12 boundary: 27*6+1*2+72*1=236;
+  ;; prefix8 -> at244. Final NUL writes at244..249, suffix ends at253.
+  (let [sql (str (apply str (repeat 27 "\u0000")) "\""
+                 (apply str (repeat 72 "a")) "\u0000")
+        statement (owned/try-snapshot (.getBytes sql "UTF-8"))
+        prepared (owned/prepared-wal statement)]
+    (is (= 253 (:byte-count prepared)))
+    (is (= 1 (count (:chunks prepared))))
+    (is (java.util.Arrays/equals (wal/portable-line-bytes sql) (emitted statement)))))
+
 (deftest scoped-native-copy-frees-on-return-and-exception
   (let [statement (owned/try-snapshot (.getBytes "SELECT 1" "UTF-8"))
         frees (atom []) original ffi/free]

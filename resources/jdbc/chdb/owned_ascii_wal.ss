@@ -14,6 +14,11 @@
 ;; All chunks are fully prepared before any native mutation.
 ;; Return [total-byte-count [[owned-byte-array used-length] ...]]. Padding is
 ;; never output. A sealed backing is never reused or mutated by this encoder.
+;; Byte accesses alone use #3% primitives under explicit guards: i<n, ASCII
+;; cp<128, and at<=capacity-12 before writes of at..at+11. Private snapshot
+;; admission is capped at64MiB. See formal/smt/owned-wal-bounds for bounded
+;; access/value safety, induction and violating/boundary controls. Global
+;; compiler optimization and all arithmetic/copy operations remain checked.
 (lambda (s)
   ;; Small records must not pay for a 64 KiB backing. ASCII-heavy records
   ;; normally fit this capacity; escaped records seal additional owned chunks.
@@ -33,11 +38,11 @@
         (seal! (fx+ at 3))
         (jolt-vector total (apply jolt-vector (reverse chunks)))))
     (define (hex! at cp)
-      (bytevector-u8-set! buffer at 92)
-      (bytevector-u8-set! buffer (fx+ at 1) 117)
+      (#3%bytevector-u8-set! buffer at 92)
+      (#3%bytevector-u8-set! buffer (fx+ at 1) 117)
       (do ((shift 12 (fx- shift 4)) (j (fx+ at 2) (fx+ j 1))) ((fx< shift 0))
         (let ((digit (fxand (fxarithmetic-shift-right cp shift) 15)))
-          (bytevector-u8-set! buffer j
+          (#3%bytevector-u8-set! buffer j
             (if (fx< digit 10) (fx+ 48 digit) (fx+ 87 digit))))))
     (bytevector-copy! durable-wal-prefix 0 buffer 0 8)
     (let loop ((i 0) (at 8))
@@ -45,16 +50,16 @@
         ((fx= i n) (finish! at))
         ((fx> at (fx- capacity 12)) (flush! at) (loop i 0))
         (else
-         (let* ((cp (bytevector-u8-ref input i))
+         (let* ((cp (#3%bytevector-u8-ref input i))
                 (escape (if (fx< cp 128)
-                            (bytevector-u8-ref durable-wal-ascii-escape cp) 1)))
+                            (#3%bytevector-u8-ref durable-wal-ascii-escape cp) 1)))
            (cond
              ((fx= escape 0)
-              (bytevector-u8-set! buffer at cp)
+              (#3%bytevector-u8-set! buffer at cp)
               (loop (fx+ i 1) (fx+ at 1)))
              ((not (fx= escape 1))
-              (bytevector-u8-set! buffer at 92)
-              (bytevector-u8-set! buffer (fx+ at 1) escape)
+              (#3%bytevector-u8-set! buffer at 92)
+              (#3%bytevector-u8-set! buffer (fx+ at 1) escape)
               (loop (fx+ i 1) (fx+ at 2)))
              ((fx<= cp #xffff)
               (hex! at cp) (loop (fx+ i 1) (fx+ at 6)))

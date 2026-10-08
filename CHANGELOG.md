@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Use bounded direct byte access inside experimental owned-ASCII WAL encoding.
+  Keep input/table indices and output capacity explicitly guarded, with bounded
+  SMT access/value/loop checks and a checked replay of a broken-reserve control.
+  Exact V1 bytes, chunk ownership, arithmetic and global compiler safety remain.
+
 - Skip ordinary aligned four-byte spans in the experimental owned-ASCII
   placeholder detector. Preserve exact quote/comment/escape semantics with a
   conservative delimiter prefilter and scalar boundary/tail handling; narrow
