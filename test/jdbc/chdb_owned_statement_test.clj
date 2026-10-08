@@ -4,6 +4,8 @@
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.durable :as durable]
+            [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb-placeholder-scan-test :as lexical]
             [clojure.data.json :as json]
             [jolt.ffi :as ffi]))
@@ -96,6 +98,79 @@
     (is (= (@#'chdb/code-placeholder? sql)
            (owned/code-placeholder? (owned/try-snapshot (.getBytes sql "UTF-8")))))))
 
+(deftest owned-native-executor-preserves-buffer-and-does-not-materialize-text
+  (let [statement (owned/try-snapshot (.getBytes "SELECT '?'" "UTF-8"))
+        calls (atom [])]
+    (owned/with-query-buffer statement
+      (fn [buffer]
+        (with-redefs [owned/text (fn [_] (throw (ex-info "unexpected text conversion" {})))
+                      chdb/prepare-query (fn [& _] (throw (ex-info "unexpected text preparation" {})))
+                      native/with-live-handle (fn [_ f] (f :connection))
+                      native/chdb-query-with-params-n
+                      (fn [& args] (swap! calls conj args) :result)
+                      chdb/consume-json-result (fn [result] {:fixture result})]
+          (is (= {:fixture :result}
+                 (chdb/execute-owned-any-with-query-buffer :handle statement buffer))))
+        (is (= 1 (count @calls)))
+        (let [args (first @calls)]
+          (is (= :connection (nth args 0)))
+          (is (= (:pointer buffer) (nth args 1)))
+          (is (= (:length buffer) (nth args 2)))
+          (is (= 0 (last args))))))))
+
+(deftest owned-native-placeholder-errors-and-invalid-buffers-stop-before-native
+  (let [sql "SELECT ?" statement (owned/try-snapshot (.getBytes sql "UTF-8"))
+        failure (fn [f] (try (f) nil (catch clojure.lang.ExceptionInfo e
+                                     [(.getMessage e) (ex-data e)])))
+        legacy (failure #(chdb/prepare-query sql []))
+        calls (atom 0)]
+    (is (some? legacy))
+    (with-redefs [native/with-live-handle (fn [& _] (swap! calls inc))]
+      (owned/with-query-buffer statement
+        (fn [buffer]
+          (is (= legacy (failure #(chdb/execute-owned-any-with-query-buffer :handle statement buffer))))
+          (is (some? (failure #(chdb/execute-owned-any-with-query-buffer
+                               :handle statement (assoc buffer :length 0)))))))
+      (is (some? (failure #(chdb/execute-owned-any-with-query-buffer :handle {} {}))))
+      (is (some? (failure #(chdb/execute-owned-any-with-query-buffer :handle statement nil))))
+      (is (= 0 @calls)))))
+
+(deftest default-adapter-owned-policy-and-pointer-controls
+  (let [adapter (:with-native-admitted-buffer!
+                 (@#'durable/default-open-operations))
+        statement (owned/try-snapshot (.getBytes "INSERT INTO t VALUES ('?')" "UTF-8"))
+        accepted {:query-class :mutating :statement-count 1
+                  :has-secrets false :writes-only-target-database true
+                  :changes-database-lifecycle false}]
+    (doseq [analysis [accepted (assoc accepted :statement-count 2)
+                     (assoc accepted :has-secrets true)
+                     (assoc accepted :writes-only-target-database false)]]
+      (let [classified (atom nil) executed (atom nil) frees (atom 0)
+            original-free ffi/free]
+        (with-redefs [owned/text (fn [_] (throw (ex-info "unexpected text conversion" {})))
+                      native/with-query-buffer (fn [& _] (throw (ex-info "unexpected text buffer" {})))
+                      native/classify-query-buffer!
+                      (fn [_ buffer _] (reset! classified buffer) analysis)
+                      chdb/execute-owned-any-with-query-buffer
+                      (fn [_ value buffer]
+                        (is (identical? statement value))
+                        (reset! executed buffer) :executed)
+                      ffi/free (fn [pointer] (swap! frees inc) (original-free pointer))]
+          (if (= accepted analysis)
+            (do
+              (is (= :executed (adapter :handle statement "default"
+                                       (fn [facts execute!]
+                                         (policy/authorize-execute! facts) (execute!)))))
+              (is (identical? @classified @executed)))
+            (do
+              (is (thrown? clojure.lang.ExceptionInfo
+                           (adapter :handle statement "default"
+                                    (fn [facts execute!]
+                                      (policy/authorize-execute! facts) (execute!)))))
+              (is (nil? @executed))))
+          (is (some? @classified))
+          (is (= 1 @frees)))))))
+
 (defn real-native-snapshot! []
   (let [sql "INSERT INTO owned_statement_sample VALUES (1, 'ready?')"
         source (.getBytes sql "UTF-8") statement (owned/try-snapshot source)
@@ -111,9 +186,11 @@
           (let [analysis (native/classify-query-buffer! handle buffer "default")]
             (assert (= :mutating (:query-class analysis)))
             (assert (= 1 (:statement-count analysis)))
-            ;; Text is an explicit test oracle for the existing executor;
-            ;; this does not claim a wired byte-only preparation path.
-            (chdb/execute-any-with-query-buffer handle replay-sql buffer))))
+            ;; Conversion/preparation traps make this a non-vacuous byte-only
+            ;; native execution witness, still not a wired Durable writer.
+            (with-redefs [owned/text (fn [_] (throw (ex-info "unexpected text conversion" {})))
+                          chdb/prepare-query (fn [& _] (throw (ex-info "unexpected text preparation" {})))]
+              (chdb/execute-owned-any-with-query-buffer handle statement buffer)))))
       (let [result (chdb/execute-any handle "SELECT n, s FROM owned_statement_sample" [])]
         (assert (= [[1 "ready?"]] (:rows result))))
       (println :real-native-owned-snapshot-green :rows 1 :wal-sql-equal true)

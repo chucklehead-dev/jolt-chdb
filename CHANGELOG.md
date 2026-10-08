@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add experimental owned-ASCII native execution through the existing result
+  and parameter machinery, without successful-path SQL text materialization.
+  Preserve unbound-placeholder errors and scoped classification/execution buffer
+  identity. The default low-level admission adapter understands the snapshot;
+  writer/encoder APIs still do not route it, so no application speedup is claimed.
+
 - Add an experimental internal owned-ASCII statement foundation for byte-flow
   qualification. Copy caller input, keep backing arrays private, and produce
   exact V1 WAL chunks and scoped native buffers from the same snapshot. Existing

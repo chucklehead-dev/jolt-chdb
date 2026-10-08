@@ -6,6 +6,7 @@
             [db.export :as export]
             [db.jdbc-shim :as shim]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.owned-statement :as owned-statement]
             [jdbc.chdb.placeholder-detector :as placeholder-detector]
             [jdbc.proto :as proto]
             [jolt.ffi :as ffi]))
@@ -414,9 +415,7 @@
                                0
                                (native/chdb-result-rows-written result)))))))
 
-(defn- execute-prepared-native [handle prepared format consume query-buffer]
-  (let [rewritten (prepared-sql prepared)
-        parameters (-prepared-query-parameters prepared)]
+(defn- execute-native-request [handle rewritten parameters format consume query-buffer]
     (native/with-live-handle
      handle
      (fn [connection]
@@ -438,7 +437,34 @@
                (:pointer format-buffer) (:length format-buffer)
                names name-lengths values value-lengths (count parameters))))
            (finally
-             (doseq [ptr (reverse @allocated)] (ffi/free ptr)))))))))
+             (doseq [ptr (reverse @allocated)] (ffi/free ptr))))))))
+
+(defn- execute-prepared-native [handle prepared format consume query-buffer]
+  (execute-native-request handle (prepared-sql prepared)
+                          (-prepared-query-parameters prepared)
+                          format consume query-buffer))
+
+(defn execute-owned-any-with-query-buffer
+  "Experimental internal unbound request from an owned ASCII snapshot.
+  The caller must encode this same statement in query-buffer, keep it live
+  through consumption, and neither mutate nor retain the borrowed pointer.
+  Ordinary successful requests never materialize SQL text. An unbound code
+  placeholder uses the existing text error path; it is not passed to native.
+  This low-level seam does not authorize Durable mutation or persistence."
+  [handle statement query-buffer]
+  (when-not (and (owned-statement/statement? statement)
+                (map? query-buffer)
+                (= (owned-statement/byte-count statement) (:length query-buffer))
+                (some? (:pointer query-buffer))
+                (not (ffi/null? (:pointer query-buffer))))
+    (throw (ex-info "invalid owned chDB query buffer" {:jdbc/sql-error true})))
+  (when (owned-statement/code-placeholder? statement)
+    ;; Preserve placeholder diagnostics without creating a second executor.
+    ;; prepare-query with no bindings rejects this case before native entry.
+    (prepare-query (owned-statement/text statement) []))
+  (execute-native-request
+   handle nil [] "JSONCompactEachRowWithNamesAndTypes"
+   (fn [_ _ result] (consume-json-result result)) query-buffer))
 
 (defn execute-prepared-any
   "Execute one request-local value returned by `prepare-query`.

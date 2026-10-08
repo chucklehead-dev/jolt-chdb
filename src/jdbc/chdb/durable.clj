@@ -19,6 +19,7 @@
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.owned-statement :as owned-statement]
             [jdbc.proto :as proto])
   (:import [java.io ByteArrayOutputStream File]
            [java.nio ByteBuffer]
@@ -816,12 +817,15 @@
                       (chdb/execute-any handle sql params))
    :with-native-admitted-buffer!
    (fn [handle sql database execute-admitted!]
-     (native/with-query-buffer
+     ((if (owned-statement/statement? sql)
+        owned-statement/with-query-buffer native/with-query-buffer)
       sql
       (fn [query-buffer]
         (execute-admitted!
          (native/classify-query-buffer! handle query-buffer database)
-         #(chdb/execute-any-with-query-buffer handle sql query-buffer)))))
+         #(if (owned-statement/statement? sql)
+            (chdb/execute-owned-any-with-query-buffer handle sql query-buffer)
+            (chdb/execute-any-with-query-buffer handle sql query-buffer))))))
    :with-native-prepared-buffer!
    (fn [handle prepared database classified!]
      (native/with-query-buffer
