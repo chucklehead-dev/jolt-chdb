@@ -1,0 +1,8 @@
+;; Frozen classifier input, not a runnable application dependency manifest.
+{:paths ["src" "resources"]
+ :deps {org.clojure/data.json
+        {:git/url "https://github.com/casselc/data.json.git"
+         :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"}
+        com.github.seancorfield/honeysql
+        {:git/url "https://github.com/seancorfield/honeysql.git"
+         :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}}}

@@ -8,7 +8,7 @@
          :git/sha "cb06349c7ffe55e423021e402d4f182f4a27bcf7"}
         org.clojure/data.json
         {:git/url "https://github.com/casselc/data.json.git"
-         :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"}
+         :git/sha "3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0"}
         com.github.seancorfield/honeysql
         {:git/url "https://github.com/seancorfield/honeysql.git"
          :git/sha "308d5a741825cb13ded6d4766041306a61181acb"}
@@ -216,6 +216,17 @@
            :json-each-row-encoder-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-json-each-row-test"]}
+           :json-each-row-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-json-each-row-native-test"]}
+           :native-json-byte-batch
+           {:extra-deps
+            {org.clojure/data.json
+             {:git/url "https://github.com/casselc/data.json.git"
+              :git/sha "fa2f6d620655272ef1480690ec3ba9d6dfd1e332"}}}
+           :json-each-row-byte-batch-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-json-each-row-byte-batch-test"]}
            :durable-cross-binding-recovery
            {:extra-paths ["bench"]
             :main-opts ["-m" "jdbc.chdb-durable-cross-binding-recovery"]}
