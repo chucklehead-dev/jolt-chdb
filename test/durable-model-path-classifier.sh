@@ -536,7 +536,9 @@ sha_repo="$fixture_root/data-json-sha"
 mkdir -p "$sha_repo"
 git archive HEAD formal scripts .github/workflows/durable-head-quint.yml | \
   tar -x -C "$sha_repo"
-cp "$repo_root/deps.edn" "$sha_repo/deps.edn"
+# Keep SHA mutations independent of the application's current dependency pin.
+# A live repin must not turn a negative control into an empty Git commit.
+cp "$repo_root/test/fixtures/model-classifier/data-json-sha-deps.edn" "$sha_repo/deps.edn"
 git -C "$sha_repo" init -q
 git -C "$sha_repo" config user.name "model classifier test"
 git -C "$sha_repo" config user.email "model-classifier@example.invalid"
