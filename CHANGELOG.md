@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an experimental internal owned-ASCII statement foundation for byte-flow
+  qualification. Copy caller input, keep backing arrays private, and produce
+  exact V1 WAL chunks and scoped native buffers from the same snapshot. Existing
+  writer/encoder APIs and default behavior are unchanged; this is not yet a
+  byte-only Durable transport or a throughput claim.
+
 - Reduce empty-parameter SQL scan overhead with a behavior-qualified Chez
   lexical detector. Preserve quoted/comment question marks, exact errors,
   bound-parameter rewriting and prepared-buffer reuse; unsupported source/AOT
