@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add bounded prefixed JSONEachRow text encoding. A String prefix is outside
+  the payload budget and custom row-writer views; the experimental serial byte
+  backend can materialize the combined output once. No persistence/ACK change.
+
 - Add an opt-in scoped S3 JDBC connection helper for consumers that already
   accept borrowed connections. Keep exporter shutdown inside the callback;
   outer connection close joins the writer before data/renewal handles retire.
