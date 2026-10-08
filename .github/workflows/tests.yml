@@ -50,6 +50,8 @@ jobs:
           version: v0.8.17-23-g976dd9d1
       - name: Require native selection, output ownership and live qualification controls
         run: jolt -Srepro -M:utf8-test
+      - name: Install libhegel for WAL streaming property tests
+        run: jolt -Srepro -A:durable-wal-stream-test -m hegel.install
       - name: Preserve strict decoding and WAL replay error precedence
         run: jolt -Srepro -M:durable-wal-stream-test
 
