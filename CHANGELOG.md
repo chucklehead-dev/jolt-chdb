@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse one bounded request-local upload scratch array across serial curl read
+  callbacks instead of allocating per chunk. Preserve capacity bounds, copied
+  bytes, per-request ownership and cleanup; no native pointer loan or WAL/ACK
+  policy change. Native byte/file multi-chunk readback and allocation gates added.
+
 - Add an opt-in scoped S3 JDBC connection helper for consumers that already
   accept borrowed connections. Keep exporter shutdown inside the callback;
   outer connection close joins the writer before data/renewal handles retire.

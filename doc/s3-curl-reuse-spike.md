@@ -216,6 +216,27 @@ fixture has an explicit `--tcp-nodelay` option to avoid charging Python's split
 header/body writes and delayed-ACK interaction to the library; default regression
 tests are unchanged. Small sample percentiles are descriptive, not p99 proof.
 
+### Request-local upload scratch candidate
+
+The upload callback now lazily allocates one managed scratch array, bounded at
+64KiB, and reuses it for the request's serial reads. Each read is also clipped
+to that callback's current capacity, which may shrink. The bytes are copied
+into libcurl's buffer; this is not a native pointer loan or a cross-request
+cache. Zero-capacity callbacks do not allocate/read, and EOF returns zero.
+File downloads already use the pointer-to-fd path and are not changed.
+
+Actual 196615-byte byte/file uploads each used four arrays on the parent and
+one on the candidate, with exact provider readback. A changing-capacity/EOF
+test uses guarded 64-byte physical backing; removing the logical capacity
+limit produces three expected failures without native out-of-bounds writes.
+
+In one matched local HTTP 100x5000 exporter run, cumulative allocation fell
+28.300 -> 27.348GB (3.36%), but throughput was flat/slightly lower (36.992k ->
+36.674k rows/s) and tails mixed. Keep this as an allocation candidate pending
+review and further attribution, not a demonstrated throughput optimization.
+Confirmation, automatic checkpoint/renewal and independent2.5M-row count
+readback pass. These numbers are not AWS or stable tail qualification.
+
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
 [connection counter](https://curl.se/libcurl/c/CURLINFO_NUM_CONNECTS.html).

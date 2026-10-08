@@ -258,6 +258,18 @@
                        "S3 request source could not be opened" true)))]
         {:input input :byte-count byte-count :close! (fn [] (.close input))}))))
 
+(defn- read-upload! [source scratch pointer capacity]
+  (if (zero? capacity)
+    0
+    (let [buffer (or @scratch
+                     (reset! scratch (byte-array (min capacity 65536))))
+          n (.read (:input source) buffer 0 (min capacity (alength buffer)))]
+      (if (neg? n)
+        0
+        ;; libcurl consumes the copied bytes before its next serial callback.
+        ;; Scratch never escapes or aliases native callback memory.
+        (do (ffi/write-array pointer buffer 0 n) n)))))
+
 (defn- parse-header! [headers bytes]
   (let [line (str/trim (String. bytes "ISO-8859-1"))
         colon (.indexOf line ":")]
@@ -318,18 +330,14 @@
         (try
           (with-open [arena (ffi/shared-arena)]
             (try
-            (let [read-callback
+            (let [read-scratch (atom nil)
+                  read-callback
                   (ffi/callback
                    arena
                    (fn [pointer size nitems _]
                      (try
-                       (let [capacity (callback-size size nitems)
-                             buffer (byte-array (min capacity 65536))
-                             n (.read (:input request-source) buffer 0
-                                      (alength buffer))]
-                         (if (neg? n)
-                           0
-                           (do (ffi/write-array pointer buffer 0 n) n)))
+                       (read-upload! request-source read-scratch pointer
+                                     (callback-size size nitems))
                        (catch Throwable error
                          (reset! callback-error error)
                          curl-readfunc-abort)))

@@ -6,7 +6,11 @@
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jolt.ffi :as ffi]
-            [jolt.fibers :as fibers]))
+            [jolt.fibers :as fibers])
+  (:import [java.io ByteArrayInputStream]
+           [java.nio.file Files OpenOption]
+           [java.nio.file.attribute FileAttribute]
+           [java.util Arrays]))
 
 (def ^:dynamic *endpoint* nil)
 
@@ -274,6 +278,51 @@
          (renewal-during-admitted-data-request true)))
   (is (= {:renewed? true :expiry 250 :generation-unchanged? true}
          (renewal-during-admitted-data-request false))))
+
+(deftest upload-reuses-one-bounded-request-scratch
+  (let [payload (byte-array (map #(mod % 127) (range 196615)))
+        file (Files/createTempFile "curl-upload-scratch-" ".bin" (make-array FileAttribute 0))]
+    (try
+      (Files/write file payload (make-array OpenOption 0))
+      (doseq [source [{:bytes payload :byte-count (alength payload)}
+                      {:file file :byte-count (alength payload)}]]
+        (let [buffers (atom []) writes (atom 0) copied (atom 0)
+              original ffi/write-array]
+          (with-redefs
+            [ffi/write-array
+             (fn [pointer bytes offset n]
+               (swap! writes inc)
+               (swap! copied + n)
+               (swap! buffers
+                      (fn [seen]
+                        (if (some #(identical? % bytes) seen) seen (conj seen bytes))))
+               (original pointer bytes offset n))]
+            (is (= 200 (:status (curl/request!
+                                 (assoc (request :put) :request-body source))))))
+          (is (> @writes 1) "Fixture must require multiple actual upload callbacks")
+          (is (= (alength payload) @copied))
+          (is (= 1 (count @buffers)) "Scratch belongs to the request, not each callback")
+          (is (every? #(<= (alength %) 65536) @buffers))
+          (is (Arrays/equals payload (:body (curl/request! (request :get)))))))
+      (finally (Files/deleteIfExists file)))))
+
+(deftest upload-scratch-honors-shrinking-capacity-zero-and-eof
+  (let [scratch (atom nil) delivered (atom [])
+        payload (byte-array (range 1 14))]
+    (with-open [input (ByteArrayInputStream. payload)]
+      (ffi/with-alloc [pointer 64]
+        (doseq [[capacity expected] [[0 0] [8 8] [2 2] [16 3] [0 0] [64 0]]]
+          ;; All physical backing is 64 bytes even for the shrinking-capacity
+          ;; control, so removing the limit cannot cause native out-of-bounds.
+          (ffi/write-array pointer (byte-array (repeat 64 99)))
+          (let [n (#'curl/read-upload! {:input input} scratch pointer capacity)]
+            (is (= expected n))
+            (is (<= n capacity))
+            (is (= 99 (ffi/read pointer :uint8 n)))
+            (swap! delivered into (vec (ffi/read-array pointer n))))
+          (when (zero? (count @delivered)) (is (nil? @scratch))))))
+    (is (= (vec payload) @delivered))
+    (is (= 8 (alength @scratch)))))
 
 (defn run-tests! [endpoint]
   (binding [*endpoint* endpoint]
