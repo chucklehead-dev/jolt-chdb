@@ -1,6 +1,7 @@
 (ns jdbc.chdb-placeholder-scan-test
   (:require [clojure.test :refer [deftest is run-tests testing]]
-            [jdbc.chdb :as chdb]))
+            [jdbc.chdb :as chdb]
+            [jdbc.chdb.placeholder-detector :as detector]))
 
 (defn- outcome [f]
   (try {:value (f)}
@@ -16,6 +17,26 @@
 (defn- check-equivalent! [sql]
   (is (= (outcome #(reference sql [])) (outcome #(candidate sql [])))
       (pr-str sql)))
+
+(deftest native-selection-and-fallback-are-non-vacuous
+  (is (detector/native-enabled?))
+  (is (false? (detector/try-code-placeholder? "SELECT '?'")))
+  (is (true? (detector/try-code-placeholder? "SELECT '?' AS literal, ?")))
+  (is (nil? (detector/try-code-placeholder? nil)))
+  (let [calls (atom 0) original @#'chdb/portable-code-placeholder?]
+    (with-redefs [chdb/portable-code-placeholder?
+                  (fn [sql] (swap! calls inc) (original sql))]
+      (is (= "SELECT '?'" (chdb/prepared-sql (chdb/prepare-query "SELECT '?'" []))))
+      (is (zero? @calls))
+      (with-redefs [detector/try-code-placeholder? (constantly nil)]
+        (is (= "SELECT '?'" (chdb/prepared-sql (chdb/prepare-query "SELECT '?'" []))))
+        (is (= 1 @calls))
+        (is (= (outcome #(reference "SELECT ?" []))
+               (outcome #(chdb/prepare-query "SELECT ?" []))))
+        (is (= 2 @calls)))))
+  ;; Fail-closed qualification rejects detectors that ignore lexical contexts.
+  (is (nil? (#'detector/qualified-detector (constantly false))))
+  (is (nil? (#'detector/qualified-detector (constantly true)))))
 
 (deftest exact-empty-parameter-results
   (doseq [sql ["" "SELECT 1" "?" "SELECT ?" "??" "SELECT '?', ?"

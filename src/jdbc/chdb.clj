@@ -6,6 +6,7 @@
             [db.export :as export]
             [db.jdbc-shim :as shim]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.placeholder-detector :as placeholder-detector]
             [jdbc.proto :as proto]
             [jolt.ffi :as ffi]))
 
@@ -189,7 +190,7 @@
                 :else
                 (recur (inc i) mode block-depth pindex (conj! out c))))))))))
 
-(defn- code-placeholder?
+(defn- portable-code-placeholder?
   "Return true when `sql` contains a positional placeholder in executable SQL.
 
   This deliberately mirrors the lexical states used by
@@ -256,6 +257,12 @@
                        (.indexOf sql (int mode) (+ quote-position 2)))
                 :else
                 (recur (inc quote-position) :code 0 slash -1)))))))))
+
+(defn- code-placeholder? [sql]
+  ;; A false native result is accepted. Nil means unsupported source/AOT
+  ;; capability and retains the established scanner, not a permission bypass.
+  (let [result (placeholder-detector/try-code-placeholder? sql)]
+    (if (boolean? result) result (portable-code-placeholder? sql))))
 
 (defn- rewrite-placeholders [sql params]
   (if (empty? params)

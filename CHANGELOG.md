@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reduce empty-parameter SQL scan overhead with a behavior-qualified Chez
+  lexical detector. Preserve quoted/comment question marks, exact errors,
+  bound-parameter rewriting and prepared-buffer reuse; unsupported source/AOT
+  contexts retain the portable scanner. No query data is cached or retained.
+
 - Compile the frozen checkpoint/WAL reference-key patterns once rather than
   rebuilding them for every head reference validation. The V1 key grammar and
   safe-integer checks are unchanged.
