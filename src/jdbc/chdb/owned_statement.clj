@@ -1,5 +1,5 @@
 (ns jdbc.chdb.owned-statement
-  "Experimental internal owned ASCII statement; not wired into writer APIs.
+  "Experimental internal owned ASCII statement for explicit owned requests.
   Ownership is enforced at the supported API, not against reflection, private
   Var access or unsafe FFI. Caller input must not race with snapshot creation."
   (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]))

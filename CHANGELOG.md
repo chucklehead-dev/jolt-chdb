@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add explicit prefixed statement encoding for the experimental serial byte
+  collector. Return an owned ASCII snapshot when supported; otherwise decode
+  the already produced bytes once. Preserve row-local custom writers, payload
+  budgets and one-pass input effects; other backends/hosts remain text-based.
+
 - Add an explicit experimental owned-snapshot execute-and-flush request.
   Retain serialized publication/settlement, WAL preparation before native
   classification, policy/size/sealed-spool guards and checkpoint-on-uncertainty.

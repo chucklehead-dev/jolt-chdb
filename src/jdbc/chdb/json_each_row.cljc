@@ -5,12 +5,25 @@
                :jolt [clojure.data.json :as json]
                :clj [clojure.data.json :as json])
             [jdbc.chdb.utf8 :as utf8]
+            #?(:jolt [jdbc.chdb.owned-statement :as owned])
             #?(:jolt [jolt.fibers :as fibers])))
 
 (def ^:private pending :pending)
 
 (defn- fail! [kind message]
   (throw (ex-info message {:type kind})))
+
+#?(:jolt
+   (defn- load-native-prefixed-byte-writer! []
+     ;; The batch loader has already qualified/initialized this namespace.
+     ;; Older product pins decline once at context construction, not mid-input.
+     (when-let [write (ns-resolve 'clojure.data.json.jolt-native 'write-prefixed-batch-bytes!)]
+       (fn [prefix rows max-bytes]
+         (try (write prefix rows max-bytes)
+              (catch Throwable error
+                (if (= :clojure.data.json.jolt-native/output-limit (:type (ex-data error)))
+                  (fail! ::output-limit "JSONEachRow output exceeds its byte limit")
+                  (throw error))))))))
 
 #?(:jolt
    (defn- load-native-writer-factory!
@@ -107,6 +120,8 @@
       :json-backend backend
       :native-writer-factory factory
       :native-batch-writer batch-writer
+      :native-prefixed-byte-writer
+      #?(:jolt (when batch-writer (load-native-prefixed-byte-writer!)) :bb nil :clj nil)
       :requested-parallelism (get options :parallelism 1)
       :effective-parallelism #?(:jolt (get options :parallelism 1)
                                 :bb 1
@@ -322,7 +337,7 @@
   [encoder rows]
   (encode-with! encoder rows identity))
 
-(defn- encode-limited-text-with-prefix!
+(defn- encode-limited-with-prefix!
   "Encode sequential rows with a UTF-8 output budget including each newline.
   Always serial: requires effective parallelism 1. Check every completed row
   before appending, and do not request the next row after exceeding the budget.
@@ -330,7 +345,7 @@
   trusted operation, and a single row may allocate before its size is known.
   The context retains no payload after return/error. This is encoding only,
   not admission or persistence."
-  [encoder rows max-bytes prefix]
+  [encoder rows max-bytes prefix owned-output?]
   (let [batch (admit! encoder)]
     (try
       (when-not (= 1 (:effective-parallelism encoder))
@@ -350,10 +365,15 @@
                     (.append out encoded)
                     (recur (- remaining size) (next rows) out))
                   (.toString out))))]
-        #?(:jolt (if-let [write (:native-batch-writer encoder)]
+        #?(:jolt (if-let [write-bytes (when owned-output? (:native-prefixed-byte-writer encoder))]
+                   (let [bytes (write-bytes prefix rows max-bytes)]
+                     ;; Snapshot copies/validates the final bytes. Unsupported
+                     ;; ASCII/size falls back from those bytes, never re-runs rows.
+                     (or (owned/try-snapshot bytes) (String. bytes "UTF-8")))
+                   (if-let [write (:native-batch-writer encoder)]
                    (if (nil? prefix) (write rows max-bytes)
                        (write rows max-bytes prefix))
-                   (with-selected-writer (:native-writer-factory encoder) operation))
+                   (with-selected-writer (:native-writer-factory encoder) operation)))
            :bb (operation)
            :clj (operation)))
       (finally (release! encoder batch)))))
@@ -363,7 +383,7 @@
   Reject before requesting the next row after exceeding that budget.
   Serial only; this is encoding, not admission or persistence."
   [encoder rows max-bytes]
-  (encode-limited-text-with-prefix! encoder rows max-bytes nil))
+  (encode-limited-with-prefix! encoder rows max-bytes nil false))
 
 (defn encode-limited-prefixed-text!
   "Return prefix followed by bounded JSONEachRow text. The caller-supplied
@@ -374,4 +394,16 @@
   [encoder prefix rows max-bytes]
   (when-not (string? prefix)
     (fail! ::invalid-prefix "JSONEachRow prefix requires a String"))
-  (encode-limited-text-with-prefix! encoder rows max-bytes prefix))
+  (encode-limited-with-prefix! encoder rows max-bytes prefix false))
+
+(defn encode-limited-prefixed-statement!
+  "Experimental explicit statement output: owned ASCII snapshot when the
+  serial native byte collector supports it, otherwise immutable SQL text.
+  Unsupported output decodes already produced bytes, never re-runs input rows.
+  Same row-local callbacks, admission/lifetime and newline-inclusive payload
+  budgets as text encoding; prefix is outside that budget. No authorization,
+  execution or persistence. Other backends/hosts retain existing text behavior."
+  [encoder prefix rows max-bytes]
+  (when-not (string? prefix)
+    (fail! ::invalid-prefix "JSONEachRow prefix requires a String"))
+  (encode-limited-with-prefix! encoder rows max-bytes prefix true))

@@ -4,6 +4,7 @@
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.json-each-row :as encoder]
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb-placeholder-scan-test :as lexical]
@@ -170,6 +171,38 @@
               (is (nil? @executed))))
           (is (some? @classified))
           (is (= 1 @frees)))))))
+
+(deftest serial-encoder-owned-selection-and-single-pass-text-fallback
+  (doseq [mode [:owned :unicode :legacy]]
+    (let [context (encoder/open-encoder {:parallelism 1 :json-backend :native-guarded-byte-batch})
+          visits (atom 0)
+          value (reify json/JSONWriter
+                  (-write [_ out _]
+                    (swap! visits inc)
+                    (.write out (if (= mode :unicode) "\"β\"" "42"))))
+          prefix "INSERT INTO t FORMAT JSONCompactEachRow\n"]
+      (try
+        (let [selected (if (= mode :legacy) (dissoc context :native-prefixed-byte-writer) context)
+              result (encoder/encode-limited-prefixed-statement! selected prefix [[value]] 100)]
+          (is (= 1 @visits))
+          (if (= mode :owned)
+            (do (is (owned/statement? result)) (is (= (str prefix "[42]\n") (owned/text result))))
+            (do (is (string? result))
+                (is (= (str prefix (if (= mode :unicode) "[\"β\"]\n" "[42]\n")) result)))))
+        (finally (encoder/close! context)))))
+  (let [context (encoder/open-encoder {:parallelism 1 :json-backend :native-guarded-byte-batch})
+        visits (atom [])
+        rows ((fn walk [values]
+                (lazy-seq (when (seq values)
+                            (swap! visits conj (first values))
+                            (cons [(first values)] (walk (rest values)))))) [1 2 3])]
+    (try
+      (is (= :jdbc.chdb.json-each-row/output-limit
+             (:type (ex-data (try (encoder/encode-limited-prefixed-statement! context "prefix" rows 1)
+                                 nil (catch Throwable error error))))))
+      (is (= [1] @visits))
+      (is (owned/statement? (encoder/encode-limited-prefixed-statement! context "prefix" [] 0)))
+      (finally (encoder/close! context)))))
 
 (defn real-native-snapshot! []
   (let [sql "INSERT INTO owned_statement_sample VALUES (1, 'ready?')"
