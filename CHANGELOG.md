@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicit experimental owned-snapshot execute-and-flush request.
+  Retain serialized publication/settlement, WAL preparation before native
+  classification, policy/size/sealed-spool guards and checkpoint-on-uncertainty.
+  Custom operations receive real SQL text; existing String APIs remain unchanged.
+  Fresh-process native recovery checks exact WAL and Unicode JSON payloads.
+
 - Add experimental owned-ASCII native execution through the existing result
   and parameter machinery, without successful-path SQL text materialization.
   Preserve unbound-placeholder errors and scoped classification/execution buffer

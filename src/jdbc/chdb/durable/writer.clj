@@ -12,7 +12,8 @@
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.wal :as wal]
-            [jdbc.chdb.native :as native])
+            [jdbc.chdb.native :as native]
+            [jdbc.chdb.owned-statement :as owned-statement])
   (:import [java.io BufferedOutputStream]
            [java.nio.file Files OpenOption Path]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
@@ -284,7 +285,9 @@
       :else (exact-statement-bytes-exceed? sql limit))))
 
 (defn- validate-statement-size! [sql]
-  (when (statement-bytes-exceed? sql max-statement-bytes)
+  (when (if (owned-statement/statement? sql)
+          (> (owned-statement/byte-count sql) max-statement-bytes)
+          (statement-bytes-exceed? sql max-statement-bytes))
     (fail! ::limit-exceeded "Durable SQL statement exceeds 64 MiB")))
 
 (defn- prepare-wal-line! [writer sql]
@@ -300,7 +303,8 @@
             _ (when (:sealed? spool)
                 (fail! ::wal-sealed
                        "A sealed Durable WAL spool cannot accept another statement"))
-            line (wal-line sql)
+            line (if (owned-statement/statement? sql)
+                   (owned-statement/prepared-wal sql) (wal-line sql))
             next-segment-bytes (+ (:byte-count @(:wal-state writer))
                                   (wal/prepared-size line))]
         (when (> next-segment-bytes max-wal-segment-bytes)
@@ -398,6 +402,22 @@
          line)))))
 
 (declare do-flush!)
+
+(defn- do-execute-owned-and-flush! [writer statement]
+  (assert-writable! writer)
+  (when-not (owned-statement/statement? statement)
+    (fail! ::invalid-options "Expected an owned ASCII statement"))
+  (reject-sealed-wal! writer)
+  (if-let [with-buffer! (:with-native-owned-admitted-buffer! (:operations writer))]
+    (let [line (prepare-wal-line! writer statement)]
+      (with-buffer! (:handle writer) statement (:database writer)
+                    (fn [analysis execute!]
+                      (policy/authorize-execute! analysis)
+                      (execute-admitted! writer execute! line))))
+    ;; Legacy/custom operations receive the actual SQL, never the opaque
+    ;; object's redacted toString. Decode once; do not re-run producer input.
+    (do-execute! writer (owned-statement/text statement)))
+  (do-flush! writer))
 
 (defn- do-execute-and-flush! [writer sql]
   ;; This is deliberately one worker request, rather than composition of the
@@ -609,6 +629,7 @@
                                     (:options request))
       :execute (do-execute! writer (:sql request))
       :execute-and-flush (do-execute-and-flush! writer (:sql request))
+      :execute-owned-and-flush (do-execute-owned-and-flush! writer (:statement request))
       :sql (do-sql! writer (:sql request) (:params request))
       :flush (do-flush! writer)
       :checkpoint (do-checkpoint! writer)
@@ -985,6 +1006,9 @@
     (when (and (some? (:with-native-admitted-buffer! operations))
                (not (fn? (:with-native-admitted-buffer! operations))))
       (fail! ::invalid-options "with-native-admitted-buffer! must be a function"))
+    (when (and (some? (:with-native-owned-admitted-buffer! operations))
+               (not (fn? (:with-native-owned-admitted-buffer! operations))))
+      (fail! ::invalid-options "with-native-owned-admitted-buffer! must be a function"))
     (let [worker (owned-thread/completion)
           heartbeat (when lease-expiry (owned-thread/completion))
           permits (ArrayBlockingQueue. queue-capacity)
@@ -1048,6 +1072,14 @@
   provides the same post-admission settlement guarantee."
   [writer sql]
   (execute-and-flush! writer sql))
+
+(defn execute-owned-and-flush!
+  "Experimental internal snapshot mutation with the same atomic publication
+  and post-admission settlement as execute-and-flush!. Only owned snapshots,
+  not caller byte arrays, are accepted. Custom operations use explicit text."
+  [writer statement]
+  (enqueue-open-settled!
+   writer {:op :execute-owned-and-flush :statement statement :result (promise)}))
 
 (defn sql! [writer sql params]
   (enqueue-open! writer {:op :sql :sql sql :params params :result (promise)}))

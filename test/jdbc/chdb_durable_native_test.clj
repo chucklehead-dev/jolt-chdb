@@ -8,6 +8,7 @@
             [jdbc.chdb.durable.local-posix :as local-posix]
             [jdbc.chdb.durable.json-rows :as json-rows]
             [jdbc.chdb.native :as native]
+            [jdbc.chdb.owned-statement :as owned]
             [jdbc.chdb.durable.policy :as policy]
             [jdbc.chdb.durable.reader :as reader]
             [jdbc.chdb.durable.wal :as wal]
@@ -594,6 +595,42 @@
           (check "fresh process reads every ordered row and exact value"
                  expected (vec actual)))))))
 
+(defn- run-owned-local-recovery-e2e [phase]
+  (let [{:keys [namespace store]} (process-store "owned-native-recovery")
+        create-sql "CREATE TABLE owned_rows (n UInt32, s String) ENGINE=MergeTree ORDER BY n"
+        insert-sql "INSERT INTO owned_rows FORMAT JSONEachRow\n{\"n\":10,\"s\":\"ready?\\u03b2\"}\n"]
+    (case phase
+      :writer
+      (let [opened (durable/open-writer!
+                    (merge {:namespace-backend namespace :object-id "owned-native-recovery"
+                            :owner "owned-writer" :instance "owned-instance"
+                            :database "数据库-α" :lease-ttl-ms 30000}
+                           (scratch-options)))
+            bytes (.getBytes insert-sql "UTF-8") statement (owned/try-snapshot bytes)]
+        (try
+          (check "ordinary table creation commits" :committed
+                 (:status (writer/execute-and-flush! opened create-sql)))
+          (aset-byte bytes 0 (byte 88))
+          (with-redefs [owned/text (fn [_] (throw (ex-info "unexpected SQL text conversion" {})))
+                        chdb/prepare-query (fn [& _] (throw (ex-info "unexpected SQL text preparation" {})))]
+            (check "owned writer commits without SQL text" :committed
+                   (:status (writer/execute-owned-and-flush! opened statement))))
+          (let [references (get-in (:head (control/read-head-read-only! store)) ["manifest" "wal"])]
+            (check "each atomic request publishes exactly one ordered WAL" 2 (count references))
+            (doseq [[sql reference] (map vector [create-sql insert-sql] references)]
+              (check "persisted owned bytes equal the portable replay oracle" true
+                     (Arrays/equals (wal/portable-line-bytes sql)
+                                    (backend/get-bytes store (get reference "key"))))))
+          (finally (writer/close! opened))))
+      :reader
+      (let [opened (durable/open-reader!
+                    (merge {:namespace-backend namespace :object-id "owned-native-recovery"}
+                           (scratch-options)))]
+        (try
+          (check "fresh process replays owned JSON payload including question mark and Unicode" [[10 "ready?β"]]
+                 (:rows (reader/query! opened "SELECT n, s FROM owned_rows ORDER BY n" [])))
+          (finally (reader/close! opened)))))))
+
 (defn- run-durable-local-recovery-e2e [phase]
   (println "Durable native local object WAL and checkpoint recovery" phase)
   (let [{:keys [namespace store]} (process-store "native-recovery")
@@ -1001,6 +1038,8 @@
     "json-rows-writer" (run-durable-json-rows-e2e :writer)
     "json-rows-reader" (run-durable-json-rows-e2e :reader)
     "wal-writer" (run-durable-local-recovery-e2e :wal-writer)
+    "owned-wal-writer" (run-owned-local-recovery-e2e :writer)
+    "owned-wal-reader" (run-owned-local-recovery-e2e :reader)
     "wal-reader" (run-durable-local-recovery-e2e :wal-reader)
     "checkpoint-writer" (run-durable-local-recovery-e2e :checkpoint-writer)
     "checkpoint-reader" (run-durable-local-recovery-e2e :checkpoint-reader)

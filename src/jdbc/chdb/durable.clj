@@ -782,6 +782,13 @@
     (fail! ::invalid-options
            "store or namespace-backend with object-id is required")))
 
+(defn- with-native-owned-admitted-buffer! [handle statement database admitted!]
+  (owned-statement/with-query-buffer
+   statement
+   (fn [buffer]
+     (admitted! (native/classify-query-buffer! handle buffer database)
+                #(chdb/execute-owned-any-with-query-buffer handle statement buffer)))))
+
 (defn- default-open-operations []
   {:now-ms #(System/currentTimeMillis)
    :renew-control! control/renew!
@@ -826,6 +833,7 @@
          #(if (owned-statement/statement? sql)
             (chdb/execute-owned-any-with-query-buffer handle sql query-buffer)
             (chdb/execute-any-with-query-buffer handle sql query-buffer))))))
+   :with-native-owned-admitted-buffer! with-native-owned-admitted-buffer!
    :with-native-prepared-buffer!
    (fn [handle prepared database classified!]
      (native/with-query-buffer
@@ -1052,6 +1060,9 @@
         _ (when (contains? configured-operations :with-native-prepared-buffer!)
             (fail! ::invalid-options
                    "with-native-prepared-buffer! is reserved for the default writer"))
+        _ (when (contains? configured-operations :with-native-owned-admitted-buffer!)
+            (fail! ::invalid-options
+                   "with-native-owned-admitted-buffer! is reserved for the default writer"))
         configured-preparation?
         (contains? configured-operations :prepare-query!)
         configured-prepared-execution?
@@ -1074,7 +1085,7 @@
         operations
         (if (or (contains? configured-operations :analyze-execute!)
                 (contains? configured-operations :execute-native!))
-          (dissoc operations :with-native-admitted-buffer!)
+          (dissoc operations :with-native-admitted-buffer! :with-native-owned-admitted-buffer!)
           operations)
         operations
         (if (some #(contains? configured-operations %)
@@ -1333,6 +1344,15 @@
   [connection sql]
   (shim/extension-operation
    #(writer/execute-and-flush! (jdbc-writer-handle connection) sql)))
+
+(defn execute-owned-and-flush!
+  "Experimental internal owned-snapshot counterpart to execute-and-flush!.
+  It retains the same publication/settlement guarantees and accepts only the
+  owned ASCII capability, never arbitrary caller arrays. Custom operations
+  receive an explicit text fallback. Reader/non-chDB connections fail closed."
+  [connection statement]
+  (shim/extension-operation
+   #(writer/execute-owned-and-flush! (jdbc-writer-handle connection) statement)))
 
 (defn execute-and-flush-settled!
   "Compatibility seam for caller-owned submission contexts. Raw

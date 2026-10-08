@@ -1569,10 +1569,11 @@
 (defn run-checks! []
   (reset! failures 0)
   (check-public-custom-admission-operations!)
-  (let [calls (atom [])
+  (doseq [hook [:with-native-admitted-buffer! :with-native-owned-admitted-buffer!]]
+   (let [calls (atom [])
         operations (assoc (support/fake-open-operations calls (atom [0M])
                                                        (atom 0) (atom 0))
-                          :with-native-admitted-buffer!
+                          hook
                           (fn [& _] :bypass))]
     (with-redefs-fn
       {(private-var 'require-strict-utf8-decoder-capability!) (constantly true)}
@@ -1582,7 +1583,7 @@
                (fn [] (durable/open-writer!
                        (writer-open-options (backend/memory-backend)
                                             operations))))))
-    (check "rejected hook performs no external startup work" [] @calls))
+    (check "rejected hook performs no external startup work" [] @calls)))
   (check-canonical-scratch-cleanup!)
   (check-public-writer-phase-observer-forwarding!)
   (check-startup-stage-envelopes!)

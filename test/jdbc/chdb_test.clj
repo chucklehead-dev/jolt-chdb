@@ -8,6 +8,7 @@
             [jdbc.chdb :as chdb]
             [jdbc.chdb-placeholder-scan-test]
             [jdbc.chdb-owned-statement-test]
+            [jdbc.chdb-owned-writer-test]
             [jdbc.chdb-json-rows-test :as json-rows]
             [jdbc.chdb-json-each-row-test]
             [jdbc.chdb-production-json-encode-test]
@@ -694,6 +695,8 @@
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-placeholder-scan-test)]
     (swap! failures + fail error))
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-owned-statement-test)]
+    (swap! failures + fail error))
+  (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-owned-writer-test)]
     (swap! failures + fail error))
   (let [{:keys [fail error]} (test/run-tests 'jdbc.chdb-json-each-row-test)]
     (swap! failures + fail error))
