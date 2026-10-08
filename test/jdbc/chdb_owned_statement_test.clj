@@ -47,6 +47,20 @@
   (is (false? (owned/statement? {})))
   (is (thrown? clojure.lang.ExceptionInfo (owned/byte-count {}))))
 
+(deftest word-ascii-validation-rejects-every-high-bit-position-and-tail
+  (doseq [n (range 17)]
+    (let [source (byte-array (repeat n (byte 127)))]
+      (is (= n (owned/byte-count (owned/try-snapshot source))))
+      (doseq [i (range n) high [128 129 192 254 255]]
+        (aset-byte source i (unchecked-byte high))
+        (is (nil? (owned/try-snapshot source)))
+        (aset-byte source i (byte 127)))))
+  (doseq [value (range 128)]
+    (let [source (byte-array (repeat 17 (byte value)))
+          statement (owned/try-snapshot source)]
+      (is (owned/statement? statement))
+      (is (= 17 (owned/byte-count statement))))))
+
 (deftest caller-alias-mutant-is-detected
   ;; Deliberately replace the copy boundary locally. A marker/class check alone
   ;; would accept this broken ownership implementation; content witnesses don't.

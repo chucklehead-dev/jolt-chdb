@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate private ASCII snapshots with aligned unsigned four-byte high-bit
+  checks and bounded byte tails. Copy before validating as before; no query
+  data/ownership or admission limits change. Narrow-fixnum hosts retain the
+  byte loop rather than using bignum word operations.
+
 - Add explicit prefixed statement encoding for the experimental serial byte
   collector. Return an owned ASCII snapshot when supported; otherwise decode
   the already produced bytes once. Preserve row-local custom writers, payload
