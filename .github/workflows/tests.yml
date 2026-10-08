@@ -57,6 +57,32 @@ jobs:
       - name: Require scoped reader selection in real owned worker and heartbeat
         run: jolt -Srepro -M:durable-reader-context-test
 
+  native-json-byte-batch:
+    name: Required native JSON byte-batch composition
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      JOLT_AOT_CACHE: '0'
+      JOLT_CACHE_DIR: ${{ github.workspace }}/../jolt-cache-byte-batch-1873df46
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/../jolt-gitlibs-byte-batch-1873df46
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install immutable measured callback-boundary compiler
+        uses: ./.github/actions/install-jolt-aspects
+        with:
+          source-sha: 1873df461bb842a698789287ef626115e7cd559e
+          version: v0.8.17-41-g1873df46
+      - name: Preserve configured encoding and bounded admission
+        run: jolt -Srepro -M:json-each-row-encoder-test
+      - name: Require guarded native writer selection
+        run: jolt -Srepro -M:json-each-row-native-test
+      - name: Require byte-batch wire, custom writer, budget and lifetime controls
+        run: jolt -Srepro -M:native-json-byte-batch:json-each-row-byte-batch-test
+      - name: Require combined UTF-8 sizing and strict decoder controls
+        run: jolt -Srepro -M:utf8-test
+      - name: Require real owned worker and heartbeat reader contexts
+        run: jolt -Srepro -M:durable-reader-context-test
+
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)
     runs-on: ubuntu-latest
