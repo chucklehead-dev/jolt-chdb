@@ -11,6 +11,18 @@
   startup. Previously the dbspec accepted this option but the driver dropped
   it. Add public-boundary and confirmed-checkpoint effect regressions (#250).
 
+- Add an experimental source-only `:native-guarded-byte-batch` JSONEachRow
+  backend, preserving admission, incremental budgets, original custom errors
+  and close/release lifetime. Require serial ownership and the callback-boundary
+  runtime helper. No default backend or Durable ACK policy changes.
+
+- Integrate opt-in guarded JSONEachRow writer factories, payload-local caches
+  and incremental UTF-8 output budgets from the measured performance branches.
+  Keep configured encoding, current WAL ownership and ACKs unchanged. Update
+  data.json to the measured guarded-writer revision required by the new APIs;
+  native selection remains explicit, and unsupported hosts or missing
+  capabilities fail. No default throughput or standalone/AOT claim.
+
 - Add a manual-only five-batch S3 connection-reuse comparison, pinned to reviewed
   benchmark/runtime/native/dependency commits. Run through the existing
   protected-main AWS environment with isolated prefixes and independent
