@@ -73,6 +73,13 @@
       (@#'head/valid-json-value! fixture/valid-head [] @#'head/head-json-schema 0))
     (is (zero? @calls))))
 
+(deftest validation-does-not-recompile-fixed-reference-grammar
+  (let [calls (atom 0) original re-pattern]
+    (with-redefs [clojure.core/re-pattern
+                  (fn [pattern] (swap! calls inc) (original pattern))]
+      (head/validate! fixture/valid-head :writer))
+    (is (zero? @calls))))
+
 (defn run-checks! []
   (let [r (run-tests 'jdbc.chdb-durable-head-traversal-test)]
     (when-not (zero? (+ (:fail r) (:error r)))

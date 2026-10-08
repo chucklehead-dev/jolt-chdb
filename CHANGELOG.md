@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Compile the frozen checkpoint/WAL reference-key patterns once rather than
+  rebuilding them for every head reference validation. The V1 key grammar and
+  safe-integer checks are unchanged.
+
 - Reduce temporary entry-pair allocations during Durable head JSON validation
   by traversing small array maps directly and vectors by index. Preserve
   validation rules, first-error order, redacted paths and encoded bytes.

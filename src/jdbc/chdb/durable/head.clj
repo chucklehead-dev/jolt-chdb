@@ -25,6 +25,12 @@
 (def ^:private supported-writer-features #{})
 (def ^:private sha256-pattern #"[0-9a-f]{64}")
 (def ^:private decimal-component "(?:0|[1-9][0-9]*)")
+(def ^:private checkpoint-key-pattern
+  (re-pattern (str "checkpoints/(" decimal-component ")-("
+                   decimal-component ")-([0-9a-f]{8})\\.tar\\.gz")))
+(def ^:private wal-key-pattern
+  (re-pattern (str "wal/(" decimal-component ")-("
+                   decimal-component ")-([0-9a-f]{8})\\.jsonl")))
 (def ^:private redacted-object-path ["<redacted-object-field>"])
 
 (def ^:private reference-json-schema
@@ -153,14 +159,11 @@
                               (conj path "key"))
         size (nonnegative-safe-integer! (required reference "size" path)
                                         (conj path "size"))
-        digest (required reference "sha256" path)
-        extension (case kind :checkpoint "tar\\.gz" :wal "jsonl")
-        prefix (case kind :checkpoint "checkpoints" :wal "wal")]
-    ;; Build the exact V1 spelling without accepting an absolute key, empty
+        digest (required reference "sha256" path)]
+    ;; Match the exact V1 spelling without accepting an absolute key, empty
     ;; component, traversal component, leading zero, or non-lowercase hex token.
-    (let [key-pattern (re-pattern
-                       (str prefix "/(" decimal-component ")-("
-                            decimal-component ")-([0-9a-f]{8})\\." extension))
+    (let [key-pattern (case kind :checkpoint checkpoint-key-pattern
+                                :wal wal-key-pattern)
           match (re-matches key-pattern key)]
       (when-not match
         (corrupt! "head.json object reference key is not a canonical V1 key"
