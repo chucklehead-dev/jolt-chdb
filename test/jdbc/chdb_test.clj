@@ -12,6 +12,7 @@
             [jdbc.chdb-production-json-encode-test]
             [jdbc.chdb-durable-json-rows-test]
             [jdbc.chdb-durable-head-test :as durable-head]
+            [jdbc.chdb-durable-head-traversal-test :as durable-head-traversal]
             [jdbc.chdb-durable-head-whitespace-test :as durable-head-whitespace]
             [jdbc.chdb-durable-head-depth-test :as durable-head-depth]
             [jdbc.chdb-durable-backend-test :as durable-backend]
@@ -704,6 +705,7 @@
   (run-storage-checks)
   (native-lifecycle/run-checks!)
   (durable-head/run-checks!)
+  (durable-head-traversal/run-checks!)
   (durable-head-whitespace/run-checks!)
   (durable-head-depth/run-checks!)
   (durable-backend/run-checks!)

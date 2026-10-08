@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reduce temporary entry-pair allocations during Durable head JSON validation
+  by traversing small array maps directly and vectors by index. Preserve
+  validation rules, first-error order, redacted paths and encoded bytes.
+
 - Add bounded prefixed JSONEachRow text encoding. A String prefix is outside
   the payload budget and custom row-writer views; the experimental serial byte
   backend can materialize the combined output once. No persistence/ACK change.

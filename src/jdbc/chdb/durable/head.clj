@@ -71,25 +71,30 @@
     (do
       (when (>= depth max-json-depth)
         (corrupt! "head.json exceeds the JSON nesting limit" path))
-      (doseq [[key child] value]
-        (when-not (string? key)
-          (corrupt! "head.json object keys must be strings" path))
-        ;; Known keys are constants from the frozen schema and are safe to expose.
-        ;; Unknown key names may themselves contain credentials, so once traversal
-        ;; crosses one, neither that key nor any descendant key reaches error data.
-        (let [known? (and (map? schema) (contains? schema key))]
-          (valid-json-value! child
-                             (if known? (conj path key) redacted-object-path)
-                             (when known? (get schema key))
-                             (inc depth)))))
+      (let [visit (fn [_ key child]
+                    (when-not (string? key)
+                      (corrupt! "head.json object keys must be strings" path))
+                    ;; Unknown names and descendants never enter error data.
+                    (let [known? (and (map? schema) (contains? schema key))]
+                      (valid-json-value! child
+                                         (if known? (conj path key) redacted-object-path)
+                                         (when known? (get schema key))
+                                         (inc depth)))
+                    nil)]
+        ;; Small array maps reduce in the same insertion order as their seq,
+        ;; without allocating a boxed map-entry vector for every field. Other
+        ;; maps retain seq order (hash collision traversal can differ).
+        (if (instance? clojure.lang.PersistentArrayMap value)
+          (reduce-kv visit nil value)
+          (doseq [[key child] value] (visit nil key child)))))
 
     (vector? value)
     (do
       (when (>= depth max-json-depth)
         (corrupt! "head.json exceeds the JSON nesting limit" path))
       (let [element-schema (when (vector? schema) (first schema))]
-        (doseq [[index child] (map-indexed vector value)]
-          (valid-json-value! child (conj path index) element-schema
+        (dotimes [index (count value)]
+          (valid-json-value! (nth value index) (conj path index) element-schema
                              (inc depth)))))
 
     (integer? value)
