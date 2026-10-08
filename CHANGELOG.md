@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a native synthetic-S3 causal test comparing one shared curl scope with
+  independent data/renewal scopes. Verify real lease CAS during an admitted,
+  deliberately held data request, plus joined workers and exact cleanup counts.
+  No default transport, credential-rotation or writer-lifecycle change.
+
 - Add an explicit experimental lexical curl-reuse scope with serial admission,
   configuration isolation and reset-before-arena-release. Default S3 transport
   selection and Durable publication policy remain unchanged; synthetic HTTP

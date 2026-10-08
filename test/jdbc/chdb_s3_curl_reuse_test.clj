@@ -1,6 +1,10 @@
 (ns jdbc.chdb-s3-curl-reuse-test
   (:require [clojure.test :as test :refer [deftest is]]
             [jdbc.chdb.durable.s3-curl :as curl]
+            [jdbc.chdb.durable.s3 :as s3]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.control :as control]
+            [jdbc.chdb.durable.owned-thread :as owned-thread]
             [jolt.ffi :as ffi]
             [jolt.fibers :as fibers]))
 
@@ -191,6 +195,85 @@
           (is (= :scope-result (fibers/join owner)))
           (when @deferred-free (original-cleanup @deferred-free))
           (is (= 1 @cleanups)))))))
+
+(defn- renewal-during-admitted-data-request [shared?]
+  (let [handles (atom []) cleanups (atom 0) renewal-performs (atom 0)
+        hold-data? (atom false) entered (promise) release (promise)
+        data (owned-thread/completion)
+        original-init @#'curl/curl-easy-init
+        original-cleanup @#'curl/curl-easy-cleanup
+        original-perform @#'curl/curl-easy-perform
+        result (atom nil)
+        exercise
+        (fn [send-data send-renewal]
+          (let [options {:endpoint *endpoint* :bucket "bucket"
+                         :prefix (str "renewal-overlap-" (if shared? "shared" "split"))
+                         :region "us-east-1" :access-key "ACCESS"
+                         :secret-key "SECRET" :session-token "SESSION" :max-attempts 1}
+                ;; An owned OS thread does not inherit Clojure dynamic bindings.
+                data-request (request :get)
+                data-store (backend/object-backend
+                             (s3/s3-backend (assoc options :request! send-data)) "object")
+                renewal-store (backend/object-backend
+                                (s3/s3-backend (assoc options :request! send-renewal)) "object")
+                token (:token (control/acquire!
+                                data-store {:owner "overlap-writer" :instance "overlap-instance"
+                                            :expires-at 200M :now 100M :clock-skew 5M
+                                            :database "default" :engine-version "26.7.3"
+                                            :backup-format 1 :min-reader "26.7.3"}))]
+            (is (= 200 (:status (send-data (request :put)))))
+            (reset! hold-data? true)
+            (owned-thread/start! data #(send-data data-request))
+            (try
+              (assert (= :entered (deref entered 2000 :timeout)))
+              ;; Data is admitted and its arena/options are live, but its native
+              ;; perform is deliberately held. Renewal does real signed HTTP
+              ;; GET + conditional PUT through the synthetic S3 fixture.
+              (let [renewed (try (control/renew! renewal-store token 250M)
+                                 (catch Throwable error error))]
+                (is (not (realized? (:outcome data))))
+                (reset! result
+                        (if (instance? Throwable renewed)
+                          {:renewed? false :error-type (:type (ex-data renewed))}
+                          {:renewed? true
+                           :expiry (get-in renewed [:head "lease" "expires_at"])
+                           :generation-unchanged?
+                           (= (:generation token)
+                              (get-in renewed [:head "lease" "generation"]))})))
+              (finally
+                (deliver release :continue)
+                (is (= 200 (:status (owned-thread/join! data))))))
+            (reset! hold-data? false)
+            (control/release! renewal-store token)))]
+    (with-redefs-fn
+      {#'curl/curl-easy-init
+       (fn [] (let [handle (original-init)] (swap! handles conj handle) handle))
+       #'curl/curl-easy-cleanup
+       (fn [handle] (swap! cleanups inc) (original-cleanup handle))
+       #'curl/curl-easy-perform
+       (fn [handle]
+         (when (and @hold-data? (not (identical? handle (first @handles))))
+           (swap! renewal-performs inc))
+         (when (and @hold-data? (identical? handle (first @handles)))
+           (deliver entered :entered)
+           @release)
+         (original-perform handle))}
+      (fn []
+        (curl/with-reused-transport!
+          (fn [send-data]
+            (if shared?
+              (exercise send-data send-data)
+              (curl/with-reused-transport!
+                (fn [send-renewal] (exercise send-data send-renewal))))))))
+    (is (= (if shared? 1 2) (count @handles) @cleanups))
+    (is (= (if shared? 0 2) @renewal-performs))
+    @result))
+
+(deftest separate-owned-handles-admit-renewal-while-data-is-active
+  (is (= {:renewed? false :error-type :jdbc.chdb.durable.s3/transport}
+         (renewal-during-admitted-data-request true)))
+  (is (= {:renewed? true :expiry 250 :generation-unchanged? true}
+         (renewal-during-admitted-data-request false))))
 
 (defn run-tests! [endpoint]
   (binding [*endpoint* endpoint]

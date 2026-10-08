@@ -46,6 +46,28 @@ reset, hence the explicit one-configuration ownership fence.
 STS token rotation also counts as a configuration change: close this scope and
 open another rather than silently refreshing credentials in the cached handle.
 
+## Data/renewal separation control
+
+The native loopback suite now compares a shared scope with two independent
+scopes while an owned OS thread holds an admitted data request before its native
+perform. Its callback arena and options are live. Renewal runs a real signed
+HTTP GET and conditional PUT against the synthetic S3 fixture, through the
+existing control-plane `renew!` operation.
+
+A shared handle rejects renewal before any native renewal request. Separate
+handles complete exactly two native requests, advance wire expiry to 250, and
+retain the generation while the data operation remains unfinished. Both cases
+release and join the data thread, then release the lease and retire each handle
+once. Routing renewal back to the data sender gives two intended assertion
+failures and zero errors; the single-handle admission guard stays enabled, so
+this negative control does not permit concurrent native use or a use-after-free.
+
+This tests admitted-request overlap, not simultaneous on-wire payload transfer,
+automatic heartbeat scheduling, full writer persistence, credential rotation,
+or AWS throughput. Default selection and production sources are unchanged.
+It supports dedicated renewal ownership as the next implementation direction;
+it does not close the broader adoption/lifecycle requirements in issue #251.
+
 References: [reset](https://curl.se/libcurl/c/curl_easy_reset.html),
 [cleanup](https://curl.se/libcurl/c/curl_easy_cleanup.html),
 [connection counter](https://curl.se/libcurl/c/CURLINFO_NUM_CONNECTS.html).
