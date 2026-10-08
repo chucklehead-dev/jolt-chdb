@@ -302,8 +302,11 @@
            [0 2 4]
            (scanned-lf-offsets next-lf! [[10 65 10 66 10]]))
     (run-lf-framing-property! next-lf!)
-    (when-let [native-var (ns-resolve 'jdbc.chdb.byte-range 'native-search)]
-      (with-redefs-fn
+    (let [native-var (ns-resolve 'jdbc.chdb.byte-range 'native-search)]
+      (check "scanner fallback control requires its real selector" true
+             (some? native-var))
+      (when native-var
+       (with-redefs-fn
         {native-var (delay nil)}
         (fn []
           (check "forced-off scanner capability really declines" false
@@ -336,7 +339,7 @@
                (check-recovery-failure!
                 (str "forced-off scanner rejects " label) ::durable/corrupt open!)
                (check (str "forced-off scanner applies no prefix for " label)
-                      [] (engine-effects @calls)))))))))
+                      [] (engine-effects @calls))))))))))
 
   (let [decoder-capability-var
         (ns-resolve 'jdbc.chdb.durable 'strict-utf8-decoder-capable-result)
