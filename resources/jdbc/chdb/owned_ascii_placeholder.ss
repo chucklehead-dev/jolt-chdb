@@ -4,9 +4,34 @@
   (unless (and (jolt-array? s) (eq? (jolt-array-kind s) 'byte))
     (error 'placeholder-detector "owned ASCII snapshot required"))
   (let* ((input (jolt-array-vec s)) (n (bytevector-length input)))
+    ;; Conservative zero-byte lane detection. Cross-lane borrow may report
+    ;; extra matches, never hide a matching byte; those words stay scalar.
+    ;; ASCII snapshots and 64-bit fixnums keep all intermediate values unboxed.
+    (define (word-has? word repeated-byte)
+      (let ((x (fxxor word repeated-byte)))
+        (not (fx=? (fxand (fx- x #x01010101) (fxnot x) #x80808080) 0))))
+    (define (interesting? word mode)
+      (cond
+        ((fx=? mode 0)
+         (or (word-has? word #x3f3f3f3f)  ; ?
+             (word-has? word #x27272727)  ; single quote
+             (word-has? word #x22222222)  ; double quote
+             (word-has? word #x60606060)  ; backtick
+             (word-has? word #x2d2d2d2d)  ; dash (line comment)
+             (word-has? word #x2f2f2f2f))) ; slash (block comment)
+        ((fx=? mode 1) (word-has? word #x0a0a0a0a))
+        ((fx=? mode 2)
+         (or (word-has? word #x2f2f2f2f) (word-has? word #x2a2a2a2a)))
+        (else
+         (or (word-has? word #x5c5c5c5c)
+             (word-has? word (fx* mode #x01010101))))))
     ;; mode 0 code; 1 line comment; 2 block comment; otherwise quote codepoint.
     (let loop ((i 0) (mode 0) (depth 0))
       (if (fx>=? i n) #f
+        (if (and (fixnum? #x80808080) (fx=? (fxand i 3) 0)
+                 (fx<=? (fx+ i 4) n)
+                 (not (interesting? (bytevector-u32-native-ref input i) mode)))
+            (loop (fx+ i 4) mode depth)
         (let* ((c (bytevector-u8-ref input i))
                (next-i (fx+ i 1))
                (next (if (fx<? next-i n)
@@ -37,4 +62,4 @@
             ((fx=? c mode)
              (if (fx=? next mode) (loop (fx+ i 2) mode depth)
                  (loop next-i 0 0)))
-            (else (loop next-i mode depth))))))))
+            (else (loop next-i mode depth)))))))))

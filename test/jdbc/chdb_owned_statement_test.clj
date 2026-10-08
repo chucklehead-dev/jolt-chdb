@@ -1,5 +1,8 @@
 (ns jdbc.chdb-owned-statement-test
   (:require [clojure.test :refer [deftest is run-tests]]
+            [clojure.java.io :as io]
+            [clojure.string :as string]
+            [jolt.scheme :as scheme]
             [jdbc.chdb.owned-statement :as owned]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb :as chdb]
@@ -112,6 +115,28 @@
                (str "SELECT " (apply str (repeat 2048 "'a?',")) "'tail\\?'" "?")]]
     (is (= (@#'chdb/code-placeholder? sql)
            (owned/code-placeholder? (owned/try-snapshot (.getBytes sql "UTF-8")))))))
+
+(deftest word-placeholder-skip-boundaries-match-independent-scalar-oracle
+  (doseq [padding (range 33)
+          tail ["" "abc" "abcdefg" "?" "????????"]
+          syntax ["?" "'ordinary?text'" "\"ordinary?text\"" "`ordinary?text`"
+                  "'ordinary\\'?text'" "\"ordinary\\\"?text\"" "`ordinary\\`?text`"
+                  "'ordinary''?text'" "\"ordinary\"\"?text\"" "`ordinary``?text`"
+                  "-- ordinary?text\n" "-- ordinary?text\r"
+                  "/* ordinary? /* inner? */ text */"
+                  "/* ordinary? /* inner? */ text"
+                  "'ordinary?text" "\"ordinary?text" "`ordinary?text"]]
+    (let [sql (str (apply str (repeat padding "a")) syntax tail)]
+      (is (= (@#'chdb/portable-code-placeholder? sql)
+             (owned/code-placeholder? (owned/try-snapshot (.getBytes sql "UTF-8")))))
+      (is (= sql (owned/text (owned/try-snapshot (.getBytes sql "UTF-8")))))))
+  ;; Non-vacuity: dropping the code-mode '?' lane detector must be rejected.
+  (let [source (slurp (io/resource "jdbc/chdb/owned_ascii_placeholder.ss"))
+        mutant (scheme/eval-string
+                 (string/replace source "(word-has? word #x3f3f3f3f)" "#f"))
+        bytes (.getBytes "abc?ordinary" "UTF-8")]
+    (is (true? (owned/code-placeholder? (owned/try-snapshot bytes))))
+    (is (false? (mutant bytes)))))
 
 (deftest owned-native-executor-preserves-buffer-and-does-not-materialize-text
   (let [statement (owned/try-snapshot (.getBytes "SELECT '?'" "UTF-8"))

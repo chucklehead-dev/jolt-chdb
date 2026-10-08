@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Skip ordinary aligned four-byte spans in the experimental owned-ASCII
+  placeholder detector. Preserve exact quote/comment/escape semantics with a
+  conservative delimiter prefilter and scalar boundary/tail handling; narrow
+  fixnum hosts keep the scalar path. No parameter or native admission change.
+
 - Validate private ASCII snapshots with aligned unsigned four-byte high-bit
   checks and bounded byte tails. Copy before validating as before; no query
   data/ownership or admission limits change. Narrow-fixnum hosts retain the
