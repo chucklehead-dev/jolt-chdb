@@ -35,9 +35,18 @@
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
 
+(defonce ^:private json-reader-var
+  ;; Default consumers do not require the experimental data.json API.
+  (delay (or (requiring-resolve 'clojure.data.json/*experimental-native-reader*)
+             (fail! ::invalid-options "Configured JSON reader API is unavailable"))))
+
 (defn- call-with-backend-context [writer f]
   (try
-    (backend/call-with-operation-context (:backend-context writer) f)
+    (backend/call-with-operation-context
+     (:backend-context writer)
+     (if-let [reader (:json-reader (:operations writer))]
+       (fn [] (with-bindings {@json-reader-var reader} (f)))
+       f))
     (catch Throwable error
       (if (= ::backend/operation-stopped (:type (ex-data error)))
         (do
@@ -968,6 +977,11 @@
     (when (and (some? (:writer-phase! operations))
                (not (fn? (:writer-phase! operations))))
       (fail! ::invalid-options "writer-phase! must be a function"))
+    (when (and (some? (:json-reader operations))
+               (not (fn? (:json-reader operations))))
+      (fail! ::invalid-options "json-reader must be a function"))
+    ;; Fail before either owned thread starts, including cleanup operations.
+    (when (:json-reader operations) @json-reader-var)
     (when (and (some? (:with-native-admitted-buffer! operations))
                (not (fn? (:with-native-admitted-buffer! operations))))
       (fail! ::invalid-options "with-native-admitted-buffer! must be a function"))

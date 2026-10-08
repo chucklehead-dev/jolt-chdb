@@ -54,6 +54,8 @@ jobs:
         run: jolt -Srepro -A:durable-wal-stream-test -m hegel.install
       - name: Preserve strict decoding and WAL replay error precedence
         run: jolt -Srepro -M:durable-wal-stream-test
+      - name: Require scoped reader selection in real owned worker and heartbeat
+        run: jolt -Srepro -M:durable-reader-context-test
 
   typed-check:
     name: Typed Clojure pilot (JVM, ABI contracts only)
