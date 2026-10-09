@@ -466,6 +466,68 @@
    handle nil [] "JSONCompactEachRowWithNamesAndTypes"
    (fn [_ _ result] (consume-json-result result)) query-buffer))
 
+(defn execute-owned-compact-json-stream-with-query-buffer
+  "Experimental internal execution of a classified owned compact-JSON INSERT.
+  Exact generated header must match the beginning of the SAME borrowed SQL
+  buffer. Appends its remaining bytes without text/byte-array materialization.
+  Requires the separately qualified 26.9.0 package; no default selection.
+  Caller must keep buffer live, immutable and identical to statement through
+  completion. Does not authorize Durable mutation or confirm persistence."
+  [handle statement query-buffer header]
+  (when-not (and (owned-statement/statement? statement)
+                (map? query-buffer)
+                (= (owned-statement/byte-count statement) (:length query-buffer))
+                (some? (:pointer query-buffer))
+                (not (ffi/null? (:pointer query-buffer))))
+    (throw (ex-info "invalid owned chDB query buffer" {:jdbc/sql-error true})))
+  ;; Admit only the closed producer's simple quoted-column INSERT shape.
+  ;; No query parameters, comments, expressions or arbitrary header parser.
+  (when-not (and (string? header) (<= 1 (count header) 8192)
+                (re-matches #"insert into [A-Za-z_][A-Za-z0-9_]* \(`[A-Za-z_][A-Za-z0-9_.]*`(?:, `[A-Za-z_][A-Za-z0-9_.]*`)*\) FORMAT JSONCompactEachRow\n" header))
+    (throw (ex-info "invalid owned compact INSERT header" {:type ::invalid-stream-header})))
+  (let [header-size (count header)
+        {:keys [pointer length]} query-buffer]
+    (when-not (and (< header-size length)
+                  (= header (ffi/read-bytes pointer header-size)))
+      (throw (ex-info "owned compact INSERT header mismatch" {:type ::invalid-stream-header})))
+    (when (owned-statement/code-placeholder? statement)
+      (prepare-query (owned-statement/text statement) []))
+    (native/ensure-loaded!)
+    (when-not (= "26.9.0" (native/chdb-version))
+      (throw (ex-info "unqualified chDB streaming package" {:type ::unqualified-stream-package})))
+    (native/with-live-handle
+     handle
+     (fn [connection]
+       (let [allocated (atom [])]
+         (try
+           (let [format (allocate-encoded! allocated "JSONCompactEachRow")
+                 ;; Strip only the fixed format suffix; payload starts just
+                 ;; after its newline. Header syntax/bytes were checked above.
+                 query-size (- header-size (count " FORMAT JSONCompactEachRow\n"))
+                 stream (native/chdb-stream-insert-n
+                         connection pointer query-size (:pointer format) (:length format))
+                 finalized? (atom false)]
+             (when (ffi/null? stream)
+               (throw (ex-info "chDB returned a null insert stream" {:jdbc/sql-error true})))
+             (try
+               (when-let [message (native/chdb-stream-insert-error stream)]
+                 (throw (ex-info (str "chDB insert stream failed: " message) {:jdbc/sql-error true})))
+               ;; The reviewed C ABI copies append input before returning.
+               ;; Pointer remains borrowed from the request's scoped buffer.
+               (when-not (zero? (native/chdb-stream-append
+                                 stream (+ (ffi/address pointer) header-size) (- length header-size)))
+                 (throw (ex-info (str "chDB stream append failed: "
+                                     (or (native/chdb-stream-insert-error stream) "unknown error"))
+                                 {:jdbc/sql-error true})))
+               (let [result (native/chdb-stream-done stream)]
+                 (reset! finalized? true)
+                 (consume-json-result result))
+               (catch Throwable error
+                 (when-not @finalized? (native/chdb-stream-cancel-insert stream))
+                 (throw error))
+               (finally (native/chdb-destroy-insert-stream stream))))
+           (finally (doseq [ptr (reverse @allocated)] (ffi/free ptr)))))))))
+
 (defn execute-prepared-any
   "Execute one request-local value returned by `prepare-query`.
 

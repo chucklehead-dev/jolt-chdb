@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicitly selected experimental owned-buffer compact JSON streaming
+  executor for separately qualified native package 26.9.0. Validate a bounded
+  closed INSERT header and borrow the same immutable payload; keep result,
+  cancellation and stream lifetimes scoped. No default selection, Durable
+  authorization, WAL format or persistence confirmation change.
+
 - Use bounded direct reads in the private owned-ASCII placeholder scan, keeping
   all lexical and word-skip guards unchanged. Numeric bounds checks, portable
   lexical parity and a checked lookahead-boundary mutant accompany the change.
