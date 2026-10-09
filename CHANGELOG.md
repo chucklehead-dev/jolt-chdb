@@ -12,6 +12,12 @@
   This is benchmark support, not hosted S3 performance qualification or a
   change to the library's storage/publication behavior.
 
+- Hand bounded encoder row sources into their protected body once, and avoid
+  constructing unused fallback closures on native collector paths. Together
+  with the matching encoder dependency fix, completed lazy rows can become
+  collectible during a batch. Preserve budgets, admission/release and exact
+  output; no Durable acknowledgement or throughput guarantee changes.
+
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
   keep ordinary owned execution for other statement shapes. Reject conflicting

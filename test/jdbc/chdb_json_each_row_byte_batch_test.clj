@@ -2,7 +2,39 @@
   "Source-only collector integration; no native persistence qualification."
   (:require [clojure.test :refer [deftest is]]
             [clojure.data.json :as json]
-            [jdbc.chdb.json-each-row :as encoder]))
+            [jdbc.chdb.json-each-row :as encoder]
+            [jolt.scheme :as scheme]))
+
+(deftest native-delegation-does-not-retain-the-original-lazy-row-head
+  ;; A synthetic consuming backend isolates the codec's own retention from
+  ;; dependency-specific serializer behavior. Full native wire/persistence
+  ;; checks are separate; this is a reachability/lifetime test only.
+  (let [weak (scheme/eval-string "(lambda (row) (weak-cons row #f))")
+        alive? (scheme/eval-string "(lambda (pair) (not (bwp-object? (car pair))))")
+        watch (atom nil) observations (atom []) visits (atom 0)
+        context (assoc (encoder/open-encoder {:json-backend :configured})
+                       :native-prefixed-byte-writer
+                       (fn [_ rows _]
+                         (dorun rows)
+                         (.getBytes "[]\n" "UTF-8")))]
+    (try
+      (encoder/encode-limited-prefixed-statement! context "INSERT INTO probe\n"
+        (map (fn [i]
+               (let [row [(str "row-" i) i]]
+                 (swap! visits inc)
+                 (when (zero? i) (reset! watch (weak row)))
+                 (when (contains? #{128 256 384} i)
+                   (System/gc) (System/gc)
+                   (swap! observations conj (alive? @watch)))
+                 row)) (range 512)) 1048576)
+      (is (= 512 @visits))
+      (is (= 3 (count @observations)))
+      (doseq [retained? @observations] (is (false? retained?)))
+      (let [held [(str "held-row") 1] reference (weak held)]
+        (System/gc) (System/gc)
+        (is (true? (alive? reference)))
+        (is (= "held-row" (first held))))
+      (finally (encoder/close! context)))))
 
 (defn- kind [operation]
   (:type (ex-data (try (operation) nil (catch Throwable error error)))))
