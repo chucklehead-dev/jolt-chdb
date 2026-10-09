@@ -337,6 +337,17 @@
   [encoder rows]
   (encode-with! encoder rows identity))
 
+(defn- serial-limited-payload [rows max-bytes prefix]
+  (loop [remaining max-bytes rows (seq rows) out (StringBuilder. (or prefix ""))]
+    (if (seq rows)
+      (let [encoded (row-text (first rows))
+            size (utf8/byte-count encoded)]
+        (when (> size remaining)
+          (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
+        (.append out encoded)
+        (recur (- remaining size) (next rows) out))
+      (.toString out))))
+
 (defn- encode-limited-with-prefix!
   "Encode sequential rows with a UTF-8 output budget including each newline.
   Always serial: requires effective parallelism 1. Check every completed row
@@ -346,36 +357,33 @@
   The context retains no payload after return/error. This is encoding only,
   not admission or persistence."
   [encoder rows max-bytes prefix owned-output?]
-  (let [batch (admit! encoder)]
+  (let [row-source (volatile! rows)
+        batch (admit! encoder)]
     (try
-      (when-not (= 1 (:effective-parallelism encoder))
-        (fail! ::serial-required "Bounded JSONEachRow encoding requires serial parallelism"))
-      (when-not (and (integer? max-bytes) (not (neg? max-bytes)))
-        (fail! ::invalid-limit "JSONEachRow byte limit must be a nonnegative integer"))
-      (when-not (or (nil? rows) (sequential? rows))
-        (fail! ::invalid-rows "Bounded JSONEachRow encoding requires sequential rows"))
-      (let [operation
-            (fn []
-              (loop [remaining max-bytes rows (seq rows) out (StringBuilder. (or prefix ""))]
-                (if (seq rows)
-                  (let [encoded (row-text (first rows))
-                        size (utf8/byte-count encoded)]
-                    (when (> size remaining)
-                      (fail! ::output-limit "JSONEachRow output exceeds its byte limit"))
-                    (.append out encoded)
-                    (recur (- remaining size) (next rows) out))
-                  (.toString out))))]
-        #?(:jolt (if-let [write-bytes (when owned-output? (:native-prefixed-byte-writer encoder))]
-                   (let [bytes (write-bytes prefix rows max-bytes)]
-                     ;; Snapshot copies/validates the final bytes. Unsupported
-                     ;; ASCII/size falls back from those bytes, never re-runs rows.
-                     (or (owned/try-snapshot bytes) (String. bytes "UTF-8")))
-                   (if-let [write (:native-batch-writer encoder)]
-                   (if (nil? prefix) (write rows max-bytes)
-                       (write rows max-bytes prefix))
-                   (with-selected-writer (:native-writer-factory encoder) operation)))
-           :bb (operation)
-           :clj (operation)))
+      (let [rows @row-source]
+        (vreset! row-source nil)
+        (when-not (= 1 (:effective-parallelism encoder))
+          (fail! ::serial-required "Bounded JSONEachRow encoding requires serial parallelism"))
+        (when-not (and (integer? max-bytes) (not (neg? max-bytes)))
+          (fail! ::invalid-limit "JSONEachRow byte limit must be a nonnegative integer"))
+        (when-not (or (nil? rows) (sequential? rows))
+          (fail! ::invalid-rows "Bounded JSONEachRow encoding requires sequential rows"))
+        ;; Do not construct an unused fallback closure capturing the original
+        ;; lazy sequence head on the native collector paths. Keep writer-bound
+        ;; fallback construction local to the branch that actually needs it.
+        #?(:jolt
+           (if-let [write-bytes (when owned-output? (:native-prefixed-byte-writer encoder))]
+             (let [bytes (write-bytes prefix rows max-bytes)]
+               ;; Snapshot copies/validates the final bytes. Unsupported
+               ;; ASCII/size falls back from those bytes, never re-runs rows.
+               (or (owned/try-snapshot bytes) (String. bytes "UTF-8")))
+             (if-let [write (:native-batch-writer encoder)]
+               (if (nil? prefix) (write rows max-bytes)
+                   (write rows max-bytes prefix))
+               (with-selected-writer (:native-writer-factory encoder)
+                 #(serial-limited-payload rows max-bytes prefix))))
+           :bb (serial-limited-payload rows max-bytes prefix)
+           :clj (serial-limited-payload rows max-bytes prefix)))
       (finally (release! encoder batch)))))
 
 (defn encode-limited-text!
