@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add portable qualification support for confirmed 26.9 streaming exports on
+  local storage or an explicitly selected, isolated S3 CI prefix. Preserve
+  full physical-row recovery and keep credential-bearing failures out of logs.
+  This is benchmark support, not hosted S3 performance qualification or a
+  change to the library's storage/publication behavior.
+
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
   keep ordinary owned execution for other statement shapes. Reject conflicting
