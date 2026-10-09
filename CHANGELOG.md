@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Select matching codec and encoder lazy-row release fixes in streaming
+  storage qualification, retaining previous allocation improvements. Keep
+  exact production-source and runtime guards; local results do not qualify S3.
+
 - Select the cumulatively tested exporter and JSON allocation improvements in
   the streaming storage qualification runner. Keep hosted runtime authentication
   and S3 qualification as separate gates; production defaults are unchanged.
