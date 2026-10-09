@@ -15,7 +15,7 @@ by one lowercase/digit/hyphen lane name. A shared or empty prefix is rejected.
 
 The runner requires `BENCH_EXPECT_EXPORTER_ROOT`, `BENCH_EXPECT_JSON_ROOT`,
 `BENCH_JOLT_BIN`, `BENCH_JOLT_WRAPPER` and `BENCH_JOLT_SHA256`. It checks exporter
-`0d1e41e`, JSON `805bb9a`, compiler version `v0.8.17-48-g20f25cf4` and the
+`07c0a64`, JSON `c2cf28a`, compiler version `v0.8.17-48-g20f25cf4` and the
 supplied qualified runtime checksum. Library source must match chDB `368e767`;
 benchmark-only changes are separate. Local commands must use the workspace's
 mandatory Chez 10.4.1 wrapper. CI must authenticate the immutable runtime
@@ -52,3 +52,16 @@ did not print synthetic credential values and created no storage directory.
 No hosted S3 request was made. The existing main S3 workflow still selects an
 older stack; this support must be reviewed and wired to a qualified new runtime
 artifact before it can provide hosted performance evidence.
+
+The current pins retain both the row-writer closure reuse and private attribute
+replay-tree allocation reductions. Two local 300-sample, 10k-row windows of this
+exact stack recovered all 3.03 million physical rows independently, including
+typed values, statuses and timestamps. Confirmed wall throughput was 28,021 and
+27,728 rows/s; inverse-p99 throughput was 21,337 and 20,309 rows/s. Those local
+windows do not qualify S3, HTTP ingestion or real application throughput. The
+driver's `:tail-qualified? false` remains intentional: a passing correctness
+receipt alone does not establish repeated or cross-backend tail qualification.
+The repinned runner also passed a local five-sample, 1k-row smoke and fresh
+8,000-row recovery with source/artifact checksums checked before and after.
+Its unchanged parent rejected those same candidate roots before opening
+storage. Pure storage selection tests still pass: 3 tests, 51 assertions.

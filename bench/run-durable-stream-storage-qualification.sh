@@ -11,8 +11,8 @@ task_jolt=${BENCH_JOLT_BIN:?qualified source Jolt required}
 task_wrapper=${BENCH_JOLT_WRAPPER:?pinned Chez wrapper required}
 task_checksum=${BENCH_JOLT_SHA256:?qualified runtime checksum required}
 task_chdb=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-test "$(git -C "$task_exporter" rev-parse HEAD)" = 0d1e41ed2ef3288a250b9533dd55b491ab210d0a
-test "$(git -C "$task_json" rev-parse HEAD)" = 805bb9a26bba73cbb9f13415a2636755ca4aaa69
+test "$(git -C "$task_exporter" rev-parse HEAD)" = 07c0a64b60a5630f2d4d77e0c51fb259dceaf652
+test "$(git -C "$task_json" rev-parse HEAD)" = c2cf28a0056f6ebe6e1bd8b9d34a0235637bd0b1
 git -C "$task_exporter" diff --quiet HEAD
 git -C "$task_json" diff --quiet HEAD
 # Benchmark-only additions may differ, but actual library code must match.

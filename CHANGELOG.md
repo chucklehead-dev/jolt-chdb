@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Select the cumulatively tested exporter and JSON allocation improvements in
+  the streaming storage qualification runner. Keep hosted runtime authentication
+  and S3 qualification as separate gates; production defaults are unchanged.
+
 - Add portable qualification support for confirmed 26.9 streaming exports on
   local storage or an explicitly selected, isolated S3 CI prefix. Preserve
   full physical-row recovery and keep credential-bearing failures out of logs.
