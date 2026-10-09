@@ -27,7 +27,9 @@ if ! script -qefc \
   exit 1
 fi
 
-if grep -Fq 'ThreadStatus: current_thread contains invalid address' "$transcript"; then
+# Color codes surround the logger name on a TTY, splitting `ThreadStatus:`.
+# Match the diagnostic body, which remains contiguous in colored/plain logs.
+if grep -Fq 'current_thread contains invalid address' "$transcript"; then
   sed -n '1,240p' "$transcript" >&2
   exit 1
 fi

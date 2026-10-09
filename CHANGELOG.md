@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Detect the native streaming-insert ThreadStatus failure in ANSI-colored
+  pseudo-terminal logs. Successful row readback and exit status alone are not
+  sufficient to qualify the affected native lifecycle.
+
 - Use bounded direct reads in the private owned-ASCII placeholder scan, keeping
   all lexical and word-skip guards unchanged. Numeric bounds checks, portable
   lexical parity and a checked lookahead-boundary mutant accompany the change.
