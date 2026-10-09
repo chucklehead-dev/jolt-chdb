@@ -83,7 +83,7 @@
         [:owner :instance :database :lease-ttl-ms :clock-skew-ms
          :heartbeat-interval-ms :force? :max-attempts :retry-deadline-ms
          :retry-initial-backoff-ms :retry-max-backoff-ms
-         :checkpoint-wal-reference-threshold]))
+         :checkpoint-wal-reference-threshold :owned-compact-stream?]))
 
 (def ^:private snapshot-dbspec-keys
   (conj common-dbspec-keys :expected-normalized-head-sha256))
@@ -219,6 +219,9 @@
   (when (:read-only? spec)
     (fail! ::invalid-options "A writer dbspec cannot be read-only"))
   (validate-common-dbspec! spec)
+  (when (and (contains? spec :owned-compact-stream?)
+             (not (instance? Boolean (:owned-compact-stream? spec))))
+    (fail! ::invalid-options "owned-compact-stream? must be boolean"))
   (nonblank-string! (:owner spec) "owner")
   (nonblank-string! (:instance spec) "instance")
   (nonblank-string! (:database spec) "database")
@@ -272,7 +275,10 @@
   Storage is either an already object-scoped `:backend`, or a
   `:namespace-backend` plus `:object-id`. `:owner` and `:database` are required.
   When omitted, `:instance` is a fresh UUIDv4 identity; lease generation remains
-  the protocol's ordering and fencing authority."
+  the protocol's ordering and fencing authority. Experimental Jolt-only
+  :owned-compact-stream? true requires native package 26.9.0 and default native
+  lifetime/preparation/execution hooks; it selects closed owned compact INSERTs after
+  the same classification/admission, with exact SQL WAL and ordinary fallback."
   [options]
   (when-not (map? options)
     (fail! ::invalid-options "Durable writer options must be a map"))
@@ -782,14 +788,21 @@
     (fail! ::invalid-options
            "store or namespace-backend with object-id is required")))
 
-(defn- with-native-owned-admitted-buffer! [handle statement database admitted!]
+(defn- with-native-owned-admitted-buffer!
+  ([handle statement database admitted!]
+   (with-native-owned-admitted-buffer! handle statement database admitted! false))
+  ([handle statement database admitted! stream?]
   (owned-statement/with-query-buffer
    statement
    (fn [buffer]
      (admitted! (native/classify-query-buffer! handle buffer database)
-                #(chdb/execute-owned-any-with-query-buffer handle statement buffer)))))
+                #(if stream?
+                   (chdb/execute-owned-stream-or-query-with-query-buffer handle statement buffer)
+                   (chdb/execute-owned-any-with-query-buffer handle statement buffer)))))))
 
-(defn- default-open-operations []
+(defn- default-open-operations
+  ([] (default-open-operations false))
+  ([stream?]
   {:now-ms #(System/currentTimeMillis)
    :renew-control! control/renew!
    :monotonic-ms! retry/monotonic-ms
@@ -831,9 +844,14 @@
         (execute-admitted!
          (native/classify-query-buffer! handle query-buffer database)
          #(if (owned-statement/statement? sql)
-            (chdb/execute-owned-any-with-query-buffer handle sql query-buffer)
+            ((if stream? chdb/execute-owned-stream-or-query-with-query-buffer
+                         chdb/execute-owned-any-with-query-buffer) handle sql query-buffer)
             (chdb/execute-any-with-query-buffer handle sql query-buffer))))))
-   :with-native-owned-admitted-buffer! with-native-owned-admitted-buffer!
+   :with-native-owned-admitted-buffer!
+   (if stream?
+     (fn [handle statement database admitted!]
+       (with-native-owned-admitted-buffer! handle statement database admitted! true))
+     with-native-owned-admitted-buffer!)
    :with-native-prepared-buffer!
    (fn [handle prepared database classified!]
      (native/with-query-buffer
@@ -844,7 +862,7 @@
          #(chdb/execute-prepared-any-with-query-buffer
            handle prepared query-buffer)))))
    :execute-prepared-native! chdb/execute-prepared-any
-   :recovery-event! (fn [_] nil)})
+   :recovery-event! (fn [_] nil)}))
 
 (defn- epoch-ms->seconds
   "Convert the runtime wall-clock representation to the frozen V1 wire unit."
@@ -963,6 +981,8 @@
   [{:keys [scratch-parent operations]
     :or {scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
+  (when (contains? options :owned-compact-stream?)
+    (fail! ::invalid-options "owned-compact-stream? is a writer-only option"))
   (validate-expected-normalized-head-sha256! options)
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
@@ -1037,16 +1057,29 @@
   [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
            heartbeat-interval-ms scratch-parent operations max-attempts
            retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms
-           checkpoint-wal-reference-threshold]
+           checkpoint-wal-reference-threshold owned-compact-stream?]
     :or {lease-ttl-ms default-lease-ttl-ms
          clock-skew-ms default-clock-skew-ms
          max-attempts default-max-attempts
          retry-deadline-ms default-retry-deadline-ms
          retry-initial-backoff-ms default-retry-initial-backoff-ms
          retry-max-backoff-ms default-retry-max-backoff-ms
-         force? false
+         force? false owned-compact-stream? false
          scratch-parent (System/getProperty "java.io.tmpdir")}
     :as options}]
+  (when (and (contains? options :owned-compact-stream?)
+             (not (instance? Boolean owned-compact-stream?)))
+    (fail! ::invalid-options "owned-compact-stream? must be boolean"))
+  (when owned-compact-stream?
+    (when (some #(contains? operations %)
+                [:open-native! :close-native! :classification-sql! :prepare-query!
+                 :classify! :query-native! :execute-native! :execute-prepared-native!
+                 :analyze-execute! :with-native-admitted-buffer!
+                 :with-native-prepared-buffer! :with-native-owned-admitted-buffer!])
+      (fail! ::invalid-options "owned streaming requires default native operations"))
+    (native/ensure-loaded!)
+    (when-not (= "26.9.0" (native/chdb-version))
+      (fail! ::unqualified-owned-stream "owned streaming requires native package 26.9.0")))
   (require-strict-utf8-decoder-capability!)
   (require-fresh-default-native-lifetime! (or operations {}))
   (validate-lease-timing! lease-ttl-ms clock-skew-ms heartbeat-interval-ms)
@@ -1072,7 +1105,7 @@
             (fail! ::invalid-options
                    "prepared-query operation overrides must be supplied together"))
         operations (validate-recovery-phase-observer!
-                    (merge (default-open-operations) configured-operations))
+                    (merge (default-open-operations owned-compact-stream?) configured-operations))
         ;; A test or embedding that replaces either legacy preparation or
         ;; execution operation must retain its old seam unless it explicitly
         ;; supplies the matching prepared pair as well.
@@ -1420,6 +1453,8 @@
                    (:retry-initial-backoff-ms spec)
                    :retry-max-backoff-ms (:retry-max-backoff-ms spec)
                    :force? (boolean (:force? spec))}
+                    (contains? spec :owned-compact-stream?)
+                    (assoc :owned-compact-stream? (:owned-compact-stream? spec))
                     (contains? spec :checkpoint-wal-reference-threshold)
                     (assoc :checkpoint-wal-reference-threshold
                            (:checkpoint-wal-reference-threshold spec))))))))

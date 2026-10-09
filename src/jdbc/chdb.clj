@@ -466,6 +466,10 @@
    handle nil [] "JSONCompactEachRowWithNamesAndTypes"
    (fn [_ _ result] (consume-json-result result)) query-buffer))
 
+(defn- compact-stream-header? [header]
+  (and (string? header) (<= 1 (count header) 8192)
+       (re-matches #"insert into [A-Za-z_][A-Za-z0-9_]* \(`[A-Za-z_][A-Za-z0-9_.]*`(?:, `[A-Za-z_][A-Za-z0-9_.]*`)*\)(?: SETTINGS input_format_read_datetime_number_as_raw_value=1)? FORMAT JSONCompactEachRow\n" header)))
+
 (defn execute-owned-compact-json-stream-with-query-buffer
   "Experimental internal execution of a classified owned compact-JSON INSERT.
   Exact generated header must match the beginning of the SAME borrowed SQL
@@ -482,8 +486,7 @@
     (throw (ex-info "invalid owned chDB query buffer" {:jdbc/sql-error true})))
   ;; Admit only the closed producer's simple quoted-column INSERT shape.
   ;; No query parameters, comments, expressions or arbitrary header parser.
-  (when-not (and (string? header) (<= 1 (count header) 8192)
-                (re-matches #"insert into [A-Za-z_][A-Za-z0-9_]* \(`[A-Za-z_][A-Za-z0-9_.]*`(?:, `[A-Za-z_][A-Za-z0-9_.]*`)*\)(?: SETTINGS input_format_read_datetime_number_as_raw_value=1)? FORMAT JSONCompactEachRow\n" header))
+  (when-not (compact-stream-header? header)
     (throw (ex-info "invalid owned compact INSERT header" {:type ::invalid-stream-header})))
   (let [header-size (count header)
         {:keys [pointer length]} query-buffer]
@@ -527,6 +530,23 @@
                  (throw error))
                (finally (native/chdb-destroy-insert-stream stream))))
            (finally (doseq [ptr (reverse @allocated)] (ffi/free ptr)))))))))
+
+(defn execute-owned-stream-or-query-with-query-buffer
+  "Internal opt-in selector; called only after normal Durable admission.
+  Read at most 8192 immutable ASCII prefix bytes. Stream only a closed compact
+  INSERT header; all other statements keep the ordinary owned executor.
+  Neither selection nor fallback grants mutation/persistence permission."
+  [handle statement buffer]
+  (when-not (and (owned-statement/statement? statement) (map? buffer)
+                (= (owned-statement/byte-count statement) (:length buffer))
+                (some? (:pointer buffer)) (not (ffi/null? (:pointer buffer))))
+    (throw (ex-info "invalid owned chDB query buffer" {:jdbc/sql-error true})))
+  (let [prefix (ffi/read-bytes (:pointer buffer) (min 8192 (:length buffer)))
+        lf (str/index-of prefix "\n")
+        header (when lf (subs prefix 0 (inc lf)))]
+    (if (and (compact-stream-header? header) (< (count header) (:length buffer)))
+      (execute-owned-compact-json-stream-with-query-buffer handle statement buffer header)
+      (execute-owned-any-with-query-buffer handle statement buffer))))
 
 (defn execute-prepared-any
   "Execute one request-local value returned by `prepare-query`.

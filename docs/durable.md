@@ -227,6 +227,22 @@ path until your provider and failure boundaries have been qualified.
 | `:retry-max-backoff-ms` | Cap for exponential retry delay; defaults to 250 milliseconds. |
 | `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
+| `:owned-compact-stream?` | Experimental Jolt writer option, default false. Requires native package 26.9.0. After normal admission, stream closed owned compact JSON INSERTs; other statements keep their ordinary execution path. |
+
+The streaming option is for a matching owned-statement producer, such as an
+exporter with `:owned-statement-output? true`. It does not make ordinary SQL
+strings stream automatically. Only the current closed ASCII INSERT header is
+selected; unsupported shapes keep the regular path. Native lifetime,
+classification, preparation and execution operation overrides are rejected for
+this mode. Clock, persistence and observer operations retain their existing
+trusted contracts; the option does not validate arbitrary custom operations.
+
+The full immutable SQL is still classified and recorded in V1 WAL before
+publication. A streamed native failure is not a rollback proof: the writer
+becomes unconfirmed and a later flush must checkpoint the live state. Readers
+need no streaming option or new WAL format. Runtime/native pins, repeated tail
+performance, hosted S3 and standalone packaging remain separate qualification
+gates. The default installer has not been upgraded by this opt-in option.
 
 The `*-ms` names above describe the application configuration and remain in
 milliseconds. On `head.json`, Protocol V1 freezes `lease.expires_at` as Unix

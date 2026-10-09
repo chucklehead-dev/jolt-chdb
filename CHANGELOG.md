@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
+  Select compact streaming after normal full-buffer classification/admission;
+  keep ordinary owned execution for other statement shapes. Reject conflicting
+  native operation overrides and retain exact SQL WAL, lease and confirmation
+  rules. Default writers and all snapshot readers remain unchanged.
+
 - Allow only the exact fixed query-local raw-DateTime tick setting in the
   experimental compact owned stream header. Preserve it in native stream
   initialization and in the complete classified/replayed owned SQL statement.

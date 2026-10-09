@@ -167,6 +167,10 @@ backend reads or lease mutation.
 
 See [Durable storage](docs/durable.md) for configuration, recovery and
 acknowledgement behavior, provider status, and the modeling/testing method.
+Experimental Jolt writers on native 26.9.0 can set `:owned-compact-stream? true`
+to stream supported owned compact INSERTs after the same admission checks.
+It is off by default, preserves exact SQL WAL, and requires a matching owned
+statement producer; ordinary strings and other shapes keep their usual path.
 Applications that also use Samizdat or another SQLite/JDBC consumer should
 follow the [database-provider convergence contract](docs/provider-convergence.md)
 rather than adding exclusions or dependency overrides.
