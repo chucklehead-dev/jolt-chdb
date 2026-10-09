@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Allow only the exact fixed query-local raw-DateTime tick setting in the
+  experimental compact owned stream header. Preserve it in native stream
+  initialization and in the complete classified/replayed owned SQL statement.
+
 - Add an explicitly selected experimental owned-buffer compact JSON streaming
   executor for separately qualified native package 26.9.0. Validate a bounded
   closed INSERT header and borrow the same immutable payload; keep result,

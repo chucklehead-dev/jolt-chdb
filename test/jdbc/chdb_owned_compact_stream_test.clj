@@ -59,6 +59,8 @@
           (doseq [bad [nil "" "insert into sample FORMAT JSONEachRow\n"
                        "insert into sample (`other`) FORMAT JSONCompactEachRow\n"
                        "insert into sample (`n`); select 1 FORMAT JSONCompactEachRow\n"
+                       "insert into sample (`n`, `label`) SETTINGS input_format_read_datetime_number_as_raw_value=0 FORMAT JSONCompactEachRow\n"
+                       "insert into sample (`n`, `label`) SETTINGS compatibility='26.7' FORMAT JSONCompactEachRow\n"
                        "insert into sample (`n`) FORMAT JSONCompactEachRow\n"]]
             (is (thrown? clojure.lang.ExceptionInfo
                          (chdb/execute-owned-compact-json-stream-with-query-buffer :handle statement buffer bad))))
@@ -97,3 +99,15 @@
                        (chdb/execute-owned-compact-json-stream-with-query-buffer :handle statement buffer header)))))
       (is (= 1 (count @calls)))
       (is (= :open (ffirst @calls))))))
+
+(deftest fixed-raw-ticks-clause-is-preserved-not-a-session-setting
+  (let [query "insert into sample (`n`, `label`) SETTINGS input_format_read_datetime_number_as_raw_value=1"
+        header (str query " FORMAT JSONCompactEachRow\n")
+        statement (owned/try-snapshot (.getBytes (str header payload) "UTF-8"))]
+    (simulated :ok
+      (fn [calls]
+        (owned/with-query-buffer statement
+          #(is (= 1 (:count (chdb/execute-owned-compact-json-stream-with-query-buffer
+                             :handle statement % header)))))
+        (is (= [[:open query "JSONCompactEachRow"] [:append payload]
+                :done :destroy-result :destroy-stream] @calls))))))

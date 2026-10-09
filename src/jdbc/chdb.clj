@@ -483,7 +483,7 @@
   ;; Admit only the closed producer's simple quoted-column INSERT shape.
   ;; No query parameters, comments, expressions or arbitrary header parser.
   (when-not (and (string? header) (<= 1 (count header) 8192)
-                (re-matches #"insert into [A-Za-z_][A-Za-z0-9_]* \(`[A-Za-z_][A-Za-z0-9_.]*`(?:, `[A-Za-z_][A-Za-z0-9_.]*`)*\) FORMAT JSONCompactEachRow\n" header))
+                (re-matches #"insert into [A-Za-z_][A-Za-z0-9_]* \(`[A-Za-z_][A-Za-z0-9_.]*`(?:, `[A-Za-z_][A-Za-z0-9_.]*`)*\)(?: SETTINGS input_format_read_datetime_number_as_raw_value=1)? FORMAT JSONCompactEachRow\n" header))
     (throw (ex-info "invalid owned compact INSERT header" {:type ::invalid-stream-header})))
   (let [header-size (count header)
         {:keys [pointer length]} query-buffer]
