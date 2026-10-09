@@ -15,7 +15,7 @@ by one lowercase/digit/hyphen lane name. A shared or empty prefix is rejected.
 
 The runner requires `BENCH_EXPECT_EXPORTER_ROOT`, `BENCH_EXPECT_JSON_ROOT`,
 `BENCH_JOLT_BIN`, `BENCH_JOLT_WRAPPER` and `BENCH_JOLT_SHA256`. It checks exporter
-`07c0a64`, JSON `679878d`, compiler version `v0.8.17-48-g20f25cf4` and the
+`4f3bfd2b`, JSON `679878d`, compiler version `v0.8.17-49-g7c57cf7e` and the
 supplied qualified runtime checksum. Library source must match chDB `291e1f4`;
 benchmark-only changes are separate. Local commands must use the workspace's
 mandatory Chez 10.4.1 wrapper. CI must authenticate the immutable runtime
@@ -56,17 +56,37 @@ artifact before it can provide hosted performance evidence.
 The current pins retain row-writer/map-visitor closure reuse and private
 attribute replay-tree allocation reductions, and include matching encoder and
 codec source handoffs so completed lazy rows can be reclaimed during a batch.
-Two local 300-sample, 10k-row windows of this exact production stack recovered
+Two local 300-sample, 10k-row windows of the preceding exporter `07c0a64` and
+runtime `20f25cf4` stack recovered
 all 3.03 million physical rows independently, including typed values, statuses
 and timestamps. Confirmed wall throughput was 28,560 and 28,223 rows/s;
 inverse-p99 throughput was 21,779 and 20,612 rows/s. Allocation remained near
 75.6 MB/10k rows, while observed process GC time was 1.83 and 1.88 seconds.
-Those local
-windows do not qualify S3, HTTP ingestion or real application throughput. The
+Those local windows do not qualify S3, HTTP ingestion or real application throughput. The
 driver's `:tail-qualified? false` remains intentional: a passing correctness
 receipt alone does not establish repeated or cross-backend tail qualification.
-The repinned runner also passed a local five-sample, 1k-row smoke and fresh
+The preceding row-head runner also passed a local five-sample, 1k-row smoke and fresh
 8,000-row recovery with source/artifact checksums checked before and after.
 Its unchanged c2cf28a/368e767 parent rejected those same candidate roots
 before opening storage. Pure storage selection tests pass: 3 tests,
 51 assertions. These checks do not qualify the hosted artifact or S3 backend.
+
+The selected exporter `4f3bfd2b` retains a private lookup for the unchanged
+public status-code table, while replacements continue through the live table.
+The selected runtime `7c57cf7e` improves ordinary sorted-operation argument
+dispatch and type checks; it does not add the aspect compiler. One local
+300-sample, 10k-row window using both recovered all 3.03 million complete
+physical rows. Confirmed wall throughput was 29,302 rows/s, with batch latency
+p50/p90/p95/p99 of 331.6/388.0/413.9/458.3 ms and allocation of 72.1 MB per
+10k rows. This is not a repeated tail, S3, or real-application qualification.
+The producer workflow and strict consumer authentication still require review
+and an actual hosted artifact; a local executable checksum is not hosted
+provenance and must not be substituted for it.
+
+This repinned runner passed a separate local five-sample, 1k-row smoke on the
+actual built `7c57cf7e` executable. All eight confirmed streams (including
+three warmups) recovered 8,000 complete physical rows in a fresh stock-reader
+process. Pre/post source and executable/input checksums matched. The preceding
+runner rejected the new exporter selection before opening storage. Successful
+local stores and scratch were removed after recovery; bounded receipts remain.
+This short smoke proves selection and recovery, not a throughput target.

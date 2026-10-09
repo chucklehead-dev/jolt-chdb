@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Select the guarded private status-code exporter and cumulative sorted-operation
+  runtime in streaming storage qualification. Keep exact source and supplied
+  artifact checksums, full fresh-reader recovery, and hosted artifact authentication
+  before S3 credentials. Ordinary library dependencies remain unchanged.
+
 - Select matching codec and encoder lazy-row release fixes in streaming
   storage qualification, retaining previous allocation improvements. Keep
   exact production-source and runtime guards; local results do not qualify S3.
