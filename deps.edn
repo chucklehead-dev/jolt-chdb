@@ -216,6 +216,9 @@
            :json-each-row-encoder-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-json-each-row-test"]}
+           :json-optional-binding-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-json-optional-binding-test"]}
            :json-each-row-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-json-each-row-native-test"]}
