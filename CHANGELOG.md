@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a developer-only RowBinary-in-ASCII-SQL Durable replay feasibility probe.
+  No encoder/exporter backend, transport default or durability contract changes.
+
 - Hand bounded encoder row sources into their protected body once, and avoid
   constructing unused fallback closures on native collector paths. Together
   with the matching encoder dependency fix, completed lazy rows can become
