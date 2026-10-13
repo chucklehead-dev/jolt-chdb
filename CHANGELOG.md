@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep the configured JSONEachRow encoder loadable with ordinary data.json.
+  Resolve the experimental writer binding only when selecting a native writer;
+  a missing binding rejects before factory or serialization effects. No JSON
+  output, WAL format, admission or persistence semantics change.
+
 - Allow an explicitly supplied JSON reader in owned writer/heartbeat operation
   contexts. Default parsing, startup/recovery and caller bindings are unchanged;
   the experimental API is resolved before owned threads start. Opt-in requires

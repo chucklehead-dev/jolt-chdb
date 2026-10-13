@@ -74,6 +74,13 @@ jobs:
           version: v0.8.17-41-g1873df46
       - name: Preserve configured encoding and bounded admission
         run: jolt -Srepro -M:json-each-row-encoder-test
+      - name: Preserve optional binding scope with qualified JSON
+        run: jolt -Srepro -M:json-optional-binding-test --qualified
+      - name: Require configured startup with ordinary JSON in a fresh process
+        run: >-
+          jolt -Srepro
+          -Sdeps '{:deps {org.clojure/data.json {:git/url "https://github.com/casselc/data.json.git" :git/sha "97298fd8a67a6d4ee3eb1346d5e184beb9565b90"}}}'
+          -M:json-optional-binding-test --ordinary
       - name: Require guarded native writer selection
         run: jolt -Srepro -M:json-each-row-native-test
       - name: Require byte-batch wire, custom writer, budget and lifetime controls

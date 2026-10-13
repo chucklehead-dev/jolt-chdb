@@ -48,7 +48,12 @@
 #?(:jolt
    (defn- with-selected-writer [factory operation]
      (if factory
-       (binding [json/*experimental-native-writer* (factory)] (operation))
+       ;; Optional native support must not impose its private fork ABI on
+       ;; consumers using ordinary data.json and the configured backend.
+       (let [writer-var (ns-resolve 'clojure.data.json '*experimental-native-writer*)]
+         (when-not writer-var
+           (fail! ::native-unavailable "Native JSON writer binding is unavailable"))
+         (with-bindings {writer-var (factory)} (operation)))
        (operation))))
 
 (defn open-encoder
