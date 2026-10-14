@@ -6,6 +6,11 @@
   Preserve the exact error and checkpoint-required pending work without
   inventing publication ambiguity; genuine publication uncertainty is unchanged.
 
+- Reuse bounded request-owned managed scratch across S3 upload callbacks,
+  sized no larger than the declared body. Preserve synchronous native copies,
+  byte parity, request isolation, close/error handling and transport semantics.
+  This reduces isolated upload allocation; no S3 throughput gain is claimed.
+
 - Share the checkpoint policy's head read with WAL reference selection, while
   retaining fresh commit reads, full stored-object verification, conditional CAS
   and existing custom-hook behavior. Keep the measured owned-statement path and
