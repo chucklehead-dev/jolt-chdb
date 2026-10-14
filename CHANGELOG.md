@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Label read-only S3 preflight failures with an allowlisted service/API name
+  so missing metadata access can be diagnosed without exposing CLI arguments,
+  stderr, credentials or policy contents. Reject non-metadata operations.
+
 - Reuse the two fixed Durable reference-key regex patterns during head
   validation instead of constructing them for every reference. Preserve exact
   V1 grammar, validation errors and encode/decode canonicalization. This reduces
