@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in matched typed-span benchmark for local POSIX and scoped S3
+  storage. Retain confirmed public SDK writes, exact SQL and full separate-
+  process recovery; report p50/p90/p95/p99 and real checkpoint/renewal witnesses.
+  S3 data and renewal transports remain independently owned until writer close.
+  No application defaults, protocol, or acknowledgement semantics change.
+
 - Hand bounded encoder row sources into their protected body once, and avoid
   constructing unused fallback closures on native collector paths. Together
   with the matching encoder dependency fix, completed lazy rows can become
