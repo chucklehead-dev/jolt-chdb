@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an opt-in protected-main current typed SDK storage workflow with read-only
+  scope/lifecycle preflight and separately selected local/S3 qualification.
+  Pin the reviewed workload, runtime artifact, native library and dependencies;
+  retain confirmed writes and separate recovery. No app-default or IAM change.
+
 - Keep the configured JSONEachRow encoder loadable with ordinary data.json.
   Resolve the experimental writer binding only when selecting a native writer;
   a missing binding rejects before factory or serialization effects. No JSON
