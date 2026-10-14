@@ -53,6 +53,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_s3_preflight.py
 bb scripts/test_typed_storage_budget.clj
 actionlint .github/workflows/current-typed-storage.yml
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
 bb scripts/test_typed_storage_receipts.clj
 ```
 

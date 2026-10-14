@@ -165,6 +165,7 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_s3_preflight.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
           bb scripts/test_typed_storage_budget.clj
           bb scripts/test_typed_storage_receipts.clj
       - name: Download checksum-pinned Corretto 25.0.2
