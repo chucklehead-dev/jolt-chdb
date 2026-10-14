@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Recognize read-only S3 preflight's exact CI-prefix listing condition only on
+  ListBucket for the configured bucket. Keep unknown/broader conditions closed
+  and verify object read/write permissions separately; no IAM or S3 mutation.
+
 - Reuse bounded request-owned managed scratch across S3 upload callbacks,
   sized no larger than the declared body. Preserve synchronous native copies,
   byte parity, request isolation, close/error handling and transport semantics.
