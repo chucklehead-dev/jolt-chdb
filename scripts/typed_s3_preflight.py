@@ -45,7 +45,10 @@ def aws(*args):
             capture_output=True, timeout=40, check=False,
         )
     except (subprocess.TimeoutExpired, OSError):
-        raise PreflightFailure(failure) from None
+        result = None
+    # Raise outside the handler so the public error does not retain the original
+    # TimeoutExpired/OSError as __context__, even under explicit inspection.
+    require(result is not None, failure)
     # Never relay stderr: CLI errors may name accounts, role ARNs or buckets.
     require(result.returncode == 0, failure)
     return json.loads(result.stdout)

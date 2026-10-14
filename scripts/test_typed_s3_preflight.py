@@ -74,6 +74,8 @@ for label, outcome in [
         except module.PreflightFailure as error:
             assert str(error) == "metadata-iam-get-role-failed"
             assert sentinel not in str(error)
+            assert error.__context__ is None
+            assert error.__cause__ is None
         assert run.call_count == 1
     print(f"sanitized {label}: passed")
 with patch.object(module.subprocess, "run") as run:
