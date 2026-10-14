@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse the two fixed Durable reference-key regex patterns during head
+  validation instead of constructing them for every reference. Preserve exact
+  V1 grammar, validation errors and encode/decode canonicalization. This reduces
+  isolated validation allocation; no end-to-end throughput claim is made.
+
 - Keep the configured JSONEachRow encoder loadable with ordinary data.json.
   Resolve the experimental writer binding only when selecting a native writer;
   a missing binding rejects before factory or serialization effects. No JSON

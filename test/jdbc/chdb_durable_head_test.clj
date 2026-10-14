@@ -80,6 +80,12 @@
 
 (defn- run-deterministic-checks []
   (println "Durable V1 head.json contract")
+  (check "reference validation reuses namespace-owned regex patterns"
+         nil
+         (caught-error
+           #(with-redefs [clojure.core/re-pattern
+                           (fn [_] (throw (ex-info "unexpected per-reference pattern construction" {})))]
+              (head/validate! valid-head :writer))))
   (let [document (json/write-str valid-head)
         original json/read-str
         calls (atom 0)
