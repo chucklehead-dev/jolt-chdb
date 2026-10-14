@@ -124,3 +124,25 @@ with patch.object(module.subprocess, "run") as run:
         assert str(error) == "unsupported-metadata-operation"
     assert run.call_count == 0
 print("metadata operation/error controls: 4 passed; no AWS calls")
+
+for metadata in ({}, {"Status": "Enabled"}, {"Status": "Suspended"}):
+    outcome = types.SimpleNamespace(returncode=0,
+        stdout=module.json.dumps({"metadata": metadata}).encode(), stderr=b"")
+    with patch.object(module.subprocess, "run", return_value=outcome) as run:
+        assert module.aws("s3api", "get-bucket-versioning") == metadata
+        argv = run.call_args.args[0]
+        assert argv[argv.index("--query") + 1] == "{metadata: @}"
+for raw in (b"", b" ", sentinel.encode(), b"null", b"[]", b"{}",
+            b'{"metadata":null}', b'{"metadata":[]}',
+            b'{"metadata":{},"extra":"fixture-sensitive-cli-detail"}'):
+    outcome = types.SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+    with patch.object(module.subprocess, "run", return_value=outcome):
+        try:
+            module.aws("s3api", "get-bucket-versioning")
+            raise AssertionError("invalid envelope was accepted")
+        except module.PreflightFailure as error:
+            assert str(error) == "metadata-s3api-get-bucket-versioning-response-invalid"
+            assert sentinel not in str(error)
+            assert error.__context__ is None
+            assert error.__cause__ is None
+print("metadata envelope controls: 12 passed; empty stdout never implies unversioned")
