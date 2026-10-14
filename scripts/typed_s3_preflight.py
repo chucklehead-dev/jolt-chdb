@@ -65,6 +65,24 @@ def items(value):
     return value if isinstance(value, list) else [value]
 
 
+def scoped_listing_condition(condition, actions, resources, bucket_arn):
+    """Recognize only ListBucket restricted to the exact CI namespace.
+
+    This condition never proves GetObject/PutObject permission. Bind the shape
+    to its action and bucket resource; do not accept it on mixed/object actions.
+    """
+    if [a.lower() for a in actions] != ["s3:listbucket"] or resources != [bucket_arn]:
+        return False
+    if not isinstance(condition, dict) or set(condition) != {"StringLike"}:
+        return False
+    selection = condition["StringLike"]
+    if not isinstance(selection, dict) or set(selection) != {"s3:prefix"}:
+        return False
+    prefixes = items(selection["s3:prefix"])
+    return bool(prefixes) and all(isinstance(p, str) and
+                                 p in ("ci/jolt-chdb", "ci/jolt-chdb/*") for p in prefixes)
+
+
 def policy_scope(documents, bucket, account):
     bucket_arn = f"arn:aws:s3:::{bucket}"
     object_scope = bucket_arn + "/ci/jolt-chdb/*"
@@ -76,12 +94,14 @@ def policy_scope(documents, bucket, account):
             require(statement.get("Effect") == "Allow", "policy-needs-deny-review")
             require(not any(k in statement for k in ("NotAction", "NotResource", "Principal", "NotPrincipal")),
                     "policy-needs-shape-review")
-            condition = statement.get("Condition", {})
-            accepted_condition = {"StringEquals": {"s3:ResourceAccount": account}}
-            require(condition in ({}, accepted_condition), "policy-needs-condition-review")
             actions = items(statement.get("Action", []))
             resources = items(statement.get("Resource", []))
             require(all(isinstance(x, str) for x in actions + resources), "invalid-policy-members")
+            condition = statement.get("Condition", {})
+            accepted_condition = {"StringEquals": {"s3:ResourceAccount": account}}
+            require(condition in ({}, accepted_condition) or
+                    scoped_listing_condition(condition, actions, resources, bucket_arn),
+                    "policy-needs-condition-review")
             relevant = [action for action in actions if action.lower().startswith("s3:")]
             if not relevant:
                 continue
