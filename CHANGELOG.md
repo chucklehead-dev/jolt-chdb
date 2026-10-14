@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Label read-only S3 preflight failures with an allowlisted service/API name
+  so missing metadata access can be diagnosed without exposing CLI arguments,
+  stderr, credentials or policy contents. Reject non-metadata operations.
+
 - Add an opt-in protected-main current typed SDK storage workflow with read-only
   scope/lifecycle preflight and separately selected local/S3 qualification.
   Pin the reviewed workload, runtime artifact, native library and dependencies;

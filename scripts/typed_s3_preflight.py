@@ -18,19 +18,36 @@ class PreflightFailure(Exception):
     pass
 
 
+METADATA_OPERATIONS = frozenset({
+    ("sts", "get-caller-identity"), ("iam", "get-role"),
+    ("iam", "list-role-policies"), ("iam", "list-attached-role-policies"),
+    ("iam", "get-role-policy"), ("iam", "get-policy"),
+    ("iam", "get-policy-version"),
+    ("s3api", "get-bucket-lifecycle-configuration"),
+    ("s3api", "get-bucket-versioning"),
+})
+
+
 def require(ok, code):
     if not ok:
         raise PreflightFailure(code)
 
 
 def aws(*args):
-    result = subprocess.run(
-        ["aws", *args, "--output", "json", "--no-cli-pager",
-         "--cli-connect-timeout", "10", "--cli-read-timeout", "20"],
-        capture_output=True, timeout=40, check=False,
-    )
+    operation = args[:2]
+    require(operation in METADATA_OPERATIONS, "unsupported-metadata-operation")
+    # Report only an allowlisted service/API label, never arguments or stderr.
+    failure = "metadata-" + "-".join(operation) + "-failed"
+    try:
+        result = subprocess.run(
+            ["aws", *args, "--output", "json", "--no-cli-pager",
+             "--cli-connect-timeout", "10", "--cli-read-timeout", "20"],
+            capture_output=True, timeout=40, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        raise PreflightFailure(failure) from None
     # Never relay stderr: CLI errors may name accounts, role ARNs or buckets.
-    require(result.returncode == 0, "metadata-permission-or-api-failed")
+    require(result.returncode == 0, failure)
     return json.loads(result.stdout)
 
 

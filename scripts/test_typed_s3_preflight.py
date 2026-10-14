@@ -2,6 +2,9 @@
 import copy
 import importlib.util
 import pathlib
+import subprocess
+import types
+from unittest.mock import patch
 
 path = pathlib.Path(__file__).with_name("typed_s3_preflight.py")
 spec = importlib.util.spec_from_file_location("preflight", path)
@@ -56,3 +59,28 @@ verdict("suspended bucket still needs old-version expiry",
                                        {"Status": "Suspended"}, prefix), False)
 verdict("unknown versioning status", lambda: module.lifecycle_scope(lifecycle, {"Status": "Unknown"}, prefix), False)
 print("preflight pure controls: 17 passed; not an IAM simulator or live cloud proof")
+
+sentinel = "fixture-sensitive-cli-detail"
+for label, outcome in [
+    ("CLI failure", types.SimpleNamespace(returncode=1, stdout=b"", stderr=sentinel.encode())),
+    ("timeout", subprocess.TimeoutExpired(["aws", sentinel], 40)),
+    ("launch failure", OSError(sentinel)),
+]:
+    kwargs = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+    with patch.object(module.subprocess, "run", **kwargs) as run:
+        try:
+            module.aws("iam", "get-role", "--role-name", sentinel)
+            raise AssertionError("failure was accepted")
+        except module.PreflightFailure as error:
+            assert str(error) == "metadata-iam-get-role-failed"
+            assert sentinel not in str(error)
+        assert run.call_count == 1
+    print(f"sanitized {label}: passed")
+with patch.object(module.subprocess, "run") as run:
+    try:
+        module.aws("s3api", "delete-object", sentinel)
+        raise AssertionError("mutation was accepted")
+    except module.PreflightFailure as error:
+        assert str(error) == "unsupported-metadata-operation"
+    assert run.call_count == 0
+print("metadata operation/error controls: 4 passed; no AWS calls")
