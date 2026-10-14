@@ -40,7 +40,10 @@ def aws(*args):
     failure = "metadata-" + "-".join(operation) + "-failed"
     try:
         result = subprocess.run(
-            ["aws", *args, "--output", "json", "--no-cli-pager",
+            # AWS CLI suppresses an empty {} response (unversioned buckets).
+            # Wrap before formatting rather than treating absent output as proof.
+            ["aws", *args, "--query", "{metadata: @}",
+             "--output", "json", "--no-cli-pager",
              "--cli-connect-timeout", "10", "--cli-read-timeout", "20"],
             capture_output=True, timeout=40, check=False,
         )
@@ -51,7 +54,15 @@ def aws(*args):
     require(result is not None, failure)
     # Never relay stderr: CLI errors may name accounts, role ARNs or buckets.
     require(result.returncode == 0, failure)
-    return json.loads(result.stdout)
+    response_failure = "metadata-" + "-".join(operation) + "-response-invalid"
+    try:
+        envelope = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        envelope = None
+    # Outside the handler: retain no JSONDecodeError context containing metadata.
+    require(isinstance(envelope, dict) and set(envelope) == {"metadata"} and
+            isinstance(envelope["metadata"], dict), response_failure)
+    return envelope["metadata"]
 
 
 def document(value):

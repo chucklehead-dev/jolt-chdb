@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve empty read-only AWS metadata responses with a CLI query envelope,
+  including unversioned buckets. Reject missing/malformed output without leaking
+  parser context or interpreting it as versioning state; add real CLI loopback
+  and pure envelope controls. No cloud writes or policy/lifecycle changes.
+
 - Recognize read-only S3 preflight's exact CI-prefix listing condition only on
   ListBucket for the configured bucket. Keep unknown/broader conditions closed
   and verify object read/write permissions separately; no IAM or S3 mutation.
