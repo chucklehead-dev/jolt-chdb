@@ -6,6 +6,11 @@
   so missing metadata access can be diagnosed without exposing CLI arguments,
   stderr, credentials or policy contents. Reject non-metadata operations.
 
+- Reuse the two fixed Durable reference-key regex patterns during head
+  validation instead of constructing them for every reference. Preserve exact
+  V1 grammar, validation errors and encode/decode canonicalization. This reduces
+  isolated validation allocation; no end-to-end throughput claim is made.
+
 - Add an opt-in protected-main current typed SDK storage workflow with read-only
   scope/lifecycle preflight and separately selected local/S3 qualification.
   Pin the reviewed workload, runtime artifact, native library and dependencies;
