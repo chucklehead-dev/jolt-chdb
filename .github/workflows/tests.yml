@@ -161,6 +161,12 @@ jobs:
           mkdir -p "$install_dir"
           tar -xzf "$archive" -C "$install_dir"
           echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Preserve current typed cloud request and receipt controls without AWS
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_s3_preflight.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
+          bb scripts/test_typed_storage_budget.clj
+          bb scripts/test_typed_storage_receipts.clj
       - name: Download checksum-pinned Corretto 25.0.2
         env:
           CORRETTO_URL: https://corretto.aws/downloads/resources/25.0.2.10.1/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz
