@@ -16,11 +16,13 @@ on:
       - src/jdbc/chdb/durable/reader.clj
       - src/jdbc/chdb/durable/s3.clj
       - src/jdbc/chdb/durable/s3_curl.clj
+      - src/jdbc/chdb/durable/s3_body.clj
       - test/durable-s3-curl.sh
       - test/durable-large-checkpoint.sh
       - test/durable-s3-minio.sh
       - test/durable-s3-minio-script-test.sh
       - test/jdbc/chdb_durable_s3_curl_test.clj
+      - test/jdbc/chdb_durable_s3_body_test.clj
       - test/jdbc/chdb_durable_large_checkpoint_qualification.clj
       - test/jdbc/chdb_durable_head_test.clj
       - test/jdbc/chdb_durable_head_whitespace_test.clj

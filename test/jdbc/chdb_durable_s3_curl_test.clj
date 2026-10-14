@@ -3,7 +3,8 @@
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.s3 :as s3]
-            [jdbc.chdb.durable.s3-curl :as s3-curl])
+            [jdbc.chdb.durable.s3-curl :as s3-curl]
+            [jdbc.chdb-durable-s3-body-test :as body-test])
   (:import [java.nio.file Files OpenOption StandardOpenOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]))
 
@@ -67,6 +68,7 @@
 (defn -main [endpoint]
   (reset! failures 0)
   (println "Durable V1 libcurl SigV4 loopback transport")
+  (body-test/run-checks!)
   (let [probe (s3-curl/request!
                {:method :put
                 :url (str endpoint "/bucket/transport-probe")
@@ -294,6 +296,8 @@
              unsafe-directory (PosixFilePermissions/fromString "rwxrwx---"))
           source (.resolve directory "upload.bin")
           target (.resolve directory "download.bin")
+          large-source (.resolve directory "large-upload.bin")
+          large-target (.resolve directory "large-download.bin")
           missing (.resolve directory "missing.bin")
           truncated (.resolve directory "truncated.bin")
           unsupported (.resolve directory "unsupported.bin")
@@ -314,6 +318,25 @@
                 store "checkpoints/test.tar" target))
         (check "streamed file bytes remain exact"
                [1 2 3 4 5] (vec (Files/readAllBytes target)))
+        (let [payload (byte-array 300003)]
+          (dotimes [i (alength payload)]
+            (let [v (mod i 251)] (aset-byte payload i (if (> v 127) (- v 256) v))))
+          (Files/write large-source payload (make-array OpenOption 0))
+          (check "multi-chunk file upload succeeds" :created
+                 (:status (backend/put-file-if-absent!
+                           store "checkpoints/multi-chunk.tar" large-source)))
+          (check "multi-chunk file download count remains exact"
+                 {:status :downloaded :byte-count 300003}
+                 (backend/download-to-file!
+                  store "checkpoints/multi-chunk.tar" large-target))
+          (let [actual (Files/readAllBytes large-target)]
+            (check "multi-chunk wire bytes remain exact" true
+                   (and (= 300003 (alength actual))
+                        (loop [i 0]
+                          (if (= i 300003) true
+                              (and (= (let [v (mod i 251)] (if (> v 127) (- v 256) v))
+                                      (aget actual i))
+                                   (recur (inc i)))))))))
         (check "download collision preserves the existing destination"
                [::s3/transport [1 2 3 4 5]]
                [(error-type #(backend/download-to-file!
@@ -349,6 +372,8 @@
         (finally
           (Files/deleteIfExists source)
           (Files/deleteIfExists target)
+          (Files/deleteIfExists large-source)
+          (Files/deleteIfExists large-target)
           (Files/deleteIfExists missing)
           (Files/deleteIfExists truncated)
           (Files/deleteIfExists unsupported)

@@ -2,6 +2,7 @@
   "Jolt-native libcurl transport for the Durable S3 backend."
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.s3 :as s3]
+            [jdbc.chdb.durable.s3-body :as body]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.nio.file Files LinkOption OpenOption]
@@ -244,7 +245,12 @@
                     (catch Throwable _
                       (transport-failure!
                        "S3 request source could not be opened" true)))]
-        {:input input :byte-count byte-count :close! (fn [] (.close input))}))))
+        {:input input :byte-count byte-count
+         :read-chunk! (body/chunk-reader
+                       input byte-count
+                       (fn [destination buffer n]
+                         (ffi/write-array destination buffer 0 n)))
+         :close! (fn [] (.close input))}))))
 
 (defn- parse-header! [headers bytes]
   (let [line (str/trim (String. bytes "ISO-8859-1"))
@@ -306,13 +312,8 @@
                    arena
                    (fn [pointer size nitems _]
                      (try
-                       (let [capacity (callback-size size nitems)
-                             buffer (byte-array (min capacity 65536))
-                             n (.read (:input request-source) buffer 0
-                                      (alength buffer))]
-                         (if (neg? n)
-                           0
-                           (do (ffi/write-array pointer buffer 0 n) n)))
+                       ((:read-chunk! request-source)
+                        pointer (callback-size size nitems))
                        (catch Throwable error
                          (reset! callback-error error)
                          curl-readfunc-abort)))

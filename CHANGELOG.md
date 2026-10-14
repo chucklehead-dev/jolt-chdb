@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse bounded request-owned managed scratch across S3 upload callbacks,
+  sized no larger than the declared body. Preserve synchronous native copies,
+  byte parity, request isolation, close/error handling and transport semantics.
+  This reduces isolated upload allocation; no S3 throughput gain is claimed.
+
 - Label read-only S3 preflight failures with an allowlisted service/API name
   so missing metadata access can be diagnosed without exposing CLI arguments,
   stderr, credentials or policy contents. Reject non-metadata operations.
