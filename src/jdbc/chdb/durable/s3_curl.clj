@@ -274,7 +274,10 @@
 
   Byte responses are bounded; checkpoint downloads stream to a CREATE_NEW file.
   Transport errors are sanitized and write failures remain ambiguous unless the
-  request was proven not to have started."
+  request was proven not to have started. The optional expect-100-timeout-ms
+  (1..1000, default 1000) may start uploading before a remote rejection arrives;
+  it preserves conditional-write enforcement, not early-rejection bandwidth
+  savings. Total request deadlines still apply independently."
   [{:keys [method url headers request-body response-body auth region
            connect-timeout-ms timeout-ms max-response-bytes expect-100-timeout-ms]
     :or {connect-timeout-ms 10000

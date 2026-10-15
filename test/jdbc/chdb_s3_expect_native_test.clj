@@ -1,5 +1,39 @@
 (ns jdbc.chdb-s3-expect-native-test
-  (:require [jdbc.chdb.durable.s3-curl :as curl]))
+  (:require [jdbc.chdb.durable.s3-curl :as curl]
+            [jdbc.chdb.durable.s3 :as s3]
+            [jdbc.chdb.durable.backend :as backend]))
+
+(defn rejection-controls [endpoint bytes]
+  (doseq [wait [1000 10]]
+    (curl/with-reused-transport!
+      (fn [owner]
+        (let [send (curl/request-function {:expect-100-timeout-ms wait :timeout-ms 5000} owner)
+              store (backend/object-backend
+                     (s3/s3-backend {:endpoint endpoint :bucket "bucket" :prefix "continue-reject"
+                                     :region "us-east-1" :access-key "ACCESS" :secret-key "SECRET"
+                                     :session-token "SESSION" :max-attempts 1 :request! send})
+                     "object")]
+          (doseq [key ["early412" "late417"]]
+            (let [before (backend/get-with-etag store key)
+                  _ (assert (= "protected-original" (String. (:bytes before) "UTF-8")))
+                  result (try (backend/put-bytes-if-absent! store key bytes)
+                              (catch Throwable error {:error error}))
+                  after (backend/get-with-etag store key)]
+              (assert (not= :created (:status result)))
+              (if (= key "early412")
+                (assert (= :precondition-failed (:status result)))
+                ;; A late417 can surface as an HTTP rejection or ambiguous
+                ;; transport/rewind failure. It must never be a committed ACK.
+                (assert (or (and (= ::s3/provider (:type (ex-data (:error result))))
+                                 (= 417 (:status (ex-data (:error result)))))
+                            (= :ambiguous (:status result)))))
+              (assert (= (:etag before) (:etag after)))
+              (assert (= "protected-original" (String. (:bytes after) "UTF-8")))))
+          ;; A real new write/read after both failures uses the same owned handle.
+          (let [key (str "success-after-rejection-" wait)
+                value (.getBytes "after-rejection" "UTF-8")]
+            (assert (= :created (:status (backend/put-bytes-if-absent! store key value))))
+            (assert (= "after-rejection" (String. (:bytes (backend/get-with-etag store key)) "UTF-8")))))))))
 
 (defn -main [endpoint]
   (let [bytes (byte-array 1048577)
@@ -20,6 +54,7 @@
         candidate (send 10)]
     (assert (> baseline 800))
     (assert (< candidate 500))
+    (rejection-controls endpoint bytes)
     (prn {:scope :native-libcurl-ignored-continue-not-aws
           :body-bytes 1048577 :exact-body true
           :default-ms baseline :bounded-wait-ms candidate})))

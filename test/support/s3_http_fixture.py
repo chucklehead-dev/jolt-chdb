@@ -11,6 +11,10 @@ import urllib.parse
 
 
 OBJECTS = {}
+for _name in ("early412", "late417"):
+    _body = b"protected-original"
+    OBJECTS[f"/bucket/continue-reject/object/{_name}"] = (
+        _body, '"' + hashlib.sha256(_body).hexdigest() + '"')
 AFTER_CAS_TIMEOUTS = set()
 LOCK = threading.Lock()
 REQUEST_COUNTS = {"authenticated_requests": 0, "gets": 0, "puts": 0}
@@ -40,11 +44,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def handle_expect_100(self):
+        if (self.path.startswith("/bucket/continue-reject/")
+                and self.path.endswith(("/early412", "/late417"))):
+            if self.path.endswith("/late417"):
+                time.sleep(0.05)  # beyond the 10ms wait, before default 1000ms
+            self.reject_continue(417 if self.path.endswith("/late417") else 412)
+            return False
         if self.path.startswith("/bucket/ignore-continue/"):
             # Controlled transport boundary: accept the body but send no interim
             # response. Other existing fixture routes retain normal behavior.
             return True
         return super().handle_expect_100()
+
+    def reject_continue(self, status):
+        # An early response need not consume the body. Close this connection so
+        # unread upload bytes cannot be parsed as another request on the fixture.
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
 
     def setup(self):
         super().setup()
@@ -140,6 +159,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.answer(403)
             return
         record_request("puts", self.key())
+        if (self.key().startswith("/bucket/continue-reject/")
+                and self.key().endswith(("/early412", "/late417"))):
+            # Also reject libcurl's possible replay without Expect after417.
+            self.reject_continue(417 if self.key().endswith("/late417") else 412)
+            return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
