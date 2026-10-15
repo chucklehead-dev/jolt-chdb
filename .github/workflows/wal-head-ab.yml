@@ -84,7 +84,7 @@ jobs:
           echo "BENCH_RUNTIME_BINARY_SHA256=$QUALIFIED_RUNTIME_BINARY_SHA256" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_EXPORTER_ROOT=$GITHUB_WORKSPACE/.qualification/exporter" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_JSON_ROOT=$GITHUB_WORKSPACE/.qualification/json" >> "$GITHUB_ENV"
-          echo "TASK_TYPED_BUDGET_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_profile_driver.clj" >> "$GITHUB_ENV"
+          echo "TASK_TYPED_BUDGET_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_wal_head_driver.clj" >> "$GITHUB_ENV"
           echo "BENCH_JOLT_WRAPPER=$GITHUB_WORKSPACE/scripts/current_typed_jolt.sh" >> "$GITHUB_ENV"
       - name: Install exact native26.9.0 without changing application defaults
         run: |
@@ -100,6 +100,9 @@ jobs:
           printf '%s  %s\n' a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557 "$task_native_dir/libchdb.so" | sha256sum -c -
           rm -- "$task_archive"
           echo "JOLT_CHDB_LIB=$task_native_dir/libchdb.so" >> "$GITHUB_ENV"
+      - name: Prove both arm identities through dummy-credential loopback first
+        timeout-minutes: 5
+        run: bash scripts/test_wal_head_identity.sh "$BENCH_JOLT_BIN" "$GITHUB_WORKSPACE/.qualification/baseline" "$GITHUB_WORKSPACE/.qualification/json"
       - name: Assume existing protected CI role
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:

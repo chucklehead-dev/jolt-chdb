@@ -41,6 +41,7 @@ assert args[6:] == ["10000", "256", "true", "wide16"]
 source = pathlib.Path(args[3]).parents[1]
 phase, root = args[4], pathlib.Path(args[5])
 storage = os.environ["SDK_STORAGE_ARM"]
+assert os.environ["SDK_WAL_HEAD_ARM"] == source.name
 assert os.environ["TASK_ORIGINAL_TYPED_DRIVER"] == str(source / "bench/typed-storage-window.clj")
 assert args[1] == ("240s" if phase == "reader" else "1200s" if storage == "s3" else "360s")
 entry = {"arm": source.name, "storage": storage, "phase": phase,

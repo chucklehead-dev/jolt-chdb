@@ -168,6 +168,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
+          bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj
           bb scripts/test_typed_storage_budget.clj
           bb scripts/test_typed_storage_receipts.clj
           bb -cp scripts -e "(require 'test-typed-storage-curl-profile-receipt) (let [r (clojure.test/run-tests 'test-typed-storage-curl-profile-receipt)] (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))"

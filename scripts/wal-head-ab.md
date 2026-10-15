@@ -9,8 +9,11 @@ pins are unchanged. The older measured compiler is a causal comparison control,
 not the target for new upstream work (currently stock Jolt0.8.22).
 
 The workflow runs local baseline/candidate first, then adjacent S3
-baseline/candidate windows, always with independent object identities. Each arm
-uses256measured10k batches +3warmups, automatic128-reference checkpoints,
+baseline/candidate windows, always with independent object identities. Both use
+the same benchmark-only options wrapper to replace the frozen driver's
+hard-coded object ID with one of two distinct, closed IDs. Unique temporary
+directories alone would NOT isolate the S3 objects. No other option changes.
+Each arm uses256measured10k batches +3warmups, automatic128-reference checkpoints,
 independent heartbeat renewals and stock-reader full physical/typed recovery.
 Only one local database/WAL tree lives at once, removed on success or failure.
 

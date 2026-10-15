@@ -25,11 +25,12 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-# Keep the S3 windows adjacent. One live fixture at a time; separate random
-# roots also give the immutable driver separate Durable object identities.
+# Keep the S3 windows adjacent. One live fixture at a time. The shared selected
+# driver supplies distinct closed S3 object IDs; random local roots alone cannot.
 for task_storage in local s3; do
   export SDK_STORAGE_ARM="$task_storage"
   for task_arm in baseline candidate; do
+    export SDK_WAL_HEAD_ARM="$task_arm"
     task_output="$task_receipts/$task_arm"
     case "$task_arm" in
       baseline) task_source="$task_baseline"; unset QUALIFIED_STORAGE_SOURCE_PROFILE ;;
