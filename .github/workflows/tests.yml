@@ -278,5 +278,7 @@ jobs:
         run: bash test/durable-s3-curl.sh jolt
       - name: Test witnessed WAL head races through real libcurl
         run: bash test/durable-s3-curl.sh jolt durable-witness-head-native-test
+      - name: Require selected WAL publication through real curl
+        run: bash test/durable-s3-curl.sh jolt durable-selected-publication-native-test
       - name: Test
         run: jolt -M:test

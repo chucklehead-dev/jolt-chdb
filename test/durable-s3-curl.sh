@@ -4,7 +4,7 @@ set -euo pipefail
 runner=${1:-jolt}
 test_alias=${2:-durable-s3-curl-test}
 case "$test_alias" in
-  durable-s3-curl-test|durable-witness-head-native-test) ;;
+  durable-s3-curl-test|durable-witness-head-native-test|durable-selected-publication-native-test) ;;
   *) echo unsupported-local-curl-test >&2; exit 64 ;;
 esac
 tmp_dir=$(mktemp -d)

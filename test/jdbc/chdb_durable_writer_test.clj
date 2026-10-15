@@ -12,6 +12,7 @@
             [jdbc.chdb.durable.time-domain :as time-domain]
             [jdbc.chdb.durable.writer :as writer]
             [jdbc.chdb-durable-writer-test-support :as support]
+            [jdbc.chdb-durable-selection-writer-test :as selection-writer-tests]
             [jolt.fibers :as fibers]))
 
 (def failures (atom 0))
@@ -2527,6 +2528,7 @@
   (run-checkpoint-cleanup-precedence-checks!)
   (run-checkpoint-public-retry-checks!)
   (run-file-wal-phase2-checks!)
+  (selection-writer-tests/-main)
   (run-native-exception-uncertainty-checks!)
   (run-deterministic-checks!)
   (run-stateful-property!)

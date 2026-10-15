@@ -179,6 +179,9 @@
            :durable-witness-head-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-witness-head-native-test"]}
+           :durable-selected-publication-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-selected-publication-native-test"]}
            :durable-s3-itf-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
