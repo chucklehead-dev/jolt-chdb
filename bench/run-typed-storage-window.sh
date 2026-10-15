@@ -52,6 +52,14 @@ case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
     git -C "$task_chdb" diff --quiet 92526362d112c2da0aa4993f09db8c25c42cba45 -- src resources deps.edn
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 180d2d018c8b153ed9fc812528e909076f6ed7f1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 6eac0599c0e33d4971305011355c3a9de3b1bcc1 ;;
+  wal-selection-head-seal-upload-buffer)
+    # Restore canonical main's request-owned scratch on the reuse feature graph.
+    # Keep previous source profiles frozen; never relabel their measurements.
+    git -C "$task_chdb" diff --quiet d3da7e3a9e0a53845caadd7dc1892be254457cdb -- src resources deps.edn
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 180d2d018c8b153ed9fc812528e909076f6ed7f1
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 6eac0599c0e33d4971305011355c3a9de3b1bcc1
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_curl.clj)" = 528ed7bfd3e01f31e937d01706d51ec357fa8ef1
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_body.clj)" = 44b64e1ab7ba66ce3ae1f4f51ebc8b0f71ee580d ;;
   *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
 esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"

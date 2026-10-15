@@ -1,5 +1,28 @@
 # Frozen-feature selection-head WAL measurement
 
+## Canonical upload-buffer restoration
+
+Production anchor `d3da7e3a9e0a53845caadd7dc1892be254457cdb` restores main's
+already-reviewed `b59470503c42ae8f84170c614e20ee9b8cf807c5` request-owned
+upload scratch helper on top of the seal-corrected feature graph. The older
+connection-reuse branch had retained per-callback allocation. This is recovered
+cumulative work, not a new fix missing from product main.
+
+Select the closed `wal-selection-head-seal-upload-buffer` profile; all previous
+profiles remain unchanged and reject this different production source. Control
+and writer blobs stay exactly as below; curl is
+`528ed7bfd3e01f31e937d01706d51ec357fa8ef1`, body helper is
+`44b64e1ab7ba66ce3ae1f4f51ebc8b0f71ee580d`. Reuse ownership, callback-arena
+cleanup, stored-object verification, commit fencing, SDK/JSON/compiler pins and
+default options are unchanged. No arbitrary source override is accepted.
+
+Compare future corrected-source windows against the seal-corrected profile,
+not against relabeled historical receipts. An actual libcurl 6 MiB file-upload
+screen removed about6.3MB managed allocation per request, with exact size/SHA256
+readback. That is a loopback callback-algorithm control, not AWS or end-to-end
+Durable throughput. Protected CI must authenticate the new exact source before
+selecting this profile. No cloud dispatch or default change is implied here.
+
 ## Seal-error correction for future measurements
 
 Production anchor `92526362d112c2da0aa4993f09db8c25c42cba45` adds the reviewed
