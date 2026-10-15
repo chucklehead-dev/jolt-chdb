@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Pre-screen private owned ASCII statements with a synchronous native marker
+  search before lexical placeholder detection. Marker-free statements avoid
+  the lexer; any hit retains all quote/comment rules. Missing native symbols
+  retain the original scanner. Ownership, classification and ACKs are unchanged.
+
 - Keep pre-publication seal errors distinct from uncertain control outcomes.
   Preserve the exact error and checkpoint-required pending work without
   inventing publication ambiguity; genuine publication uncertainty is unchanged.

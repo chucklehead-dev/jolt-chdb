@@ -19,6 +19,41 @@
     (wal/write-prepared! out (owned/prepared-wal statement))
     (.toByteArray out)))
 
+(deftest marker-prescreen-skips-only-proven-marker-free-input
+  (let [source (slurp (io/resource "jdbc/chdb/owned_ascii_marker_prescreen.ss"))
+        ;; Throwing lexer makes skipped work observable without a timing gate.
+        screen (scheme/eval-string
+                 (str "(" source " (lambda (s) (error 'fixture \"lexer reached\")))"))
+        no-native (scheme/eval-string
+                    (str "(" (string/replace source
+                               "(foreign-procedure \"memchr\" (u8* int size_t) void*)"
+                               "#f")
+                         " (lambda (s) (error 'fixture \"lexer reached\")))"))]
+    (doseq [sql ["" "abc" "'unterminated" "/* unterminated" "abc\u0000tail"]]
+      (is (false? (screen (.getBytes sql "UTF-8")))))
+    ;; A marker in ANY lexical context must reach the original scanner.
+    (doseq [sql ["?" "'?'" "--?" "/*?*/" "abc\u0000?"]]
+      (is (thrown? Throwable (screen (.getBytes sql "UTF-8")))))
+    (is (false? (no-native (.getBytes "" "UTF-8"))))
+    (is (thrown? Throwable (no-native (.getBytes "abc" "UTF-8"))))
+    (is (thrown? Throwable (screen nil)))
+    (is (thrown? Throwable (screen "not an array")))
+    (let [absent-symbol (scheme/eval-string
+                          (str "(" (string/replace source "\"memchr\""
+                                     "\"jolt_chdb_fixture_absent_marker_symbol_20261015\"")
+                               " (lambda (s) #t))"))]
+      ;; Real symbol-resolution failure, not just a manually false capability.
+      (is (true? (absent-symbol (.getBytes "abc" "UTF-8"))))))
+  ;; Explicit length, not C-string termination: embedded NUL hides no marker.
+  (doseq [n [1 2 3 4 7 8 15 16 31 32 63 64 65 127 128 129 4095 4096 4097]
+          at [0 (quot n 2) (dec n)]]
+    (let [bytes (byte-array n)]
+      (aset-byte bytes at (byte 63))
+      (let [statement (owned/try-snapshot bytes)]
+        (is (true? (owned/code-placeholder? statement)))
+        (is (= (@#'chdb/portable-code-placeholder? (owned/text statement))
+               (owned/code-placeholder? statement)))))))
+
 (deftest copied-input-is-not-an-alias-and-output-is-opaque
   (let [sql "INSERT INTO t VALUES ('ready?')"
         source (.getBytes sql "UTF-8") statement (owned/try-snapshot source)]

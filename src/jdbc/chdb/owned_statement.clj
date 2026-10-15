@@ -13,9 +13,12 @@
 (def ^:private snapshot-source (kernel-source "jdbc/chdb/owned_ascii_snapshot.ss"))
 (def ^:private wal-source (kernel-source "jdbc/chdb/owned_ascii_wal.ss"))
 (def ^:private placeholder-source (kernel-source "jdbc/chdb/owned_ascii_placeholder.ss"))
+(def ^:private marker-prescreen-source (kernel-source "jdbc/chdb/owned_ascii_marker_prescreen.ss"))
 (def ^:private snapshot-kernel (delay (scheme/eval-string snapshot-source)))
 (def ^:private wal-kernel (delay (scheme/eval-string wal-source)))
-(def ^:private placeholder-kernel (delay (scheme/eval-string placeholder-source)))
+(def ^:private placeholder-kernel
+  (delay ((scheme/eval-string marker-prescreen-source)
+          (scheme/eval-string placeholder-source))))
 
 (deftype ^:private OwnedAsciiStatement [seal payload size]
   Object
