@@ -60,6 +60,12 @@ case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 6eac0599c0e33d4971305011355c3a9de3b1bcc1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_curl.clj)" = 528ed7bfd3e01f31e937d01706d51ec357fa8ef1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_body.clj)" = 44b64e1ab7ba66ce3ae1f4f51ebc8b0f71ee580d ;;
+  owned-marker-prescreen)
+    # Reviewed optional marker filter on the exact corrected upload graph.
+    # Neither historical profiles nor caller-selected source refs are widened.
+    git -C "$task_chdb" diff --quiet 897fe0caf592098e17c89215d1552e73adc423a4 -- src resources deps.edn
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/owned_statement.clj)" = 4cb0ccfcc0e63ee329efbfbda79a0ce0867cc4a6
+    test "$(git -C "$task_chdb" rev-parse HEAD:resources/jdbc/chdb/owned_ascii_marker_prescreen.ss)" = dfd384d4005c14464ec8e3171bc6a1df59e09ba4 ;;
   *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
 esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"

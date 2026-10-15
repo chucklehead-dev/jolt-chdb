@@ -1,5 +1,21 @@
 # Frozen-feature selection-head WAL measurement
 
+## Owned marker pre-screen
+
+Production anchor `897fe0caf592098e17c89215d1552e73adc423a4` adds the reviewed
+optional synchronous native marker filter to the corrected upload graph.
+Select `owned-marker-prescreen`; all older profiles remain frozen and reject
+this different source. Loader blob is `4cb0ccfcc0e63ee329efbfbda79a0ce0867cc4a6`;
+new filter blob is `dfd384d4005c14464ec8e3171bc6a1df59e09ba4`. Whole production
+tree/dependency comparison remains required, not just two positive blob checks.
+
+Any raw marker hit keeps the unchanged lexical scanner; missing native symbol
+also keeps that scanner. No ownership, admission/classification, stored-object
+verification, fresh commit head/CAS, ACK, recovery or default option change.
+Compare separately against the upload-buffer profile with identical workload
+and independent stock readback. The short component/local-pair results do not
+establish checkpoint-window, sustained-tail or AWS performance.
+
 ## Canonical upload-buffer restoration
 
 Production anchor `d3da7e3a9e0a53845caadd7dc1892be254457cdb` restores main's
