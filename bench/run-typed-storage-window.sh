@@ -46,6 +46,12 @@ case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
     git -C "$task_chdb" diff --quiet 6ae42f4e57aa131cf020269aea306c196585cb9e -- src resources deps.edn
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 180d2d018c8b153ed9fc812528e909076f6ed7f1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 16cb452d375d59418f30718d73bdfa2a2bb431bd ;;
+  wal-selection-head-seal)
+    # Same measured graph with the reviewed seal-error provenance correction.
+    # Keep the historical profile above closed over its original source.
+    git -C "$task_chdb" diff --quiet 92526362d112c2da0aa4993f09db8c25c42cba45 -- src resources deps.edn
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 180d2d018c8b153ed9fc812528e909076f6ed7f1
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 6eac0599c0e33d4971305011355c3a9de3b1bcc1 ;;
   *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
 esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"

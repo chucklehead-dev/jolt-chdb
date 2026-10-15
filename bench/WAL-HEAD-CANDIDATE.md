@@ -1,5 +1,22 @@
 # Frozen-feature selection-head WAL measurement
 
+## Seal-error correction for future measurements
+
+Production anchor `92526362d112c2da0aa4993f09db8c25c42cba45` adds the reviewed
+pre-publication seal-error provenance correction to the previous measured graph.
+It preserves all owned-statement/native-admission features and dependency pins.
+Control remains blob `180d2d018c8b153ed9fc812528e909076f6ed7f1`; writer is
+`6eac0599c0e33d4971305011355c3a9de3b1bcc1`. Select the new closed profile
+`wal-selection-head-seal` for this graph. The historical profile below remains
+unchanged and rejects this new production source.
+
+This correction has focused writer/selection/owned-output tests; it is not a new
+throughput result. Do not relabel the earlier matched receipts or assume their
+timings apply to this head. Any protected comparison workflow must authenticate
+the new exact source before selecting it. No cloud workload is dispatched here.
+
+## Historical selection-head source
+
 This branch is measurement support, not a whole-feature merge proposal. The
 next baseline is the measured single-head candidate1a23e21. Commit6ae42f4e57aa131cf020269aea306c196585cb9e
 applies the reviewed policy/publication-read change to that graph, modifying only
