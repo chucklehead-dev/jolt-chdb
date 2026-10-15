@@ -28,4 +28,5 @@ port=$(<"$port_file")
 "$runner" -M:durable-s3-curl-test "http://127.0.0.1:$port"
 "$runner" -Srepro -Sdeps '{:paths ["src" "test"]}' -m jdbc.chdb-s3-expect-options-test
 "$runner" -Srepro -Sdeps '{:paths ["bench" "test"]}' -m jdbc.chdb-typed-storage-profile-test
+"$runner" -Srepro -Sdeps '{:paths ["src" "resources" "bench" "test"]}' -m jdbc.chdb-typed-storage-routing-test
 "$runner" -Srepro -Sdeps '{:paths ["src" "test"]}' -m jdbc.chdb-s3-expect-native-test "http://127.0.0.1:$port"
