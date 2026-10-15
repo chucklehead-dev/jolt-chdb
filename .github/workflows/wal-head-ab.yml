@@ -1,4 +1,4 @@
-name: bounded S3 WAL selection head comparison
+name: bounded S3 upload scratch comparison
 
 on:
   workflow_dispatch:
@@ -41,13 +41,13 @@ jobs:
         run: mkdir -p target/wal-head-ab
       - uses: actions/checkout@v4
         with:
-          ref: 1a23e211dda170e0d927728d8035d1f823e0d0be
+          ref: f0a7af6049cc5a5712541513e9aec27375bc234a
           path: .qualification/baseline
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: c7f54fe1d346cccd41fd421332e8cf46bebbc736
+          ref: a92f60b4e8936f0e2731150d04d35e42d9af4c5f
           path: .qualification/candidate
           fetch-depth: 0
           persist-credentials: false
@@ -146,8 +146,8 @@ jobs:
       - name: Validate every fixed source and both workload/recovery profiles
         run: |
           set -euo pipefail
-          test "$(git -C .qualification/baseline rev-parse HEAD)" = 1a23e211dda170e0d927728d8035d1f823e0d0be
-          test "$(git -C .qualification/candidate rev-parse HEAD)" = c7f54fe1d346cccd41fd421332e8cf46bebbc736
+          test "$(git -C .qualification/baseline rev-parse HEAD)" = f0a7af6049cc5a5712541513e9aec27375bc234a
+          test "$(git -C .qualification/candidate rev-parse HEAD)" = a92f60b4e8936f0e2731150d04d35e42d9af4c5f
           test "$(git -C .qualification/exporter rev-parse HEAD)" = 4f3bfd2bac88227710a3687b2a14fb5274689ef8
           test "$(git -C .qualification/json rev-parse HEAD)" = b959a5625c28cc8571e04de5ca02a2c8902b8b5e
           for task_repo in .qualification/baseline .qualification/candidate .qualification/exporter .qualification/json; do
