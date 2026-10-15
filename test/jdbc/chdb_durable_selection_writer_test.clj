@@ -37,6 +37,7 @@
                      (custom-publication? s t p)
                      (control/publish-wal-file! s t p)))))
         w (writer/start! {:store store :token token :handle :fake-handle
+                          :recovered-document (:head (control/read-head! delegate))
                           :database "default"
                           :engine-metadata {:version "26.7.3" :backup-format 1
                                             :min-reader "26.7.3"}
@@ -128,6 +129,36 @@
       (finally
         (reset! verify-failure? false)
         (writer/close! writer)))))
+
+(deftest seal-errors-do-not-invent-publication-ambiguity
+  (let [terminal (ex-info "injected seal failure" {:type ::control/commit-ambiguous})
+        seal-var (ns-resolve 'jdbc.chdb.durable.writer 'seal-wal!)]
+    (doseq [custom? [false true]]
+      (let [{:keys [writer store hooks]} (fixture custom?)]
+        (try
+          (writer/execute! writer "INSERT INTO t VALUES (1)")
+          (is (= :pending (:state (writer/persistence-observation writer))))
+          (let [error (with-redefs-fn
+                        {seal-var (fn [_] (throw terminal))}
+                        #(try (writer/flush! writer) nil (catch Throwable e e)))]
+            (is (identical? terminal error)))
+          (is (true? (:checkpoint-required? (writer/status writer))))
+          (is (= 1 (:pending-statements (writer/status writer))))
+          (is (= :pending (:state (writer/persistence-observation writer))))
+          (is (zero? @hooks))
+          (is (= 0 (get-in (:head (control/read-head! store)) ["manifest" "seq"])))
+          ;; A later confirmed checkpoint covers the retained local mutation.
+          (is (= :committed (:status (writer/flush! writer))))
+          (is (= :confirmed (:state (writer/persistence-observation writer))))
+          (finally (writer/close! writer)))))
+    ;; Positive control: the same error from the publication operation really
+    ;; is ambiguous and must still poison observation. Do not suppress by type.
+    (let [{:keys [writer]} (fixture (fn [& _] (throw terminal)))]
+      (try
+        (writer/execute! writer "INSERT INTO t VALUES (1)")
+        (is (identical? terminal (try (writer/flush! writer) nil (catch Throwable e e))))
+        (is (= :unconfirmed (:state (writer/persistence-observation writer))))
+        (finally (try (writer/close! writer) (catch Throwable _)))))))
 
 (defn -main [& _]
   (let [r (run-tests 'jdbc.chdb-durable-selection-writer-test)]

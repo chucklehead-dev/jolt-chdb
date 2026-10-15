@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep pre-publication seal errors distinct from uncertain control outcomes.
+  Preserve the exact error and checkpoint-required pending work without
+  inventing publication ambiguity; genuine publication uncertainty is unchanged.
+
 - Share the checkpoint policy's head read with WAL reference selection, while
   retaining fresh commit reads, full stored-object verification, conditional CAS
   and existing custom-hook behavior. Keep the measured owned-statement path and

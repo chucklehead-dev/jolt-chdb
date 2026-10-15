@@ -532,7 +532,17 @@
       (do-checkpoint! writer)
 
       :else
-      (let [[publication committed]
+      (let [seal-error (volatile! nil)
+            seal-path! (fn []
+                         (try
+                           (:path (seal-flush-wal! writer byte-count))
+                           (catch Throwable error
+                             ;; Keep the old pre-publication seal boundary:
+                             ;; even an ambiguity-tagged seal error cannot
+                             ;; describe an attempted object/head publication.
+                             (vreset! seal-error error)
+                             (throw error))))
+            [publication committed]
             (try
               (let [publication
                     (if select-publish!
@@ -543,10 +553,10 @@
                          ;; head. The commit still rereads AFTER full readback;
                          ;; no old ETag is carried across the upload for CAS.
                          (when-not (checkpoint-threshold-in-head? writer document)
-                           (:path (seal-flush-wal! writer byte-count)))))
+                           (seal-path!))))
                       ((:publish-wal-file! (:operations writer))
                        (:store writer) (:token writer)
-                       (:path (seal-flush-wal! writer byte-count))))]
+                       (seal-path!)))]
                 (if (and select-publish! (nil? publication))
                   [nil nil]
                   [publication
@@ -560,7 +570,8 @@
                 ;; Definite errors leave recovery work pending. Only an
                 ;; explicit unprovable control outcome poisons it, and a later
                 ;; WAL is intentionally unable to erase that uncertainty.
-                (when (commit-ambiguous? error)
+                (when (and (not (identical? error @seal-error))
+                           (commit-ambiguous? error))
                   (observation/unconfirmed! (:persistence-observation writer)))
                 (throw error)))]
         (if (and select-publish! (nil? publication))
