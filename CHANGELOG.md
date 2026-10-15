@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Share the checkpoint policy's head read with WAL reference selection, while
+  retaining fresh commit reads, full stored-object verification, conditional CAS
+  and existing custom-hook behavior. Keep the measured owned-statement path and
+  dependency graph intact. Throughput remains subject to a matched comparison.
+
 - Add an opt-in matched typed-span benchmark for local POSIX and scoped S3
   storage. Retain confirmed public SDK writes, exact SQL and full separate-
   process recovery; report p50/p90/p95/p99 and real checkpoint/renewal witnesses.

@@ -484,6 +484,10 @@
                           kind reference result)
   result)
 
+(defn- checkpoint-threshold-in-head? [writer document]
+  (when-let [threshold (:checkpoint-wal-reference-threshold writer)]
+    (>= (inc (count (get-in document ["manifest" "wal"]))) threshold)))
+
 (defn- checkpoint-threshold-reached?
   "Whether committing the staged WAL as another reference would reach the
   configured manifest-WAL limit.
@@ -493,16 +497,27 @@
   transition, which atomically replaces the base and clears WAL only after its
   head CAS is proved."
   [writer]
-  (when-let [threshold (:checkpoint-wal-reference-threshold writer)]
+  (when (:checkpoint-wal-reference-threshold writer)
     (let [snapshot (or (control/read-head! (:store writer))
                        (fail! ::control/lease-fenced
                               "The Durable head no longer exists"))]
-      (>= (inc (count (get-in (:head snapshot) ["manifest" "wal"])))
-          threshold))))
+      (checkpoint-threshold-in-head? writer (:head snapshot)))))
+
+(defn- seal-flush-wal! [writer byte-count]
+  (try
+    (observed-writer-phase
+     (:writer-phase! (:operations writer)) :wal-join byte-count
+     #(seal-wal! writer))
+    (catch Throwable error
+      ;; A failed seal cannot fall through to immutable WAL publication.
+      (require-checkpoint! writer)
+      (throw error))))
 
 (defn- do-flush! [writer]
   (assert-writable! writer)
-  (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)]
+  (let [{:keys [byte-count checkpoint-required?]} @(:wal-state writer)
+        select-publish! (when (:checkpoint-wal-reference-threshold writer)
+                          (:publish-wal-file-selected! (:operations writer)))]
     (cond
       checkpoint-required?
       (do-checkpoint! writer)
@@ -510,35 +525,37 @@
       (zero? byte-count)
       {:status :empty}
 
-      (checkpoint-threshold-reached? writer)
+      (and (not select-publish!) (checkpoint-threshold-reached? writer))
       ;; The pending mutations are already present in the serialized owner
       ;; handle. Checkpoint before returning this flush result, so its caller
       ;; still receives one confirmed/reconciled V1 head witness.
       (do-checkpoint! writer)
 
       :else
-      (let [spool
+      (let [[publication committed]
             (try
-              (observed-writer-phase
-               (:writer-phase! (:operations writer)) :wal-join byte-count
-               #(seal-wal! writer))
-              (catch Throwable error
-                ;; A native mutation is staged only if the spool has a closed,
-                ;; exact file image. A failed seal must force checkpoint and
-                ;; cannot fall through to immutable WAL publication.
-                (require-checkpoint! writer)
-                (throw error)))
-            [publication committed]
-            (try
-              (let [publication ((:publish-wal-file! (:operations writer))
-                                 (:store writer) (:token writer) (:path spool))
-                    committed ((:commit-reference! (:operations writer))
-                               (:store writer) (:token writer)
-                               {:kind :wal
-                                :reference (:reference publication)
-                                :verified-publication publication
-                                :verify-reference! control/verify-file-reference!})]
-                [publication committed])
+              (let [publication
+                    (if select-publish!
+                      (select-publish!
+                       (:store writer) (:token writer)
+                       (fn [document]
+                         ;; Selection and reference generation share one fresh
+                         ;; head. The commit still rereads AFTER full readback;
+                         ;; no old ETag is carried across the upload for CAS.
+                         (when-not (checkpoint-threshold-in-head? writer document)
+                           (:path (seal-flush-wal! writer byte-count)))))
+                      ((:publish-wal-file! (:operations writer))
+                       (:store writer) (:token writer)
+                       (:path (seal-flush-wal! writer byte-count))))]
+                (if (and select-publish! (nil? publication))
+                  [nil nil]
+                  [publication
+                   ((:commit-reference! (:operations writer))
+                    (:store writer) (:token writer)
+                    {:kind :wal
+                     :reference (:reference publication)
+                     :verified-publication publication
+                     :verify-reference! control/verify-file-reference!})]))
               (catch Throwable error
                 ;; Definite errors leave recovery work pending. Only an
                 ;; explicit unprovable control outcome poisons it, and a later
@@ -546,10 +563,13 @@
                 (when (commit-ambiguous? error)
                   (observation/unconfirmed! (:persistence-observation writer)))
                 (throw error)))]
-        ;; Retain the complete pending buffer on every failure. Only a confirmed
-        ;; or reconciled head commit proves that replay can recover these writes.
-        (clear-wal! writer)
-        (record-publication! writer :wal (:reference publication) committed)))))
+        (if (and select-publish! (nil? publication))
+          ;; No WAL was sealed/published when the threshold selected checkpoint.
+          (do-checkpoint! writer)
+          (do
+            ;; Only confirmed/reconciled commit permits dropping the spool.
+            (clear-wal! writer)
+            (record-publication! writer :wal (:reference publication) committed)))))))
 
 (defn- do-checkpoint! [writer]
   (assert-writable! writer)
@@ -946,6 +966,13 @@
             (control/publish-wal-file!
              store token path
              (assoc retry-options :phase-observe! (:writer-phase! configured-operations))))
+          :publish-wal-file-selected!
+          ;; Existing custom publication hooks retain their old call path.
+          (when-not (contains? configured-operations :publish-wal-file!)
+            (fn [store token select-file!]
+              (control/publish-wal-file-selected!
+               store token select-file!
+               (assoc retry-options :phase-observe! (:writer-phase! configured-operations)))))
           :publish-checkpoint!
           (fn [store token path]
             (control/publish-checkpoint-file!
@@ -995,6 +1022,9 @@
                    :close-native! :cleanup-scratch!}]
     (when-not (every? #(fn? (get operations %)) required)
       (fail! ::invalid-options "writer operations must be functions"))
+    (when (and (some? (:publish-wal-file-selected! operations))
+               (not (fn? (:publish-wal-file-selected! operations))))
+      (fail! ::invalid-options "publish-wal-file-selected! must be a function"))
     (when (and (some? (:writer-phase! operations))
                (not (fn? (:writer-phase! operations))))
       (fail! ::invalid-options "writer-phase! must be a function"))

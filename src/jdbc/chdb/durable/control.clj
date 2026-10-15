@@ -650,6 +650,61 @@
          :etag (:etag result)}
         store token reference)))))
 
+(defn- regular-wal-file! [file-path]
+  (let [path (if (instance? Path file-path)
+               file-path
+               (Paths/get (str file-path) (make-array String 0)))]
+    (when-not (Files/isRegularFile path (make-array java.nio.file.LinkOption 0))
+      (fail! ::invalid-options "WAL publication requires a regular file"))
+    path))
+
+(defn- publish-wal-file-from-head!
+  [store token path current options]
+  (let [observe! (:phase-observe! options)
+        generation (checked-token-generation token current)
+        sequence (inc (get-in current ["manifest" "seq"]))]
+    (when (> sequence head/max-safe-integer)
+      (fail! ::sequence-exhausted
+             "The Durable manifest sequence cannot be incremented safely"))
+    (let [reference {"key" (str "wal/" generation "-" sequence "-"
+                                 (unique-object-token) ".jsonl")
+                     "size" (Files/size path)
+                     "sha256" (digest/sha256-file path)}
+          result (observed-phase observe! :wal-immutable-put
+                                 (get reference "size")
+                                 #(backend/put-file-if-absent!
+                                   store (get reference "key") path))]
+      (verified-wal-publication
+       {:status (reconcile-publication!
+                 (:status result)
+                 #(observed-phase observe! :wal-immutable-verify
+                                  (get reference "size")
+                                  (fn [] (verify-file-reference! store reference)))
+                 true options)
+        :reference reference
+        :etag (:etag result)}
+       store token reference))))
+
+(defn ^:no-doc publish-wal-file-selected!
+  "Internal policy/publication bridge; commit still reads its own fresh head.
+
+  Select once using one newly decoded head. Nil means no publication. Otherwise
+  publish the selected regular file using that head's manifest sequence and
+  ordinary immutable verification. No head ETag escapes into publication/CAS."
+  [store token select-file! options]
+  (when-not (fn? select-file!)
+    (fail! ::invalid-options "select-file! must be a function"))
+  (when (and (some? (:phase-observe! options))
+             (not (fn? (:phase-observe! options))))
+    (fail! ::invalid-options "phase-observe! must be a function"))
+  (let [snapshot (or (read-head! store)
+                     (fail! ::lease-fenced "The Durable head no longer exists"))
+        current (:head snapshot)
+        selected (select-file! current)]
+    (when (some? selected)
+      (publish-wal-file-from-head! store token (regular-wal-file! selected)
+                                   current options))))
+
 (defn publish-wal-file!
   "Publish one staged statement-WAL file under its exact V1 reference.
 
@@ -667,40 +722,14 @@
   ([store token file-path]
    (publish-wal-file! store token file-path {}))
   ([store token file-path options]
-   (let [path (if (instance? Path file-path)
-                file-path
-                (Paths/get (str file-path) (make-array String 0)))]
-     (when-not (Files/isRegularFile path (make-array java.nio.file.LinkOption 0))
-       (fail! ::invalid-options "WAL publication requires a regular file"))
+   (let [path (regular-wal-file! file-path)]
      (let [observe! (:phase-observe! options)
            _ (when (and (some? observe!) (not (fn? observe!)))
                (fail! ::invalid-options "phase-observe! must be a function"))
            snapshot (or (read-head! store)
                         (fail! ::lease-fenced "The Durable head no longer exists"))
-           current (:head snapshot)
-           generation (checked-token-generation token current)
-           sequence (inc (get-in current ["manifest" "seq"]))]
-       (when (> sequence head/max-safe-integer)
-         (fail! ::sequence-exhausted
-                "The Durable manifest sequence cannot be incremented safely"))
-       (let [reference {"key" (str "wal/" generation "-" sequence "-"
-                                    (unique-object-token) ".jsonl")
-                        "size" (Files/size path)
-                        "sha256" (digest/sha256-file path)}
-             result (observed-phase observe! :wal-immutable-put
-                                    (get reference "size")
-                                    #(backend/put-file-if-absent!
-                                      store (get reference "key") path))]
-         (verified-wal-publication
-          {:status (reconcile-publication!
-                    (:status result)
-                    #(observed-phase observe! :wal-immutable-verify
-                                     (get reference "size")
-                                     (fn [] (verify-file-reference! store reference)))
-                    true options)
-           :reference reference
-           :etag (:etag result)}
-          store token reference))))))
+           current (:head snapshot)]
+       (publish-wal-file-from-head! store token path current options)))))
 
 (defn verify-byte-reference!
   "Verify a bounded in-memory immutable object against a V1 reference.
