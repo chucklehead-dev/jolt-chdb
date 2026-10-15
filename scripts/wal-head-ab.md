@@ -1,11 +1,12 @@
-# Matched single-head WAL qualification
+# Matched selection-head WAL qualification
 
 `wal-head-ab.yml` is a protected-main, manual workflow. It compares baseline
-3fd96c4 with candidate1a23e21 on one host. Both use the same frozen advanced
+1a23e21 with candidatec7f54fe on one host. Both use the same frozen advanced
 exporter4f3/JSONb959/compiler1ae/native26.9 stack, not current app defaults.
-Candidate production differs ONLY in control.clj, blobc198a388, identical to
-the reviewed single-head implementation in PR272. Other production files and
-pins are unchanged. The older measured compiler is a causal comparison control,
+Candidate production differs ONLY in control.clj (blob180d2d01) and writer.clj
+(blob16cb452d), the reviewed policy/publication-read change. It preserves the
+owned-statement/native-admission features of this measured graph. Other
+production files and pins are unchanged. The older measured compiler is a causal comparison control,
 not the target for new upstream work (currently stock Jolt0.8.22).
 
 The workflow runs local baseline/candidate first, then adjacent S3

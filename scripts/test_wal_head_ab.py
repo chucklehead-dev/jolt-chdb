@@ -20,8 +20,8 @@ import os, pathlib, sys
 source = pathlib.Path(sys.argv[2]).name
 args = sys.argv[3:]
 if args == ["rev-parse", "HEAD"]:
-    refs = {"baseline": "3fd96c4691c5db49ed4d3ef55622aaa6b9074127",
-            "candidate": "1a23e211dda170e0d927728d8035d1f823e0d0be"}
+    refs = {"baseline": "1a23e211dda170e0d927728d8035d1f823e0d0be",
+            "candidate": "c7f54fe1d346cccd41fd421332e8cf46bebbc736"}
     print("wrong" if os.environ.get("FAKE_WRONG") == source else refs[source])
 elif args == ["diff", "--quiet", "HEAD"]:
     sys.exit(1 if os.environ.get("FAKE_DIRTY") == source else 0)
@@ -61,7 +61,7 @@ if storage == "s3":
     base_env = dict(os.environ, PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
                     BENCH_EXPECT_EXPORTER_ROOT=str(sources["exporter"]),
                     BENCH_EXPECT_JSON_ROOT=str(sources["json"]),
-                    QUALIFIED_STORAGE_SOURCE_PROFILE="must-not-leak-to-baseline",
+                    QUALIFIED_STORAGE_SOURCE_PROFILE="must-not-leak-to-either-arm",
                     CHDB_BENCH_METADATA_READER="native")
 
     def run(number, **changes):
@@ -82,7 +82,7 @@ if storage == "s3":
     assert [(e["storage"], e["arm"], e["phase"]) for e in entries] == [
         (storage, arm, phase) for storage in ["local", "s3"]
         for arm in ["baseline", "candidate"] for phase in ["window", "reader"]]
-    assert all(e["profile"] == ("wal-single-head" if e["arm"] == "candidate" else None) for e in entries)
+    assert all(e["profile"] == ("wal-selection-head" if e["arm"] == "candidate" else "wal-single-head") for e in entries)
     assert all(e["reader"] == "stock" for e in entries if e["phase"] == "reader")
     assert len({e["root"] for e in entries}) == 4
     expected = {"preflight.json", "local-writer.edn", "local-reader.edn",
