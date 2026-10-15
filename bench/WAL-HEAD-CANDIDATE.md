@@ -1,13 +1,15 @@
-# Frozen-feature single-head WAL measurement
+# Frozen-feature selection-head WAL measurement
 
-This branch is measurement support, not a whole-feature merge proposal. Parent
-workload3fd96c4 and production291e1f43 remain the baseline. Commit85738d512025ae056f7721c6ffd89c061046d94e
-changes only control.clj to blobc198a3887fd8c4073763676e32c9945a58f34913,
-identical to the reviewed production candidate in PR272 (db927eb7).
+This branch is measurement support, not a whole-feature merge proposal. The
+next baseline is the measured single-head candidate1a23e21. Commit6ae42f4e57aa131cf020269aea306c196585cb9e
+applies the reviewed policy/publication-read change to that graph, modifying only
+control.clj (blob180d2d018c8b153ed9fc812528e909076f6ed7f1) and writer.clj
+(blob16cb452d375d59418f30718d73bdfa2a2bb431bd). The writer retains its measured
+owned-statement/native-admission features. No compiler/dependency repins.
 
-Set QUALIFIED_STORAGE_SOURCE_PROFILE=wal-single-head only for this candidate.
-The launcher accepts exactly that frozen production graph or the original
-baseline graph, not arbitrary source refs. Compiler/native/exporter/JSON pins,
+Set QUALIFIED_STORAGE_SOURCE_PROFILE=wal-selection-head for this candidate and
+wal-single-head for the1a23 baseline. The launcher accepts only the enumerated
+frozen production graphs, not arbitrary source refs. Compiler/native/exporter/JSON pins,
 workload, automatic checkpoints/renewals and stock recovery remain unchanged.
 No Expect wait override or transport change. Default source profile stays
 baseline and rejects candidate production unless explicitly selected.

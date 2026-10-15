@@ -40,6 +40,12 @@ case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
     # files/dependencies retain baseline contents.
     git -C "$task_chdb" diff --quiet 85738d512025ae056f7721c6ffd89c061046d94e -- src resources deps.edn
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = c198a3887fd8c4073763676e32c9945a58f34913 ;;
+  wal-selection-head)
+    # Surgical selection/publication-read change on the same measured graph.
+    # Preserve owned-statement admission, every other production file and pins.
+    git -C "$task_chdb" diff --quiet 6ae42f4e57aa131cf020269aea306c196585cb9e -- src resources deps.edn
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 180d2d018c8b153ed9fc812528e909076f6ed7f1
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 16cb452d375d59418f30718d73bdfa2a2bb431bd ;;
   *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
 esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"
