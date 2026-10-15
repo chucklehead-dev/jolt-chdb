@@ -7,6 +7,12 @@
   compiler and dependency pins, workload, independent recovery, cloud budgets
   and scalar-only receipt privacy checks. No new throughput result is implied.
 
+- Share the automatic checkpoint policy's fresh head read with WAL reference
+  selection. Keep the independent fresh commit read after full object verification,
+  conditional CAS, renewal/takeover fencing and ambiguous-result reconciliation.
+  Custom publication hooks retain their existing path. No throughput gain is
+  claimed before a matched measurement.
+
 - Add a protected-main, fixed-source baseline/single-head WAL comparison with
   separate local/S3 windows, independent stock recovery and native curl scalar
   profiles. Keep the measured compiler/dependency graph unchanged, reject dirty
