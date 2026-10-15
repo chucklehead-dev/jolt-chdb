@@ -4,7 +4,7 @@ set -euo pipefail
 test "$#" -eq 2
 task_candidate=$(realpath "$1")
 task_receipts=$(realpath "$2")
-test "$(git -C "$task_candidate" rev-parse HEAD)" = a0e1e73a0af08db2fb943c87f70a13e26e5e406a
+test "$(git -C "$task_candidate" rev-parse HEAD)" = a0ce9d5fda063eb57e011e06e3e1c15797ad4afa
 git -C "$task_candidate" diff --quiet HEAD
 test "${SDK_STORAGE_ARM:?}" = s3
 test "${TASK_ORIGINAL_TYPED_DRIVER:?}" = "$task_candidate/bench/typed-storage-window.clj"

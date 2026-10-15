@@ -37,18 +37,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Require closed mode and workload bounds
-        env:
-          TASK_MODE: qualify
+      - name: Prepare fixed workload receipt directory
         run: |
           set -euo pipefail
-          case "$TASK_MODE" in preflight|qualify) ;; *) exit 1 ;; esac
           # Fixed 256 measured 10k batches +3 warmups; no input-selected size,
           # source, namespace, archive or compiler. Each S3 arm has a20min writer deadline.
           mkdir -p target/current-typed-storage
       - uses: actions/checkout@v4
         with:
-          ref: a0e1e73a0af08db2fb943c87f70a13e26e5e406a
+          ref: a0ce9d5fda063eb57e011e06e3e1c15797ad4afa
           path: .qualification/benchmark
           fetch-depth: 0
           persist-credentials: false
@@ -164,7 +161,7 @@ jobs:
       - name: Validate exact workload receipts and source parity
         run: |
           set -euo pipefail
-          test "$(git -C .qualification/benchmark rev-parse HEAD)" = a0e1e73a0af08db2fb943c87f70a13e26e5e406a
+          test "$(git -C .qualification/benchmark rev-parse HEAD)" = a0ce9d5fda063eb57e011e06e3e1c15797ad4afa
           test "$(git -C .qualification/exporter rev-parse HEAD)" = 4f3bfd2bac88227710a3687b2a14fb5274689ef8
           test "$(git -C .qualification/json rev-parse HEAD)" = b959a5625c28cc8571e04de5ca02a2c8902b8b5e
           test "$(git -C .qualification/local-benchmark rev-parse HEAD)" = 3fd96c4691c5db49ed4d3ef55622aaa6b9074127
