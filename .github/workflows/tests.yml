@@ -169,6 +169,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
           bb scripts/test_typed_storage_budget.clj
           bb scripts/test_typed_storage_receipts.clj
+          bb -cp scripts -e "(require 'test-typed-storage-curl-profile-receipt) (let [r (clojure.test/run-tests 'test-typed-storage-curl-profile-receipt)] (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))"
       - name: Download checksum-pinned Corretto 25.0.2
         env:
           CORRETTO_URL: https://corretto.aws/downloads/resources/25.0.2.10.1/amazon-corretto-25.0.2.10.1-linux-x64.tar.gz
