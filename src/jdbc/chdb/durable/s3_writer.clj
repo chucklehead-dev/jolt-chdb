@@ -27,7 +27,9 @@
     (fn [send-data]
       (curl/with-reused-transport!
         (fn [send-renewal]
-          (let [namespace (s3/s3-backend (assoc s3-options :request! send-data))
+          (let [send-data (curl/request-function s3-options send-data)
+                send-renewal (curl/request-function s3-options send-renewal)
+                namespace (s3/s3-backend (assoc s3-options :request! send-data))
                 renewal-store (backend/object-backend
                                 (s3/s3-backend (assoc s3-options :request! send-renewal))
                                 (:object-id writer-options))

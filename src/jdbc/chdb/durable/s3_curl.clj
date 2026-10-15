@@ -26,6 +26,7 @@
 (def ^:private curlopt-infilesize-large 30115)
 (def ^:private curlopt-timeout-ms 155)
 (def ^:private curlopt-connecttimeout-ms 156)
+(def ^:private curlopt-expect-100-timeout-ms 227)
 (def ^:private curlopt-aws-sigv4 10305)
 (def ^:private curlinfo-response-code 0x200002)
 (def ^:private curl-readfunc-abort 0x10000000)
@@ -275,9 +276,10 @@
   Transport errors are sanitized and write failures remain ambiguous unless the
   request was proven not to have started."
   [{:keys [method url headers request-body response-body auth region
-           connect-timeout-ms timeout-ms max-response-bytes]
+           connect-timeout-ms timeout-ms max-response-bytes expect-100-timeout-ms]
     :or {connect-timeout-ms 10000
          timeout-ms 300000
+         expect-100-timeout-ms 1000
          max-response-bytes (* 128 1024 1024)
          headers {}}}]
   @initialized
@@ -289,6 +291,8 @@
                    (map? headers)
                    (integer? connect-timeout-ms) (pos? connect-timeout-ms)
                    (integer? timeout-ms) (pos? timeout-ms)
+                   (integer? expect-100-timeout-ms)
+                   (<= 1 expect-100-timeout-ms 1000)
                    (integer? max-response-bytes) (pos? max-response-bytes))
       (transport-failure! "invalid libcurl request options" true))
     (let [handle (or *reused-handle* (curl-easy-init))]
@@ -370,6 +374,8 @@
               (set-long! handle curlopt-connecttimeout-ms
                          connect-timeout-ms :connect-timeout)
               (set-long! handle curlopt-timeout-ms timeout-ms :timeout)
+              (set-long! handle curlopt-expect-100-timeout-ms
+                         expect-100-timeout-ms :expect-continue-timeout)
               (set-pointer! handle curlopt-writedata ffi/null :write-data)
               (set-pointer! handle curlopt-writefunction
                             write-callback :write-callback)
@@ -479,11 +485,12 @@
 
 (defn request-function
   "Create a transport function with optional timeout and byte-response bounds."
-  [options]
-  (let [selected (select-keys options
-                              [:connect-timeout-ms :timeout-ms
+  ([options] (request-function options (fn [request] (request! request))))
+  ([options send!]
+   (let [selected (select-keys options
+                              [:connect-timeout-ms :timeout-ms :expect-100-timeout-ms
                                :max-response-bytes])]
-    (fn [request] (request! (merge selected request)))))
+     (fn [request] (send! (merge selected request))))))
 
 (defn s3-backend
   "Create the S3 ObjectBackend with a statically reachable libcurl transport.

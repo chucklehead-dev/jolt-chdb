@@ -39,6 +39,13 @@ def etag(body):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle_expect_100(self):
+        if self.path.startswith("/bucket/ignore-continue/"):
+            # Controlled transport boundary: accept the body but send no interim
+            # response. Other existing fixture routes retain normal behavior.
+            return True
+        return super().handle_expect_100()
+
     def setup(self):
         super().setup()
         if "--tcp-nodelay" in sys.argv[2:]:
@@ -136,6 +143,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
+        if key.startswith("/bucket/ignore-continue/"):
+            exact = (length == 1048577 and body == bytes(length)
+                     and self.headers.get("Expect", "").lower() == "100-continue")
+            self.answer(200 if exact else 400, b"", etag(body))
+            return
         if key.startswith("/bucket/writer-native-overlap/object/wal/"):
             with LOCK:
                 armed = OBJECTS.pop("native-overlap-armed", False)

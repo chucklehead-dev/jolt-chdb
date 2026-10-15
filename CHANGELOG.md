@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in bounded Expect/Continue wait for native S3 transport, including
+  independently owned data and renewal senders. Preserve the 1000ms default,
+  request deadlines, credential fences, conditional writes and verification.
+  Controlled native loopback removes an ignored-interim-response stall; actual
+  AWS throughput benefit still requires matched qualification.
+
 - Add an opt-in matched typed-span benchmark for local POSIX and scoped S3
   storage. Retain confirmed public SDK writes, exact SQL and full separate-
   process recovery; report p50/p90/p95/p99 and real checkpoint/renewal witnesses.
