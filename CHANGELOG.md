@@ -10,7 +10,9 @@
 - Share the automatic checkpoint policy's fresh head read with WAL reference
   selection. Keep the independent fresh commit read after full object verification,
   conditional CAS, renewal/takeover fencing and ambiguous-result reconciliation.
-  Custom publication hooks retain their existing path. No throughput gain is
+  Custom publication hooks retain their existing path. Seal errors remain
+  checkpoint-required local failures, not uncertain publication outcomes.
+  No throughput gain is
   claimed before a matched measurement.
 
 - Add a protected-main, fixed-source baseline/single-head WAL comparison with
