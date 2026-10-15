@@ -30,8 +30,7 @@ test "$(git -C "$task_exporter" rev-parse HEAD)" = 4f3bfd2bac88227710a3687b2a14f
 test "$(git -C "$task_json" rev-parse HEAD)" = b959a5625c28cc8571e04de5ca02a2c8902b8b5e
 git -C "$task_exporter" diff --quiet HEAD
 git -C "$task_json" diff --quiet HEAD
-git -C "$task_chdb" merge-base --is-ancestor 291e1f43a859428f737211c0e9853e1616b54097 HEAD
-git -C "$task_chdb" diff --quiet 291e1f43a859428f737211c0e9853e1616b54097 -- src resources deps.edn
+bash "$task_chdb/bench/check-typed-storage-source.sh" "$task_chdb"
 test -f "${JOLT_CHDB_LIB:?exact native library required}"
 test "$(sha256sum "$JOLT_CHDB_LIB" | cut -d ' ' -f1)" = a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557
 
