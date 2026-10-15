@@ -197,6 +197,9 @@ jobs:
       - name: Reject identifiers and credentials from receipt uploads
         id: receipt_scan
         if: always()
+        # configure-aws-credentials persists AWS_* for this step. The JOLT_*
+        # aliases above are verbatim copies, so scanning the AWS_* values also
+        # covers them; step-local aliases are not independently available here.
         env:
           TASK_ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
           TASK_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
