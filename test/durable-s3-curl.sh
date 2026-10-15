@@ -2,6 +2,11 @@
 set -euo pipefail
 
 runner=${1:-jolt}
+test_alias=${2:-durable-s3-curl-test}
+case "$test_alias" in
+  durable-s3-curl-test|durable-witness-head-native-test) ;;
+  *) echo unsupported-local-curl-test >&2; exit 64 ;;
+esac
 tmp_dir=$(mktemp -d)
 port_file="$tmp_dir/port"
 server_pid=""
@@ -25,4 +30,4 @@ done
 [[ -s "$port_file" ]]
 
 port=$(<"$port_file")
-"$runner" -M:durable-s3-curl-test "http://127.0.0.1:$port"
+"$runner" "-M:$test_alias" "http://127.0.0.1:$port"

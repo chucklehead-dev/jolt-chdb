@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Avoid one redundant head GET when committing a WAL whose private publication
+  witness already proves stored-object readback. The first fresh head snapshot
+  still guards an ETag CAS; conflicts reread and preserve renewals or fence
+  takeovers, and ambiguous writes remain reconciliation-only. Unwitnessed and
+  checkpoint commits retain their post-verification refresh.
+
 - Add an explicitly selected protected S3 transfer diagnostic around the existing
   budgeted workload. Aggregate native curl timing milestones and new connections
   by bounded request/body classes without retaining request data. Keep fixed

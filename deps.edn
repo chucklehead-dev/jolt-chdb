@@ -176,6 +176,9 @@
            :durable-s3-curl-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-durable-s3-curl-test"]}
+           :durable-witness-head-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-durable-witness-head-native-test"]}
            :durable-s3-itf-test
            {:extra-deps
             {io.github.chucklehead-dev/jolt-hegel
