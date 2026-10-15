@@ -254,6 +254,7 @@
                                      :local :local-posix-typed-public-export
                                      :s3 :s3-scoped-typed-public-export)
                             :native-execution-arm stream-arm :stream-calls @stream-calls
+                            :storage-profile (storage/report-profile)
                             :timestamp-wire (:timestamp-wire state)
                             :metadata-reader {:mode reader-mode :calls @reader-calls
                                               :startup-reader :stock :recovery-reader :stock}
@@ -322,6 +323,7 @@
                                                 ") AS t FROM otel_traces LIMIT 1")))) :physical-type))
       (spit (str root "/reader.edn")
             (pr-str {:passed true :groups n :rows (* n (+ 3 samples))
+                     :storage-profile (storage/report-profile)
                      :full-physical-rows-equal true :typed-values-status true}))
       (println :fresh-reader-green :rows (* n (+ 3 samples))))))
 
