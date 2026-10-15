@@ -4,6 +4,41 @@ This manual workflow measures the actual SDK/exporter path on local storage
 and S3. It does not replace the separate pre-encoded Durable benchmark.
 Application defaults and the existing AWS role and bucket policies are unchanged.
 
+## Fixed S3 continue-wait comparison
+
+`expect-continue-ab.yml` is a separate manual protected-main workflow. It first
+qualifies the preserved local baseline, then runs the fixed candidate with
+1000ms and10ms continue waits sequentially on the same host. Each S3 arm has a
+different fixed object ID,256 measured10k batches plus3 warmups, the same forced
+heartbeat/checkpoint workload, and a separate stock-reader process. The original
+qualification workflow and its source guard are not bypassed or repinned.
+
+The candidate has its own closed source profile; it accepts only the two waits
+in S3 mode. An unset profile retains old defaults, and a leaked S3 wait in local
+mode is rejected. Both writer and reader receipts bind the chosen wait.
+The new workflow pins the candidate checkout, compiler artifact, native library,
+exporter and JSON dependencies; it does not accept user-selected source or size.
+
+Each arm retains24000writer requests/6GiB declared upload and1000GET-only reader
+requests/zero upload. The combined maximum is48000writer requests/12GiB plus
+2000reader requests, not a single6GiB run. Writer deadlines are20minutes each,
+readers four minutes each, and the S3 step is bounded to50minutes so both arms
+fit inside the one-hour assumed-role session. Failures remain failures; deadlines
+or exhausted budgets never fabricate persisted acknowledgements.
+
+Process logs and owned scratch directories are cleaned on exit. Only the seven
+existing allowlisted scalar receipt names within each of the two fixed arm
+directories can be uploaded, after the unchanged privacy scanner checks each.
+Partial receipts are diagnostic, not qualification. The final verifier composes
+the original full workload/recovery/budget checks for both arms, then rejects
+swapped wait profiles or differing SQL fixture hashes. This is one sequential
+comparison, not a confidence interval, randomized study or full-app guarantee.
+
+The10ms setting can send upload bytes before a rejection arrives. Conditional
+write enforcement is preserved, but early-rejection bandwidth savings are not
+promised. This experiment does not change application defaults or claim an AWS
+throughput improvement before validated results exist.
+
 Dispatch `current-typed-storage.yml` from protected `main`. The default mode,
 `preflight`, assumes the existing CI role and reads identity, role policies,
 bucket versioning and lifecycle metadata. It does not write objects. Unsupported
