@@ -32,3 +32,19 @@ requests open3connections, whereas3requests through the scoped owner open1,
 with complete measurements collected before handle reset/cleanup. This is not
 TLS/AWS or durable-recovery qualification. Protected cloud wiring and review are
 still required before using these counters to explain the real S3 deficit.
+
+`s3-transport-profile.yml` provides that wiring once reviewed and merged. Its
+default is read-only preflight; `mode=qualify` uses the original3fd96c4 benchmark
+with no wait override, the same1ae runtime/native26.9.0/exporter/JSON pins,
+256x10k workload and independent stock recovery. `typed_storage_profile_driver`
+wraps the unchanged request-budget driver, not a replacement for it. Writer and
+reader processes each produce their own profile; receipt validation checks
+closed metric/class shapes and exact agreement with settled request counts.
+Unknown fields, nonfinite values, missing samples or failed calls reject.
+
+Request limits remain24000/6GiB for the writer and1000GETs/zero upload for the
+reader. The unchanged original workload/recovery oracle runs before profile
+validation. Only the nine fixed scalar files may be uploaded, after credential/
+identifier scans. Local logs and scratch are removed on exit, including failure.
+Profile milestones may include first interim response rather than final headers;
+they do not isolate server processing from upload or network delay.

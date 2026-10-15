@@ -99,8 +99,9 @@ loopback S3 fixture exercises the real scoped writer, checkpoints, renewals,
 stock-reader recovery and wrapper routing with dummy credentials; it is not
 AWS IAM, real SigV4 authentication or a throughput qualification.
 
-Only seven named scalar receipt files, each at most 2 MiB, are eligible for
-upload. A final gate rejects configured credentials and identifiers in raw,
+Ordinary qualification produces seven named scalar receipts. The separate
+transport diagnostic adds two allowlisted aggregate timing receipts; each file
+is bounded to 2 MiB. A final gate rejects configured credentials and identifiers in raw,
 JSON-escaped, URL-encoded or Base64 form before the artifact uploader runs.
 This is a secondary leak check, not a universal secret detector. Process logs,
 telemetry payloads, object contents and storage directories are never uploaded.

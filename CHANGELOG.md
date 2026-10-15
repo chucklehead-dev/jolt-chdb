@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add an explicitly selected protected S3 transfer diagnostic around the existing
+  budgeted workload. Aggregate native curl timing milestones and new connections
+  by bounded request/body classes without retaining request data. Keep fixed
+  source/runtime pins, stock recovery and request/upload limits; reject incomplete
+  profiles and privacy-scan the two additional scalar receipts. No transport
+  option, application default or durability behavior change.
+
 - Add a protected-main, fixed-source S3 Expect/Continue comparison with sequential
   1000ms/10ms arms, separate object identities and independent stock recovery.
   Keep the qualified runtime/dependency pins and per-arm request/upload limits;
