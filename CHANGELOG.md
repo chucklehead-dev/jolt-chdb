@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a protected-main, fixed-source baseline/single-head WAL comparison with
+  separate local/S3 windows, independent stock recovery and native curl scalar
+  profiles. Keep the measured compiler/dependency graph unchanged, reject dirty
+  or untracked source inputs, bound both arms' cloud requests/uploads, and clean
+  local storage after every arm. No new throughput result is implied.
+
 - Avoid one redundant head GET when committing a WAL whose private publication
   witness already proves stored-object readback. The first fresh head snapshot
   still guards an ETag CAS; conflicts reread and preserve renewals or fence
