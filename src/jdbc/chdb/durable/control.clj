@@ -992,16 +992,22 @@
   (let [observe! (when (= :wal kind) (:phase-observe! options))
         initial (or (read-commit-head! store nil)
                     (fail! ::lease-fenced "The Durable head no longer exists"))
-        initial-current (assert-owned! (:head initial) token)]
+        initial-current (assert-owned! (:head initial) token)
+        witnessed-wal? (and (= :wal kind)
+                            (verified-wal-publication?
+                             verified-publication store token reference))]
     (reference-transition initial-current token kind reference engine-metadata)
-    (when-not (and (= :wal kind)
-                   (verified-wal-publication?
-                    verified-publication store token reference))
+    (when-not witnessed-wal?
       (when-not (observed-phase observe! :wal-immutable-verify
                                 (get reference "size")
                                 #(verify-reference! store reference))
         (fail! ::object-unverified
                "The immutable Durable object could not be verified")))
+    ;; A matching private WAL witness means no verification I/O occurred here,
+    ;; so its first fresh snapshot is sufficient for the initial guarded CAS.
+    ;; A concurrent renewal/takeover still changes the ETag: the existing
+    ;; precondition-failure path rereads, preserves renewal or fences takeover.
+    ;; Unwitnessed/checkpoint verification retains its post-I/O refresh.
     ;; A heartbeat may change only the lease expiry while verification is in
     ;; flight. Rebuild from the newest owned head and retry only a definite CAS
     ;; precondition failure. An ambiguous CAS is never retried: exact reread
@@ -1011,9 +1017,11 @@
       (retry-budget! (assoc options :max-attempts max-attempts))
       {:phase :cas
        :phase-observe! observe!
-       :snapshot (or (read-commit-head! store initial)
-                     (fail! ::lease-fenced
-                            "The Durable head no longer exists"))}
+       :snapshot (if witnessed-wal?
+                   initial
+                   (or (read-commit-head! store initial)
+                       (fail! ::lease-fenced
+                              "The Durable head no longer exists")))}
       (fn [_ snapshot]
         (commit-reference-attempt! store token kind reference
                                    engine-metadata snapshot)))
