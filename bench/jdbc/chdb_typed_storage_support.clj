@@ -4,7 +4,7 @@
             [jdbc.chdb.durable :as durable]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.local-posix :as local]
-            [jdbc.chdb.durable.s3 :as s3]
+            [jdbc.chdb.durable.s3-curl :as curl]
             [jdbc.chdb.durable.s3-writer :as s3-writer]
             [jdbc.chdb-typed-storage-profile :as profile]))
 
@@ -51,7 +51,7 @@
     (case (arm)
       :local (assoc basic :namespace-backend (local/local-backend (str root "/objects")))
       :s3 (if (= phase "writer") basic
-              (assoc basic :namespace-backend (s3/s3-backend (s3-options)))))))
+              (assoc basic :namespace-backend (curl/s3-backend (s3-options)))))))
 
 (defn with-writer! [options on-renew! f]
   (case (arm)
