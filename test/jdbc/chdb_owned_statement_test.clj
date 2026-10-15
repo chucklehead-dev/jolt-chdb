@@ -33,9 +33,11 @@
       (is (false? (screen (.getBytes sql "UTF-8")))))
     ;; A marker in ANY lexical context must reach the original scanner.
     (doseq [sql ["?" "'?'" "--?" "/*?*/" "abc\u0000?"]]
-      (is (thrown? Throwable (screen (.getBytes sql "UTF-8")))))
+      (is (thrown-with-msg? Throwable #"lexer reached"
+                           (screen (.getBytes sql "UTF-8")))))
     (is (false? (no-native (.getBytes "" "UTF-8"))))
-    (is (thrown? Throwable (no-native (.getBytes "abc" "UTF-8"))))
+    (is (thrown-with-msg? Throwable #"lexer reached"
+                         (no-native (.getBytes "abc" "UTF-8"))))
     (is (thrown? Throwable (screen nil)))
     (is (thrown? Throwable (screen "not an array")))
     (let [absent-symbol (scheme/eval-string
