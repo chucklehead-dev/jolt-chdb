@@ -11,7 +11,8 @@
               store (backend/object-backend
                      (s3/s3-backend {:endpoint endpoint :bucket "bucket" :prefix "continue-reject"
                                      :region "us-east-1" :access-key "ACCESS" :secret-key "SECRET"
-                                     :session-token "SESSION" :max-attempts 1 :request! send})
+                                     :session-token "SESSION" :max-attempts 1 :timeout-ms 5000
+                                     :retry-deadline-ms 5000 :request! send})
                      "object")]
           (doseq [key ["early412" "late417"]]
             (let [before (backend/get-with-etag store key)
@@ -35,6 +36,20 @@
             (assert (= :created (:status (backend/put-bytes-if-absent! store key value))))
             (assert (= "after-rejection" (String. (:bytes (backend/get-with-etag store key)) "UTF-8")))))))))
 
+(defn short-deadline-control [endpoint bytes]
+  (let [start (System/nanoTime)
+        error (try (curl/request!
+                     {:method :put :url (str endpoint "/bucket/ignore-continue/deadline")
+                      :request-body {:bytes bytes :byte-count 1048577}
+                      :headers {"x-amz-content-sha256" "UNSIGNED-PAYLOAD"}
+                      :auth {:access-key "ACCESS" :secret-key "SECRET" :session-token "SESSION"}
+                      :region "us-east-1" :timeout-ms 100 :expect-100-timeout-ms 1000})
+                   nil (catch Throwable e e))
+        elapsed (/ (- (System/nanoTime) start) 1e6)]
+    ;; CURLE_OPERATION_TIMEDOUT, not a mocked allocation/validation failure.
+    (assert (= 28 (:curl-code (ex-data error))))
+    (assert (< elapsed 800))))
+
 (defn -main [endpoint]
   (let [bytes (byte-array 1048577)
         send (fn [wait]
@@ -54,6 +69,7 @@
         candidate (send 10)]
     (assert (> baseline 800))
     (assert (< candidate 500))
+    (short-deadline-control endpoint bytes)
     (rejection-controls endpoint bytes)
     (prn {:scope :native-libcurl-ignored-continue-not-aws
           :body-bytes 1048577 :exact-body true
