@@ -31,7 +31,17 @@ test "$(git -C "$task_json" rev-parse HEAD)" = b959a5625c28cc8571e04de5ca02a2c89
 git -C "$task_exporter" diff --quiet HEAD
 git -C "$task_json" diff --quiet HEAD
 git -C "$task_chdb" merge-base --is-ancestor 291e1f43a859428f737211c0e9853e1616b54097 HEAD
-git -C "$task_chdb" diff --quiet 291e1f43a859428f737211c0e9853e1616b54097 -- src resources deps.edn
+case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
+  baseline)
+    git -C "$task_chdb" diff --quiet 291e1f43a859428f737211c0e9853e1616b54097 -- src resources deps.edn ;;
+  wal-single-head)
+    # Exactly the reviewed control blob on the frozen feature graph, not a
+    # mutable branch or a caller-selected source revision. All other production
+    # files/dependencies retain baseline contents.
+    git -C "$task_chdb" diff --quiet 85738d512025ae056f7721c6ffd89c061046d94e -- src resources deps.edn
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = c198a3887fd8c4073763676e32c9945a58f34913 ;;
+  *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
+esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"
 test "$(sha256sum "$JOLT_CHDB_LIB" | cut -d ' ' -f1)" = a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557
 
