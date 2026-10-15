@@ -1,11 +1,16 @@
-# Matched selection-head WAL qualification
+# Matched canonical upload-buffer qualification
 
 `wal-head-ab.yml` is a protected-main, manual workflow. It compares baseline
-1a23e21 with candidatec7f54fe on one host. Both use the same frozen advanced
+f0a7af60 with candidatea92f60b on one host. Both use the same frozen advanced
 exporter4f3/JSONb959/compiler1ae/native26.9 stack, not current app defaults.
-Candidate production differs ONLY in control.clj (blob180d2d01) and writer.clj
-(blob16cb452d), the reviewed policy/publication-read change. It preserves the
-owned-statement/native-admission features of this measured graph. Other
+Both arms retain the shared selection-head and seal-error provenance corrections.
+Candidate production differs ONLY in s3_curl.clj (blob528ed7bf) and the added
+s3_body.clj (blob44b64e1a), restoring main's already-reviewed request-owned upload
+scratch helper alongside experimental connection reuse. Baseline selects the
+closed `wal-selection-head-seal` profile; candidate selects
+`wal-selection-head-seal-upload-buffer`. This recovers a canonical optimization
+missing from the old frozen feature graph, not a new fix missing from main.
+It preserves the owned-statement/native-admission features. Other
 production files and pins are unchanged. The older measured compiler is a causal comparison control,
 not the target for new upstream work (currently stock Jolt0.8.22).
 
@@ -39,3 +44,8 @@ bounds. Track p50/p90/p95/p99 and raw sample counts, while retaining native curl
 milestones as overlapping diagnostics, not exclusive phases. A saved GET is a
 mechanism result; throughput improvement and sustained tail targets require
 actual results. No blanket improvement claim from prior short smoke tests.
+
+Earlier1a23/c7 selection-head receipts remain evidence for their exact historical
+source. Do not relabel them as upload-buffer results. The local file-upload
+screen establishes a scoped allocation reduction, not this workflow's AWS
+throughput or tail outcome. No production source is changed by this CI update.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compare the seal-corrected measured stack with canonical request-owned S3
+  upload scratch restored alongside connection reuse. Pin both exact source
+  profiles and reject workflow/runner tuple drift. Preserve workload, compiler,
+  dependency/native pins, cloud bounds, independent recovery and scalar-only
+  artifact privacy. No new AWS throughput result or product change is implied.
+
 - Advance the fixed local/S3 comparison from single-head WAL commit to shared
   policy/publication selection, preserving the measured owned-writer graph,
   compiler and dependency pins, workload, independent recovery, cloud budgets

@@ -5,8 +5,8 @@ test "$#" -eq 3
 task_baseline=$(realpath "$1")
 task_candidate=$(realpath "$2")
 task_receipts=$(realpath "$3")
-test "$(git -C "$task_baseline" rev-parse HEAD)" = 1a23e211dda170e0d927728d8035d1f823e0d0be
-test "$(git -C "$task_candidate" rev-parse HEAD)" = c7f54fe1d346cccd41fd421332e8cf46bebbc736
+test "$(git -C "$task_baseline" rev-parse HEAD)" = f0a7af6049cc5a5712541513e9aec27375bc234a
+test "$(git -C "$task_candidate" rev-parse HEAD)" = a92f60b4e8936f0e2731150d04d35e42d9af4c5f
 for task_source in "$task_baseline" "$task_candidate" "${BENCH_EXPECT_EXPORTER_ROOT:?}" "${BENCH_EXPECT_JSON_ROOT:?}"; do
   git -C "$task_source" diff --quiet HEAD
   task_untracked=$(git -C "$task_source" ls-files --others -- src resources deps.edn bench test)
@@ -33,8 +33,8 @@ for task_storage in local s3; do
     export SDK_WAL_HEAD_ARM="$task_arm"
     task_output="$task_receipts/$task_arm"
     case "$task_arm" in
-      baseline) task_source="$task_baseline"; export QUALIFIED_STORAGE_SOURCE_PROFILE=wal-single-head ;;
-      candidate) task_source="$task_candidate"; export QUALIFIED_STORAGE_SOURCE_PROFILE=wal-selection-head ;;
+      baseline) task_source="$task_baseline"; export QUALIFIED_STORAGE_SOURCE_PROFILE=wal-selection-head-seal ;;
+      candidate) task_source="$task_candidate"; export QUALIFIED_STORAGE_SOURCE_PROFILE=wal-selection-head-seal-upload-buffer ;;
     esac
     export TASK_ORIGINAL_TYPED_DRIVER="$task_source/bench/typed-storage-window.clj"
     task_driver="$task_source/bench/run-typed-storage-window.sh"

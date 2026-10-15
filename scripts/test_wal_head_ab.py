@@ -2,11 +2,39 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 
 runner = pathlib.Path(__file__).with_name("run_wal_head_ab.sh").resolve()
+expected_refs = {
+    "baseline": "f0a7af6049cc5a5712541513e9aec27375bc234a",
+    "candidate": "a92f60b4e8936f0e2731150d04d35e42d9af4c5f",
+}
+workflow = runner.parents[1] / ".github/workflows/wal-head-ab.yml"
+
+
+def workflow_tuple_valid(text):
+    checkouts = re.findall(
+        r"ref: ([a-f0-9]{40})\n\s+path: \.qualification/(baseline|candidate)\n", text)
+    validations = re.findall(
+        r'test "\$\(git -C \.qualification/(baseline|candidate) rev-parse HEAD\)" = ([a-f0-9]{40})', text)
+    return (len(checkouts) == len(validations) == 2
+            and {arm: ref for ref, arm in checkouts} == expected_refs
+            and dict(validations) == expected_refs)
+
+
+workflow_text = workflow.read_text()
+assert workflow_tuple_valid(workflow_text), "workflow checkout/validation tuple drift"
+for arm, stale in {"baseline": "1a23e211dda170e0d927728d8035d1f823e0d0be",
+                   "candidate": "c7f54fe1d346cccd41fd421332e8cf46bebbc736"}.items():
+    # Change checkout only, then validation only: both controls must reject.
+    current = expected_refs[arm]
+    assert not workflow_tuple_valid(workflow_text.replace(current, stale, 1))
+    marker = f'git -C .qualification/{arm} rev-parse HEAD)" = '
+    assert not workflow_tuple_valid(workflow_text.replace(marker + current, marker + stale))
+
 with tempfile.TemporaryDirectory(prefix="wal-head-orchestration-") as directory:
     root = pathlib.Path(directory)
     fake_bin = root / "bin"
@@ -20,8 +48,8 @@ import os, pathlib, sys
 source = pathlib.Path(sys.argv[2]).name
 args = sys.argv[3:]
 if args == ["rev-parse", "HEAD"]:
-    refs = {"baseline": "1a23e211dda170e0d927728d8035d1f823e0d0be",
-            "candidate": "c7f54fe1d346cccd41fd421332e8cf46bebbc736"}
+    refs = {"baseline": "f0a7af6049cc5a5712541513e9aec27375bc234a",
+            "candidate": "a92f60b4e8936f0e2731150d04d35e42d9af4c5f"}
     print("wrong" if os.environ.get("FAKE_WRONG") == source else refs[source])
 elif args == ["diff", "--quiet", "HEAD"]:
     sys.exit(1 if os.environ.get("FAKE_DIRTY") == source else 0)
@@ -82,7 +110,7 @@ if storage == "s3":
     assert [(e["storage"], e["arm"], e["phase"]) for e in entries] == [
         (storage, arm, phase) for storage in ["local", "s3"]
         for arm in ["baseline", "candidate"] for phase in ["window", "reader"]]
-    assert all(e["profile"] == ("wal-selection-head" if e["arm"] == "candidate" else "wal-single-head") for e in entries)
+    assert all(e["profile"] == ("wal-selection-head-seal-upload-buffer" if e["arm"] == "candidate" else "wal-selection-head-seal") for e in entries)
     assert all(e["reader"] == "stock" for e in entries if e["phase"] == "reader")
     assert len({e["root"] for e in entries}) == 4
     expected = {"preflight.json", "local-writer.edn", "local-reader.edn",
@@ -93,7 +121,8 @@ if storage == "s3":
     assert result.returncode == 7 and len(entries) == 5
     for number, failure in enumerate([{"FAKE_DIRTY": "candidate"},
                                       {"FAKE_UNTRACKED": "exporter"},
-                                      {"FAKE_WRONG": "candidate"}], 2):
+                                      {"FAKE_WRONG": "candidate"},
+                                      {"FAKE_WRONG": "baseline"}], 2):
         result, entries, _ = run(number, **failure)
         assert result.returncode != 0 and entries == []
-print("wal-head orchestration: 5 scenarios passed; no cloud or performance claim")
+print("upload-buffer orchestration: 6 scenarios and workflow tuple controls passed; no cloud or performance claim")
