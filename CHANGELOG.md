@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a protected-main, fixed-source S3 Expect/Continue comparison with sequential
+  1000ms/10ms arms, separate object identities and independent stock recovery.
+  Keep the qualified runtime/dependency pins and per-arm request/upload limits;
+  report the combined 12GiB maximum explicitly. Upload only privacy-checked
+  scalar receipts. No application default, IAM or durability-contract change.
+
 - Preserve empty read-only AWS metadata responses with a CLI query envelope,
   including unversioned buckets. Reject missing/malformed output without leaking
   parser context or interpreting it as versioning state; add real CLI loopback

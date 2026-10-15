@@ -27,7 +27,7 @@ for task_wait in 1000 10; do
   export QUALIFIED_STORAGE_SOURCE_PROFILE=expect-continue-ab
   export SDK_S3_EXPECT_WAIT_MS="$task_wait"
   task_driver="$task_candidate/bench/run-typed-storage-window.sh"
-  timeout --kill-after=5s 1800s bash "$task_driver" window "$task_root" 10000 256 true wide16 > "$task_root/writer.log" 2>&1
+  timeout --kill-after=5s 1200s bash "$task_driver" window "$task_root" 10000 256 true wide16 > "$task_root/writer.log" 2>&1
   cp "$task_root/http-budget.edn" "$task_output/s3-writer-budget.edn"
   CHDB_BENCH_METADATA_READER=stock timeout --kill-after=5s 240s bash "$task_driver" reader "$task_root" 10000 256 true wide16 > "$task_root/reader.log" 2>&1
   cp "$task_root/writer.edn" "$task_output/s3-writer.edn"
