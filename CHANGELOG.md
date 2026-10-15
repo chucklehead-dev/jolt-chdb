@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reduce empty-parameter SQL scan overhead with a behavior-qualified Chez
+  lexical detector. Preserve quoted/comment question marks, exact errors,
+  bound-parameter rewriting and prepared-buffer reuse; unsupported source/AOT
+  contexts retain the portable scanner. No query data is cached or retained.
+
 - Compare the seal-corrected measured stack with canonical request-owned S3
   upload scratch restored alongside connection reuse. Pin both exact source
   profiles and reject workflow/runner tuple drift. Preserve workload, compiler,

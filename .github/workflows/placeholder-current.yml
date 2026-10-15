@@ -1,0 +1,59 @@
+name: current Jolt placeholder qualification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/placeholder-current.yml'
+      - 'deps.edn'
+      - 'src/jdbc/chdb.clj'
+      - 'src/jdbc/chdb/placeholder_detector.cljc'
+      - 'resources/jdbc/chdb/placeholder_detector.ss'
+      - 'test/jdbc/chdb_placeholder_scan_test.clj'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/placeholder-current.yml'
+      - 'deps.edn'
+      - 'src/jdbc/chdb.clj'
+      - 'src/jdbc/chdb/placeholder_detector.cljc'
+      - 'resources/jdbc/chdb/placeholder_detector.ss'
+      - 'test/jdbc/chdb_placeholder_scan_test.clj'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stock-0822:
+    name: Placeholder semantics on stock Jolt 0.8.22
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JOLT_AOT_CACHE: '0'
+      JOLT_NO_USER_DEPS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install checksum-pinned stock Jolt, without a compiler build
+        run: |
+          set -euo pipefail
+          task_dir=$(mktemp -d "$RUNNER_TEMP/placeholder-jolt.XXXXXXXX")
+          task_archive="$task_dir/release.tar.gz"
+          curl -fsSL --connect-timeout 15 --max-time 180 \
+            https://github.com/jolt-lang/jolt/releases/download/v0.8.22/jolt-v0.8.22-x86_64-linux.tar.gz \
+            -o "$task_archive"
+          printf '%s  %s\n' b6aef5a73c8537cf7e5c4d51887511c275fde1a01ca9ac59a0f5200e606ccd0f "$task_archive" | sha256sum -c -
+          task_member=$(tar -tzf "$task_archive" | grep -E '(^|/)jolt$')
+          test "$(printf '%s\n' "$task_member" | wc -l)" = 1
+          tar --extract --gzip --to-stdout --file "$task_archive" -- "$task_member" > "$task_dir/jolt"
+          printf '%s  %s\n' 1960d07af8216a4dff79dd505af16c046bd785b45ef2c1515b42d747cce3612d "$task_dir/jolt" | sha256sum -c -
+          chmod 755 "$task_dir/jolt"
+          rm -- "$task_archive"
+          echo "$task_dir" >> "$GITHUB_PATH"
+      - name: Require the exact current runtime
+        run: test "$(jolt --version)" = 'jolt v0.8.22'
+      - name: Require native selection, portable fallback and lexical parity
+        run: >-
+          jolt -Srepro -Sdeps '{:paths ["src" "resources" "test"]}'
+          -m jdbc.chdb-placeholder-scan-test
