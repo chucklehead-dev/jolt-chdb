@@ -1,10 +1,8 @@
 (ns jdbc.chdb-confirmation-profile-test
   (:require [clojure.test :refer [deftest is run-tests]]
             [jdbc.chdb.durable.backend :as backend]
-            [jdbc.chdb.durable.control :as control]))
-
-(load-file "scripts/typed_storage_confirmation_profile.clj")
-(require '[typed-storage-confirmation-profile :as profile])
+            [jdbc.chdb.durable.control :as control]
+            [typed-storage-confirmation-profile :as profile]))
 
 (defn thrown [f] (try (f) nil (catch Throwable e e)))
 
