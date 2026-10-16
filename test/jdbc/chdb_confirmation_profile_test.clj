@@ -2,9 +2,37 @@
   (:require [clojure.test :refer [deftest is run-tests]]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
+            [typed-storage-confirmation-receipt :as receipt]
             [typed-storage-confirmation-profile :as profile]))
 
 (defn thrown [f] (try (f) nil (catch Throwable e e)))
+
+(deftest failure-diagnostics-have-a-closed-non-sensitive-projection
+  (let [secret "PRIVATE-CANARY-DO-NOT-RETAIN"
+        cause (ex-info secret {:type :jdbc.chdb.durable.s3/permission
+                               :status 403 :headers {"Authorization" secret}})
+        error (ex-info secret {:type (keyword secret) :status secret :body secret} cause)
+        counts (assoc (profile/initial-counts) :file-publications 7 :private secret)
+        report (receipt/failure-report error :driver counts)]
+    (is (= [{:kind :exception-info :type :other :http-status nil}
+            {:kind :exception-info :type :jdbc.chdb.durable.s3/permission :http-status 403}]
+           (:causes report)))
+    (is (= 7 (get-in report [:counts :file-publications])))
+    (is (false? (:scope-returned report)))
+    (is (not (.contains (pr-str report) secret)))
+    (is (not (contains? (:counts report) :private)))
+    (is (= :invalid (get-in (receipt/failure-report error :driver
+                              (assoc counts :file-publications secret))
+                            [:counts :file-publications])))
+    (is (= :invalid (get-in (receipt/failure-report error :driver
+                              (assoc counts :file-publications 1000001))
+                            [:counts :file-publications])))
+    (is (thrown #(receipt/failure-report error :arbitrary counts)))
+    (is (= 8 (count (:causes
+                      (receipt/failure-report
+                        (reduce (fn [e _] (ex-info secret {} e)) cause (range 20))
+                        :selection-validation counts)))))
+    (is (thrown #(profile/validate! report "candidate" "window")))))
 
 (deftest closed-selector-preserves-reader-and-default-options
   (doseq [[arm phase expected]

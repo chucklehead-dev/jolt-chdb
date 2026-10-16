@@ -10,7 +10,7 @@ ALLOWED = {"preflight.json", "local-writer.edn", "local-reader.edn",
            "s3-writer.edn", "s3-reader.edn", "s3-writer-budget.edn",
            "s3-reader-budget.edn", "s3-writer-curl-profile.edn",
            "s3-reader-curl-profile.edn", "s3-writer-confirmation.edn",
-           "s3-reader-confirmation.edn"}
+           "s3-reader-confirmation.edn", "process-failure.edn", "driver-failure.edn"}
 FIELDS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
           "JOLT_CHDB_S3_ACCESS_KEY", "JOLT_CHDB_S3_SECRET_KEY",
           "JOLT_CHDB_S3_SESSION_TOKEN", "TASK_ROLE_ARN", "TASK_BUCKET")

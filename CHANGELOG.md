@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Retain closed, scalar-only process and driver failure diagnostics for the
+  protected WAL comparison before cleaning temporary files. Never retain raw
+  logs, exception messages, request data or credentials; failed runs remain
+  failures and diagnostic receipts cannot satisfy qualification checks.
+
 - Add a protected, fixed-source WAL checksum/readback comparison using the
   existing typed SDK workload and independent stock-reader recovery. Require
   positive sealed-proof observations and publication verification counts,
