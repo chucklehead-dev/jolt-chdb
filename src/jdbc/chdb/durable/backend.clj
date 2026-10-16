@@ -36,6 +36,39 @@
     do not expose a provider path or stream. Expected-reference checks remain
     the control layer's responsibility."))
 
+(defprotocol ObjectUploadConfirmation
+  (put-file-with-checksum-if-absent! [backend key local-path expected-size expected-sha256]
+    "Optional trusted publication capability. Return :unsupported without I/O,
+    or the ordinary conditional-create result. A qualified provider may attach
+    private confirmation evidence ONLY to unambiguous :created results after
+    validating the transmitted size and full-object SHA256 against these exact
+    inputs. Existing/ambiguous outcomes do not carry confirmation evidence.
+    Implementing this protocol is an explicit provider trust contract."))
+
+(deftype ^:private UploadConfirmation [seal owner key size sha256])
+(def ^:private upload-seal (Object.))
+
+(defn ^:no-doc confirmed-upload-result
+  "Trusted backend implementation hook, not an application acknowledgement API.
+  Called only after a qualified single-PUT validates the exact selected body.
+  The control layer separately binds writer authority and the full reference."
+  [owner key size sha256 result]
+  (when-not (= :created (:status result))
+    (throw (ex-info "Only a new immutable upload can be confirmed" {})))
+  (with-meta result
+    {upload-seal (UploadConfirmation. upload-seal owner key size sha256)}))
+
+(defn ^:no-doc confirmed-upload?
+  [result owner key size sha256]
+  (let [proof (get (meta result) upload-seal)]
+    (and (= :created (:status result))
+         (instance? UploadConfirmation proof)
+         (identical? upload-seal (.-seal ^UploadConfirmation proof))
+         (identical? owner (.-owner ^UploadConfirmation proof))
+         (= key (.-key ^UploadConfirmation proof))
+         (= size (.-size ^UploadConfirmation proof))
+         (= sha256 (.-sha256 ^UploadConfirmation proof)))))
+
 (defprotocol LocalDurability
   (with-exclusive-lock [platform lock-path f]
     "Run f while holding the provider's cross-process exclusive lock.")
@@ -224,6 +257,16 @@
     (let [scoped-key (str prefix (checked-key key))]
       (if (satisfies? ObjectDigest delegate)
         (digest-object delegate scoped-key)
+        {:status :unsupported})))
+  ObjectUploadConfirmation
+  (put-file-with-checksum-if-absent! [this key local-path expected-size expected-sha256]
+    (let [scoped-key (str prefix (checked-key key))]
+      (if (satisfies? ObjectUploadConfirmation delegate)
+        (let [result (put-file-with-checksum-if-absent!
+                      delegate scoped-key local-path expected-size expected-sha256)]
+          (if (confirmed-upload? result delegate scoped-key expected-size expected-sha256)
+            (confirmed-upload-result this key expected-size expected-sha256 result)
+            result))
         {:status :unsupported}))))
 
 (defn object-backend

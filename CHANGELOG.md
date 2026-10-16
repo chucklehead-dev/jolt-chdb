@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+- Add experimental, default-off single-PUT SHA256 confirmation for file-backed
+  WAL publication with the native HTTPS transport. Bind private evidence to the
+  backend/key/size/digest; retain full readback for unsupported, existing and
+  ambiguous outcomes, plus unchanged reader verification and lease/head-CAS
+  fencing. Add native TLS fault controls and sampled-only model CI. Real-S3 and
+  throughput qualification remain pending; checkpoints/byte publication unchanged.
+
 - Isolate libcurl response headers by status block instead of carrying interim
   ETags into final responses. Retain only bounded final ETag/SHA256/checksum-type
   fields, ignore trailers, and reject duplicate selected fields without exposing
-  their values. Add portable and native wire regressions. WAL publication still
-  verifies objects by readback; checksum confirmation is not enabled.
+  their values. Add portable and native wire regressions. Readback remains the
+  default; checksum confirmation requires an explicit qualified-provider opt-in.
 
 - Add an adjacent literate WAL checksum-confirmation model and standalone sampled
   gate, covering qualified single-PUT evidence, readback fallback, response

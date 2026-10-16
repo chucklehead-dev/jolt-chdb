@@ -404,7 +404,8 @@
   (let [selected (select-keys options
                               [:connect-timeout-ms :timeout-ms
                                :max-response-bytes])]
-    (fn [request] (request! (merge selected request)))))
+    (s3/native-request-function
+      (fn [request] (request! (merge selected request))))))
 
 (defn s3-backend
   "Create the S3 ObjectBackend with a statically reachable libcurl transport.

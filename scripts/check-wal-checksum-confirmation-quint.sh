@@ -6,7 +6,7 @@ cd "$repo_root"
 test "$(quint --version)" = 0.32.0
 test "$(go version -m "$(command -v lmt)" | awk '$1 == "mod" {print $3}')" = \
   v0.0.0-20210421124901-62fe18f2f6a6
-lmt formal/quint/wal-checksum-confirmation.md
+lmt formal/sampled/wal-checksum-confirmation.md
 model=target/formal/quint/walChecksumConfirmation.qnt
 tests=target/formal/quint/walChecksumConfirmationTest.qnt
 quint typecheck "$model"

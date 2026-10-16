@@ -1,0 +1,47 @@
+name: wal-checksum-confirmation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/wal-checksum-confirmation.yml
+      - formal/sampled/wal-checksum-confirmation.md
+      - scripts/check-wal-checksum-confirmation-quint.sh
+      - src/jdbc/chdb/durable/backend.clj
+      - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/s3*.clj
+      - test/jdbc/chdb_durable_upload_confirmation*test.clj
+      - test/jdbc/chdb_durable_s3_checksum_test.clj
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wal-checksum-confirmation.yml
+      - formal/sampled/wal-checksum-confirmation.md
+      - scripts/check-wal-checksum-confirmation-quint.sh
+      - src/jdbc/chdb/durable/backend.clj
+      - src/jdbc/chdb/durable/control.clj
+      - src/jdbc/chdb/durable/s3*.clj
+      - test/jdbc/chdb_durable_upload_confirmation*test.clj
+      - test/jdbc/chdb_durable_s3_checksum_test.clj
+
+permissions:
+  contents: read
+
+jobs:
+  sampled:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - name: Install pinned Quint and literate tangler
+        run: |
+          npm install --global @informalsystems/quint@0.32.0
+          go install github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c
+      - name: Tangle, typecheck, test mutants and sample reachable paths
+        run: bash scripts/check-wal-checksum-confirmation-quint.sh

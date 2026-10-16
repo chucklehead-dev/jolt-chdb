@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import hashlib
 import http.server
 import json
@@ -52,12 +53,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             and known_session_token
         )
 
-    def answer(self, status, body=b"", object_etag=None):
+    def answer(self, status, body=b"", object_etag=None, extra_headers=()):
         try:
             self.send_response(status)
             self.send_header("Content-Length", str(len(body)))
             if object_etag is not None:
                 self.send_header("ETag", object_etag)
+            for name, value in extra_headers:
+                self.send_header(name, value)
             self.end_headers()
             if body:
                 self.wfile.write(body)
@@ -139,6 +142,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
+        checksum = self.headers.get("x-amz-checksum-sha256")
+        if checksum is not None and checksum != base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"):
+            self.answer(400, b"BadDigest")
+            return
         if (
             "/timeout-before-cas/object/head.json" in key
             and self.headers.get("If-Match") is not None
@@ -184,7 +191,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # The matching replacement and its new ETag are already visible;
             # only the acknowledgement is lost, and only once for this head.
             time.sleep(0.4)
-        self.answer(status, object_etag=current_etag)
+        response_headers = []
+        if checksum is not None and status == 200 and "/checksum-missing/" not in key:
+            response_headers.append(("x-amz-checksum-sha256",
+                                     "INVALID-CHECKSUM" if "/checksum-conflict/" in key else checksum))
+            response_headers.append(("x-amz-checksum-type",
+                                     "COMPOSITE" if "/checksum-composite/" in key else "FULL_OBJECT"))
+        self.answer(status, object_etag=current_etag, extra_headers=response_headers)
 
 
 if __name__ == "__main__":

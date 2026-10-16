@@ -1,6 +1,8 @@
 # WAL checksum confirmation
 
-This is an adjacent bounded model, not a replacement for the head-CAS model.
+This is an adjacent sampled-only model, not a replacement for the head-CAS model
+or an addition to its exhaustive corpus. It has its own pinned CI gate; changing
+it does not request exhaustive runs of the unchanged legacy models.
 The approved sketch is `evidence/chdb-s3-checksum-confirmation-type-sketch-20261016.md`
 in the workspace (approved 2026-10-16). It adds an explicit provider trust premise:
 a qualified single-PUT provider validates the supplied whole-object SHA256.
