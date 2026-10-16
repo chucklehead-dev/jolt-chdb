@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an adjacent literate WAL checksum-confirmation model and standalone sampled
+  gate, covering qualified single-PUT evidence, readback fallback, response
+  binding, lease fencing and revision conflicts. Retain three semantic mutants.
+  This is an approved design model, not a new backend capability or default.
+
 - Reduce empty-parameter SQL scan overhead with a behavior-qualified Chez
   lexical detector. Preserve quoted/comment question marks, exact errors,
   bound-parameter rewriting and prepared-buffer reuse; unsupported source/AOT
