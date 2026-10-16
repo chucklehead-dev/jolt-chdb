@@ -4,7 +4,7 @@ umask 077
 runner=${1:?pass an explicitly qualified Jolt wrapper}
 task_main=${2:-jdbc.chdb-durable-upload-confirmation-native-test}
 case "$task_main" in
-  jdbc.chdb-durable-upload-confirmation-native-test|jdbc.chdb-durable-confirmation-metrics-native-test) ;;
+  jdbc.chdb-durable-upload-confirmation-native-test|jdbc.chdb-durable-confirmation-metrics-native-test|jdbc.chdb-durable-reused-confirmation-native-test) ;;
   *) echo 'unsupported TLS test entrypoint' >&2; exit 64 ;;
 esac
 task_root=$(mktemp -d)
