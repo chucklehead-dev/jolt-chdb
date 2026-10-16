@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Propagate custom throughput-suite failure counters through the aggregate test
+  runner using their throwing entrypoints, including previously omitted worker
+  subgroups. Add injected-child-failure controls with an independent clojure.test
+  oracle. Refresh stale pin/action guards without discarding historical results
+  or changing dependency/compiler pins.
+
 - Add experimental, default-off single-PUT SHA256 confirmation for file-backed
   WAL publication with the native HTTPS transport. Bind private evidence to the
   backend/key/size/digest; retain full readback for unsupported, existing and
