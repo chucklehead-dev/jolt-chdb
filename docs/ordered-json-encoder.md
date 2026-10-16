@@ -76,6 +76,58 @@ It is a production-integration building block, not a new throughput result.
 
 ## Experimental byte-batch collector
 
+### Explicit owned statement output
+
+`encode-limited-prefixed-statement!` has the same arguments and payload budget
+as `encode-limited-prefixed-text!`. With a matching native byte collector and
+qualified source runtime, ASCII output becomes a private owned statement;
+other backends/hosts return immutable text. Non-ASCII or oversized final output
+falls back by decoding the already-produced bytes, never by running rows or
+custom writers twice. Prefix bytes are still outside the payload budget.
+
+This is an experimental opt-in building block, not the default exporter path.
+The qualified runtime at `1ae7e0d19aa3088789410106610beb171bcfb0ef`
+and optional data.json `b959a5625c28cc8571e04de5ca02a2c8902b8b5e`
+provide the required hooks; a stock Jolt 0.8.22 version label alone does not.
+Ordinary configured encoding and stock-Jolt text execution remain supported.
+Standalone/AOT ownership qualification is not claimed.
+
+An owned value can be submitted through
+`jdbc.chdb.durable/execute-owned-and-flush!` on a Durable writer connection,
+or the corresponding low-level writer function. If the encoder returns text,
+use the existing `execute-and-flush!` instead. Do not stringify an owned value:
+its display is deliberately opaque, whereas its persisted WAL contains the
+exact original SQL. This opacity is not redaction of recovery data.
+
+The internal snapshot API copies input before accepting it; callers must not
+race that initial copy. Later caller-array mutation cannot change the accepted
+statement. WAL preparation precedes mutation, and native classification and
+execution borrow the same scoped buffer. Classification policy, statement/WAL
+limits, failed-publication handling and confirmed ACK semantics are unchanged.
+Legacy/custom writer operations receive an explicit text fallback. Neither
+this API nor snapshot creation authorizes arbitrary SQL or bypasses fencing.
+
+Focused ownership/lexical tests, writer fault controls and a separate-process
+ordinary reader exercise the path. The recovery fixture freezes the committed
+WAL manifest before normal writer close can replace it with a checkpoint, so
+the readback actually tests V1 WAL replay. Existing source-pinned arithmetic
+checks live in `formal/smt/owned-wal-bounds`; their narrow scope is not a proof
+of SQL semantics, delivery, concurrency or native-engine correctness. No new
+throughput result is claimed by this port; streaming INSERT and native-package
+upgrades are separate work.
+
+Run the optional gates with a qualified executable:
+
+```sh
+jolt -M:owned-statement-test
+jolt -M:owned-writer-test
+jolt -M:owned-encoder-test
+bash test/durable-owned-recovery.sh /path/to/qualified-jolt /path/to/stock-jolt
+bash scripts/check-owned-wal-bounds.sh
+```
+
+### Collector selection
+
 With the `:native-json-byte-batch` dependency alias and a qualified Jolt runtime
 containing the observable protocol-classification hook, you can select
 `{:json-backend :native-guarded-byte-batch :parallelism 1}`. This source-only

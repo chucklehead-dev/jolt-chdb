@@ -21,6 +21,18 @@
                          {:git/url "https://github.com/casselc/data.json.git"
                           :git/sha "fa2f6d620655272ef1480690ec3ba9d6dfd1e332"}}
             :main-opts ["-m" "jdbc.chdb-durable-reader-context-test"]}
+           :owned-statement-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-owned-statement-test" "native"]}
+           :owned-writer-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-owned-writer-test"]}
+           :owned-encoder-test
+           {:extra-paths ["test"]
+            :extra-deps {org.clojure/data.json
+                         {:git/url "https://github.com/casselc/data.json.git"
+                          :git/sha "b959a5625c28cc8571e04de5ca02a2c8902b8b5e"}}
+            :main-opts ["-m" "jdbc.chdb-owned-encoder-test"]}
            :setup-native {:main-opts ["-m" "jdbc.chdb.install"]}
            :abi-test {:extra-paths ["test"]
                       :main-opts ["-m" "jdbc.chdb-abi-test"]}
