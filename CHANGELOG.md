@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add explicit experimental owned-ASCII statement output and confirmed Durable
+  execution. Prepare exact V1 WAL chunks and classify/execute from one private
+  copied snapshot without intermediate SQL text. Preserve policy, size limits,
+  worker settlement, uncertain-mutation handling and ordinary reader replay.
+  Requires the qualified source runtime for owned output; configured encoding,
+  stock-Jolt text paths, native version and defaults are unchanged.
+
 - Add bounded prefix-aware JSONEachRow text encoding for callers constructing
   a statement header and row payload together. Prefix bytes stay outside the
   payload budget and custom row-writer views. Use an optional native prefixed

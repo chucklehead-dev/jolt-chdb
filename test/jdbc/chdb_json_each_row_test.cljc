@@ -567,25 +567,27 @@
       (finally (encoder/close! context)))))
 
 (deftest prefixed-output-keeps-the-payload-budget-and-falsey-rows
-  (let [context (encoder/open-encoder)
+  (doseq [encode [encoder/encode-limited-prefixed-text!
+                  encoder/encode-limited-prefixed-statement!]]
+    (let [context (encoder/open-encoder)
         prefix "INSERT β😀 FORMAT JSONEachRow\n"
         rows [false nil {"text" "😀é"}]
         payload (serial-payload rows)
         size (alength (.getBytes payload "UTF-8"))]
     (try
       (is (= (str prefix payload)
-             (encoder/encode-limited-prefixed-text! context prefix rows size)))
+             (encode context prefix rows size)))
       (is (= :jdbc.chdb.json-each-row/output-limit
-             (failure-type #(encoder/encode-limited-prefixed-text! context prefix rows (dec size)))))
-      (is (= prefix (encoder/encode-limited-prefixed-text! context prefix nil 0)))
-      (is (= payload (encoder/encode-limited-prefixed-text! context "" rows size)))
+             (failure-type #(encode context prefix rows (dec size)))))
+      (is (= prefix (encode context prefix nil 0)))
+      (is (= payload (encode context "" rows size)))
       (is (= :jdbc.chdb.json-each-row/invalid-prefix
-             (failure-type #(encoder/encode-limited-prefixed-text! context nil [] 0))))
+             (failure-type #(encode context nil [] 0))))
       (is (= :jdbc.chdb.json-each-row/invalid-limit
-             (failure-type #(encoder/encode-limited-prefixed-text! context prefix [] -1))))
+             (failure-type #(encode context prefix [] -1))))
       (is (= (str prefix "true\n")
-             (encoder/encode-limited-prefixed-text! context prefix [true] 5)))
-      (finally (is (= :closed (encoder/close! context)))))))
+             (encode context prefix [true] 5)))
+      (finally (is (= :closed (encoder/close! context))))))))
 
 #?(:bb nil :default
    (deftest bounded-output-does-not-run-later-serializers

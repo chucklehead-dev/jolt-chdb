@@ -315,6 +315,15 @@ jobs:
           task_bin=$(sed -n 's/^QUALIFIED_RUNTIME_BIN=//p' "$RUNNER_TEMP/confirmation-qualified-runtime.log")
           [[ "$task_bin" =~ ^/tmp/qualified-durable-runtime\.[A-Za-z0-9]+/jolt$ ]]
           bash scripts/test_confirmation_profile_tls.sh "$task_bin" "$GITHUB_WORKSPACE/.qualification/confirmation-source"
+          "$task_bin" -Srepro -M:owned-statement-test
+          "$task_bin" -Srepro -M:owned-writer-test
+          "$task_bin" -Srepro -M:owned-encoder-test
+          bash test/durable-owned-recovery.sh "$task_bin" jolt
+      - name: Replay source-pinned owned WAL bounds and controls
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+          bash scripts/check-owned-wal-bounds.sh
       - name: Test optional WAL checksum confirmation through verified TLS
         timeout-minutes: 4
         run: bash test/durable-upload-confirmation-tls.sh jolt
