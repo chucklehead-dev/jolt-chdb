@@ -280,6 +280,9 @@ jobs:
         run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
+      - name: Test scoped S3 writer renewal and fresh native recovery
+        timeout-minutes: 4
+        run: bash test/durable-s3-native-overlap.sh jolt
       - name: Require non-vacuous checksum comparison selection controls
         run: |
           jolt -Srepro -Sdeps '{:paths ["src" "test" "scripts"]}' -m jdbc.chdb-confirmation-profile-test

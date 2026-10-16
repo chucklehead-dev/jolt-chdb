@@ -783,6 +783,7 @@
 
 (defn- default-open-operations []
   {:now-ms #(System/currentTimeMillis)
+   :renew-control! control/renew!
    :monotonic-ms! retry/monotonic-ms
    :await-backoff! retry/await-backoff!
    :durable-capability native/durable-capability
@@ -1014,7 +1015,13 @@
   `:acquire-lease`, `:create-scratch`, `:open-native`, `:recover`,
   `:renew-lease`, or `:start-writer`. The original exception is retained as
   the cause for in-process diagnostics but its message and data are not copied
-  into the public envelope."
+  into the public envelope.
+
+  An explicit :operations/:renew-control! hook has the same arguments/results
+  as control/renew!: store, token, expiry in protocol seconds, retry options.
+  It is used for startup and heartbeat renewal; the open layer retains the
+  milliseconds conversion. Custom implementations are trusted to enforce the
+  same lease/CAS contract. Ordinary callers use the default control operation."
   [{:keys [owner instance database lease-ttl-ms clock-skew-ms force?
            heartbeat-interval-ms scratch-parent operations max-attempts
            retry-deadline-ms retry-initial-backoff-ms retry-max-backoff-ms
@@ -1071,7 +1078,7 @@
                    :query-native! :execute-native! :execute-prepared-native!])
           (dissoc operations :with-native-prepared-buffer!)
           operations)
-        required [:now-ms :monotonic-ms! :await-backoff!
+        required [:now-ms :renew-control! :monotonic-ms! :await-backoff!
                   :durable-capability :create-scratch! :cleanup-scratch!
                   :open-native! :close-native! :restore-database!
                   :create-checkpoint! :delete-checkpoint!
@@ -1158,7 +1165,7 @@
                          "The Durable writer lease expired during recovery"))
                 (at-startup-stage!
                  :renew-lease
-                 #(control/renew!
+                 #((:renew-control! operations)
                    store token (epoch-ms->seconds renewed-expiry)
                    (assoc retry-options
                           :stopped?
@@ -1191,7 +1198,7 @@
                          :renew!
                          (fn [store token expiry-ms operation-retry-options]
                            (update-in
-                            (control/renew!
+                            ((:renew-control! operations)
                              store token (epoch-ms->seconds expiry-ms)
                              operation-retry-options)
                             [:head "lease" "expires_at"]
