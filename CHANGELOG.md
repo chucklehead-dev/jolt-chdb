@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserve native transport provenance and exact upload-confirmation binding
+  through the audited benchmark metrics wrappers. Count sealed confirmations
+  separately from ordinary creates, exclude unsupported no-I/O probes, and
+  require real TLS/fault controls to retain confirmation rather than fallback.
+  Add request-level p90/p99 estimates and sample-count flags. No benchmark mode,
+  acknowledgement boundary, provider default or throughput result is changed.
+
 - Propagate custom throughput-suite failure counters through the aggregate test
   runner using their throwing entrypoints, including previously omitted worker
   subgroups. Add injected-child-failure controls with an independent clojure.test

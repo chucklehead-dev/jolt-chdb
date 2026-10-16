@@ -279,6 +279,9 @@ jobs:
       - name: Test optional WAL checksum confirmation through verified TLS
         timeout-minutes: 4
         run: bash test/durable-upload-confirmation-tls.sh jolt
+      - name: Require checksum selection through benchmark instrumentation
+        timeout-minutes: 4
+        run: bash test/durable-upload-confirmation-tls.sh jolt jdbc.chdb-durable-confirmation-metrics-native-test
       - name: Test witnessed WAL head races through real libcurl
         run: bash test/durable-s3-curl.sh jolt durable-witness-head-native-test
       - name: Require selected WAL publication through real curl

@@ -6,6 +6,40 @@ the Durable protocol or its ordering. Each accepted materialized statement is
 prepared and size-checked before native mutation, appended to the pending WAL
 only after native success, and published by an explicit later flush.
 
+### Checksum-confirmation instrumentation
+
+The metrics wrappers preserve the optional native-HTTPS checksum-confirmation
+capability without changing requests, responses or exceptions. This preservation
+is justified only for these audited pass-through wrappers; it does not qualify
+an arbitrary custom transport. Backend receipts are revalidated against their
+original owner/key/size/digest before rebinding to the wrapper.
+
+For `:put-file-with-checksum-if-absent`, the fixed logical result label
+`:checksum-confirmed-created` means a matching private upload witness was seen.
+It is not a head-commit or delivery acknowledgement. Ordinary `:created` still
+includes missing/composite evidence that requires readback. Unsupported capability
+probes perform no I/O and are not counted as upload calls or bytes. Report labels
+and scalar fields do not contain object identities, hashes, headers or payloads.
+
+Request observations include nearest-rank p50/p90/p95/p99 and sample-count support
+flags. Those flags describe order-statistic resolution, not sustained tail
+qualification. The native TLS control below runs the same confirmation, fallback,
+timeout, conflicting-response and changed-file checks through both wrappers; it
+also requires actual zero verification downloads for the qualified case. A
+positive backend witness count alone would not prove the final control-plane
+readback was skipped.
+
+```sh
+bash test/durable-upload-confirmation-tls.sh /path/to/qualified-jolt-wrapper \
+  jdbc.chdb-durable-confirmation-metrics-native-test
+```
+
+These controls do not enable checksum confirmation in an AWS benchmark profile
+or establish real-provider, independent-process recovery or throughput results.
+Those remain separate qualification gates in #278.
+
+### Admission and throughput profiles
+
 The primary acceptance workload is 512 rows per `FORMAT JSONEachRow` statement.
 Encoding-inclusive Durable admission must have p50 batch latency no greater
 than 20.48 ms (25,000 rows/s) and p99 no greater than 25.60 ms (20,000 rows/s).

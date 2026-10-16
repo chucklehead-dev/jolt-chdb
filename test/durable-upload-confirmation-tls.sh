@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 077
 runner=${1:?pass an explicitly qualified Jolt wrapper}
+task_main=${2:-jdbc.chdb-durable-upload-confirmation-native-test}
+case "$task_main" in
+  jdbc.chdb-durable-upload-confirmation-native-test|jdbc.chdb-durable-confirmation-metrics-native-test) ;;
+  *) echo 'unsupported TLS test entrypoint' >&2; exit 64 ;;
+esac
 task_root=$(mktemp -d)
 task_server=
 cleanup() {
@@ -27,6 +32,6 @@ done
 test -s "$task_root/port"
 task_port=$(<"$task_root/port")
 [[ "$task_port" =~ ^[0-9]+$ ]]
-"$runner" -Srepro -Sdeps '{:paths ["src" "test"]}' \
-  -m jdbc.chdb-durable-upload-confirmation-native-test \
+"$runner" -Srepro -Sdeps '{:paths ["src" "test" "bench"]}' \
+  -m "$task_main" \
   "https://127.0.0.1:$task_port" "$task_root/cert.pem"
