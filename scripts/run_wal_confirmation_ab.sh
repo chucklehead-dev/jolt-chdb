@@ -25,6 +25,22 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+run_phase() {
+  local task_phase="$1" task_limit="$2" task_status
+  if timeout --kill-after=5s "${task_limit}s" bash "$task_driver" "$task_phase" "$task_root" 10000 256 true wide16 > "$task_root/$task_phase.log" 2>&1; then
+    return 0
+  else
+    task_status=$?
+    # Only closed loop-selected enums and the process exit code. Never copy or
+    # parse logs, exception messages, URLs, object names, or credentials.
+    printf '{:scope :wal-confirmation-process-failure :storage :%s :arm :%s :phase :%s :exit-code %d}\n' \
+      "$task_storage" "$task_arm" "$task_phase" "$task_status" > "$task_output/process-failure.edn" || true
+    if [[ -f "$task_root/driver-failure.edn" && ! -L "$task_root/driver-failure.edn" ]]; then
+      cp "$task_root/driver-failure.edn" "$task_output/driver-failure.edn" || true
+    fi
+    return "$task_status"
+  fi
+}
 # Keep the S3 windows adjacent. One live fixture at a time. The shared selected
 # driver supplies distinct closed S3 object IDs; random local roots alone cannot.
 for task_storage in local s3; do
@@ -41,13 +57,13 @@ for task_storage in local s3; do
     task_root=$(mktemp -d /tmp/current-typed-wal-confirmation.XXXXXXXX)
     task_seconds=360
     if [[ "$task_storage" == s3 ]]; then task_seconds=1200; fi
-    timeout --kill-after=5s "${task_seconds}s" bash "$task_driver" window "$task_root" 10000 256 true wide16 > "$task_root/writer.log" 2>&1
+    run_phase window "$task_seconds"
     if [[ "$task_storage" == s3 ]]; then
       cp "$task_root/http-budget.edn" "$task_output/s3-writer-budget.edn"
       cp "$task_root/curl-profile.edn" "$task_output/s3-writer-curl-profile.edn"
       cp "$task_root/confirmation-selection.edn" "$task_output/s3-writer-confirmation.edn"
     fi
-    CHDB_BENCH_METADATA_READER=stock timeout --kill-after=5s 240s bash "$task_driver" reader "$task_root" 10000 256 true wide16 > "$task_root/reader.log" 2>&1
+    CHDB_BENCH_METADATA_READER=stock run_phase reader 240
     cp "$task_root/writer.edn" "$task_output/$task_storage-writer.edn"
     cp "$task_root/reader.edn" "$task_output/$task_storage-reader.edn"
     if [[ "$task_storage" == s3 ]]; then

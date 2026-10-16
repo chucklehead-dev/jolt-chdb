@@ -63,6 +63,8 @@ if timeout --kill-after=5s 45s "$task_jolt" -Srepro -Sdeps "$task_deps" \
 fi
 grep -Fq 'confirmation-proof-missing' "$task_root/missing-provenance.log"
 grep -Fq ':real-publication-probe-passed-not-ingestion-throughput' "$task_root/missing-provenance.log"
+grep -Fq ':stage :selection-validation' "$task_root/missing-provenance/driver-failure.edn"
+grep -Fq ':scope-returned false' "$task_root/missing-provenance/driver-failure.edn"
 echo 'real TLS fallback was rejected by the confirmation selection oracle'
 export JOLT_CHDB_S3_PREFIX=ci/jolt-chdb/123-3/typed-window
 export TEST_CONFIRMATION_DROP_PROVENANCE=false
@@ -76,4 +78,5 @@ if timeout --kill-after=5s 45s "$task_jolt" -Srepro -Sdeps "$task_deps" \
 fi
 grep -Fq 'confirmation-unexpected-readback' "$task_root/missing-publication-witness.log"
 grep -Fq ':real-publication-probe-passed-not-ingestion-throughput' "$task_root/missing-publication-witness.log"
+grep -Fq ':stage :selection-validation' "$task_root/missing-publication-witness/driver-failure.edn"
 echo 'real TLS commit readback was rejected by the confirmation selection oracle'

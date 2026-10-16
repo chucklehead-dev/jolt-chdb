@@ -281,7 +281,9 @@ jobs:
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
       - name: Require non-vacuous checksum comparison selection controls
-        run: jolt -Srepro -Sdeps '{:paths ["src" "test" "scripts"]}' -m jdbc.chdb-confirmation-profile-test
+        run: |
+          jolt -Srepro -Sdeps '{:paths ["src" "test" "scripts"]}' -m jdbc.chdb-confirmation-profile-test
+          bash scripts/test_confirmation_failure_receipts.sh
       - uses: actions/checkout@v4
         with:
           ref: fd8f961364e73bac370286d5481407b23120e9cd
