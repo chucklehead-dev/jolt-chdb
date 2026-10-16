@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a protected, fixed-source WAL checksum/readback comparison using the
+  existing typed SDK workload and independent stock-reader recovery. Require
+  positive sealed-proof observations and publication verification counts,
+  including real-TLS silent-fallback controls, before accepting scalar results.
+  Keep compiler/encoder/exporter pins, privacy and cloud budgets unchanged.
+
 - Preserve native transport provenance and exact upload-confirmation binding
   through the audited benchmark metrics wrappers. Count sealed confirmations
   separately from ordinary creates, exclude unsupported no-I/O probes, and

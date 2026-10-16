@@ -168,6 +168,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
           bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj
           bb scripts/test_typed_storage_budget.clj
           bb scripts/test_typed_storage_receipts.clj
@@ -276,6 +277,16 @@ jobs:
         run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
+      - name: Require non-vacuous checksum comparison selection controls
+        run: jolt -Srepro -Sdeps '{:paths ["src" "test" "scripts"]}' -m jdbc.chdb-confirmation-profile-test
+      - uses: actions/checkout@v4
+        with:
+          ref: fd8f961364e73bac370286d5481407b23120e9cd
+          path: .qualification/confirmation-source
+          persist-credentials: false
+      - name: Require real TLS comparison selection and missing-proof control
+        timeout-minutes: 5
+        run: bash scripts/test_confirmation_profile_tls.sh jolt "$GITHUB_WORKSPACE/.qualification/confirmation-source"
       - name: Test optional WAL checksum confirmation through verified TLS
         timeout-minutes: 4
         run: bash test/durable-upload-confirmation-tls.sh jolt
