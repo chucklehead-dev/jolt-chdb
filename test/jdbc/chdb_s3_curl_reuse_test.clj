@@ -2,6 +2,7 @@
   (:require [clojure.test :as test :refer [deftest is]]
             [jdbc.chdb.durable.s3-curl :as curl]
             [jdbc.chdb.durable.s3 :as s3]
+            [jdbc.chdb.durable.s3-headers :as response-header]
             [jdbc.chdb.durable.backend :as backend]
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.owned-thread :as owned-thread]
@@ -9,6 +10,13 @@
             [jolt.fibers :as fibers]))
 
 (def ^:dynamic *endpoint* nil)
+
+(defn- synthetic-final-headers [state status]
+  ;; Stubbed perform/getinfo calls below do not invoke HTTP callbacks. Keep
+  ;; this adaptation scoped to synthetic lifecycle tests, never real transfers.
+  (is (= response-header/initial-state state))
+  (is (= 200 status))
+  {})
 
 (defn- request [method]
   {:method method :url (str *endpoint* "/bucket/reuse-probe")
@@ -81,6 +89,7 @@
                                     (catch Throwable e e))))))
          0)
        #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)
+       #'response-header/final-headers synthetic-final-headers
        #'curl/curl-easy-reset
        (fn [h] (swap! open-at-reset conj (ffi/arena-open? @arena)) (original-reset h))}
       #(curl/with-reused-transport!
@@ -129,7 +138,8 @@
          (fn [h option value]
            (if (and (= :setup-error mode) (compare-and-set! first? true false))
              43 (original-setopt h option value)))
-         #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)}
+         #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)
+         #'response-header/final-headers synthetic-final-headers}
         #(curl/with-reused-transport!
            (fn [send]
              (let [failure (try (send (request :get)) nil (catch Throwable e e))]
@@ -167,6 +177,7 @@
        #'curl/curl-easy-perform
        (fn [_] (deliver entered true) @release (deliver transfer-finished true) 0)
        #'curl/curl-easy-getinfo-pointer (fn [_ _ out] (ffi/write out :long 200) 0)
+       #'response-header/final-headers synthetic-final-headers
        #'curl/curl-easy-cleanup
        (fn [handle]
          (swap! cleanups inc)

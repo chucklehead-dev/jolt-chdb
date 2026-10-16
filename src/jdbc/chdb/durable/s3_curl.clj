@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-body :as body]
+            [jdbc.chdb.durable.s3-headers :as response-header]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.nio.file Files LinkOption OpenOption]
@@ -265,14 +266,7 @@
          :close! (fn [] (.close input))}))))
 
 (defn- parse-header! [headers bytes]
-  (let [line (str/trim (String. bytes "ISO-8859-1"))
-        colon (.indexOf line ":")]
-    (when (pos? colon)
-      (let [name (str/lower-case (subs line 0 colon))]
-        ;; ETag is the only response header in the ObjectBackend contract. Not
-        ;; retaining arbitrary provider headers also avoids reflecting secrets.
-        (when (= "etag" name)
-          (swap! headers assoc name (str/trim (subs line (inc colon)))))))))
+  (swap! headers response-header/accept-line (String. bytes "ISO-8859-1")))
 
 (defn request!
   "Execute one request emitted by jdbc.chdb.durable.s3 using libcurl SigV4.
@@ -314,7 +308,7 @@
                   (try ((:close! request-source)) (catch Throwable _ nil)))
                 (finish-handle! handle)
                 (throw error)))
-            response-headers (atom {})
+            response-headers (atom response-header/initial-state)
             callback-error (atom nil)
             slist (atom ffi/null)
             cleaned? (atom false)
@@ -404,7 +398,8 @@
                    :response-code false)
                   (let [status (ffi/read status-pointer :long)
                         result (merge {:status status
-                                       :headers @response-headers}
+                                       :headers (response-header/final-headers
+                                                 @response-headers status)}
                                       ((:result response-sink)))]
                     (when-not (= 200 status)
                       ((:cleanup! response-sink)))
@@ -441,7 +436,8 @@
       (transport-failure! "libcurl scope allocation failed" true))
     (try
       (operation
-       (fn [request]
+       (s3/native-request-function
+        (fn [request]
          (let [origin (when (string? (:url request))
                         (re-find #"^https?://[^/?#]+" (:url request)))
                configuration [origin (:region request) (:auth request)]
@@ -465,7 +461,7 @@
              (binding [*reused-handle* handle] (request! request))
              (finally
                (swap! state assoc :active nil)
-               (deliver (:done ticket) :settled))))))
+               (deliver (:done ticket) :settled)))))))
       (finally
         (let [active (loop []
                        (let [before @state]
@@ -484,7 +480,8 @@
   (let [selected (select-keys options
                               [:connect-timeout-ms :timeout-ms
                                :max-response-bytes])]
-    (fn [request] (request! (merge selected request)))))
+    (s3/native-request-function
+      (fn [request] (request! (merge selected request))))))
 
 (defn s3-backend
   "Create the S3 ObjectBackend with a statically reachable libcurl transport.

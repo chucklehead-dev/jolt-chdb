@@ -1,6 +1,7 @@
 (ns jdbc.chdb-s3-curl-cleanup-test
   (:require [clojure.test :refer [deftest is]]
             [jolt.ffi :as ffi]
+            [jdbc.chdb.durable.s3-headers :as response-header]
             [jdbc.chdb.durable.s3-curl :as curl]))
 
 (defn- request []
@@ -21,6 +22,13 @@
            (swap! state-at-cleanup conj (ffi/arena-open? @arena))
            (original-cleanup handle))
          #'curl/curl-easy-perform (fn [_] (if (= :perform-error mode) 7 0))
+         ;; The synthetic perform never invokes HTTP callbacks. This test owns
+         ;; arena/handle lifetime only; actual HTTP/TLS suites test the parser.
+         #'response-header/final-headers
+         (fn [state status]
+           (is (= response-header/initial-state state))
+           (is (= 200 status))
+           {})
          #'curl/curl-easy-setopt-string
          (fn [handle option value]
            (if (= :setup-error mode) 43 (original-setopt handle option value)))

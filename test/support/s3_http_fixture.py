@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import hashlib
 import http.server
 import json
@@ -66,12 +67,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             and known_session_token
         )
 
-    def answer(self, status, body=b"", object_etag=None):
+    def answer(self, status, body=b"", object_etag=None, extra_headers=()):
         try:
             self.send_response(status)
             self.send_header("Content-Length", str(len(body)))
             if object_etag is not None:
                 self.send_header("ETag", object_etag)
+            for name, value in extra_headers:
+                self.send_header(name, value)
             self.end_headers()
             if body:
                 self.wfile.write(body)
@@ -101,6 +104,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.answer(200)
             else:
                 self.answer(200 if entered.is_set() else 202)
+            return
+        if self.key() == "/__fixture__/interim-response-headers":
+            self.send_response_only(100)
+            self.send_header("ETag", '"interim-only"')
+            self.send_header("x-amz-checksum-sha256", "interim-only")
+            self.end_headers()
+            self.answer(200)
+            return
+        if self.key() == "/__fixture__/selected-response-headers":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("ETag", '"final"')
+            self.send_header("X-Amz-Checksum-Sha256", "fixture-checksum")
+            self.send_header("x-amz-checksum-type", "FULL_OBJECT")
+            self.send_header("X-Unselected-Provider-Value", "NOT-RETAINED")
+            self.end_headers()
+            return
+        if self.key() == "/__fixture__/duplicate-response-checksum":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("x-amz-checksum-sha256", "FIRST-CANARY")
+            self.send_header("X-Amz-Checksum-Sha256", "SECOND-CANARY")
+            self.end_headers()
+            return
+        if self.key() == "/__fixture__/response-trailers":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("ETag", '"final"')
+            self.send_header("Trailer", "ETag, x-amz-checksum-sha256")
+            self.end_headers()
+            self.wfile.write(b'1\r\nx\r\n0\r\nETag: "trailer"\r\n'
+                             b'x-amz-checksum-sha256: trailer-only\r\n\r\n')
             return
         if self.key() == "/__fixture__/stats":
             with LOCK:
@@ -136,6 +171,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         key = self.key()
+        checksum = self.headers.get("x-amz-checksum-sha256")
+        if checksum is not None and checksum != base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"):
+            self.answer(400, b"BadDigest")
+            return
         if key.startswith("/bucket/writer-native-overlap/object/wal/"):
             with LOCK:
                 armed = OBJECTS.pop("native-overlap-armed", False)
@@ -197,7 +236,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # The matching replacement and its new ETag are already visible;
             # only the acknowledgement is lost, and only once for this head.
             time.sleep(0.4)
-        self.answer(status, object_etag=current_etag)
+        response_headers = []
+        if checksum is not None and status == 200 and "/checksum-missing/" not in key:
+            response_headers.append(("x-amz-checksum-sha256",
+                                     "INVALID-CHECKSUM" if "/checksum-conflict/" in key else checksum))
+            response_headers.append(("x-amz-checksum-type",
+                                     "COMPOSITE" if "/checksum-composite/" in key else "FULL_OBJECT"))
+        self.answer(status, object_etag=current_etag, extra_headers=response_headers)
 
 
 if __name__ == "__main__":

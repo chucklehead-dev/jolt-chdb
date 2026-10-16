@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Port experimental, default-off single-PUT WAL checksum confirmation onto
+  the measured owned-writer graph. Qualify both ordinary and lexical reused
+  native HTTPS transports; retain readback for missing/composite/ambiguous
+  outcomes, existing objects, and default/custom transports. Use only final
+  response headers as evidence. No new AWS throughput result is claimed.
+
 - Keep pre-publication seal errors distinct from uncertain control outcomes.
   Preserve the exact error and checkpoint-required pending work without
   inventing publication ambiguity; genuine publication uncertainty is unchanged.

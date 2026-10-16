@@ -258,5 +258,8 @@ jobs:
         run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
+      - name: Test checksum confirmation through lexical native TLS owner
+        timeout-minutes: 4
+        run: bash test/durable-upload-confirmation-tls.sh jolt jdbc.chdb-durable-reused-confirmation-native-test
       - name: Test
         run: jolt -M:test
