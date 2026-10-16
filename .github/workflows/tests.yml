@@ -286,7 +286,7 @@ jobs:
           bash scripts/test_confirmation_failure_receipts.sh
       - uses: actions/checkout@v4
         with:
-          ref: fd8f961364e73bac370286d5481407b23120e9cd
+          ref: 7efb62f96c8f636cfa50714067ce368c53794d4d
           path: .qualification/confirmation-source
           persist-credentials: false
       - name: Require real TLS comparison selection and missing-proof control

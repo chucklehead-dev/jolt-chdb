@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Resolve trusted comparison namespaces through the actual immutable SDK
+  launcher, not only the small TLS fixture. Require an injected failure through
+  that full entry point before assuming AWS credentials; propagate benchmark
+  failures to the bounded diagnostic instead of terminating its outer scope.
+  Performance production sources, workload and dependency/native pins unchanged.
+
 - Retain closed, scalar-only process and driver failure diagnostics for the
   protected WAL comparison before cleaning temporary files. Never retain raw
   logs, exception messages, request data or credentials; failed runs remain
