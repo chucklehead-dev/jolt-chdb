@@ -61,5 +61,5 @@ if timeout --kill-after=5s 45s "$task_jolt" -Srepro -Sdeps "$task_deps" \
   echo 'missing-provenance control unexpectedly succeeded' >&2
   exit 1
 fi
-rg -q 'confirmation-proof-missing' "$task_root/missing-provenance.log"
+grep -Fq 'confirmation-proof-missing' "$task_root/missing-provenance.log"
 echo 'real TLS fallback was rejected by the confirmation selection oracle'
