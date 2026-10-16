@@ -146,7 +146,8 @@ module walChecksumProtocol {
   pure def needsReadback(local: LocalState): bool = and {
     local.phase == Observed, boundResponse(local),
     Set(Created, Exists, Ambiguous).contains(local.response.outcome),
-    local.response.checksum != Conflicting,
+    // Existing/ambiguous objects never use response checksums as evidence.
+    local.response.outcome != Created or local.response.checksum != Conflicting,
     not(checksumEligible(local)),
   }
   pure def readbackVerified(local: LocalState): LocalState =
@@ -167,7 +168,7 @@ module walChecksumProtocol {
     local.phase == Observed and or {
       not(boundResponse(local)) and not(IGNORE_BINDING_MUTANT),
       local.response.outcome == Rejected,
-      local.response.checksum == Conflicting,
+      local.response.outcome == Created and local.response.checksum == Conflicting,
       needsReadback(local) and not(objectMatches(table, local.attempt.reference)),
     }
   action rejectEvidence(writer: int): bool = all {
@@ -344,6 +345,19 @@ module walChecksumConfirmationTest {
     .then(upload(0, true, Matching, 1, 1, false)).then(takeover)
     .then(selectAttempt(1, 0)).then(upload(1, true, Matching, 1, 1, false))
     .then(observeResponse(1, 1)).expect(not(canConfirm(writers.get(1))))
+    .then(verifyReadback(1)).expect(existingReached and evidenceIsSound)
+
+  run ambiguousConflictingChecksumStillReadsTest = init.then(selectAttempt(0, 0))
+    .then(upload(0, true, Conflicting, 1, 1, true))
+    .then(observeResponse(0, 0)).expect(not(canConfirm(writers.get(0))))
+    .expect(not(canReject(writers.get(0), objects)))
+    .then(verifyReadback(0)).expect(ambiguousReached and evidenceIsSound)
+
+  run existingConflictingChecksumStillReadsTest = init.then(selectAttempt(0, 0))
+    .then(upload(0, true, Matching, 1, 1, false)).then(takeover)
+    .then(selectAttempt(1, 0)).then(upload(1, true, Conflicting, 1, 1, false))
+    .then(observeResponse(1, 1)).expect(not(canConfirm(writers.get(1))))
+    .expect(not(canReject(writers.get(1), objects)))
     .then(verifyReadback(1)).expect(existingReached and evidenceIsSound)
 
   run changedBodyRejectedTest = init.then(selectAttempt(0, 0))

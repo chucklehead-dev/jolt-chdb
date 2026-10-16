@@ -4,7 +4,8 @@
             [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-curl :as s3-curl]
-            [jdbc.chdb-durable-s3-body-test :as body-test])
+            [jdbc.chdb-durable-s3-body-test :as body-test]
+            [jdbc.chdb-durable-s3-headers-test :as headers-test])
   (:import [java.nio.file Files OpenOption StandardOpenOption]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]))
 
@@ -65,10 +66,35 @@
    :backup-format 1
    :min-reader "26.7.3"})
 
+(defn- header-probe [endpoint fixture]
+  (s3-curl/request!
+   {:method :get :url (str endpoint "/__fixture__/" fixture)
+    :response-body :bytes
+    :auth {:access-key "ACCESS" :secret-key "SECRET" :session-token "SESSION"}
+    :region "us-east-1" :connect-timeout-ms 2000 :timeout-ms 10000}))
+
 (defn -main [endpoint]
   (reset! failures 0)
   (println "Durable V1 libcurl SigV4 loopback transport")
   (body-test/run-checks!)
+  (headers-test/run-checks!)
+  (let [response (header-probe endpoint "interim-response-headers")]
+    (check "final response does not inherit interim-only headers" {}
+           (:headers response)))
+  (check "final checksum fields are selected without other provider headers"
+         {"etag" "\"final\"" "x-amz-checksum-sha256" "fixture-checksum"
+          "x-amz-checksum-type" "FULL_OBJECT"}
+         (:headers (header-probe endpoint "selected-response-headers")))
+  (let [response (header-probe endpoint "response-trailers")]
+    (check "trailers cannot replace final response evidence" {"etag" "\"final\""}
+           (:headers response))
+    (check "chunked response body remains exact" "x"
+           (String. (:body response) "UTF-8")))
+  (let [error (try (header-probe endpoint "duplicate-response-checksum") nil
+                  (catch Throwable e {:message (ex-message e) :data (ex-data e)}))]
+    (check "duplicate checksum fails closed without reflecting either value"
+           {:message "S3 response headers are invalid"
+            :data {:category :transport :definitely-not-sent? false}} error))
   (let [probe (s3-curl/request!
                {:method :put
                 :url (str endpoint "/bucket/transport-probe")

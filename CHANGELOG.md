@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Isolate libcurl response headers by status block instead of carrying interim
+  ETags into final responses. Retain only bounded final ETag/SHA256/checksum-type
+  fields, ignore trailers, and reject duplicate selected fields without exposing
+  their values. Add portable and native wire regressions. WAL publication still
+  verifies objects by readback; checksum confirmation is not enabled.
+
 - Add an adjacent literate WAL checksum-confirmation model and standalone sampled
   gate, covering qualified single-PUT evidence, readback fallback, response
   binding, lease fencing and revision conflicts. Retain three semantic mutants.

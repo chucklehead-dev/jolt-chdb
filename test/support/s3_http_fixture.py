@@ -73,6 +73,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self.authenticated():
             self.answer(403)
             return
+        if self.key() == "/__fixture__/interim-response-headers":
+            self.send_response_only(100)
+            self.send_header("ETag", '"interim-only"')
+            self.send_header("x-amz-checksum-sha256", "interim-only")
+            self.end_headers()
+            self.answer(200)
+            return
+        if self.key() == "/__fixture__/selected-response-headers":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("ETag", '"final"')
+            self.send_header("X-Amz-Checksum-Sha256", "fixture-checksum")
+            self.send_header("x-amz-checksum-type", "FULL_OBJECT")
+            self.send_header("X-Unselected-Provider-Value", "NOT-RETAINED")
+            self.end_headers()
+            return
+        if self.key() == "/__fixture__/duplicate-response-checksum":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("x-amz-checksum-sha256", "FIRST-CANARY")
+            self.send_header("X-Amz-Checksum-Sha256", "SECOND-CANARY")
+            self.end_headers()
+            return
+        if self.key() == "/__fixture__/response-trailers":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("ETag", '"final"')
+            self.send_header("Trailer", "ETag, x-amz-checksum-sha256")
+            self.end_headers()
+            self.wfile.write(b'1\r\nx\r\n0\r\nETag: "trailer"\r\n'
+                             b'x-amz-checksum-sha256: trailer-only\r\n\r\n')
+            return
         if self.key() == "/__fixture__/stats":
             with LOCK:
                 report = {

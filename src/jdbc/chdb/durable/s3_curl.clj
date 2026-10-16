@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.s3 :as s3]
             [jdbc.chdb.durable.s3-body :as body]
+            [jdbc.chdb.durable.s3-headers :as response-header]
             [jolt.ffi :as ffi])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
            [java.nio.file Files LinkOption OpenOption]
@@ -253,14 +254,7 @@
          :close! (fn [] (.close input))}))))
 
 (defn- parse-header! [headers bytes]
-  (let [line (str/trim (String. bytes "ISO-8859-1"))
-        colon (.indexOf line ":")]
-    (when (pos? colon)
-      (let [name (str/lower-case (subs line 0 colon))]
-        ;; ETag is the only response header in the ObjectBackend contract. Not
-        ;; retaining arbitrary provider headers also avoids reflecting secrets.
-        (when (= "etag" name)
-          (swap! headers assoc name (str/trim (subs line (inc colon)))))))))
+  (swap! headers response-header/accept-line (String. bytes "ISO-8859-1")))
 
 (defn request!
   "Execute one request emitted by jdbc.chdb.durable.s3 using libcurl SigV4.
@@ -302,7 +296,7 @@
                   (try ((:close! request-source)) (catch Throwable _ nil)))
                 (curl-easy-cleanup handle)
                 (throw error)))
-            response-headers (atom {})
+            response-headers (atom response-header/initial-state)
             callback-error (atom nil)
             slist (atom ffi/null)]
         (try
@@ -387,7 +381,8 @@
                    :response-code false)
                   (let [status (ffi/read status-pointer :long)
                         result (merge {:status status
-                                       :headers @response-headers}
+                                       :headers (response-header/final-headers
+                                                 @response-headers status)}
                                       ((:result response-sink)))]
                     (when-not (= 200 status)
                       ((:cleanup! response-sink)))
