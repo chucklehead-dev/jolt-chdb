@@ -34,11 +34,17 @@
      []
      ;; Validate the runtime boundary at open, not after realizing input rows.
      (load-native-writer-factory! 'load-payload-byte-buffer-writer!)
-     (let [write (ns-resolve 'clojure.data.json.jolt-native 'write-batch-text!)]
+     (let [write (ns-resolve 'clojure.data.json.jolt-native 'write-batch-text!)
+           prefixed (ns-resolve 'clojure.data.json.jolt-native 'write-prefixed-batch-text!)]
        (when-not (ifn? write)
          (fail! ::native-unavailable "Native JSON batch writer was not initialized"))
-       (fn [rows max-bytes]
-         (try (write rows max-bytes)
+       (fn [rows max-bytes & prefixes]
+         ;; No optional argument is the old API; "" is a real supplied prefix.
+         (try (if (seq prefixes)
+                (if (ifn? prefixed)
+                  (prefixed (first prefixes) rows max-bytes)
+                  (str (first prefixes) (write rows max-bytes)))
+                (write rows max-bytes))
               (catch Throwable error
                 (if (= :clojure.data.json.jolt-native/output-limit
                        (:type (ex-data error)))
@@ -322,7 +328,7 @@
   [encoder rows]
   (encode-with! encoder rows identity))
 
-(defn encode-limited-text!
+(defn- encode-limited-text-with-prefix!
   "Encode sequential rows with a UTF-8 output budget including each newline.
   Always serial: requires effective parallelism 1. Check every completed row
   before appending, and do not request the next row after exceeding the budget.
@@ -330,7 +336,7 @@
   trusted operation, and a single row may allocate before its size is known.
   The context retains no payload after return/error. This is encoding only,
   not admission or persistence."
-  [encoder rows max-bytes]
+  [encoder rows max-bytes prefix]
   (let [batch (admit! encoder)]
     (try
       (when-not (= 1 (:effective-parallelism encoder))
@@ -341,7 +347,7 @@
         (fail! ::invalid-rows "Bounded JSONEachRow encoding requires sequential rows"))
       (let [operation
             (fn []
-              (loop [remaining max-bytes rows (seq rows) out (StringBuilder.)]
+              (loop [remaining max-bytes rows (seq rows) out (StringBuilder. (or prefix ""))]
                 (if (seq rows)
                   (let [encoded (row-text (first rows))
                         size (utf8/byte-count encoded)]
@@ -351,8 +357,29 @@
                     (recur (- remaining size) (next rows) out))
                   (.toString out))))]
         #?(:jolt (if-let [write (:native-batch-writer encoder)]
-                   (write rows max-bytes)
+                   (if (nil? prefix) (write rows max-bytes)
+                       (write rows max-bytes prefix))
                    (with-selected-writer (:native-writer-factory encoder) operation))
            :bb (operation)
            :clj (operation)))
       (finally (release! encoder batch)))))
+
+(defn encode-limited-text!
+  "Encode ordered rows with a UTF-8 payload budget including newlines.
+  Reject before requesting the next row after exceeding that budget.
+  Requires effective parallelism 1. Lazy input can realize its own chunks and
+  trusted serializers can allocate a row before its size is known.
+  This is encoding, not admission or persistence."
+  [encoder rows max-bytes]
+  (encode-limited-text-with-prefix! encoder rows max-bytes nil))
+
+(defn encode-limited-prefixed-text!
+  "Return prefix followed by bounded JSONEachRow text. The caller-supplied
+  immutable String prefix is not charged against the row payload budget.
+  Custom writers still observe only their current row, never this prefix or
+  preceding rows. Serial encoding only; no SQL validation or persistence.
+  The experimental byte backend may materialize the combined String once."
+  [encoder prefix rows max-bytes]
+  (when-not (string? prefix)
+    (fail! ::invalid-prefix "JSONEachRow prefix requires a String"))
+  (encode-limited-text-with-prefix! encoder rows max-bytes prefix))

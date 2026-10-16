@@ -7,6 +7,65 @@
 (defn- kind [operation]
   (:type (ex-data (try (operation) nil (catch Throwable error error)))))
 
+(deftest native-factory-selects-present-prefixed-helper-or-legacy-fallback
+  (require 'clojure.data.json.jolt-native)
+  (let [resolve ns-resolve
+        plain @(resolve 'clojure.data.json.jolt-native 'write-batch-text!)]
+    (doseq [present? [false true]]
+      (let [calls (atom {:plain 0 :prefixed []})]
+        (with-redefs
+          [ns-resolve
+           (fn [space name]
+             (cond
+               (and (= space 'clojure.data.json.jolt-native) (= name 'write-batch-text!))
+               (fn [rows limit] (swap! calls update :plain inc) (plain rows limit))
+               (and (= space 'clojure.data.json.jolt-native) (= name 'write-prefixed-batch-text!))
+               (when present?
+                 (fn [prefix rows limit]
+                   (swap! calls update :prefixed conj prefix)
+                   (str prefix (plain rows limit))))
+               :else (resolve space name)))]
+          (let [context (encoder/open-encoder {:json-backend :native-guarded-byte-batch})]
+            (try
+              (is (= "false\n" (encoder/encode-limited-text! context [false] 6)))
+              (is (= "true\n" (encoder/encode-limited-prefixed-text! context "" [true] 5)))
+              (is (= "headfalse\n"
+                     (encoder/encode-limited-prefixed-text! context "head" [false] 6)))
+              (is (= (if present? {:plain 1 :prefixed ["" "head"]}
+                                 {:plain 3 :prefixed []}) @calls))
+              (finally (encoder/close! context)))))))))
+
+(deftest prefixed-budget-and-row-observability
+  (doseq [backend [:configured :native-guarded-byte-batch]]
+    (let [context (encoder/open-encoder {:json-backend backend})
+          prefix "INSERT β😀 FORMAT JSONCompactEachRow\n"
+          seen (atom []) retained (atom nil)
+          value (reify json/JSONWriter
+                  (-write [_ out _]
+                    (swap! seen conj (.toString out))
+                    (reset! retained out)
+                    (.append out "42")))
+          payload "[0]\n[1,42,2]\n"]
+      (try
+        (is (= (str prefix payload)
+               (encoder/encode-limited-prefixed-text! context prefix [[0] [1 value 2]]
+                 (alength (.getBytes payload "UTF-8")))))
+        (is (= ["[1,"] @seen))
+        (is (= "[1,42,2]\n" (.toString @retained)))
+        (is (= prefix (encoder/encode-limited-prefixed-text! context prefix nil 0)))
+        (is (= :jdbc.chdb.json-each-row/invalid-prefix
+               (kind #(encoder/encode-limited-prefixed-text! context nil [] 0))))
+        (let [effects (atom [])
+              record (fn [n] (reify json/JSONWriter
+                               (-write [_ out _] (swap! effects conj n) (.append out "true"))))]
+          (is (= :jdbc.chdb.json-each-row/output-limit
+                 (kind #(encoder/encode-limited-prefixed-text! context prefix
+                          [(record 1) (record 2) (record 3)] 5))))
+          (is (= [1 2] @effects)))
+        (is (= (str prefix "false\n")
+               (encoder/encode-limited-prefixed-text! context prefix [false] 6)))
+        (finally (encoder/close! context))))))
+
 (deftest batch-backend-preserves-wire-and-materialization
   (let [context (encoder/open-encoder {:json-backend :native-guarded-byte-batch})
         rows [[0 "é😀/\n"] {"nested" [nil true 18446744073709551615N]} []]

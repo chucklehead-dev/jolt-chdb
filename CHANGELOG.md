@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add bounded prefix-aware JSONEachRow text encoding for callers constructing
+  a statement header and row payload together. Prefix bytes stay outside the
+  payload budget and custom row-writer views. Use an optional native prefixed
+  collector when available, otherwise retain compatible text assembly; preserve
+  ordinary data.json startup and BB's native Cheshire path. No ACK/default change.
+
 - Add experimental scoped S3 writer/JDBC owners with separate reusable data and
   lease-renewal transports. Close and join the writer before retiring either
   transport; preserve primary callback failures. Qualify held native WAL upload,

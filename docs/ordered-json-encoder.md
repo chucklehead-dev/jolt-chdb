@@ -55,6 +55,25 @@ Lazy input may realize its own chunks; custom serialization is trusted and can
 allocate a large row before its size is known. The budget is not persistence
 confirmation or a hard bound on arbitrary callback allocation.
 
+When a caller needs a header followed by the same bounded rows, use
+`(json-rows/encode-limited-prefixed-text! encoder prefix rows max-bytes)`.
+The prefix must be an immutable String. Its bytes are deliberately outside the
+row-payload budget; callers must bound their own header separately. Empty input
+returns the prefix. Row newlines still count, and an overflow releases admission
+before another encoding call can reuse the context.
+
+For example, a producer constructing a SQL statement can supply its generated
+header directly, instead of first asking this API for a separate payload String
+and then adding the header. The encoder does not validate or execute that SQL.
+Custom JSON writers still see only their current row's output: never the header
+or preceding rows, with no repeated row effects on fallback. JVM data.json and
+Babashka's native Cheshire remain their configured writers. On the qualified
+native byte backend, a matching optional prefixed collector can assemble the
+combined result; older matching backends keep compatible text concatenation.
+Neither the new API nor its selection changes persistence acknowledgements,
+backend defaults, source/AOT qualification, or the native runtime requirement.
+It is a production-integration building block, not a new throughput result.
+
 ## Experimental byte-batch collector
 
 With the `:native-json-byte-batch` dependency alias and a qualified Jolt runtime

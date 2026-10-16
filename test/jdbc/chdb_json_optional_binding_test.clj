@@ -9,6 +9,10 @@
       (with-redefs [ns-resolve (fn [& _]
                                 (throw (ex-info "unexpected optional lookup" {})))]
         (is (= "{\"v\":1}\n" (encoder/encode-text! context [{"v" 1}]))))
+      (with-redefs [ns-resolve (fn [& _]
+                                (throw (ex-info "unexpected optional lookup" {})))]
+        (is (= "prefix{\"v\":1}\n"
+               (encoder/encode-limited-prefixed-text! context "prefix" [{"v" 1}] 8))))
       (finally (encoder/close! context)))))
 
 (deftest missing-binding-rejects-before-factory-or-operation
