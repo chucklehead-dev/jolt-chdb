@@ -4,6 +4,7 @@ import hashlib
 import http.server
 import json
 import re
+import socket
 import sys
 import threading
 import time
@@ -15,6 +16,12 @@ AFTER_CAS_TIMEOUTS = set()
 LOCK = threading.Lock()
 REQUEST_COUNTS = {"authenticated_requests": 0, "gets": 0, "puts": 0}
 ITF_NAMESPACES = set()
+WRITER_OVERLAPS = {}
+
+
+def writer_overlap(name):
+    with LOCK:
+        return WRITER_OVERLAPS.setdefault(name, (threading.Event(), threading.Event()))
 
 
 def record_request(method, path):
@@ -32,6 +39,13 @@ def etag(body):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        if "--tcp-nodelay" in sys.argv[2:]:
+            # Optional profiling control: do not charge Python's split
+            # header/body writes and delayed ACK interaction to the library.
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     def log_message(self, _format, *_args):
         pass
@@ -75,6 +89,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authenticated():
             self.answer(403)
+            return
+        overlap = re.fullmatch(r"/__fixture__/writer-overlap/(shared|split|native)/(entered|release|arm)", self.key())
+        if overlap:
+            entered, release = writer_overlap(overlap.group(1))
+            if overlap.group(2) == "arm":
+                entered.clear()
+                release.clear()
+                with LOCK:
+                    OBJECTS["native-overlap-armed"] = True
+                self.answer(200)
+            elif overlap.group(2) == "release":
+                release.set()
+                self.answer(200)
+            else:
+                self.answer(200 if entered.is_set() else 202)
             return
         if self.key() == "/__fixture__/interim-response-headers":
             self.send_response_only(100)
@@ -145,6 +174,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         checksum = self.headers.get("x-amz-checksum-sha256")
         if checksum is not None and checksum != base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"):
             self.answer(400, b"BadDigest")
+            return
+        if key.startswith("/bucket/writer-native-overlap/object/wal/"):
+            with LOCK:
+                armed = OBJECTS.pop("native-overlap-armed", False)
+            if armed:
+                entered, release = writer_overlap("native")
+                entered.set()
+                if not release.wait(10):
+                    self.answer(504)
+                    return
+        overlap = re.fullmatch(r"/__fixture__/writer-overlap/(shared|split)/data", key)
+        if overlap:
+            entered, release = writer_overlap(overlap.group(1))
+            entered.set()
+            # Bound failures so a broken test cannot strand a server thread.
+            self.answer(200 if release.wait(10) else 504)
             return
         if (
             "/timeout-before-cas/object/head.json" in key

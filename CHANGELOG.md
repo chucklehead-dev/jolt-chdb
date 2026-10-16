@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add experimental scoped S3 writer/JDBC owners with separate reusable data and
+  lease-renewal transports. Close and join the writer before retiring either
+  transport; preserve primary callback failures. Qualify held native WAL upload,
+  automatic heartbeat routing and fresh-process full-row recovery. Defaults,
+  credentials, lease policy and confirmed persistence semantics are unchanged.
+  The JDBC constructor initializes its shim itself rather than depending on
+  an unrelated consumer to require `db.jdbc` first.
+
 - Add an explicit scoped, serial S3 transport that reuses curl connections and
   TLS/DNS caches between requests. Reject concurrent or changed-configuration
   requests, drain admitted work before close, and reset callback options before

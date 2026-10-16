@@ -91,7 +91,7 @@ Data publication and automatic lease renewal must have independently owned
 transports: sharing one serial handle can reject renewal while a data request
 is active. This low-level scope does not automatically route a writer's renewal
 traffic; do not simply put an ordinary writer and its heartbeat on one scope.
-An application-level writer owner must arrange and settle both lifetimes.
+The scoped writer helper below arranges and settles both lifetimes.
 Neither reuse nor scope completion changes conditional requests, retry bounds,
 full reader verification, or the meaning of a confirmed Durable return.
 
@@ -101,6 +101,51 @@ exercise checksum confirmation, missing/composite fallback, ambiguous timeout,
 conflicting responses, and changed-source rejection through the reused owner.
 These are lifecycle and correctness checks, not a production throughput result
 or compiled-application qualification.
+
+### Scoped writer and JDBC ownership
+
+For a writer, prefer `jdbc.chdb.durable.s3-writer/with-writer!` or
+`with-connection!` over wiring a raw reused transport yourself. Both helpers
+own two independent senders for the same namespace: one for data/publication,
+one for startup and heartbeat renewal. `with-connection!` exposes the normal
+JDBC connection, suitable for a borrowed connection in the OTel exporter.
+
+```clojure
+(require '[jdbc.chdb.durable :as durable]
+         '[jdbc.chdb.durable.s3-writer :as s3-writer])
+
+;; s3-options is the ordinary endpoint/bucket/prefix/region/credential map.
+;; Supply credentials privately; do not print that map.
+(s3-writer/with-connection!
+  s3-options
+  {:object-id "telemetry" :owner "my-app" :database "otel"}
+  (fn [connection]
+    ;; Use this borrowed connection for the lifetime of your application.
+    ;; Stop producers and flush/shut down exporters before returning.
+    (durable/execute-and-flush!
+      connection
+      "CREATE TABLE IF NOT EXISTS samples (n UInt64) ENGINE=MergeTree ORDER BY n")
+    (durable/execute-and-flush! connection "INSERT INTO samples VALUES (1)")))
+```
+
+`with-writer!` instead passes the low-level Durable writer and takes its normal
+open options, including `:instance`. Neither callback may return a live writer,
+connection, backend, or unjoined producer. On return or error, the helper closes
+the writer/connection and joins its worker and heartbeat before either native
+transport retires. A callback failure stays primary if close also fails; a
+close failure otherwise propagates. Startup failures unwind the transport
+scopes. Storage and renewal-routing overrides are rejected rather than silently
+mixing namespaces. The default `control/renew!` still enforces ownership and CAS;
+the hook only routes it to the independent sender, retaining wire-seconds versus
+writer-milliseconds conversion, retry options, and local fencing checks.
+
+This remains explicit and experimental, with no automatic credential rotation
+or global connection pool. End the scope and start another to change credentials.
+Reuse does not increase upload bandwidth or make admission a persistence ACK.
+Current native tests hold an actual WAL upload while a controlled heartbeat
+tick renews the lease, then confirm the insert, settle both threads, and recover
+all 512 rows in a fresh process. Controlled ticks are not a wall-clock scheduler
+or long-running credential-rotation test; compiled-app qualification is separate.
 
 ### Checkpoint buffers and file ownership
 
