@@ -34,6 +34,43 @@
 
 (defn run-checks! []
   (println "Durable throughput metrics redaction contracts")
+  (let [marker (Object.)
+        response {:status 200}
+        original (with-meta (fn [_] response) {:fixture-marker marker})
+        wrapped (metrics/instrument-transport (metrics/recorder) original)]
+    (check "transparent wrapper preserves existing function metadata identity"
+           true (identical? marker (:fixture-marker (meta wrapped))))
+    (check "transparent wrapper returns the original response object"
+           true (identical? response (wrapped {:operation :get}))))
+  (let [report (#'metrics/latency-report (mapv #(* % 1000000) (range 1 101)))]
+    (check "request latency uses nearest-rank p50/p90/p95/p99"
+           [50.0 90.0 95.0 99.0]
+           ((juxt :p50-ms :p90-ms :p95-ms :p99-ms) report))
+    (check "small request windows do not imply supported p99 rank estimates"
+           false (:p99-supported? (#'metrics/latency-report [1000000]))))
+  (let [recorder (metrics/recorder)
+        store (metrics/instrument-backend recorder (backend/memory-backend))]
+    (check "optional capability on a generic delegate declines without I/O"
+           {:status :unsupported}
+           (backend/put-file-with-checksum-if-absent! store "not-opened" "not-opened" 0 "not-used"))
+    (check "unsupported capability probes are not counted as uploads"
+           {} (:logical (metrics/report recorder))))
+  (let [checks (atom 0) recorder (metrics/recorder)
+        original backend/confirmed-upload?
+        delegate (reify backend/ObjectUploadConfirmation
+                   (put-file-with-checksum-if-absent! [this key _ n sha]
+                     (backend/confirmed-upload-result this key n sha {:status :created})))
+        wrapped (metrics/instrument-backend recorder delegate)
+        result (with-redefs [backend/confirmed-upload?
+                             (fn [& args] (swap! checks inc) (apply original args))]
+                 (backend/put-file-with-checksum-if-absent! wrapped "key-canary" "not-opened" 3 "hash-canary"))]
+    (check "one evidence decision controls both classification and rebinding" 1 @checks)
+    (check "confirmation evidence is rebound to the wrapper and exact coordinates"
+           true (original result wrapped "key-canary" 3 "hash-canary"))
+    (check "only checked private evidence gets the fixed confirmation label"
+           {:checksum-confirmed-created 1}
+           (get-in (metrics/report recorder)
+                   [:logical :setup :put-file-with-checksum-if-absent :results])))
   (let [canaries ["AKIA-CANARY" "secret-key-canary" "session-canary"
                   "bucket-canary" "prefix-canary" "object-key-canary"
                   "signed-url-canary" "etag-canary" "sql-canary"

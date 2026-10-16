@@ -16,9 +16,9 @@
 (def ^:private phases #{:setup :admission :flush :close :recovery})
 (def ^:private operations
   #{:get :get-with-etag :put-file-if-absent :put-bytes-if-absent
-    :replace-if-match :download-to-file})
+    :replace-if-match :download-to-file :put-file-with-checksum-if-absent})
 (def ^:private result-categories
-  #{:ok :missing :created :replaced :precondition-failed :ambiguous
+  #{:ok :missing :created :checksum-confirmed-created :replaced :precondition-failed :ambiguous
     :downloaded :not-found :authentication :permission :throttled
     :provider :transport :timeout :invalid-response :error})
 
@@ -126,24 +126,28 @@
 
   The wrapper intentionally derives its observation before dropping all
   references to the request/response. It records neither provider identity nor
-  opaque response metadata."
+  opaque response metadata. It transparently forwards the same request/result,
+  preserving existing function metadata (including native factory provenance).
+  It does not confer provenance on an unmarked custom transport."
   [metrics request!]
-  (fn [request]
-    (let [phase @(:phase metrics)
-          operation (checked-operation (:operation request))
-          sent-bytes (request-body-bytes request)
-          start (System/nanoTime)]
-      (try
-        (let [response (request! request)]
-          (record! (:transport metrics) phase operation
-                   (- (System/nanoTime) start) sent-bytes
-                   (response-body-bytes response) (transport-category response))
-          response)
-        (catch Throwable error
-          (record! (:transport metrics) phase operation
-                   (- (System/nanoTime) start) sent-bytes 0
-                   (throwable-category error))
-          (throw error))))))
+  (with-meta
+    (fn [request]
+      (let [phase @(:phase metrics)
+            operation (checked-operation (:operation request))
+            sent-bytes (request-body-bytes request)
+            start (System/nanoTime)]
+        (try
+          (let [response (request! request)]
+            (record! (:transport metrics) phase operation
+                     (- (System/nanoTime) start) sent-bytes
+                     (response-body-bytes response) (transport-category response))
+            response)
+          (catch Throwable error
+            (record! (:transport metrics) phase operation
+                     (- (System/nanoTime) start) sent-bytes 0
+                     (throwable-category error))
+            (throw error)))))
+    (meta request!)))
 
 (defn- regular-file-bytes [path]
   (try
@@ -167,7 +171,8 @@
         (throw error)))))
 
 (defn instrument-backend
-  "Wrap an ObjectBackend while preserving its exact calls and return values."
+  "Preserve ordinary backend calls/results. Rebind optional upload evidence
+  only after checking its original delegate and exact reference coordinates."
   [metrics delegate]
   (reify backend/ObjectBackend
     (get-bytes [_ key]
@@ -188,7 +193,34 @@
                        #(backend/replace-if-match! delegate key bytes etag)))
     (download-to-file! [_ key path]
       (observe-logical metrics :download-to-file 0
-                       #(backend/download-to-file! delegate key path)))))
+                       #(backend/download-to-file! delegate key path)))
+    backend/ObjectUploadConfirmation
+    (put-file-with-checksum-if-absent! [this key path expected-size expected-sha256]
+      (if-not (satisfies? backend/ObjectUploadConfirmation delegate)
+        {:status :unsupported}
+        (let [phase @(:phase metrics) start (System/nanoTime)
+              operation :put-file-with-checksum-if-absent]
+          (try
+            (let [result (backend/put-file-with-checksum-if-absent!
+                           delegate key path expected-size expected-sha256)
+                  confirmed? (backend/confirmed-upload?
+                               result delegate key expected-size expected-sha256)
+                  returned (if confirmed?
+                             (backend/confirmed-upload-result
+                               this key expected-size expected-sha256 result)
+                             result)]
+              ;; A single pure evidence decision controls reporting AND rebinding.
+              ;; Unsupported capability probes are no-I/O, not upload observations.
+              (when-not (= :unsupported (:status result))
+                (record! (:logical metrics) phase operation
+                         (- (System/nanoTime) start) expected-size 0
+                         (if confirmed? :checksum-confirmed-created (logical-category result))))
+              returned)
+            (catch Throwable error
+              (record! (:logical metrics) phase operation
+                       (- (System/nanoTime) start) expected-size 0
+                       (throwable-category error))
+              (throw error))))))))
 
 (defn- percentile [ordered fraction]
   (nth ordered (max 0 (dec (long (Math/ceil (* fraction (count ordered))))))))
@@ -199,11 +231,15 @@
         nanos (reduce + 0 ordered)]
     {:count count
      :p50-ms (/ (double (percentile ordered 0.50)) 1000000.0)
+     :p90-ms (/ (double (percentile ordered 0.90)) 1000000.0)
      :p95-ms (/ (double (percentile ordered 0.95)) 1000000.0)
+     :p99-ms (/ (double (percentile ordered 0.99)) 1000000.0)
      :max-ms (/ (double (peek ordered)) 1000000.0)
      :total-ms (/ (double nanos) 1000000.0)
      :p50-supported? (>= count 2)
-     :p95-supported? (>= count 20)}))
+     :p90-supported? (>= count 10)
+     :p95-supported? (>= count 20)
+     :p99-supported? (>= count 100)}))
 
 (defn- summarized [observations]
   (into {}
