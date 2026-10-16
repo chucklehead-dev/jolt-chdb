@@ -393,4 +393,6 @@
       (println :qualification-failed :phase phase :label (or (:label (ex-data error)) :unknown))
       (println :error-class (.getName (class error))
                :error-type (when (keyword? (:type (ex-data error))) (:type (ex-data error))))
-      (System/exit 1))))
+      ;; Preserve nonzero CLI failure while allowing an enclosing trusted
+      ;; benchmark driver to retain its bounded diagnostic before cleanup.
+      (throw error))))
