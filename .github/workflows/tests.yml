@@ -130,6 +130,9 @@ jobs:
         run: clojure -M:typed-check
 
   test:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -168,6 +171,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
           bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj
           bb scripts/test_typed_storage_budget.clj
           bb scripts/test_typed_storage_receipts.clj
@@ -276,6 +280,36 @@ jobs:
         run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
+      - name: Require non-vacuous checksum comparison selection controls
+        run: jolt -Srepro -Sdeps '{:paths ["src" "test" "scripts"]}' -m jdbc.chdb-confirmation-profile-test
+      - uses: actions/checkout@v4
+        with:
+          ref: fd8f961364e73bac370286d5481407b23120e9cd
+          path: .qualification/confirmation-source
+          persist-credentials: false
+      - name: Require real TLS comparison selection and missing-proof control
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFIED_RUNTIME_PROFILE: current-0821-1ae7
+          QUALIFIED_RUNTIME_RUN_ID: '38618434034'
+          QUALIFIED_RUNTIME_RUN_ATTEMPT: '1'
+          QUALIFIED_RUNTIME_WORKFLOW_SHA: 1533b9fe6f7782f4d024a07aefbfb7ce50c4251b
+          QUALIFIED_RUNTIME_ARTIFACT_ID: '11921513712'
+          QUALIFIED_RUNTIME_ARTIFACT_SHA256: 931dda8bf4e9d9beeaa92ad64b8a1c925d3ab670f87414ec9efee9af28cb3537
+          QUALIFIED_RUNTIME_BINARY_SHA256: 06a2ccb858c072bfcd74ce94d96eb95f008d75e0fb1f46117728602572189811
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/confirmation-qualified-runtime.sh"
+          curl -fsSL --connect-timeout 15 --max-time 30 \
+            https://raw.githubusercontent.com/chucklehead-dev/jolt-otel-clickhouse/96119103195b67cfc9fd52277251888980fc7852/scripts/fetch-qualified-durable-runtime.sh \
+            -o "$helper"
+          printf '%s  %s\n' 81030fafdb2e3c79765792d043585139f4410c27a281113dd19874b4c27e74b2 "$helper" | sha256sum -c -
+          TMPDIR=/tmp timeout --signal=TERM --kill-after=5s 240s bash "$helper" > "$RUNNER_TEMP/confirmation-qualified-runtime.log"
+          test "$(grep -c '^QUALIFIED_RUNTIME_BIN=' "$RUNNER_TEMP/confirmation-qualified-runtime.log")" = 1
+          task_bin=$(sed -n 's/^QUALIFIED_RUNTIME_BIN=//p' "$RUNNER_TEMP/confirmation-qualified-runtime.log")
+          [[ "$task_bin" =~ ^/tmp/qualified-durable-runtime\.[A-Za-z0-9]+/jolt$ ]]
+          bash scripts/test_confirmation_profile_tls.sh "$task_bin" "$GITHUB_WORKSPACE/.qualification/confirmation-source"
       - name: Test optional WAL checksum confirmation through verified TLS
         timeout-minutes: 4
         run: bash test/durable-upload-confirmation-tls.sh jolt

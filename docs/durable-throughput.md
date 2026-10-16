@@ -1,5 +1,35 @@
 # Durable JSONEachRow throughput qualification
 
+## Checksum confirmation comparison
+
+The manually dispatched `wal-confirmation-ab.yml` workflow compares default
+readback with experimental `:sha256-single-put` confirmation. Both arms use the
+same frozen measured source (`fd8f961`), compiler, JSON backend, exporter and
+256-by-10,000 wide typed-span workload. Local runs are unchanged controls; only
+the S3 candidate writer receives the opt-in backend option. Both independent
+readers retain full stock verification and must recover identical physical rows
+and typed values. Existing historical profiles and results are not relabeled.
+
+The additional scalar receipt records actual file publications, completed PUT
+and verification phases across publication and WAL commit, and successful private upload-proof checks. Proof
+observations are not unique uploads: scoped backends and the control layer may
+check the same proof. A candidate result requires positive proof observations
+and no publication readback; baseline requires readback and no proof. Missing
+proof, fallback, errors and vacuous runs reject the profile rather than becoming
+performance results. A real-TLS control deliberately strips provenance and
+requires that rejection. Another control removes the publication witness and
+requires rejection of the real readback at commit. These observers run only in the isolated benchmark
+process and do not change normal library defaults.
+
+The workflow retains protected-main OIDC, existing request/upload/retention
+limits and privacy scanning. Only allowlisted scalar receipts are uploaded;
+raw logs, object names, credentials and telemetry remain excluded. Report
+p50/p90/p95/p99, allocation, CPU, transfer accounting and independent recovery
+together. A successful window is not a sustained tail-confidence claim, and
+this profile's existence is not a claim of AWS qualification or a speedup.
+
+## Existing benchmark
+
 `jdbc.chdb-durable-throughput` is a manual, production-path benchmark for the
 ClickStack-shaped log inserts used by `jolt-otel-clickhouse`. It does not alter
 the Durable protocol or its ordering. Each accepted materialized statement is
