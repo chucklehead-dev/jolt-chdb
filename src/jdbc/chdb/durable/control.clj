@@ -589,7 +589,7 @@
 (defn- verified-wal-publication
   [publication store token reference]
   ;; Map metadata preserves the public receipt's shape and wire representation.
-  ;; The sealed value is minted only after a successful readback. Matching all
+  ;; Mint only after readback or qualified exact-upload confirmation. Matching all
   ;; inputs prevents reuse for another backend or write.
   (with-meta publication
     {verified-wal-seal
@@ -670,17 +670,26 @@
                                  (unique-object-token) ".jsonl")
                      "size" (Files/size path)
                      "sha256" (digest/sha256-file path)}
-          result (observed-phase observe! :wal-immutable-put
-                                 (get reference "size")
-                                 #(backend/put-file-if-absent!
-                                   store (get reference "key") path))]
+          result (observed-phase
+                  observe! :wal-immutable-put (get reference "size")
+                  (fn []
+                    (let [confirmed (when (satisfies? backend/ObjectUploadConfirmation store)
+                                      (backend/put-file-with-checksum-if-absent!
+                                        store (get reference "key") path
+                                        (get reference "size") (get reference "sha256")))]
+                      (if (or (nil? confirmed) (= :unsupported (:status confirmed)))
+                        (backend/put-file-if-absent! store (get reference "key") path)
+                        confirmed))))
+          confirmed? (backend/confirmed-upload?
+                       result store (get reference "key")
+                       (get reference "size") (get reference "sha256"))]
       (verified-wal-publication
        {:status (reconcile-publication!
                  (:status result)
                  #(observed-phase observe! :wal-immutable-verify
                                   (get reference "size")
                                   (fn [] (verify-file-reference! store reference)))
-                 true options)
+                 (not confirmed?) options)
         :reference reference
         :etag (:etag result)}
        store token reference))))
@@ -718,7 +727,9 @@
   As with byte publication, an existing immutable object is accepted only
   after exact size and full SHA-256 verification.  Ambiguous put results are
   reconciled by the streaming file verifier, so a lost provider response is
-  never mistaken for a successful WAL publication."
+  never mistaken for a successful WAL publication. A qualified optional backend
+  capability can confirm a new upload against the selected size/digest instead
+  of readback; defaults and existing/ambiguous outcomes retain readback."
   ([store token file-path]
    (publish-wal-file! store token file-path {}))
   ([store token file-path options]
@@ -995,7 +1006,8 @@
 
   `verify-reference!` must return truthy only after checking the backend
   object against the reference's size and SHA-256. A matching private WAL
-  publication witness carries that completed readback into this call; all
+  publication witness carries that completed readback or qualified exact-upload
+  confirmation into this call; all
   other commits invoke the supplied verifier. Verification precedes the head
   CAS without excluding same-owner lease renewal. Definite
   heartbeat CAS conflicts retry from the latest owned head; ambiguous CAS

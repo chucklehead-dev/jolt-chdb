@@ -2,12 +2,24 @@
   "S3-compatible Durable backend semantics over a streaming HTTP transport."
   (:require [clojure.string :as str]
             [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.s3-checksum :as checksum]
             [jdbc.chdb.durable.retry :as retry])
   (:import [java.net URI]
            [java.nio.file Files Paths]))
 
 (def ^:private retryable-statuses #{409 429 500 502 503 504})
 (def ^:private uncertain-write-statuses #{500 502 503 504})
+(def ^:private native-transport-seal (Object.))
+
+(defn ^:no-doc native-request-function
+  "Internal native factory hook, not a provider qualification API. Arbitrary
+  custom functions do not acquire provenance from configuration flags. This
+  is not a security boundary against hostile in-process code."
+  [f]
+  (with-meta f (assoc (meta f) native-transport-seal native-transport-seal)))
+
+(defn- native-request-function? [f]
+  (identical? native-transport-seal (get (meta f) native-transport-seal)))
 (def ^:private unreserved
   (set (map int
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")))
@@ -277,18 +289,50 @@
                        "S3 streamed response omitted its byte count"))
               {:status :downloaded :byte-count byte-count})
         404 {:status :not-found}
-        (response-or-error! :download-to-file outcome)))))
+        (response-or-error! :download-to-file outcome))))
+
+  backend/ObjectUploadConfirmation
+  (put-file-with-checksum-if-absent! [this key local-path expected-size expected-sha256]
+    (if-not (:checksum-confirmation? state)
+      {:status :unsupported}
+      (let [path (Paths/get (str local-path) (into-array String []))
+            encoded (checksum/request-checksum expected-sha256)]
+        (when-not (and (Files/isRegularFile path (make-array java.nio.file.LinkOption 0))
+                       (integer? expected-size) (not (neg? expected-size))
+                       (= expected-size (Files/size path)))
+          (fail! ::invalid-file "S3 upload source does not match its selected size"))
+        (let [outcome (request! state :put-file-with-checksum-if-absent
+                                {:method :put :url (object-url state key)
+                                 :headers {"if-none-match" "*"
+                                           "x-amz-checksum-sha256" encoded}
+                                 :request-body {:file path :byte-count expected-size}}
+                                true)
+              response (:response outcome)]
+          (cond
+            (:ambiguous? outcome) {:status :ambiguous}
+            (= 412 (:status response)) {:status :precondition-failed}
+            (= 200 (:status response))
+            (let [result {:status :created :etag (etag! response)}]
+              (if (checksum/confirmed? expected-sha256 (:headers response))
+                (backend/confirmed-upload-result this key expected-size expected-sha256 result)
+                result))
+            :else (response-or-error! :put-file-with-checksum-if-absent outcome)))))))
 
 (defn s3-backend
   "Create an S3-compatible namespace backend.
 
   `request!` is the streaming SigV4 transport boundary. It receives no SQL or
   Durable manifest data beyond the exact object request and must honor file
-  bodies/destinations without buffering them."
+  bodies/destinations without buffering them.
+
+  Experimental `:wal-upload-confirmation :sha256-single-put` opts into the
+  qualified provider's full-object SHA256 contract. It is usable only with the
+  native transport over HTTPS. Default/custom transports retain full readback.
+  This does not qualify an arbitrary S3-compatible provider's checksum behavior."
   [{:keys [endpoint bucket prefix region access-key secret-key session-token
            request! max-attempts connect-timeout-ms timeout-ms
            max-response-bytes retry-deadline-ms retry-initial-backoff-ms
-           retry-max-backoff-ms monotonic-ms! await-backoff!]
+           retry-max-backoff-ms monotonic-ms! await-backoff! wal-upload-confirmation]
     :or {prefix "" max-attempts 3 connect-timeout-ms 10000
          timeout-ms 300000 retry-deadline-ms 300000
          retry-initial-backoff-ms 25 retry-max-backoff-ms 1000
@@ -296,6 +340,8 @@
          await-backoff! retry/await-backoff!}}]
   (when-not (and (integer? max-attempts) (pos? max-attempts) (<= max-attempts 8))
     (fail! ::invalid-options "max-attempts must be between one and eight"))
+  (when-not (contains? #{nil :sha256-single-put} wal-upload-confirmation)
+    (fail! ::invalid-options "unsupported WAL upload confirmation mode"))
   (when connect-timeout-ms
     (positive-option! connect-timeout-ms "connect-timeout-ms"))
   (when timeout-ms
@@ -331,4 +377,7 @@
                       transport-options))]
     (when-not (fn? request!)
       (fail! ::invalid-options "request! must be a function"))
-    (S3Backend. (assoc state :request! request!))))
+    (let [qualified? (and (= :sha256-single-put wal-upload-confirmation)
+                          (str/starts-with? (:endpoint state) "https://")
+                          (native-request-function? request!))]
+      (S3Backend. (assoc state :request! request! :checksum-confirmation? qualified?)))))

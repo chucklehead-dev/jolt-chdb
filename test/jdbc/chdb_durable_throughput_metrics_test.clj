@@ -20,11 +20,17 @@
 
 (def ^:private expected-data-json-coordinate
   '{:git/url "https://github.com/casselc/data.json.git"
-    :git/sha "1b0716268232a79dd2b2fdb968cca171414bd589"})
+    :git/sha "3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0"})
 
 (defn- exact-data-json-pin? [deps]
   (= expected-data-json-coordinate
      (get-in deps [:deps 'org.clojure/data.json])))
+
+(defn- checked-compiler-action? [action]
+  (and (str/includes? action "default: 57e591d4d6481c5536858575ffc006cf5a41adbf")
+       (str/includes? action "default: v0.8.6-37-g57e591d4")
+       (str/includes? action "actual_version=\"$(\"$install_dir/jolt\" --version)\"")
+       (str/includes? action "test \"$actual_version\" = \"jolt $ACTION_JOLT_VERSION\"")))
 
 (defn run-checks! []
   (println "Durable throughput metrics redaction contracts")
@@ -339,11 +345,18 @@
             (assoc-in deps
                       [:deps 'org.clojure/data.json :git/url]
                       "https://github.com/clojure/data.json.git")))
-    (check "recovery performance documentation binds the current data.json pin"
+    (check "recovery performance documentation preserves the historical data.json pin"
            true
            (str/includes?
             durable-doc
             "1b0716268232a79dd2b2fdb968cca171414bd589"))
+    (check "recovery documentation distinguishes the current descendant pin"
+           true (str/includes? durable-doc "3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0"))
+    (check "current-pin guard rejects the historical measured pin"
+           false
+           (exact-data-json-pin?
+             (assoc-in deps [:deps 'org.clojure/data.json :git/sha]
+                       "1b0716268232a79dd2b2fdb968cca171414bd589")))
     (check "local selector runner retains checked peak-RSS evidence"
            true
            (and (str/includes? durable-doc
@@ -401,9 +414,17 @@
            false (str/includes? hosted-text stale-pin))
     (check "shared action asserts the exact strict-decoder compiler version"
            true
-           (and (str/includes?
-                 action "57e591d4d6481c5536858575ffc006cf5a41adbf")
-                (str/includes? action "jolt v0.8.6-37-g57e591d4")))
+           (checked-compiler-action? action))
+    (check "action guard rejects a missing runtime banner assertion"
+           false
+           (checked-compiler-action?
+             (str/replace action
+               "test \"$actual_version\" = \"jolt $ACTION_JOLT_VERSION\"" "true")))
+    (check "action guard rejects a changed default compiler version"
+           false
+           (checked-compiler-action?
+             (str/replace action "default: v0.8.6-37-g57e591d4"
+                                 "default: v0.8.6-unqualified")))
     (check "throughput provenance consumes shared action outputs"
            true
            (and (str/includes?

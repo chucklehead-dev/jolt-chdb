@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Propagate custom throughput-suite failure counters through the aggregate test
+  runner using their throwing entrypoints, including previously omitted worker
+  subgroups. Add injected-child-failure controls with an independent clojure.test
+  oracle. Refresh stale pin/action guards without discarding historical results
+  or changing dependency/compiler pins.
+
+- Add experimental, default-off single-PUT SHA256 confirmation for file-backed
+  WAL publication with the native HTTPS transport. Bind private evidence to the
+  backend/key/size/digest; retain full readback for unsupported, existing and
+  ambiguous outcomes, plus unchanged reader verification and lease/head-CAS
+  fencing. Add native TLS fault controls and sampled-only model CI. Real-S3 and
+  throughput qualification remain pending; checkpoints/byte publication unchanged.
+
+- Isolate libcurl response headers by status block instead of carrying interim
+  ETags into final responses. Retain only bounded final ETag/SHA256/checksum-type
+  fields, ignore trailers, and reject duplicate selected fields without exposing
+  their values. Add portable and native wire regressions. Readback remains the
+  default; checksum confirmation requires an explicit qualified-provider opt-in.
+
+- Add an adjacent literate WAL checksum-confirmation model and standalone sampled
+  gate, covering qualified single-PUT evidence, readback fallback, response
+  binding, lease fencing and revision conflicts. Retain three semantic mutants.
+  This is an approved design model, not a new backend capability or default.
+
 - Reduce empty-parameter SQL scan overhead with a behavior-qualified Chez
   lexical detector. Preserve quoted/comment question marks, exact errors,
   bound-parameter rewriting and prepared-buffer reuse; unsupported source/AOT

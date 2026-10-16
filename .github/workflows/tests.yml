@@ -276,6 +276,9 @@ jobs:
         run: bash test/durable-local-posix.sh /usr/bin/env
       - name: Test Durable libcurl SigV4 transport
         run: bash test/durable-s3-curl.sh jolt
+      - name: Test optional WAL checksum confirmation through verified TLS
+        timeout-minutes: 4
+        run: bash test/durable-upload-confirmation-tls.sh jolt
       - name: Test witnessed WAL head races through real libcurl
         run: bash test/durable-s3-curl.sh jolt durable-witness-head-native-test
       - name: Require selected WAL publication through real curl

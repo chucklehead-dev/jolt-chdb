@@ -596,8 +596,11 @@ integer-character overload, which already uses Jolt's checked Scheme scanner.
 The remaining `String.replace` and scan follow-up tracked in
 `jolt-aspect-packs#125` is separate from this dependency update.
 
-The active dependency is `casselc/data.json`
-`1b0716268232a79dd2b2fdb968cca171414bd589`. It carries the maintained
+The current dependency is `casselc/data.json`
+`3adc8c5d3a57a30d18f62bad9d1c7a5c1f6857e0`, a descendant of the historically
+measured `1b0716268232a79dd2b2fdb968cca171414bd589`. Source ancestry was checked;
+the historical measurements below are not new measurements of the current pin.
+The maintained line carries the
 String-backed reader ordinary-run improvements, Jolt-specialized
 codepoint-decoder access, and the map-entry-sequence writer reuse. Durable's
 validation-before-replay ordering, strict UTF-8, wire bytes, record order,

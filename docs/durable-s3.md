@@ -63,7 +63,8 @@ return the exact `:byte-count`.
 The default transport requires libcurl 7.75 or newer. It configures
 `CURLOPT_AWS_SIGV4`, supplies access and secret keys through libcurl's private
 credential option, signs an optional `x-amz-security-token`, retains only the
-response ETag, and never includes credential-bearing curl messages in public
+final response's ETag and optional SHA256/checksum-type fields, and never
+includes credential-bearing curl messages in public
 exceptions. `:connect-timeout-ms` defaults to 10000, `:timeout-ms` to 300000,
 and bounded byte responses default to 128 MiB via `:max-response-bytes`.
 The request timeout may exceed the writer's default 30-second lease TTL.
@@ -92,6 +93,51 @@ SHA-256 uses an incremental OpenSSL EVP context on Jolt. This is required
 because the compatibility
 `MessageDigest.update` contract snapshots caller bytes until `digest`; using it
 for a file loop would retain and later concatenate the whole checkpoint.
+
+## Experimental single-PUT WAL confirmation
+
+Readback is still the default. The experimental backend option
+`:wal-upload-confirmation :sha256-single-put` lets file-backed WAL publication
+use a qualified provider's full-object SHA256 acknowledgement instead of an
+immediate verification download. This has local TLS-fixture coverage, not yet
+real-S3 or throughput qualification; do not treat it as a production recommendation.
+
+The upload sends the digest already selected for the V1 reference. It does not
+rehash a changed source and silently substitute a different reference. Only an
+unambiguous new upload through the native HTTPS transport can carry confirmation
+evidence. Missing or composite checksum evidence falls back to readback;
+malformed or conflicting evidence cannot confirm publication. Existing-object
+and ambiguous outcomes always retain full readback. Byte-array publication,
+checkpoints, reader hash verification, lease fencing and head CAS are unchanged.
+
+This explicitly trusts the selected provider to enforce single-PUT checksum
+validation. It does not qualify an arbitrary S3-compatible service. A custom
+`:request!` function cannot gain confirmation capability from an option flag.
+Internal capability/minting hooks are trusted implementation contracts, not a
+security boundary against hostile code inside the process.
+
+The transport retains only bounded selected headers from the final response
+block. Interim responses and trailers cannot supply those fields, and duplicate
+selected fields fail closed without reflecting their values in exceptions.
+Private evidence is bound to the backend instance and exact key, size and digest;
+the existing control-plane witness additionally binds writer authority/reference.
+
+Run the native TLS controls and adjacent sampled literate model with:
+
+```sh
+bash test/durable-upload-confirmation-tls.sh /path/to/qualified-jolt-wrapper
+bash scripts/check-wal-checksum-confirmation-quint.sh
+```
+
+The TLS fixture uses fake credentials and a private ephemeral test CA. It first
+requires rejection of the untrusted CA; supplying that CA never disables peer
+or hostname checks. It covers actual PUT checksum validation, default/fallback
+readback, ambiguous timeout, conflicting response, and same-size source mutation.
+The [sampled model](../formal/sampled/wal-checksum-confirmation.md) has its own CI
+gate, separate from the existing exhaustive corpus. Neither substitutes for real
+service qualification or an independent-process recovery/performance run.
+
+## Transport qualification
 
 The checked-in semantic transport test is deliberately adversarial: it checks
 conditional headers, opaque ETags, retry bounds, credential redaction,
