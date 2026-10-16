@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicit scoped, serial S3 transport that reuses curl connections and
+  TLS/DNS caches between requests. Reject concurrent or changed-configuration
+  requests, drain admitted work before close, and reset callback options before
+  releasing their arena. Ordinary transports and persistence guarantees stay
+  unchanged; data and lease-renewal traffic require independent owners.
+
 - Record the first complete matched AWS WAL-confirmation window, including
   p50/p90/p95/p99, independent full-row recovery and transfer/allocation counts.
   Keep the missed S3 targets, local tail variation, experimental stack and

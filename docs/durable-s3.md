@@ -72,6 +72,38 @@ That cannot bypass fencing: operations self-fence at the last proved local
 expiry, but a heartbeat stuck until the transport timeout can sacrifice
 availability. Configure request timeouts within renewal slack when that
 availability guarantee is required.
+### Explicit connection reuse
+
+`jdbc.chdb.durable.s3-curl/with-reused-transport!` calls your function with a
+serial request function. Pass that request function as `:request!` when creating
+an S3 backend inside the scope. Completed requests reuse connections and TLS/DNS
+caches instead of creating a new curl handle each time. The ordinary backend
+does not select this experimental mode automatically.
+
+The scope owns the native handle. It stops admission, waits for an admitted
+request to finish, then releases the handle on both success and error. Do not
+return a live backend or retain the request function for later work. Concurrent
+requests reject rather than queue. The first request fixes the HTTP(S) origin,
+region and credential configuration; a change rejects before native work. Start
+a new scope to rotate credentials. This is not a shared cross-tenant pool.
+
+Data publication and automatic lease renewal must have independently owned
+transports: sharing one serial handle can reject renewal while a data request
+is active. This low-level scope does not automatically route a writer's renewal
+traffic; do not simply put an ordinary writer and its heartbeat on one scope.
+An application-level writer owner must arrange and settle both lifetimes.
+Neither reuse nor scope completion changes conditional requests, retry bounds,
+full reader verification, or the meaning of a confirmed Durable return.
+
+Real loopback tests verify fewer new connections, method reset, failure reuse,
+closed/concurrent rejection, and draining before cleanup. The TLS controls also
+exercise checksum confirmation, missing/composite fallback, ambiguous timeout,
+conflicting responses, and changed-source rejection through the reused owner.
+These are lifecycle and correctness checks, not a production throughput result
+or compiled-application qualification.
+
+### Checkpoint buffers and file ownership
+
 Checkpoint file bodies cross bounded libcurl callbacks. Uploads retain an open
 NIO input stream. On Linux, the implemented and qualified download path retains
 an atomically created
