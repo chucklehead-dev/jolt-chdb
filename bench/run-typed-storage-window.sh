@@ -60,6 +60,13 @@ case "${QUALIFIED_STORAGE_SOURCE_PROFILE:-baseline}" in
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/writer.clj)" = 6eac0599c0e33d4971305011355c3a9de3b1bcc1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_curl.clj)" = 528ed7bfd3e01f31e937d01706d51ec357fa8ef1
     test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_body.clj)" = 44b64e1ab7ba66ce3ae1f4f51ebc8b0f71ee580d ;;
+  wal-checksum-confirmation)
+    # Same reviewed checksum-capable source for BOTH comparison arms. The
+    # protected driver alone selects readback versus explicit confirmation.
+    git -C "$task_chdb" diff --quiet 26ba60f2ff297769da8aaa5d3f2ad48b0cc665f1 -- src resources deps.edn
+    test -z "$(git -C "$task_chdb" ls-files --others -- src resources deps.edn)"
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/control.clj)" = 7f0a642616b3b728891702718b6054b56010708b
+    test "$(git -C "$task_chdb" rev-parse HEAD:src/jdbc/chdb/durable/s3_curl.clj)" = 4b498a536ea7a381ce8218316cbfe62f8267949f ;;
   *) echo unexpected-typed-storage-source-profile >&2; exit 64 ;;
 esac
 test -f "${JOLT_CHDB_LIB:?exact native library required}"
