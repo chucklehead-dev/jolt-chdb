@@ -78,3 +78,23 @@
   (let [r (run-tests 'jdbc.chdb-confirmation-profile-test)]
     (when (pos? (+ (:fail r) (:error r)))
       (throw (ex-info "Confirmation profile controls failed" {})))))
+
+(deftest commit-fallback-remains-visible-and-preserves-result-and-observer
+  (let [counts (atom (assoc (profile/initial-counts) :file-publications 1
+                           :completed-publications 1 :put-completions 1
+                           :valid-proof-observations 1))
+        result {:status :committed} seen (atom []) token (Object.)]
+    (with-redefs [control/commit-reference!
+                  (fn [store actual options]
+                    (is (= :store store))
+                    (is (identical? token actual))
+                    (is (= :wal (:kind options)))
+                    ((:phase-observe! options) {:phase :wal-immutable-verify :status :complete})
+                    result)]
+      (is (identical? result
+            (profile/with-observers! counts
+              #(control/commit-reference! :store token
+                 {:kind :wal :phase-observe! (fn [e] (swap! seen conj e))})))))
+    (is (= 1 (count @seen)))
+    (is (= 1 (:verification-completions @counts)))
+    (is (thrown #(profile/report! counts "candidate" "window")))))

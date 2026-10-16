@@ -27,8 +27,10 @@
                   (assert (= :committed
                              (:status (control/commit-reference! store token
                                         {:kind :wal :reference (:reference publication)
-                                         :verified-publication publication
-                                         :verify-reference! (fn [& _] (throw (ex-info "Duplicate verification" {})))})))))))
+                                         :verified-publication
+                                         (if (= "true" (System/getenv "TEST_CONFIRMATION_DROP_PUBLICATION_WITNESS"))
+                                           (with-meta publication nil) publication)
+                                         :verify-reference! control/verify-file-reference!})))))))
             (let [head (control/read-head-read-only! store)
                   refs (get-in head [:head "manifest" "wal"])]
               (assert (= 1 (count refs)))

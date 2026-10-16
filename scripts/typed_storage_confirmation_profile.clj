@@ -24,6 +24,7 @@
   ;; evidence predicate, CAS, reader, or renewal decisions.
   (let [publish! control/publish-wal-file!
         selected! control/publish-wal-file-selected!
+        commit! control/commit-reference!
         confirmed? backend/confirmed-upload?
         observed
         (fn [publish store token path-or-selector options]
@@ -54,6 +55,16 @@
                   (fn
                     ([store token selector] (observed selected! store token selector {}))
                     ([store token selector options] (observed selected! store token selector options)))
+                  control/commit-reference!
+                  (fn [store token options]
+                    (let [observer (:phase-observe! options)]
+                      (commit! store token
+                        (assoc options :phase-observe!
+                          (fn [event]
+                            (when observer (observer event))
+                            (when (and (= :wal-immutable-verify (:phase event))
+                                       (= :complete (:status event)))
+                              (swap! counts update :verification-completions inc)))))))
                   backend/confirmed-upload?
                   (fn [& args]
                     (let [result (apply confirmed? args)]

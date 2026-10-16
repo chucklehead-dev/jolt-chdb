@@ -62,4 +62,18 @@ if timeout --kill-after=5s 45s "$task_jolt" -Srepro -Sdeps "$task_deps" \
   exit 1
 fi
 grep -Fq 'confirmation-proof-missing' "$task_root/missing-provenance.log"
+grep -Fq ':real-publication-probe-passed-not-ingestion-throughput' "$task_root/missing-provenance.log"
 echo 'real TLS fallback was rejected by the confirmation selection oracle'
+export JOLT_CHDB_S3_PREFIX=ci/jolt-chdb/123-3/typed-window
+export TEST_CONFIRMATION_DROP_PROVENANCE=false
+export TEST_CONFIRMATION_DROP_PUBLICATION_WITNESS=true
+mkdir "$task_root/missing-publication-witness"
+if timeout --kill-after=5s 45s "$task_jolt" -Srepro -Sdeps "$task_deps" \
+  "$task_repo/scripts/typed_storage_confirmation_driver.clj" window "$task_root/missing-publication-witness" \
+  > "$task_root/missing-publication-witness.log" 2>&1; then
+  echo 'missing-publication-witness control unexpectedly succeeded' >&2
+  exit 1
+fi
+grep -Fq 'confirmation-unexpected-readback' "$task_root/missing-publication-witness.log"
+grep -Fq ':real-publication-probe-passed-not-ingestion-throughput' "$task_root/missing-publication-witness.log"
+echo 'real TLS commit readback was rejected by the confirmation selection oracle'

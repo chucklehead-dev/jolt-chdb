@@ -11,13 +11,14 @@ readers retain full stock verification and must recover identical physical rows
 and typed values. Existing historical profiles and results are not relabeled.
 
 The additional scalar receipt records actual file publications, completed PUT
-and verification phases, and successful private upload-proof checks. Proof
+and verification phases across publication and WAL commit, and successful private upload-proof checks. Proof
 observations are not unique uploads: scoped backends and the control layer may
 check the same proof. A candidate result requires positive proof observations
 and no publication readback; baseline requires readback and no proof. Missing
 proof, fallback, errors and vacuous runs reject the profile rather than becoming
 performance results. A real-TLS control deliberately strips provenance and
-requires that rejection. These observers run only in the isolated benchmark
+requires that rejection. Another control removes the publication witness and
+requires rejection of the real readback at commit. These observers run only in the isolated benchmark
 process and do not change normal library defaults.
 
 The workflow retains protected-main OIDC, existing request/upload/retention
