@@ -9,8 +9,8 @@ import tempfile
 
 runner = pathlib.Path(__file__).with_name("run_wal_confirmation_ab.sh").resolve()
 expected_refs = {
-    "baseline": "fd8f961364e73bac370286d5481407b23120e9cd",
-    "candidate": "fd8f961364e73bac370286d5481407b23120e9cd",
+    "baseline": "7efb62f96c8f636cfa50714067ce368c53794d4d",
+    "candidate": "7efb62f96c8f636cfa50714067ce368c53794d4d",
 }
 workflow = runner.parents[1] / ".github/workflows/wal-confirmation-ab.yml"
 
@@ -48,8 +48,8 @@ import os, pathlib, sys
 source = pathlib.Path(sys.argv[2]).name
 args = sys.argv[3:]
 if args == ["rev-parse", "HEAD"]:
-    refs = {"baseline": "fd8f961364e73bac370286d5481407b23120e9cd",
-            "candidate": "fd8f961364e73bac370286d5481407b23120e9cd"}
+    refs = {"baseline": "7efb62f96c8f636cfa50714067ce368c53794d4d",
+            "candidate": "7efb62f96c8f636cfa50714067ce368c53794d4d"}
     print("wrong" if os.environ.get("FAKE_WRONG") == source else refs[source])
 elif args == ["diff", "--quiet", "HEAD"]:
     sys.exit(1 if os.environ.get("FAKE_DIRTY") == source else 0)

@@ -25,17 +25,21 @@ with tempfile.TemporaryDirectory(prefix="typed-jolt-routing-") as directory:
                                        QUALIFIED_RUNTIME_BINARY_SHA256=sha),
                               capture_output=True, text=True, timeout=5)
 
-    result = run("s3", ["-Sdeps", '{:paths ["space path"]}', driver, "window"])
+    deps = '{:paths ["space path"] :deps {sample/lib {:git/sha "unchanged"}}}'
+    rooted = '{:paths ["' + str(wrapper.resolve().parent) + '" ' + deps[len('{:paths ['):]
+    result = run("s3", ["-Sdeps", deps, driver, "window"])
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["-Sdeps", '{:paths ["space path"]}', budget, "window"]
-    result = run("local", [driver, "window"])
-    assert result.returncode == 0 and result.stdout.splitlines() == [driver, "window"]
+    assert result.stdout.splitlines() == ["-Sdeps", rooted, budget, "window"]
+    result = run("local", ["-Sdeps", deps, driver, "window"])
+    assert result.returncode == 0 and result.stdout.splitlines() == ["-Sdeps", deps, driver, "window"]
     result = run("s3", ["--version"])
     assert result.returncode == 0 and result.stdout == "--version\n"
     for args in [["relative-driver.clj", "window"], [driver, driver], ["-e", "1"],
-                 ["--version", "extra"]]:
+                 ["--version", "extra"], [driver, "window"],
+                 ["-Sdeps", "{:deps {}}", driver, "window"],
+                 ["-Sdeps", deps, "-Sdeps", deps, driver, "window"]]:
         result = run("s3", args)
         assert result.returncode != 0 and result.stdout == ""
     result = run("s3", [driver, "window"], sha="0" * 64)
     assert result.returncode != 0 and result.stdout == ""
-print("typed Jolt routing controls: 8 passed; path drift rejects before exec")
+print("typed Jolt routing controls: 11 passed; paths/deps preserved; unrooted or drifting S3 rejects before exec")

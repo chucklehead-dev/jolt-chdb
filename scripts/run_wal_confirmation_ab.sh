@@ -5,8 +5,8 @@ test "$#" -eq 3
 task_baseline=$(realpath "$1")
 task_candidate=$(realpath "$2")
 task_receipts=$(realpath "$3")
-test "$(git -C "$task_baseline" rev-parse HEAD)" = fd8f961364e73bac370286d5481407b23120e9cd
-test "$(git -C "$task_candidate" rev-parse HEAD)" = fd8f961364e73bac370286d5481407b23120e9cd
+test "$(git -C "$task_baseline" rev-parse HEAD)" = 7efb62f96c8f636cfa50714067ce368c53794d4d
+test "$(git -C "$task_candidate" rev-parse HEAD)" = 7efb62f96c8f636cfa50714067ce368c53794d4d
 for task_source in "$task_baseline" "$task_candidate" "${BENCH_EXPECT_EXPORTER_ROOT:?}" "${BENCH_EXPECT_JSON_ROOT:?}"; do
   git -C "$task_source" diff --quiet HEAD
   task_untracked=$(git -C "$task_source" ls-files --others -- src resources deps.edn bench test)
