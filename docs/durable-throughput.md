@@ -4,7 +4,7 @@
 
 The manually dispatched `wal-confirmation-ab.yml` workflow compares default
 readback with experimental `:sha256-single-put` confirmation. Both arms use the
-same frozen measured source (`fd8f961`), compiler, JSON backend, exporter and
+same frozen measured source (`7efb62f`, a benchmark-only child of `fd8f961`), compiler, JSON backend, exporter and
 256-by-10,000 wide typed-span workload. Local runs are unchanged controls; only
 the S3 candidate writer receives the opt-in backend option. Both independent
 readers retain full stock verification and must recover identical physical rows
@@ -27,6 +27,11 @@ raw logs, object names, credentials and telemetry remain excluded. Report
 p50/p90/p95/p99, allocation, CPU, transfer accounting and independent recovery
 together. A successful window is not a sustained tail-confidence claim, and
 this profile's existence is not a claim of AWS qualification or a speedup.
+
+The first complete [matched AWS results](durable-checksum-results-20261016.md)
+show a normal-path confirmation gain with independent recovery, but S3 still
+misses the targets. That report includes all four latency percentiles, exact
+pins, allocation/transfer counters and the remaining real-provider fault gate.
 
 ## Existing benchmark
 
@@ -66,7 +71,8 @@ bash test/durable-upload-confirmation-tls.sh /path/to/qualified-jolt-wrapper \
 
 These controls do not enable checksum confirmation in an AWS benchmark profile
 or establish real-provider, independent-process recovery or throughput results.
-Those remain separate qualification gates in #278.
+Those are separate gates in #278; see the matched-results report above for the
+completed normal-provider window and the still-pending real-AWS fault coverage.
 
 ### Admission and throughput profiles
 

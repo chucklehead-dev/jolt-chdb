@@ -99,8 +99,10 @@ for a file loop would retain and later concatenate the whole checkpoint.
 Readback is still the default. The experimental backend option
 `:wal-upload-confirmation :sha256-single-put` lets file-backed WAL publication
 use a qualified provider's full-object SHA256 acknowledgement instead of an
-immediate verification download. This has local TLS-fixture coverage, not yet
-real-S3 or throughput qualification; do not treat it as a production recommendation.
+immediate verification download. One [matched real-S3 window](durable-checksum-results-20261016.md)
+demonstrated confirmation and independent recovery with improved throughput,
+but still missed the S3 targets. Real-AWS fault coverage and sustained-tail
+qualification remain incomplete; do not treat it as a production recommendation.
 
 The upload sends the digest already selected for the V1 reference. It does not
 rehash a changed source and silently substitute a different reference. Only an

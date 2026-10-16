@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Record the first complete matched AWS WAL-confirmation window, including
+  p50/p90/p95/p99, independent full-row recovery and transfer/allocation counts.
+  Keep the missed S3 targets, local tail variation, experimental stack and
+  pending real-provider fault coverage explicit; no defaults change.
+
 - Resolve trusted comparison namespaces through the actual immutable SDK
   launcher, not only the small TLS fixture. Require an injected failure through
   that full entry point before assuming AWS credentials; propagate benchmark
