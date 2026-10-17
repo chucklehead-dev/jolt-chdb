@@ -20,6 +20,13 @@ run_native() {
     printf 'Native stream acceptance receipt missing\n' >&2
     return 1
   fi
+  if [[ "$1" == bad-option-read ]]; then
+    LC_ALL=C grep -Fq 'Changed physical-row expectation rejected' "$task_log"
+  elif ! LC_ALL=C grep -Fq ':exact-rows true' "$task_log" ||
+       ! LC_ALL=C grep -Fq ':passed true' "$task_log"; then
+    printf 'Native stream physical-success receipt missing\n' >&2
+    return 1
+  fi
 }
 
 for task_outcome in success uncertain; do
