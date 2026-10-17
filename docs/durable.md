@@ -227,6 +227,38 @@ path until your provider and failure boundaries have been qualified.
 | `:retry-max-backoff-ms` | Cap for exponential retry delay; defaults to 250 milliseconds. |
 | `:scratch-parent` | Parent for private recovery directories; defaults to the process temporary directory. For Linux S3 recovery, the default assumes normal sticky-temp protection; a custom parent must prevent other OS principals from renaming or replacing its private scratch child. |
 | `:force?` | Allow explicit takeover before lease expiry. Use only with external knowledge that the old writer must be fenced. |
+| `:owned-compact-stream?` | Experimental Jolt writer option, default false. Requires native package 26.9.0. After normal admission, stream closed owned compact JSON INSERTs; other statements keep their ordinary execution path. |
+
+The streaming option is for a matching owned-statement producer, such as an
+exporter with `:owned-statement-output? true`. It does not make ordinary SQL
+strings stream automatically. Only the current closed ASCII INSERT header is
+selected; unsupported shapes keep the regular path. Native lifetime,
+classification, preparation and execution operation overrides are rejected for
+this mode. Clock, persistence and observer operations retain their existing
+trusted contracts; the option does not validate arbitrary custom operations.
+
+The full immutable SQL is still classified and recorded in V1 WAL before
+publication. A streamed native failure is not a rollback proof: the writer
+becomes unconfirmed and a later flush must checkpoint the live state. Readers
+need no streaming option or new WAL format. Runtime/native pins, repeated tail
+performance, hosted S3 and standalone packaging remain separate qualification
+gates. The default installer has not been upgraded by this opt-in option.
+
+Qualification currently uses Linux x86-64 and the exact 26.9.0 package. An
+ordinary reader still needs an engine compatible with the SQL in the WAL:
+this is not a downgrade guarantee or a migration of older timestamp records.
+The raw-tick setting stays in each recorded statement, not in session state.
+
+Use the qualified writer runtime for `jolt -Srepro -M:owned-stream-test`; the
+owned producer still needs its internal byte-array support. Stock Jolt 0.8.22
+is tested as an ordinary reader, not as this experimental producer. With the
+qualified library selected through `JOLT_CHDB_LIB`, run
+`bash test/durable-owned-stream-recovery.sh WRITER_JOLT READER_JOLT` for real
+stream/fallback selection, lost-completion checkpoint recovery and independent
+readback. It also rejects a deliberately wrong physical-row expectation.
+Native checks remain enabled when Clojure assertions are disabled; PTY output
+is checked for the historical stream-lifecycle diagnostic. Successful synthetic
+stores are removed; a failed run retains its printed scratch directory.
 
 The `*-ms` names above describe the application configuration and remain in
 milliseconds. On `head.json`, Protocol V1 freezes `lease.expires_at` as Unix

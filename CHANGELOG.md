@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
+  Select compact streaming after normal full-buffer classification/admission;
+  keep ordinary owned execution for other statement shapes. Reject conflicting
+  native operation overrides and retain exact SQL WAL, lease and confirmation
+  rules. Default writers and all snapshot readers remain unchanged.
+
+- Retain the fixed per-query raw-tick setting in both stream initialization
+  and exact SQL WAL. Keep borrowed buffers, cancellation and native results
+  scoped, with cleanup state initialized before acquiring the stream.
+
 - Add explicit experimental owned-ASCII statement output and confirmed Durable
   execution. Prepare exact V1 WAL chunks and classify/execute from one private
   copied snapshot without intermediate SQL text. Preserve policy, size limits,
