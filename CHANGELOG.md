@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Refresh the protected current-stack local/S3 qualification to the landed SDK,
+  exporter and optional native JSON checkpoints. Keep its immutable workload
+  separate from current driver source; retain recovery checks, cloud budgets,
+  privacy gates and application defaults. Synthetic launcher controls reject
+  stale or modified sources before storage-capable processes start.
+  Derive missing p90 from actual batch samples and reject reported percentile
+  values that disagree with those samples; retain explicit performance misses.
+
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
   keep ordinary owned execution for other statement shapes. Reject conflicting

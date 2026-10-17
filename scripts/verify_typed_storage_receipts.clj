@@ -5,7 +5,26 @@
       expected-sql "d3afed99dac4a86aa35e34beb7933c1e84f6fdbf8ddc0cb603fc9fe2a6c25b11"]
   (doseq [arm ["local" "s3"]]
     (let [w (read! (str arm "-writer")) r (read! (str arm "-reader"))
-          latency (:latency w)]
+          times (:samples-nanos w)
+          _ (assert (and (= 256 (count times))
+                         (every? #(and (integer? %) (pos? %)) times)))
+          ordered (vec (sort times))
+          measured (zipmap [:p50-ms :p90-ms :p95-ms :p99-ms]
+                           (map (fn [fraction]
+                                  (/ (double (nth ordered
+                                              (dec (long (Math/ceil (* fraction (count ordered)))))))
+                                     1000000.0))
+                                [0.50 0.90 0.95 0.99]))
+          reported (:latency w)
+          ;; Older benchmark envelopes omit p90. Derive it from real samples
+          ;; and check every percentile the producer actually supplied.
+          _ (doseq [key [:p50-ms :p95-ms :p99-ms]]
+              (assert (and (number? (get reported key))
+                           (== (get reported key) (get measured key)))))
+          _ (when (contains? reported :p90-ms)
+              (assert (and (number? (:p90-ms reported))
+                           (== (:p90-ms reported) (:p90-ms measured)))))
+          latency (merge reported measured)]
       (assert (= :passed (:gate-status w)))
       (assert (= (if (= arm "local") :local-posix-typed-public-export
                      :s3-scoped-typed-public-export) (:scope w)))

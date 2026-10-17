@@ -170,6 +170,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_s3_cli.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
           bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj
