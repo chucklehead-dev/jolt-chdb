@@ -72,16 +72,9 @@ impl Serialize for CompactRow<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let s = self.span;
         let mut row = serializer.serialize_seq(Some(BASE.len() + self.fields.len() * 2))?;
-        // Ordinary-query JSON input interprets an integer as Unix seconds;
-        // Jolt's typed stream path accepts raw ticks. ISO preserves all nine
-        // fractional digits without forcing a lossy f64 seconds conversion.
-        let nanos = s["start-time-unix-nano"].as_u64().unwrap();
-        let timestamp = chrono::DateTime::from_timestamp(
-            (nanos / 1_000_000_000) as i64,
-            (nanos % 1_000_000_000) as u32,
-        )
-        .unwrap();
-        row.serialize_element(&Text(timestamp.format("%Y-%m-%dT%H:%M:%S%.9fZ")))?;
+        // The captured query-local raw-tick setting is validated with the
+        // prefix below. The exact setting must also reach every SQL WAL line.
+        row.serialize_element(&s["start-time-unix-nano"])?;
         row.serialize_element(&s["span-context"]["trace-id"])?;
         row.serialize_element(&s["span-context"]["span-id"])?;
         row.serialize_element("")?; // Fixture has no parent or trace state.
@@ -126,6 +119,10 @@ fn validate(f: &Value) -> Result<()> {
         assert_eq!(cols[24 + i * 2], field["physical"]["value-column"]);
         assert_eq!(cols[25 + i * 2], field["physical"]["status-column"]);
     }
+    assert_eq!(
+        f["sql-prefix"].as_str().ok_or("SQL prefix missing")?,
+        expected_prefix(f)?
+    );
     let spans = f["spans"].as_array().ok_or("spans missing")?;
     assert!(!spans.is_empty() && spans.len() <= 10000);
     for s in spans {
@@ -180,7 +177,7 @@ mod tests {
         ]);
         let mut columns: Vec<Value> = BASE.iter().map(|s| json!(s)).collect();
         columns.extend([json!("c"), json!("cs"), json!("f"), json!("fs")]);
-        json!({"fixture-version":1, "scope":"wide16-fixture-only-not-general-sdk",
+        let mut f = json!({"fixture-version":1, "scope":"wide16-fixture-only-not-general-sdk",
         "fields":fields, "columns":columns, "spans":[{
             "name":"sample", "kind":"internal", "status":{"code":"unset"},
             "start-time-unix-nano":1700000000123456789u64,
@@ -190,7 +187,9 @@ mod tests {
             "scope":{"name":"scope", "version":"1"},
             "attributes":{"count":42, "flag":false, "text":"quote\"/\\\n漢字😀"},
             "events":[], "links":[]
-        }]})
+            }]});
+        f["sql-prefix"] = expected_prefix(&f).unwrap().into();
+        f
     }
 
     #[test]
@@ -202,7 +201,10 @@ mod tests {
         assert_eq!(lines.len(), 3);
         let row: Value = serde_json::from_slice(lines[1]).unwrap();
         assert_eq!(row.as_array().unwrap().len(), 28);
-        assert_eq!(row[0], "2023-11-14T22:13:20.123456789Z");
+        assert_eq!(row[0], 1700000000123456789u64);
+        assert!(std::str::from_utf8(lines[0])
+            .unwrap()
+            .contains("SETTINGS input_format_read_datetime_number_as_raw_value=1"));
         assert_eq!(row[8], json!({"service.name":"test"}));
         assert_eq!(row[11]["flag"], "false");
         assert_eq!(row[11]["count"], "42");
@@ -251,19 +253,43 @@ mod tests {
         assert!(row_count(&json!(-1)).is_err());
         assert!(row_count(&json!("not-count")).is_err());
     }
+
+    #[test]
+    #[should_panic]
+    fn rejects_raw_ticks_when_captured_prefix_loses_its_query_local_setting() {
+        let mut f = fixture();
+        let prefix = f["sql-prefix"].as_str().unwrap().replace(
+            " SETTINGS input_format_read_datetime_number_as_raw_value=1",
+            "",
+        );
+        f["sql-prefix"] = prefix.into();
+        validate(&f).unwrap();
+    }
 }
 
-fn encode(f: &Value) -> Result<Vec<u8>> {
+fn expected_prefix(f: &Value) -> Result<String> {
     let cols = f["columns"].as_array().unwrap();
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"INSERT INTO otel_traces (");
+    let mut bytes = b"insert into otel_traces (".to_vec();
     for (i, col) in cols.iter().enumerate() {
         if i != 0 {
             bytes.extend_from_slice(b", ");
         }
-        write!(bytes, "`{}`", col.as_str().unwrap())?;
+        write!(bytes, "`{}`", col.as_str().unwrap().replace('`', "``"))?;
     }
-    bytes.extend_from_slice(b") FORMAT JSONCompactEachRow\n");
+    bytes.extend_from_slice(
+        b") SETTINGS input_format_read_datetime_number_as_raw_value=1 FORMAT JSONCompactEachRow\n",
+    );
+    Ok(String::from_utf8(bytes)?)
+}
+
+fn encode(f: &Value) -> Result<Vec<u8>> {
+    // Input and prefix come from the actual confirmed exporter plan. Reuse
+    // only its validated header, never encoded rows or a complete statement.
+    let mut bytes = f["sql-prefix"]
+        .as_str()
+        .ok_or("SQL prefix missing")?
+        .as_bytes()
+        .to_vec();
     for span in f["spans"].as_array().unwrap() {
         serde_json::to_writer(
             &mut bytes,
@@ -350,7 +376,7 @@ fn main() -> Result<()> {
                 serde_json::to_vec(&json!({
                     "scope":"fixture-specific-rust-projection-confirmed-per-batch-local-posix",
                     "tail_qualified":false, "gate_status":"pending", "batch_size":batch,
-                    "independent_recovery_required":true, "timestamp_wire":"iso-utc",
+                    "independent_recovery_required":true, "timestamp_wire":"raw-ticks",
                     "native_settings_json_each_row":settings,
                     "warmups":3, "payload_bytes":payload_bytes, "samples":observations,
                     "native_engine":"26.9.2.1", "chdb_rust":"e685da930ecf02198c0b9e72a412cbc25842deb1"

@@ -35,11 +35,18 @@ not interchangeable local CAS implementations or fault-durability guarantees.
 
 Rust's stock serde_json may use different escaping/map order than Jolt. Compare
 all recovered physical values, types and row counts rather than asserting equal
-SQL hashes across different serializers; record their payload sizes. Rust's
-ordinary-query JSON input requires ISO timestamps rather than the raw ticks
-accepted by Jolt's typed stream path. ISO preserves all nine fractional digits;
-the independent reader must verify the exact original nanoseconds. Its formatting
-cost is included, and both reports record the timestamp wire mode.
+SQL hashes across different serializers; record their payload sizes. The current
+fixture captures the exporter's **exact SQL prefix**, including query-local
+`input_format_read_datetime_number_as_raw_value=1`. Validation rejects a missing
+or different prefix before opening the writer. This keeps native parsing settings
+and exact SQL WAL aligned with raw numeric nanoseconds; reusing the header is
+not reusing row encoding or the complete statement.
+
+The first Rust constructor omitted that setting and overflowed DateTime64. This
+was a diagnostic construction error, **not proof that ordinary-query insertion
+cannot accept raw ticks**. A temporary ISO variant round-tripped correctly;
+its historical results below are retained separately from the corrected raw-tick
+variant. Do not silently relabel its different timestamp wire as a same-wire run.
 
 Rust's fixture-specific borrowing serializer does not perform SDK admission, approved
 catalog installation/freshness checks or general attribute-shape fallback on
@@ -47,13 +54,15 @@ each batch. Therefore this isolates the practical native/Durable baseline for
 the same data and schema; it is not complete application parity or a causal
 claim about the cost of any single Jolt feature.
 
-## Initial screen, 2026-10-17
+## Initial ISO screen, 2026-10-17 (commit ebdf7ec)
 
 One caller, three warmups and 16 measured batches per runtime/size, local POSIX,
 same 28-column physical schema and synthetic source spans. Jolt exporter fd8fa0e,
 JSON4aeb24b, driver3d766fa, runtime1ae7e0d; Rust e685da9; same native library
 package26.9.0/engine26.9.2.1. Both report auto(8) native thread limits and enabled
 parallel input parsing. Runs are sequential, not a causal code-change experiment.
+Rust used ISO timestamps in this historical screen; Jolt used raw ticks. The
+corrected same-prefix/raw-tick run is a separate subsequent result.
 
 | Batch | Runtime | Confirmed rows/s | Request p50 / p90 / p95 / p99 ms |
 | --- | --- | ---: | --- |
@@ -75,3 +84,25 @@ phase. The borrowing serializer avoids materializing both the stringified
 attribute maps and a whole intermediate 28-value row vector; scalar `collect_str`
 also avoids temporary formatted-number strings. Those are useful next projection
 and encoding experiments, not an already-demonstrated Jolt implementation fix.
+
+## Corrected same-prefix/raw-tick screen, 2026-10-17
+
+Same graph, native library, schema, input, one-caller scope and 16-sample limit.
+Both encode raw nanoseconds and carry the same query-local parsing setting in
+the exact SQL prefix. Escaping/map order, SDK scope, native entry and local CAS
+implementations still differ as described above; this is not byte-identical SQL.
+
+| Batch | Runtime | Confirmed rows/s | Request p50 / p90 / p95 / p99 ms |
+| --- | --- | ---: | --- |
+| 5k | Jolt full exporter | 28,658 | 164.341 / 198.663 / 201.769 / 201.769 |
+| 5k | Rust fixture serializer | 56,619 | 82.072 / 123.712 / 126.341 / 126.341 |
+| 10k | Jolt full exporter | 28,959 | 342.390 / 381.764 / 389.538 / 389.538 |
+| 10k | Rust fixture serializer | 55,316 | 171.804 / 205.374 / 227.859 / 227.859 |
+
+Another570,000 physical rows, exact nanoseconds and typed values passed fresh
+stock-Jolt readback across both runtimes/sizes; all synthetic stores were removed.
+Rust mean encode/execute/flush:5k9.451/52.477/26.380ms;
+10k20.309/109.804/50.668ms. Jolt calling-thread CPU p50:88.952/203.565ms.
+The Rust~50k observation is plausible under per-batch confirmation and this
+wide fixture, but neither screen qualifies sustained tails or proves a causal
+cost allocation between the remaining differences. No production default change.
