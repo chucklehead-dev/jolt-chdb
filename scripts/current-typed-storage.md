@@ -4,14 +4,33 @@ This manual workflow measures the actual SDK/exporter path on local storage
 and S3. It does not replace the separate pre-encoded Durable benchmark.
 Application defaults and the existing AWS role and bucket policies are unchanged.
 
+The current qualification uses `scripts/run_current_typed_storage.sh`, not the
+fixture checkout's historical launcher. The workload remains frozen at
+`3fd96c4`; only its bench/test roots are used. Driver source/resources/dependencies
+must match `3d766fa`, with exporter `5be78d5`, SDK `d93846e`, and native JSON
+`8d557cc`. This separates the stable measurement workload from the current
+product graph without allowing user-selected source or workload sizes. Older
+transport-comparison workflows retain their own frozen launcher and graph.
+
+When driver `src`, `resources`, or `deps.edn` changes, deliberately refresh this
+closed driver's source pin and rerun qualification. A source mismatch is an
+intentional rejection, not permission to float to arbitrary `main` contents.
+The workflow fetches full driver history so source/ancestry checks work on the
+new workflow commit as well as the original source checkpoint.
+
+Here, a stock reader means the stock JSON metadata decoder in a fresh process
+on the authenticated qualified runtime. It does not imply a released stock
+Jolt executable. Separate stock-runtime compatibility runs remain distinct.
+
 ## Fixed S3 continue-wait comparison
 
 `expect-continue-ab.yml` is a separate manual protected-main workflow. It first
 qualifies the preserved local baseline, then runs the fixed candidate with
 1000ms and10ms continue waits sequentially on the same host. Each S3 arm has a
 different fixed object ID,256 measured10k batches plus3 warmups, the same forced
-heartbeat/checkpoint workload, and a separate stock-reader process. The original
-qualification workflow and its source guard are not bypassed or repinned.
+heartbeat/checkpoint workload, and a separate stock-reader process. This
+comparison's historical baseline and source guard do not inherit the current
+qualification launcher's new pins.
 
 The candidate has its own closed source profile; it accepts only the two waits
 in S3 mode. An unset profile retains old defaults, and a leaked S3 wait in local
@@ -89,6 +108,7 @@ bb scripts/test_typed_storage_budget.clj
 actionlint .github/workflows/current-typed-storage.yml
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_receipt_privacy.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_jolt.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py
 bb scripts/test_typed_storage_receipts.clj
 ```
 
