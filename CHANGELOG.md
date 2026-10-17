@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a fixture-specific Rust comparison diagnostic for fresh 28-column
+  telemetry projection/encoding and per-batch Durable ticket confirmation.
+  Require independent full physical/typed recovery; report native-entry,
+  timestamp-wire, local-backend and SDK-scope differences explicitly.
+
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
   keep ordinary owned execution for other statement shapes. Reject conflicting
