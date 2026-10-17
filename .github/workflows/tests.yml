@@ -318,6 +318,7 @@ jobs:
           "$task_bin" -Srepro -M:owned-statement-test
           "$task_bin" -Srepro -M:owned-writer-test
           "$task_bin" -Srepro -M:owned-encoder-test
+          "$task_bin" -Srepro -M:owned-stream-test
           bash test/durable-owned-recovery.sh "$task_bin" jolt
       - name: Replay source-pinned owned WAL bounds and controls
         run: |
