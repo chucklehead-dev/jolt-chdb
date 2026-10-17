@@ -14,4 +14,5 @@
         (when-not (= "Owned streaming native check failed" (some-> failure .getMessage))
           (throw (ex-info "Changed physical expectation was not rejected correctly" {})))
         (println "Changed physical-row expectation rejected"))
-      (apply run args))))
+      (apply run args)))
+  (println "Owned stream native acceptance completed"))

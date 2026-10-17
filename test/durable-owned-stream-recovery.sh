@@ -16,6 +16,10 @@ run_native() {
     printf 'Native stream lifecycle diagnostic detected\n' >&2
     return 1
   fi
+  if ! LC_ALL=C grep -Fq 'Owned stream native acceptance completed' "$task_log"; then
+    printf 'Native stream acceptance receipt missing\n' >&2
+    return 1
+  fi
 }
 
 for task_outcome in success uncertain; do
