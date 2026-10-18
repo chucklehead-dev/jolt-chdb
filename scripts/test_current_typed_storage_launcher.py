@@ -255,6 +255,11 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         assert 'git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD' in text
         assert 'git diff --quiet 3d766fa295b0e98c30f275d0a334db92e6dd998c -- src resources deps.edn' in text
         if batch:
+            # Research installs the authenticated Jolt artifact, not Babashka.
+            progress_step = text.split('- name: Test real budget entry without cloud access', 1)[1].split('\n      - name:', 1)[0]
+            assert 'bb -cp scripts scripts/test_typed_batch_progress.clj' not in progress_step
+            assert '"$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro \\\n' in progress_step
+            assert '"$GITHUB_WORKSPACE/scripts/test_typed_batch_progress.clj"' in progress_step
             assert "if: github.ref == 'refs/heads/main'" in text
             assert 'TASK_ORIGINAL_TYPED_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_batch_driver.clj' in text
             assert 'TASK_TYPED_BUDGET_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_batch_budget_driver.clj' in text
@@ -298,6 +303,8 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
                 text.replace('1:baseline 2:candidate 3:candidate 4:baseline', '1:candidate'),
                 text.replace('task_size=50000', 'task_size=10000'),
                 text.replace('task_samples=100', 'task_samples=32'),
+                text.replace('"$GITHUB_WORKSPACE/scripts/test_typed_batch_progress.clj"',
+                             '"$GITHUB_WORKSPACE/scripts/missing-progress-test.clj"'),
             ])
         for mutant in mutants:
             rejected = False

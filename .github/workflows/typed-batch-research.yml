@@ -108,7 +108,12 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test_typed_batch_failure_receipts.sh
-          bb -cp scripts scripts/test_typed_batch_progress.clj
+          (
+            cd /tmp
+            "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro \
+              -Sdeps "{:paths [\"$GITHUB_WORKSPACE/scripts\"] :deps {}}" \
+              "$GITHUB_WORKSPACE/scripts/test_typed_batch_progress.clj"
+          )
           task_root=$(mktemp -d /tmp/typed-batch-driver.XXXXXXXX)
           trap '[[ "$task_root" =~ ^/tmp/typed-batch-driver\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
           export TASK_BATCH_BUDGET_FILE="$task_root/ledger.edn"
