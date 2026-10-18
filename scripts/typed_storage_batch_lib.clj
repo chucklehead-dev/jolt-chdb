@@ -6,6 +6,28 @@
 (def zero-counts {:requests 0 :completed 0 :upload-bytes 0})
 (def schedule [[1 10000] [2 20000] [3 50000] [4 50000] [5 20000] [6 10000]])
 
+(defn failure-context [error]
+  ;; Never retain messages, arbitrary ex-data, SQL or attribute values.
+  (loop [e error left 8 out []]
+    (if (or (nil? e) (zero? left)) out
+      (let [data (ex-data e) label (:label data)
+            stage (:jdbc.chdb.durable/startup-stage data)]
+        (recur (.getCause e) (dec left)
+          (conj out
+            {:label (when (contains? #{:bounded-workload :schema-checkpoint
+                                       :confirmed-projector :confirmed-compact-plan
+                                       :owned-output-witness :witness-call :selected-prefix-path
+                                       :direct-vector-witness :exact-sql :prepared-vector-sql
+                                       :warmup :confirmed-export :writer-count
+                                       :metadata-reader-exercised :global-reader-unmodified
+                                       :stream-execution-witness :automatic-renewals
+                                       :automatic-checkpoints :exporter-shutdown
+                                       :fresh-full-physical-row-equality :fresh-stock-reader}
+                                     label) label)
+             :startup-stage (when (contains? #{:capability :read-head :acquire-lease
+                                               :create-scratch :open-native :recover
+                                               :renew-lease :start-writer} stage) stage)}))))))
+
 (defn fail! []
   (throw (ex-info "Invalid batch research control or receipt" {:type ::invalid})))
 
@@ -32,6 +54,9 @@
     ["(>= samples 256)" "(>= samples 32)"]
     [":owned-statement-output? owned-output?})"
      ":owned-statement-output? owned-output? :max-insert-bytes 67108864})"]
+    ["expected (with-bindings {#'e/*json-backend* :native-guarded-byte-batch}"
+     "expected (with-bindings {#'e/*json-backend* :native-guarded-byte-batch #'e/*insert-byte-limit* 67108864}"]
+    ["(System/exit 1)" "(throw error)"]
     ["report {:scope (case"
      "report {:research-only? true :max-insert-bytes 67108864 :scope (case"]]))
 

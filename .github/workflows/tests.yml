@@ -173,6 +173,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py --batch
           bb scripts/test_typed_batch_research.clj
+          bash scripts/test_typed_batch_failure_receipts.sh
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
           bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj

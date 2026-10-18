@@ -8,13 +8,17 @@
 (deftest exact-unique-source-changes-only
   (let [source (str "(<= 1 n 10000)\n:checkpoint-wal-reference-threshold 128\n"
                     "(>= samples 256)\n:owned-statement-output? owned-output?})\n"
-                    "report {:scope (case")
+                    "expected (with-bindings {#'e/*json-backend* :native-guarded-byte-batch}\n"
+                    "(System/exit 1)\nreport {:scope (case")
         derived (typed-storage-batch-lib/derive-source source)]
     (is (.contains derived "(<= 1 n 50000)"))
     (is (.contains derived ":checkpoint-wal-reference-threshold 16"))
     (is (.contains derived "(>= samples 32)"))
     (is (.contains derived ":max-insert-bytes 67108864"))
     (is (.contains derived ":research-only? true"))
+    (is (.contains derived "#'e/*insert-byte-limit* 67108864"))
+    (is (.contains derived "(throw error)"))
+    (is (not (.contains derived "(System/exit 1)")))
     (is (rejected? #(typed-storage-batch-lib/derive-source "drift")))
     (is (rejected? #(typed-storage-batch-lib/derive-source (str source source))))))
 

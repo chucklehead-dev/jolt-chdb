@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Give the short larger-batch research oracle the same explicit 64 MiB payload
+  bound as its exporter. Propagate research fixture failures to the bounded
+  diagnostic entry instead of exiting before it can record their categories.
+
+- Retain closed failure categories and numeric progress for failed short S3
+  research phases, without copying logs, SQL, telemetry, exception messages or
+  credentials. Preserve the original error and reject failed runs as results.
+
 - Fix the short S3 sweep's process-local fixture prefix guard to accept exactly
   its six isolated arm namespaces. Exercise the real frozen parser before cloud
   access; leave immutable qualification prefixes and application code unchanged.

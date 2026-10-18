@@ -19,7 +19,9 @@
                                   clojure.core/load-file
                                   (fn [path]
                                     (if (.endsWith path "/typed_storage_batch_driver.clj")
-                                      (doseq [request requests] (curl/request! request))
+                                      (doseq [request requests]
+                                        (if (instance? Throwable request) (throw request)
+                                          (curl/request! request)))
                                       (original-load path)))]
                       (original-load driver-path))))]
     (spit ledger (pr-str typed-storage-batch-lib/zero-counts))
@@ -36,6 +38,25 @@
                  (invoke! "reader" "rejected" [{:method :put :request-body {:byte-count 0}}])))
     (is (= 3 (count @calls)))
     (is (false? (.exists (java.io.File. (str root "/rejected/http-budget.edn")))))
+    (is (= {:requests 3 :completed 3 :upload-bytes 3} (edn/read-string (slurp ledger))))
+    (let [error (ex-info "PRIVATE-CANARY" {:label :warmup :secret "PRIVATE-CANARY"}
+                        (ex-info "PRIVATE-CANARY" {:label :PRIVATE-CANARY
+                                                  :type :jdbc.chdb.durable.s3/permission
+                                                  :jdbc.chdb.durable/startup-stage :recover
+                                                  :status 403}))
+          caught (try (invoke! "window" "failed" [error]) nil (catch Throwable e e))
+          _ (when-not (.exists (java.io.File. (str root "/failed/driver-failure.edn")))
+              (throw caught))
+          text (slurp (str root "/failed/driver-failure.edn"))
+          receipt (edn/read-string text)]
+      (is (identical? error caught))
+      (is (false? (:scope-returned receipt)))
+      (is (= :typed-batch-failure (:scope receipt)))
+      (is (= [{:label :warmup :startup-stage nil} {:label nil :startup-stage :recover}]
+             (:context receipt)))
+      (is (= {:requests 3 :completed 3 :upload-bytes 3} (:request-progress receipt)))
+      (is (false? (.contains text "PRIVATE-CANARY")))
+      (is (false? (.exists (java.io.File. (str root "/failed/http-budget.edn"))))))
     (is (= {:requests 3 :completed 3 :upload-bytes 3} (edn/read-string (slurp ledger))))))
 
 (let [result (run-tests)]
