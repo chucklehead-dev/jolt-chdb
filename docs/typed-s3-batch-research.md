@@ -99,3 +99,24 @@ closed scalar selection counts are retained in addition to existing receipts.
 Passing this short comparison is not stable-tail qualification, permission to
 enable the option by default, or evidence that arbitrary S3-compatible providers
 support the same checksum contract.
+
+## Longer checksum follow-up
+
+`confirmation-long` runs exactly one 50k-row checksum candidate with 3 warmups
+and 100 measured exports, plus the unchanged 32-sample local 10k bookends. It
+keeps the same pins, 16-reference checkpoint cadence, renewal stress, native
+streaming, 64 MiB insert bound and shared 24k-request/6 GiB upload cap. Expected
+upload volume is roughly 3.5 GB; the actual cumulative meter remains authoritative.
+This is a follow-up to the matched comparison, not another matched A/B result.
+
+The verifier requires 103 native stream calls, at least 6 checkpoints, 97
+completed checksum-selected WAL publications without verification fallback,
+and full independent physical/typed readback of all 5,150,000 S3 rows. Reader
+publication/proof counts remain zero and both phases must chain one settled
+budget ledger. Ordinary sweep and short comparison bounds remain unchanged.
+
+Nearest-rank p99 is the second-largest sample at this count. The verifier
+reports whether this observed window reaches 25k inverse-p50 /20k inverse-p99
+rows/s; a structurally valid run may still miss those rates. One 100-sample
+window is not a statistical guarantee or sustained-tail qualification. Retain
+slow samples and both local bookends; do not turn a miss into an automatic retry.

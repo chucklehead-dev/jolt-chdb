@@ -14,10 +14,12 @@ source <(sed -n '/^              run_phase() {/,/^              }/p' \
 declare -F run_phase >/dev/null
 export -f run_phase
 driver="$task_repo/scripts/fixtures/confirmation/failing-driver.sh"
-task_size=10000
+for task_samples in 32 100; do
+if [[ "$task_samples" == 100 ]]; then task_size=50000; else task_size=10000; fi
+export TEST_FAILURE_EXPECT_SAMPLES="$task_samples"
 for task_case in error timeout; do
-  task_root="$task_test/$task_case/work"
-  task_report="$task_test/$task_case/receipts"
+  task_root="$task_test/$task_samples-$task_case/work"
+  task_report="$task_test/$task_samples-$task_case/receipts"
   mkdir -p "$task_root" "$task_report"
   if [[ "$task_case" == timeout ]]; then
     export TEST_FAILURE_TIMEOUT=true
@@ -26,7 +28,7 @@ for task_case in error timeout; do
     export TEST_FAILURE_TIMEOUT=false
     task_expected=7
   fi
-  export driver task_size task_root task_report
+  export driver task_size task_samples task_root task_report
   task_actual=0
   bash -c 'set -euo pipefail; run_phase window 1' || task_actual=$?
   test "$task_actual" = "$task_expected"
@@ -38,6 +40,7 @@ for task_case in error timeout; do
   fi
   if grep -Rq 'PRIVATE-CANARY-DO-NOT-RETAIN' "$task_report"; then exit 1; fi
   python3 "$task_repo/scripts/check_typed_receipt_privacy.py" "$task_report"
+done
 done
 export TEST_FAILURE_TIMEOUT=false
 task_report="$task_test/not-directory"

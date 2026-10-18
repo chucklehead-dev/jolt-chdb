@@ -93,5 +93,25 @@
                   (assoc (reader 10000) :typed-values-status false)]]
     (is (rejected? #(typed-storage-batch-lib/workload-receipt! (writer 10000) mutant "s3" 10000)))))
 
+(deftest hundred-samples-use-second-largest-p99-and-full-recovery
+  (let [samples (vec (concat (repeat 98 1000000) [2000000 3000000]))
+        w (-> (writer 50000)
+              (assoc :samples 100 :stream-calls 103 :samples-nanos samples
+                     :latency {:p50-ms 1.0 :p95-ms 1.0 :p99-ms 2.0})
+              (assoc-in [:checkpoint-renewal-window :checkpoints] (vec (repeat 6 {}))))
+        r (assoc (reader 50000) :rows 5150000)
+        result (typed-storage-batch-lib/workload-receipt! w r "s3" 50000 100)]
+    (is (= {:p50-ms 1.0 :p90-ms 1.0 :p95-ms 1.0 :p99-ms 2.0} (:latency result)))
+    (is (false? (:p99-is-sample-maximum result)))
+    (is (false? (:stable-tail-qualified result)))
+    (doseq [bad [(assoc w :stream-calls 35)
+                 (assoc w :samples 32)
+                 (assoc-in w [:latency :p99-ms] 3.0)
+                 (assoc-in w [:checkpoint-renewal-window :checkpoints] [{} {}])]]
+      (is (rejected? #(typed-storage-batch-lib/workload-receipt! bad r "s3" 50000 100))))
+    (is (rejected? #(typed-storage-batch-lib/workload-receipt! w (assoc r :rows 1750000) "s3" 50000 100)))
+    (is (rejected? #(typed-storage-batch-lib/workload-receipt! w r "local" 50000 100)))
+    (is (rejected? #(typed-storage-batch-lib/workload-receipt! w r "s3" 50000 99)))))
+
 (let [result (run-tests)]
   (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1)))

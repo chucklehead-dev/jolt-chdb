@@ -95,14 +95,19 @@
    20000 "43dc40a60e8272e00537b24e5d00cec883b88fd5665aef048e8773812bb6bd81"
    50000 "b89c21707f1a37357ddd0367a1ed50c0611548bc7e02e5dc7833f4d4452999dd"})
 
-(defn workload-receipt! [writer reader storage n]
+(defn workload-receipt!
+  ([writer reader storage n] (workload-receipt! writer reader storage n 32))
+  ([writer reader storage n sample-count]
+  (when-not (and (contains? #{32 100} sample-count)
+                 (or (= 32 sample-count) (= ["s3" 50000] [storage n])))
+    (fail!))
   (let [samples (:samples-nanos writer)
         expected-scope (case storage "local" :local-posix-typed-public-export
                               "s3" :s3-scoped-typed-public-export nil)]
     (when-not (and expected-scope (contains? sql-digests n)
                   (= :passed (:gate-status writer)) (true? (:research-only? writer))
                   (= expected-scope (:scope writer))
-                  (= [n 32 3 "wide16" 1 "stream" 35 (get sql-digests n) 67108864]
+                  (= [n sample-count 3 "wide16" 1 "stream" (+ sample-count 3) (get sql-digests n) 67108864]
                      (mapv writer [:batch-size :samples :warmups :attribute-shape
                                    :export-callers :native-execution-arm :stream-calls
                                    :sql-sha256 :max-insert-bytes]))
@@ -111,21 +116,23 @@
                   (= "native" (get-in writer [:metadata-reader :mode]))
                   (= :stock (get-in writer [:metadata-reader :startup-reader]))
                   (= :stock (get-in writer [:metadata-reader :recovery-reader]))
-                  (= 32 (count samples))
+                  (= sample-count (count samples))
                   (every? #(and (integer? %) (pos? %)) samples)
                   (>= (get-in writer [:checkpoint-renewal-window :renewals] 0) 2)
-                  (>= (count (get-in writer [:checkpoint-renewal-window :checkpoints])) 2)
+                  (>= (count (get-in writer [:checkpoint-renewal-window :checkpoints]))
+                      (quot (+ sample-count 3) 16))
                   (true? (:passed reader)) (true? (:full-physical-rows-equal reader))
                   (true? (:typed-values-status reader))
-                  (= n (:groups reader)) (= (* n 35) (:rows reader)))
+                  (= n (:groups reader)) (= (* n (+ sample-count 3)) (:rows reader)))
       (fail!))
     (let [ordered (vec (sort samples))
           latency (zipmap [:p50-ms :p90-ms :p95-ms :p99-ms]
-                          (map (fn [p] (/ (double (nth ordered (dec (long (Math/ceil (* p 32))))))
+                          (map (fn [p] (/ (double (nth ordered (dec (long (Math/ceil (* p sample-count))))))
                                          1000000.0)) [0.5 0.9 0.95 0.99]))]
       (doseq [key [:p50-ms :p95-ms :p99-ms]]
         (when-not (= (get-in writer [:latency key]) (get latency key)) (fail!)))
       {:storage storage :batch-size n :correctness true :latency latency
-       :stable-tail-qualified false :samples 32 :p99-is-sample-maximum true
+       :stable-tail-qualified false :samples sample-count
+       :p99-is-sample-maximum (= sample-count (long (Math/ceil (* 0.99 sample-count))))
        :inverse-p50-rows-per-second (/ (* n 1000.0) (:p50-ms latency))
-       :inverse-p99-rows-per-second (/ (* n 1000.0) (:p99-ms latency))})))
+       :inverse-p99-rows-per-second (/ (* n 1000.0) (:p99-ms latency))}))))
