@@ -105,6 +105,7 @@ jobs:
         if: inputs.mode == 'sweep'
         run: |
           set -euo pipefail
+          bash scripts/test_typed_batch_failure_receipts.sh
           task_root=$(mktemp -d /tmp/typed-batch-driver.XXXXXXXX)
           trap '[[ "$task_root" =~ ^/tmp/typed-batch-driver\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
           export TASK_BATCH_BUDGET_FILE="$task_root/ledger.edn"
@@ -194,10 +195,24 @@ jobs:
               task_report="$GITHUB_WORKSPACE/target/typed-batch-research/s3-$task_index"
               mkdir -p "$task_report"
               driver="$GITHUB_WORKSPACE/scripts/run_typed_batch_research.sh"
-              timeout --kill-after=5s 300s bash "$driver" window "$task_root" "$task_size" 32 true wide16 > "$task_root/writer.log" 2>&1
+              run_phase() {
+                local task_phase="$1" task_limit="$2" task_status
+                if timeout --kill-after=5s "${task_limit}s" bash "$driver" "$task_phase" "$task_root" "$task_size" 32 true wide16 > "$task_root/$task_phase.log" 2>&1; then
+                  return 0
+                else
+                  task_status=$?
+                  printf '{:scope :typed-batch-process-failure :phase :%s :exit-code %d}\n' \
+                    "$task_phase" "$task_status" > "$task_report/process-failure.edn" || true
+                  if [[ -f "$task_root/driver-failure.edn" && ! -L "$task_root/driver-failure.edn" ]]; then
+                    cp "$task_root/driver-failure.edn" "$task_report/driver-failure.edn" || true
+                  fi
+                  return "$task_status"
+                fi
+              }
+              run_phase window 300
               cp "$task_root/writer.edn" "$task_report/s3-writer.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-writer-budget.edn"
-              CHDB_BENCH_METADATA_READER=stock timeout --kill-after=5s 120s bash "$driver" reader "$task_root" "$task_size" 32 true wide16 > "$task_root/reader.log" 2>&1
+              CHDB_BENCH_METADATA_READER=stock run_phase reader 120
               cp "$task_root/reader.edn" "$task_report/s3-reader.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-reader-budget.edn"
             )

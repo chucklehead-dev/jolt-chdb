@@ -18,7 +18,10 @@ tail guarantees. The existing 10k-row, 256-sample qualification is unchanged.
   1-second lease renewal stress, native streaming and owned statement output.
 - The fixture is an exact, checked derivative of `3fd96c4`. Only its batch and
   sample bounds, checkpoint cadence, explicit 64 MiB insert limit and research
-  labels change. Captured values, typed schema, exact SQL oracle, confirmation
+  labels change. Both the exporter and its untimed comparison encoder use that
+  same explicit byte bound. Fixture exceptions propagate to the outer diagnostic
+  entry rather than exiting before a failure receipt can be produced.
+  Captured values, typed schema, exact SQL oracle, confirmation
   and full physical/typed readback checks are preserved.
 - The frozen storage helper is loaded with one checked, process-local change:
   its prefix parser accepts exactly the six `/typed-window/1` through `/6`
@@ -49,6 +52,11 @@ lease, CAS or acknowledgement guarantee changes. Only bounded scalar receipts
 are uploaded. Native stores, scratch directories, raw logs and credentials are
 not artifacts. Per-arm scratch is removed when its process scope finishes;
 cloud fixtures expire under the preflight-checked bucket lifecycle.
+On failure, retain only a separate process exit receipt and, when available,
+closed error categories, benchmark labels/startup stages and numeric request
+progress. Unknown values collapse to `nil` or `:other`; exception messages and
+arbitrary error data are never copied. These are diagnostics, not settlement or
+performance results. A failure still stops the sweep without retrying an arm.
 
 ## Reading results
 

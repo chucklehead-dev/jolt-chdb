@@ -3,7 +3,8 @@
 (require '[clojure.edn :as edn] '[jdbc.chdb.durable.s3-curl :as curl])
 (let [parent (.getParent (java.io.File. *file*))]
   (load-file (str parent "/typed_storage_batch_lib.clj"))
-  (load-file (str parent "/typed_storage_budget_lib.clj")))
+  (load-file (str parent "/typed_storage_budget_lib.clj"))
+  (load-file (str parent "/typed_storage_confirmation_receipt.clj")))
 (let [parent (.getParent (java.io.File. *file*))
         phase (first *command-line-args*) root (second *command-line-args*)
         ledger (System/getenv "TASK_BATCH_BUDGET_FILE")
@@ -17,8 +18,26 @@
         global-request (typed-storage-budget-lib/requester curl/request! total
                          typed-storage-batch-lib/request-limit typed-storage-batch-lib/upload-limit methods)
         request (typed-storage-budget-lib/requester global-request current request-limit upload-limit methods)]
-    (with-redefs [curl/request! request]
-      (load-file (str parent "/typed_storage_batch_driver.clj")))
+    (try
+      (with-redefs [curl/request! request]
+        (load-file (str parent "/typed_storage_batch_driver.clj")))
+      (catch Throwable error
+        (try
+          (spit (str root "/driver-failure.edn")
+                (pr-str (assoc
+                  (dissoc (typed-storage-confirmation-receipt/failure-report
+                            error :driver (typed-storage-confirmation-receipt/initial-counts))
+                          :counts)
+                  :scope :typed-batch-failure :phase phase
+                  :context (typed-storage-batch-lib/failure-context error)
+                  :request-progress
+                  (into {} (map (fn [[key _]]
+                                  (let [n (get @total key)]
+                                    [key (when (and (integer? n)
+                                                   (<= 0 n typed-storage-batch-lib/upload-limit)) n)]))
+                                typed-storage-batch-lib/zero-counts)))))
+          (catch Throwable _ nil))
+        (throw error)))
     ;; Only reached after the native writer/reader and all transports close.
     (let [receipt {:phase phase :scope-returned true :before before :after @total
                    :phase-counts @current :request-limit typed-storage-batch-lib/request-limit
