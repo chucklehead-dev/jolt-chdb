@@ -35,6 +35,16 @@
     ["report {:scope (case"
      "report {:research-only? true :max-insert-bytes 67108864 :scope (case"]]))
 
+(defn derive-storage-source [source]
+  ;; Each arm needs a distinct namespace. Keep the frozen qualification's base
+  ;; prefix guard untouched; this process-local derivative accepts only the six
+  ;; research children, not arbitrary suffixes or a shared base namespace.
+  (let [before "#\"ci/jolt-chdb/[0-9]+-[0-9]+/typed-window\""
+        after "#\"ci/jolt-chdb/[0-9]+-[0-9]+/typed-window/[1-6]\""]
+    (when-not (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote before)) source)))
+      (fail!))
+    (str/replace source before after)))
+
 (defn budget-receipt! [before receipt phase]
   (when-not (contains? #{"window" "reader"} phase) (fail!))
   (let [{:keys [after phase-counts]} receipt

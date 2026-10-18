@@ -20,6 +20,10 @@ tail guarantees. The existing 10k-row, 256-sample qualification is unchanged.
   sample bounds, checkpoint cadence, explicit 64 MiB insert limit and research
   labels change. Captured values, typed schema, exact SQL oracle, confirmation
   and full physical/typed readback checks are preserved.
+- The frozen storage helper is loaded with one checked, process-local change:
+  its prefix parser accepts exactly the six `/typed-window/1` through `/6`
+  arm namespaces. The original helper and qualification gate stay untouched.
+  A no-network control exercises the actual parser before any cloud writes.
 - Exporter `67e28b5`, SDK `d93846e`, JSON `8d557cc`, driver source `3d766fa`,
   authenticated runtime `1ae7e0d1`, and native package 26.9.0 are fixed. The
   unadopted idle-companion JSON candidate is not selected.

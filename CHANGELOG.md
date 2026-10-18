@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the short S3 sweep's process-local fixture prefix guard to accept exactly
+  its six isolated arm namespaces. Exercise the real frozen parser before cloud
+  access; leave immutable qualification prefixes and application code unchanged.
+
 - Add a separate manual, bounded S3 batch-size experiment with full typed
   recovery, local bookends, shared request/upload budgets and scalar-only
   artifacts. Preserve the fixed qualification workload and all library defaults.
