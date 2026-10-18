@@ -108,6 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test_typed_batch_failure_receipts.sh
+          bb -cp scripts scripts/test_typed_batch_progress.clj
           task_root=$(mktemp -d /tmp/typed-batch-driver.XXXXXXXX)
           trap '[[ "$task_root" =~ ^/tmp/typed-batch-driver\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
           export TASK_BATCH_BUDGET_FILE="$task_root/ledger.edn"
@@ -221,6 +222,9 @@ jobs:
                     "$task_phase" "$task_status" > "$task_report/process-failure.edn" || true
                   if [[ -f "$task_root/driver-failure.edn" && ! -L "$task_root/driver-failure.edn" ]]; then
                     cp "$task_root/driver-failure.edn" "$task_report/driver-failure.edn" || true
+                  fi
+                  if [[ -f "$task_root/export-progress.edn" && ! -L "$task_root/export-progress.edn" ]]; then
+                    cp "$task_root/export-progress.edn" "$task_report/export-progress.edn" || true
                   fi
                   return "$task_status"
                 fi

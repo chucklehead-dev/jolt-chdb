@@ -181,6 +181,7 @@ jobs:
           bb -cp scripts scripts/test_s3_checksum_fault_config.clj
           bb -cp scripts scripts/test_s3_checksum_fault_receipt.clj
           bash scripts/test_typed_batch_failure_receipts.sh
+          bb -cp scripts scripts/test_typed_batch_progress.clj
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
           bb -cp scripts scripts/test_typed_storage_wal_head_profile.clj

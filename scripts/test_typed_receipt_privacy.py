@@ -16,7 +16,8 @@ for value in [secret.encode(), urllib.parse.quote(secret, safe="").encode(),
               base64.b64encode(secret.encode())]:
     assert not module.safe("s3-writer.edn", value, [secret])
 for name in ["s3-writer-curl-profile.edn", "s3-reader-curl-profile.edn",
-             "s3-writer-confirmation.edn", "s3-reader-confirmation.edn"]:
+             "s3-writer-confirmation.edn", "s3-reader-confirmation.edn",
+             "export-progress.edn"]:
     assert module.safe(name, b'{:complete true}', [])
     assert not module.safe(name, secret.encode(), [secret])
-print("receipt privacy pure controls: 14 passed")
+print("receipt privacy pure controls: 16 passed")

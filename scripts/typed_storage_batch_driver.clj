@@ -32,7 +32,24 @@
       (typed-storage-batch-lib/derive-storage-source
         (slurp (str (System/getenv "BENCH_EXPECT_BENCHMARK_ROOT")
                     "/bench/jdbc/chdb_typed_storage_support.clj")))))
-  (let [run! #(load-string (typed-storage-batch-lib/derive-source (slurp source)))]
+  (let [run-fixture! #(load-string (typed-storage-batch-lib/derive-source (slurp source)))
+        run! (if (and (= "confirmation-long" experiment) (= "window" phase)
+                      (= "s3" (System/getenv "SDK_STORAGE_ARM")))
+               (do
+                 (require 'typed-storage-batch-progress 'otel.sdk.export)
+                 (let [observe! (ns-resolve 'typed-storage-batch-progress 'observe!)
+                       export-var (ns-resolve 'otel.sdk.export 'export-spans!)
+                       path (str root "/export-progress.edn")]
+                   #(observe! @export-var 104
+                      (fn [report]
+                        ;; Same-directory rename leaves the previous complete
+                        ;; observation if termination interrupts a new write.
+                        (spit (str path ".tmp") (pr-str report))
+                        (when-not (.renameTo (io/file (str path ".tmp")) (io/file path))
+                          (throw (ex-info "Progress receipt rename failed" {}))))
+                      (fn [wrapped]
+                        (with-redefs-fn {export-var wrapped} run-fixture!)))))
+               run-fixture!)]
     (if (and (contains? #{"confirmation" "confirmation-long"} experiment)
              (= "s3" (System/getenv "SDK_STORAGE_ARM")))
       (do
