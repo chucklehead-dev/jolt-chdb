@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read-only preflight, short size sweep, or matched 50k checksum comparison
+        description: Preflight, size sweep, matched checksum comparison, or 100-sample checksum follow-up
         type: choice
-        options: [preflight, sweep, confirmation]
+        options: [preflight, sweep, confirmation, confirmation-long]
         default: preflight
 
 permissions:
@@ -35,7 +35,7 @@ jobs:
       QUALIFIED_RUNTIME_ARTIFACT_SHA256: 931dda8bf4e9d9beeaa92ad64b8a1c925d3ab670f87414ec9efee9af28cb3537
       QUALIFIED_RUNTIME_BINARY_SHA256: 06a2ccb858c072bfcd74ce94d96eb95f008d75e0fb1f46117728602572189811
       TASK_BATCH_EXPERIMENT: ${{ inputs.mode }}
-      TASK_CONFIRMATION_ARM: ${{ inputs.mode == 'confirmation' && 'baseline' || '' }}
+      TASK_CONFIRMATION_ARM: ${{ (inputs.mode == 'confirmation' || inputs.mode == 'confirmation-long') && 'baseline' || '' }}
       SDK_STREAM_ARM: stream
       SDK_EXPORT_CALLERS: '1'
       CHDB_BENCH_OWNED_OUTPUT: 'true'
@@ -51,9 +51,9 @@ jobs:
           TASK_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          case "$TASK_MODE" in preflight|sweep|confirmation) ;; *) exit 1 ;; esac
-          # Closed32sample derivative, not the immutable qualification gate.
-          # Six size arms or four confirmation arms share6GiB/24k requests.
+          case "$TASK_MODE" in preflight|sweep|confirmation|confirmation-long) ;; *) exit 1 ;; esac
+          # Closed32/100sample derivatives, not the immutable qualification gate.
+          # Six/four/one S3 arms share6GiB/24k requests, never per arm.
           mkdir -p target/typed-batch-research/preflight
       - uses: actions/checkout@v4
         if: inputs.mode != 'preflight'
@@ -188,14 +188,18 @@ jobs:
           export TASK_BATCH_BUDGET_FILE="$RUNNER_TEMP/typed-batch-budget.edn"
           printf '%s\n' '{:requests 0 :completed 0 :upload-bytes 0}' > "$TASK_BATCH_BUDGET_FILE"
           task_schedule='1:10000 2:20000 3:50000 4:50000 5:20000 6:10000'
+          task_samples=32
           if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
             task_schedule='1:baseline 2:candidate 3:candidate 4:baseline'
+          elif [[ "$TASK_BATCH_EXPERIMENT" == confirmation-long ]]; then
+            task_schedule='1:candidate'
+            task_samples=100
           fi
           for task_pair in $task_schedule; do
             (
               task_index=${task_pair%:*}
               task_size=${task_pair#*:}
-              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation || "$TASK_BATCH_EXPERIMENT" == confirmation-long ]]; then
                 export TASK_CONFIRMATION_ARM="$task_size"
                 task_size=50000
               else
@@ -209,7 +213,7 @@ jobs:
               driver="$GITHUB_WORKSPACE/scripts/run_typed_batch_research.sh"
               run_phase() {
                 local task_phase="$1" task_limit="$2" task_status
-                if timeout --kill-after=5s "${task_limit}s" bash "$driver" "$task_phase" "$task_root" "$task_size" 32 true wide16 > "$task_root/$task_phase.log" 2>&1; then
+                if timeout --kill-after=5s "${task_limit}s" bash "$driver" "$task_phase" "$task_root" "$task_size" "$task_samples" true wide16 > "$task_root/$task_phase.log" 2>&1; then
                   return 0
                 else
                   task_status=$?
@@ -224,13 +228,13 @@ jobs:
               run_phase window 300
               cp "$task_root/writer.edn" "$task_report/s3-writer.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-writer-budget.edn"
-              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation || "$TASK_BATCH_EXPERIMENT" == confirmation-long ]]; then
                 cp "$task_root/confirmation-selection.edn" "$task_report/s3-writer-confirmation.edn"
               fi
               CHDB_BENCH_METADATA_READER=stock run_phase reader 120
               cp "$task_root/reader.edn" "$task_report/s3-reader.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-reader-budget.edn"
-              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation || "$TASK_BATCH_EXPERIMENT" == confirmation-long ]]; then
                 cp "$task_root/confirmation-selection.edn" "$task_report/s3-reader-confirmation.edn"
               fi
             )
@@ -267,6 +271,8 @@ jobs:
           task_check="$GITHUB_WORKSPACE/scripts/verify_typed_batch_research.clj"
           if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
             task_check="$GITHUB_WORKSPACE/scripts/verify_typed_batch_confirmation.clj"
+          elif [[ "$TASK_BATCH_EXPERIMENT" == confirmation-long ]]; then
+            task_check="$GITHUB_WORKSPACE/scripts/verify_typed_batch_long_confirmation.clj"
           fi
           cd /tmp
           "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro -Sdeps "{:paths [\"$GITHUB_WORKSPACE/scripts\"] :deps {}}" "$task_check" "$task_receipts"

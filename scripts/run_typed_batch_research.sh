@@ -5,17 +5,32 @@ set -euo pipefail
 test "$#" -eq 6
 case "$1" in window|reader) ;; *) exit 64 ;; esac
 case "$3" in 10000|20000|50000) ;; *) exit 64 ;; esac
-test "$4" = 32
 test "$5" = true
 test "$6" = wide16
 case "${TASK_BATCH_EXPERIMENT:-sweep}" in
-  sweep) test -z "${TASK_CONFIRMATION_ARM:-}" ;;
+  sweep)
+    test "$4" = 32
+    test -z "${TASK_CONFIRMATION_ARM:-}"
+    ;;
   confirmation)
+    test "$4" = 32
     case "${TASK_CONFIRMATION_ARM:-}" in baseline|candidate) ;; *) exit 64 ;; esac
     if [[ "${SDK_STORAGE_ARM:-local}" == s3 ]]; then
       test "$3" = 50000
     else
-      test "$3" = 10000 && test "$TASK_CONFIRMATION_ARM" = baseline
+      test "$3" = 10000
+      test "$TASK_CONFIRMATION_ARM" = baseline
+    fi
+    ;;
+  confirmation-long)
+    if [[ "${SDK_STORAGE_ARM:-local}" == s3 ]]; then
+      test "$3" = 50000
+      test "$4" = 100
+      test "${TASK_CONFIRMATION_ARM:-}" = candidate
+    else
+      test "$3" = 10000
+      test "$4" = 32
+      test "${TASK_CONFIRMATION_ARM:-}" = baseline
     fi
     ;;
   *) exit 64 ;;

@@ -8,15 +8,20 @@
   (when-not (and (= 6 (count *command-line-args*))
                 (contains? #{"window" "reader"} phase)
                 (contains? #{"10000" "20000" "50000"} size)
-                (= "32" samples) (= "true" prefix) (= "wide16" shape))
+                (contains? #{"32" "100"} samples) (= "true" prefix) (= "wide16" shape))
     (typed-storage-batch-lib/fail!))
   (case experiment
-    "sweep" (when (seq arm) (typed-storage-batch-lib/fail!))
+    "sweep" (when-not (and (= "32" samples) (not (seq arm))) (typed-storage-batch-lib/fail!))
     "confirmation"
-    (when-not (and (contains? #{"baseline" "candidate"} arm)
+    (when-not (and (= "32" samples) (contains? #{"baseline" "candidate"} arm)
                    (if (= "s3" (System/getenv "SDK_STORAGE_ARM"))
                      (= "50000" size)
                      (and (= "10000" size) (= "baseline" arm))))
+      (typed-storage-batch-lib/fail!))
+    "confirmation-long"
+    (when-not (if (= "s3" (System/getenv "SDK_STORAGE_ARM"))
+                (= ["50000" "100" "candidate"] [size samples arm])
+                (= ["10000" "32" "baseline"] [size samples arm]))
       (typed-storage-batch-lib/fail!))
     (typed-storage-batch-lib/fail!))
   ;; Load the real frozen support namespace first so the fixture's later require
@@ -28,7 +33,8 @@
         (slurp (str (System/getenv "BENCH_EXPECT_BENCHMARK_ROOT")
                     "/bench/jdbc/chdb_typed_storage_support.clj")))))
   (let [run! #(load-string (typed-storage-batch-lib/derive-source (slurp source)))]
-    (if (and (= experiment "confirmation") (= "s3" (System/getenv "SDK_STORAGE_ARM")))
+    (if (and (contains? #{"confirmation" "confirmation-long"} experiment)
+             (= "s3" (System/getenv "SDK_STORAGE_ARM")))
       (do
         ;; Install AFTER the checked support derivative, so its redefinition
         ;; cannot discard the explicit option. No change to local bookends.

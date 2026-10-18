@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a fixed 100-sample, 50k-row checksum follow-up with local bookends,
+  full independent recovery and the existing shared cloud limits. Distinguish
+  its second-largest-sample p99 from the short window's maximum; neither alone
+  establishes sustained-tail qualification. Reject invalid launcher bounds
+  with standalone checks rather than relying on `set -e` inside `&&` lists.
+
 - Add a closed 50k-row A/B/B/A checksum-confirmation mode to short S3 research.
   Check actual native proof selection and full independent recovery for each
   arm under one shared request/upload budget. Keep default readback, the fixed

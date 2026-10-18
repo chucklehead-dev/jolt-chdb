@@ -133,6 +133,26 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         result = run(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="baseline", SDK_STORAGE_ARM="local")
         assert result.returncode == 0
         checks += 1
+        long_args = [*args[:2], "50000", "100", *args[4:]]
+        result = run(long_args, **dict(routing, TASK_BATCH_EXPERIMENT="confirmation-long", TASK_CONFIRMATION_ARM="candidate"))
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)[-4:] == ["50000", "100", "true", "wide16"]
+        checks += 1
+        assert run(TASK_BATCH_EXPERIMENT="confirmation-long", TASK_CONFIRMATION_ARM="baseline", SDK_STORAGE_ARM="local").returncode == 0
+        checks += 1
+        for overrides in [dict(TASK_BATCH_EXPERIMENT="sweep"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="candidate"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation-long", TASK_CONFIRMATION_ARM="baseline"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation-long", TASK_CONFIRMATION_ARM="candidate", SDK_STORAGE_ARM="local")]:
+            result = run(long_args, **dict(routing, **overrides))
+            assert result.returncode != 0 and not calls.exists(), overrides
+            checks += 1
+        assert run(**dict(routing, TASK_BATCH_EXPERIMENT="confirmation-long", TASK_CONFIRMATION_ARM="candidate")).returncode != 0
+        assert not calls.exists()
+        checks += 1
+        assert run([*args[:2], "20000", *args[3:]], TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="baseline", SDK_STORAGE_ARM="local").returncode != 0
+        assert not calls.exists()
+        checks += 1
         for overrides in [dict(TASK_BATCH_EXPERIMENT="unknown"),
                           dict(TASK_CONFIRMATION_ARM="candidate"),
                           dict(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="unknown"),
@@ -241,13 +261,17 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
             prefix = 'ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/typed-window'
             assert f'TASK_PREFIX: {prefix}' in text
             assert f'TASK_BASE_PREFIX: {prefix}' in text
-            assert "options: [preflight, sweep, confirmation]" in text
+            assert "options: [preflight, sweep, confirmation, confirmation-long]" in text
             assert "task_schedule='1:10000 2:20000 3:50000 4:50000 5:20000 6:10000'" in text
             assert "task_schedule='1:baseline 2:candidate 3:candidate 4:baseline'" in text
+            assert "task_schedule='1:candidate'" in text
+            assert 'task_samples=100' in text
+            assert '"$task_size" "$task_samples" true wide16' in text
             assert 'for task_pair in $task_schedule; do' in text
             assert 'export TASK_CONFIRMATION_ARM="$task_size"' in text
             assert 'task_size=50000' in text
             assert 'scripts/verify_typed_batch_confirmation.clj' in text
+            assert 'scripts/verify_typed_batch_long_confirmation.clj' in text
             assert text.index('> "$TASK_BATCH_BUDGET_FILE"') < text.index('for task_pair in ')
             assert text.count('> "$TASK_BATCH_BUDGET_FILE"') == 1
             assert 'for task_receipt_dir in target/typed-batch-research/*; do' in text
@@ -273,6 +297,7 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
                 text.replace('/typed-window', '/batch-sweep'),
                 text.replace('1:baseline 2:candidate 3:candidate 4:baseline', '1:candidate'),
                 text.replace('task_size=50000', 'task_size=10000'),
+                text.replace('task_samples=100', 'task_samples=32'),
             ])
         for mutant in mutants:
             rejected = False

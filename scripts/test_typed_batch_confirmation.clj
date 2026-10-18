@@ -24,4 +24,12 @@
         (ab/selection! (assoc (report "baseline" "window") :verification-completions 0) "baseline" "window")))
   (is (thrown? Throwable
         (ab/selection! (assoc (report "candidate" "reader") :valid-proof-observations 1) "candidate" "reader"))))
+(deftest hundred-sample-selection-count-is-not-the-short-count
+  (let [r (assoc (report "candidate" "window") :file-publications 97
+                  :completed-publications 97 :put-completions 97 :valid-proof-observations 194)]
+    (is (= r (ab/selection! r "candidate" "window" 97)))
+    (is (thrown? Throwable (ab/selection! r "candidate" "window")))
+    (is (thrown? Throwable (ab/selection! (report "candidate" "window") "candidate" "window" 97)))
+    (is (thrown? Throwable (ab/selection! r "baseline" "window" 97)))
+    (is (thrown? Throwable (ab/selection! r "candidate" "window" 96)))))
 (let [r (run-tests)] (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))
