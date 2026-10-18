@@ -124,6 +124,13 @@ jobs:
           printf '%s  %s\n' a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557 "$task_native_dir/libchdb.so" | sha256sum -c -
           rm -- "$task_archive"
           echo "JOLT_CHDB_LIB=$task_native_dir/libchdb.so" >> "$GITHUB_ENV"
+      - name: Check actual frozen S3 prefix parser without cloud access
+        if: inputs.mode == 'sweep'
+        run: |
+          set -euo pipefail
+          "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro \
+            -Sdeps '{:paths ["src" "resources" ".qualification/benchmark/bench"]}' \
+            scripts/test_typed_batch_prefix.clj "$BENCH_EXPECT_BENCHMARK_ROOT"
       - name: Check short matched local baseline first
         if: inputs.mode == 'sweep'
         timeout-minutes: 10
