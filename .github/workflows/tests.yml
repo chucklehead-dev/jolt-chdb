@@ -87,6 +87,8 @@ jobs:
         run: jolt -Srepro -M:native-json-byte-batch:json-each-row-byte-batch-test
       - name: Require combined UTF-8 sizing and strict decoder controls
         run: jolt -Srepro -M:utf8-test
+      - name: Qualify provider checksum fault controls without AWS
+        run: bash scripts/test_s3_checksum_fault_tls.sh "$(command -v jolt)"
       - name: Require real owned worker and heartbeat reader contexts
         run: jolt -Srepro -M:durable-reader-context-test
 
@@ -173,6 +175,8 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py --batch
           bb scripts/test_typed_batch_research.clj
+          bb -cp scripts scripts/test_s3_checksum_fault_config.clj
+          bb -cp scripts scripts/test_s3_checksum_fault_receipt.clj
           bash scripts/test_typed_batch_failure_receipts.sh
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_head_ab.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_wal_confirmation_ab.py
