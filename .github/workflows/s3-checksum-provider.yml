@@ -1,0 +1,128 @@
+name: S3 checksum provider controls
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Read-only preflight, or bounded checksum contract controls
+        type: choice
+        options: [preflight, qualify]
+        default: preflight
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: measured-exporter-storage
+  cancel-in-progress: false
+
+jobs:
+  provider:
+    if: github.ref == 'refs/heads/main'
+    environment: aws-durable-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JOLT_AOT_CACHE: '0'
+      JOLT_NO_USER_DEPS: '1'
+      QUALIFIED_RUNTIME_PROFILE: current-0821-1ae7
+      QUALIFIED_RUNTIME_RUN_ID: '38618434034'
+      QUALIFIED_RUNTIME_RUN_ATTEMPT: '1'
+      QUALIFIED_RUNTIME_WORKFLOW_SHA: 1533b9fe6f7782f4d024a07aefbfb7ce50c4251b
+      QUALIFIED_RUNTIME_ARTIFACT_ID: '11921513712'
+      QUALIFIED_RUNTIME_ARTIFACT_SHA256: 931dda8bf4e9d9beeaa92ad64b8a1c925d3ab670f87414ec9efee9af28cb3537
+      QUALIFIED_RUNTIME_BINARY_SHA256: 06a2ccb858c072bfcd74ce94d96eb95f008d75e0fb1f46117728602572189811
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require closed mode
+        env:
+          TASK_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$TASK_MODE" in preflight|qualify) ;; *) exit 1 ;; esac
+          mkdir -p target/checksum-provider
+      - name: Authenticate exact green compiler artifact
+        if: inputs.mode == 'qualify'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/fetch-qualified-durable-runtime.sh"
+          curl -fsSL --connect-timeout 15 --max-time 30 \
+            https://raw.githubusercontent.com/chucklehead-dev/jolt-otel-clickhouse/96119103195b67cfc9fd52277251888980fc7852/scripts/fetch-qualified-durable-runtime.sh \
+            -o "$helper"
+          printf '%s  %s\n' 81030fafdb2e3c79765792d043585139f4410c27a281113dd19874b4c27e74b2 "$helper" | sha256sum -c -
+          TMPDIR=/tmp timeout --signal=TERM --kill-after=5s 240s bash "$helper" | tee "$RUNNER_TEMP/qualified-runtime.log"
+          test "$(grep -c '^QUALIFIED_RUNTIME_BIN=' "$RUNNER_TEMP/qualified-runtime.log")" = 1
+          task_bin=$(sed -n 's/^QUALIFIED_RUNTIME_BIN=//p' "$RUNNER_TEMP/qualified-runtime.log")
+          [[ "$task_bin" =~ ^/tmp/qualified-durable-runtime\.[A-Za-z0-9]+/jolt$ ]]
+          test -f "$task_bin" && test ! -L "$task_bin"
+          test "$(sha256sum "$task_bin" | cut -d ' ' -f1)" = "$QUALIFIED_RUNTIME_BINARY_SHA256"
+          echo "CHECKSUM_JOLT_BIN=$task_bin" >> "$GITHUB_ENV"
+          echo "$(dirname "$task_bin")" >> "$GITHUB_PATH"
+      - name: Qualify the same controls over fake-credential verified TLS
+        if: inputs.mode == 'qualify'
+        run: |
+          set -euo pipefail
+          "$CHECKSUM_JOLT_BIN" -Srepro -Sdeps '{:paths ["src" "resources" "scripts"]}' scripts/test_s3_checksum_fault_config.clj
+          "$CHECKSUM_JOLT_BIN" -Srepro -Sdeps '{:paths ["src" "resources" "scripts"]}' scripts/test_s3_checksum_fault_receipt.clj
+          bash scripts/test_s3_checksum_fault_tls.sh "$CHECKSUM_JOLT_BIN"
+      - name: Assume existing protected role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          role-session-name: checksum-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ vars.AWS_DURABLE_REGION }}
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+      - name: Read-only scope and retention preflight
+        env:
+          TASK_ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          TASK_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          TASK_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/typed-window
+          AWS_PAGER: ''
+        run: python3 scripts/typed_s3_preflight.py > target/checksum-provider/preflight.json
+      - name: Run bounded real-provider contract controls
+        if: inputs.mode == 'qualify'
+        env:
+          TASK_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+          TASK_CHECKSUM_PREFIX: ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/typed-window/checksum-faults
+        run: |
+          set -euo pipefail
+          # 128 requests/1MiB total data upload, fixed five tiny synthetic cases.
+          # No native database download, workload payloads, IAM writes or retries.
+          task_root=$(mktemp -d /tmp/checksum-provider.XXXXXXXX)
+          trap '[[ "$task_root" =~ ^/tmp/checksum-provider\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
+          test "$(sha256sum "$CHECKSUM_JOLT_BIN" | cut -d ' ' -f1)" = "$QUALIFIED_RUNTIME_BINARY_SHA256"
+          task_status=0
+          if timeout --kill-after=5s 180s "$CHECKSUM_JOLT_BIN" -Srepro \
+            -Sdeps '{:paths ["src" "resources" "scripts"]}' \
+            scripts/qualify_s3_checksum_faults.clj "$task_root" > "$task_root/run.log" 2>&1; then
+            cp "$task_root/s3-writer-confirmation.edn" target/checksum-provider/
+          else
+            task_status=$?
+            printf '{:scope :checksum-provider-process-failure :exit-code %d}\n' "$task_status" \
+              > target/checksum-provider/process-failure.edn
+            if [[ -f "$task_root/driver-failure.edn" && ! -L "$task_root/driver-failure.edn" ]]; then
+              cp "$task_root/driver-failure.edn" target/checksum-provider/
+            fi
+          fi
+          exit "$task_status"
+      - name: Reject credentials and identifiers before receipt upload
+        id: privacy
+        if: always()
+        env:
+          TASK_ROLE_ARN: ${{ vars.AWS_DURABLE_ROLE_ARN }}
+          TASK_BUCKET: ${{ vars.AWS_DURABLE_BUCKET }}
+        run: python3 scripts/check_typed_receipt_privacy.py target/checksum-provider
+      - name: Upload only bounded scalar receipts
+        if: always() && steps.privacy.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksum-provider-receipts
+          path: target/checksum-provider/
+          retention-days: 30

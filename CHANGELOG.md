@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a protected, bounded AWS gate for the existing optional single-PUT WAL
+  checksum contract: native proof selection, default/existing readback,
+  client-injected lost-ack reconciliation and provider rejection of a changed
+  source. Reuse verified-TLS controls and retain closed scalar receipts only;
+  no defaults, protocol, IAM, replay or performance guarantees change.
+
 - Give the short larger-batch research oracle the same explicit 64 MiB payload
   bound as its exporter. Propagate research fixture failures to the bounded
   diagnostic entry instead of exiting before it can record their categories.
