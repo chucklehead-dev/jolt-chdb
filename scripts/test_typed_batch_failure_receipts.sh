@@ -32,6 +32,11 @@ for task_case in error timeout; do
   task_actual=0
   bash -c 'set -euo pipefail; run_phase window 1' || task_actual=$?
   test "$task_actual" = "$task_expected"
+  if [[ "$task_samples" == 100 ]]; then
+    cmp "$task_root/export-progress.edn" "$task_report/export-progress.edn"
+  else
+    test ! -e "$task_report/export-progress.edn"
+  fi
   grep -Fq ":exit-code $task_expected}" "$task_report/process-failure.edn"
   if [[ "$task_case" == error ]]; then
     test -f "$task_report/driver-failure.edn"

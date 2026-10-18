@@ -120,3 +120,19 @@ reports whether this observed window reaches 25k inverse-p50 /20k inverse-p99
 rows/s; a structurally valid run may still miss those rates. One 100-sample
 window is not a statistical guarantee or sustained-tail qualification. Retain
 slow samples and both local bookends; do not turn a miss into an automatic retry.
+
+The long S3 writer records public-export progress before its invocation, before
+exports 1, 9, 17, etc., after all 104 public export calls return, and when the
+invocation returns or throws. On process failure only, retain its last complete
+observation as `export-progress.edn`.
+Counts include one non-mutating admission witness, three warmups and 100 measured
+exports. The 104 public returns are NOT 104 native writes: the witness deliberately
+stubs native execution; the existing oracle still requires 103 stream calls.
+Up to eight additional completed exports may be absent from the last observation.
+A started export may still be in flight.
+Even all 104 public returns do not establish owner cleanup, transport settlement
+or independent recovery. Diagnostic write failures cannot replace the primary
+result or exception. There are no payloads, headers or error messages in this
+receipt, and it cannot satisfy a successful result verifier. Other modes are
+unchanged. Keep the 300-second writer limit and cloud budgets unchanged while
+diagnosing timeouts; do not interpret a timeout as a measured throughput miss.

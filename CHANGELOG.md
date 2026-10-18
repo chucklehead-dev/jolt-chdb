@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retain sparse, scalar-only public-export progress when the long S3 research
+  writer times out. Preserve original errors and limits; these observations are
+  diagnostics, never settlement, recovery or performance qualification.
+
 - Add a fixed 100-sample, 50k-row checksum follow-up with local bookends,
   full independent recovery and the existing shared cloud limits. Distinguish
   its second-largest-sample p99 from the short window's maximum; neither alone
