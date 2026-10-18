@@ -5,7 +5,7 @@
   failure must not replace the operation's result or primary exception. Counts
   describe public export returns, not transport settlement or native persistence."
   [export! expected emit! run!]
-  ;; One non-mutating admission witness, three warmups and100 measured calls.
+  ;; One non-mutating admission witness, three warmups and 100 measured calls.
   (assert (= 104 expected))
   (let [start (System/nanoTime)
         counts (atom {:started 0 :returned 0 :confirmed 0})
@@ -25,7 +25,7 @@
                     (bump! :returned)
                     (when (true? result) (bump! :confirmed))
                     ;; Record this before run! can block in shutdown/cleanup.
-                    ;; It includes the admission witness: NOT104 native writes.
+                    ;; It includes the admission witness: NOT 104 native writes.
                     (when (= expected (:returned @counts))
                       (record! :all-exports-returned))
                     result))]
