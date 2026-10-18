@@ -943,7 +943,7 @@
 
 (defn- commit-reference-attempt!
   [store token kind reference engine-metadata
-   {:keys [phase snapshot phase-observe!] :as state}]
+   {:keys [phase snapshot phase-observe! prepared-transition] :as state}]
   (if (= :reconcile phase)
     (if-let [latest (reread store)]
       (let [{:keys [next-seq]} (:transition state)
@@ -962,7 +962,8 @@
       {:status :retry :state state})
     (let [current (assert-owned! (:head snapshot) token)
         {:keys [desired next-seq]}
-        (reference-transition current token kind reference engine-metadata)
+        (or prepared-transition
+            (reference-transition current token kind reference engine-metadata))
         {canonical :head bytes :bytes} (encoded-head desired)
         landed? #(reference-landed? kind reference next-seq
                                     engine-metadata %)
@@ -1036,8 +1037,12 @@
         initial-current (assert-owned! (:head initial) token)
         witnessed-wal? (and (= :wal kind)
                             (verified-wal-publication?
-                             verified-publication store token reference))]
-    (reference-transition initial-current token kind reference engine-metadata)
+                             verified-publication store token reference))
+        initial-transition
+        (let [transition (reference-transition initial-current token kind reference engine-metadata)]
+          ;; The direct verifier may block or trigger a renewal. Validate its
+          ;; initial reference as before, but do not retain its unused tree.
+          (when witnessed-wal? transition))]
     (when-not witnessed-wal?
       (when-not (observed-phase observe! :wal-immutable-verify
                                 (get reference "size")
@@ -1058,6 +1063,11 @@
       (retry-budget! (assoc options :max-attempts max-attempts))
       {:phase :cas
        :phase-observe! observe!
+       ;; Only the privately witnessed path performs no verifier I/O between
+       ;; prevalidation and its first CAS. Keep its validated transition with
+       ;; that exact initial snapshot, never across an ETag conflict. Retry and
+       ;; reconcile states below deliberately do not carry this value forward.
+       :prepared-transition initial-transition
        :snapshot (if witnessed-wal?
                    initial
                    (or (read-commit-head! store initial)

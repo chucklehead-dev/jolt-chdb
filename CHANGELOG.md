@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse a verified WAL commit's already-validated transition for its first
+  conditional head update. Rebuild after a definite conflict; retain direct
+  verifier refresh, ownership checks and ambiguity-only reconciliation.
+  No acknowledgement or persistence guarantees change.
+
 - Retain sparse, scalar-only public-export progress when the long S3 research
   writer times out. Preserve original errors and limits; these observations are
   diagnostics, never settlement, recovery or performance qualification.
