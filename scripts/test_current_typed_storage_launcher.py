@@ -154,8 +154,40 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
     assert git_run("-C", shallow, "merge-base", "--is-ancestor", ancestor, "HEAD", ok=False).returncode != 0
     git_run("-C", shallow, "fetch", "--unshallow")
     git_run("-C", shallow, "merge-base", "--is-ancestor", ancestor, "HEAD")
-    workflow = pathlib.Path(__file__).parent.parent / ".github/workflows/current-typed-storage.yml"
-    checkout = workflow.read_text().split("- name: Require closed mode and workload bounds", 1)[0]
-    assert "fetch-depth: 0" in checkout
     checks += 1
+
+    def validate_workflow(text):
+        # Narrow source/pin drift controls, not a general YAML or IAM proof.
+        # actionlint and the actual protected hosted run remain separate gates.
+        marker = "- name: Require closed mode and workload bounds"
+        assert marker in text
+        assert "fetch-depth: 0" in text.split(marker, 1)[0]
+        for sha in ["3fd96c4691c5db49ed4d3ef55622aaa6b9074127",
+                    "5be78d565be0a7a929d108be929540c1b4f19524",
+                    "8d557cc18eb9526ed29ae5613089c3793d5973fa"]:
+            assert text.count(sha) == 2  # checkout and post-run check
+        assert text.count('driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"') == 2
+        assert 'BENCH_EXPECT_BENCHMARK_ROOT=$GITHUB_WORKSPACE/.qualification/benchmark' in text
+        assert '.qualification/benchmark/bench/run-typed-storage-window.sh' not in text
+        assert 'git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD' in text
+        assert 'git diff --quiet 3d766fa295b0e98c30f275d0a334db92e6dd998c -- src resources deps.edn' in text
+
+    for name in ["current-typed-storage.yml", "s3-transport-profile.yml"]:
+        workflow = pathlib.Path(__file__).parent.parent / ".github/workflows" / name
+        text = workflow.read_text()
+        validate_workflow(text)
+        checks += 1
+        mutants = [text.replace("fetch-depth: 0", "fetch-depth: 1", 1),
+                   text.replace("5be78d565be0a7a929d108be929540c1b4f19524", "0" * 40, 1),
+                   text.replace('git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD', '', 1),
+                   text.replace('driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"',
+                                'driver="$GITHUB_WORKSPACE/.qualification/benchmark/bench/run-typed-storage-window.sh"', 1)]
+        for mutant in mutants:
+            rejected = False
+            try:
+                validate_workflow(mutant)
+            except AssertionError:
+                rejected = True
+            assert rejected
+            checks += 1
 print(f"current typed launcher: {checks} controls passed (includes real local Git history); no cloud requests")

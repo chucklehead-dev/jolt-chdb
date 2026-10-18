@@ -42,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Require closed mode and workload bounds
         env:
@@ -63,14 +64,14 @@ jobs:
         if: inputs.mode == 'qualify'
         with:
           repository: chucklehead-dev/jolt-otel-clickhouse
-          ref: 4f3bfd2bac88227710a3687b2a14fb5274689ef8
+          ref: 5be78d565be0a7a929d108be929540c1b4f19524
           path: .qualification/exporter
           persist-credentials: false
       - uses: actions/checkout@v4
         if: inputs.mode == 'qualify'
         with:
           repository: casselc/data.json
-          ref: b959a5625c28cc8571e04de5ca02a2c8902b8b5e
+          ref: 8d557cc18eb9526ed29ae5613089c3793d5973fa
           path: .qualification/json
           persist-credentials: false
       - name: Authenticate exact green compiler artifact
@@ -95,6 +96,7 @@ jobs:
           echo "BENCH_RUNTIME_BINARY_SHA256=$QUALIFIED_RUNTIME_BINARY_SHA256" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_EXPORTER_ROOT=$GITHUB_WORKSPACE/.qualification/exporter" >> "$GITHUB_ENV"
           echo "BENCH_EXPECT_JSON_ROOT=$GITHUB_WORKSPACE/.qualification/json" >> "$GITHUB_ENV"
+          echo "BENCH_EXPECT_BENCHMARK_ROOT=$GITHUB_WORKSPACE/.qualification/benchmark" >> "$GITHUB_ENV"
           echo "TASK_ORIGINAL_TYPED_DRIVER=$GITHUB_WORKSPACE/.qualification/benchmark/bench/typed-storage-window.clj" >> "$GITHUB_ENV"
           echo "TASK_TYPED_BUDGET_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_profile_driver.clj" >> "$GITHUB_ENV"
           task_wrapper="$GITHUB_WORKSPACE/scripts/current_typed_jolt.sh"
@@ -123,7 +125,7 @@ jobs:
           set -euo pipefail
           task_root=$(mktemp -d /tmp/current-typed-local.XXXXXXXX)
           trap '[[ "$task_root" =~ ^/tmp/current-typed-local\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
-          driver="$GITHUB_WORKSPACE/.qualification/benchmark/bench/run-typed-storage-window.sh"
+          driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"
           timeout --kill-after=5s 360s bash "$driver" window "$task_root" 10000 256 true wide16 > "$task_root/writer.log" 2>&1
           CHDB_BENCH_METADATA_READER=stock timeout --kill-after=5s 120s bash "$driver" reader "$task_root" 10000 256 true wide16 > "$task_root/reader.log" 2>&1
           cp "$task_root/writer.edn" target/current-typed-storage/local-writer.edn
@@ -168,7 +170,7 @@ jobs:
           export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
           task_root=$(mktemp -d /tmp/current-typed-s3.XXXXXXXX)
           trap '[[ "$task_root" =~ ^/tmp/current-typed-s3\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
-          driver="$GITHUB_WORKSPACE/.qualification/benchmark/bench/run-typed-storage-window.sh"
+          driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"
           timeout --kill-after=5s 1800s bash "$driver" window "$task_root" 10000 256 true wide16 > "$task_root/writer.log" 2>&1
           cp "$task_root/http-budget.edn" target/current-typed-storage/s3-writer-budget.edn
           cp "$task_root/curl-profile.edn" target/current-typed-storage/s3-writer-curl-profile.edn
@@ -184,11 +186,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C .qualification/benchmark rev-parse HEAD)" = 3fd96c4691c5db49ed4d3ef55622aaa6b9074127
-          test "$(git -C .qualification/exporter rev-parse HEAD)" = 4f3bfd2bac88227710a3687b2a14fb5274689ef8
-          test "$(git -C .qualification/json rev-parse HEAD)" = b959a5625c28cc8571e04de5ca02a2c8902b8b5e
+          test "$(git -C .qualification/exporter rev-parse HEAD)" = 5be78d565be0a7a929d108be929540c1b4f19524
+          test "$(git -C .qualification/json rev-parse HEAD)" = 8d557cc18eb9526ed29ae5613089c3793d5973fa
           for task_repo in .qualification/benchmark .qualification/exporter .qualification/json; do
             git -C "$task_repo" diff --quiet HEAD
           done
+          git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD
+          git diff --quiet 3d766fa295b0e98c30f275d0a334db92e6dd998c -- src resources deps.edn
           test "$(sha256sum "$JOLT_CHDB_LIB" | cut -d ' ' -f1)" = a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557
           task_receipts="$GITHUB_WORKSPACE/target/current-typed-storage"
           task_check="$GITHUB_WORKSPACE/scripts/verify_typed_storage_curl_profile.clj"
