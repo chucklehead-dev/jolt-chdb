@@ -84,6 +84,9 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
                BENCH_JOLT_WRAPPER=str(wrapper), BENCH_RUNTIME_BINARY_SHA256=binary_digest,
                QUALIFIED_RUNTIME_BINARY_SHA256=binary_digest,
                QUALIFIED_RUNTIME_PROFILE="current-0821-1ae7", JOLT_CHDB_LIB=str(native))
+    env.pop("TASK_BATCH_EXPERIMENT", None)
+    env.pop("TASK_CONFIRMATION_ARM", None)
+    env.pop("SDK_STORAGE_ARM", None)
     args = ["window", str(root / "store"), "10000", "32" if batch else "256", "true", "wide16"]
 
     def run(arguments=args, **overrides):
@@ -121,6 +124,23 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         assert actual[3] == expected_budget
         assert str(shared_wrapper.parent) in actual[2]
         checks += 1
+        for arm in ["baseline", "candidate"]:
+            result = run([*args[:2], "50000", *args[3:]], **dict(routing,
+                         TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM=arm))
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout)[3] == expected_budget
+            checks += 1
+        result = run(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="baseline", SDK_STORAGE_ARM="local")
+        assert result.returncode == 0
+        checks += 1
+        for overrides in [dict(TASK_BATCH_EXPERIMENT="unknown"),
+                          dict(TASK_CONFIRMATION_ARM="candidate"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="unknown"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="baseline", SDK_STORAGE_ARM="s3"),
+                          dict(TASK_BATCH_EXPERIMENT="confirmation", TASK_CONFIRMATION_ARM="candidate", SDK_STORAGE_ARM="local")]:
+            result = run(**overrides)
+            assert result.returncode != 0 and not calls.exists()
+            checks += 1
         rejected = run(**dict(routing, TASK_ORIGINAL_TYPED_DRIVER=expected_entry + ".wrong"))
         assert rejected.returncode != 0
         assert [json.loads(line) for line in calls.read_text().splitlines()] == [["--version"]]
@@ -221,7 +241,13 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
             prefix = 'ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/typed-window'
             assert f'TASK_PREFIX: {prefix}' in text
             assert f'TASK_BASE_PREFIX: {prefix}' in text
-            assert 'for task_pair in 1:10000 2:20000 3:50000 4:50000 5:20000 6:10000; do' in text
+            assert "options: [preflight, sweep, confirmation]" in text
+            assert "task_schedule='1:10000 2:20000 3:50000 4:50000 5:20000 6:10000'" in text
+            assert "task_schedule='1:baseline 2:candidate 3:candidate 4:baseline'" in text
+            assert 'for task_pair in $task_schedule; do' in text
+            assert 'export TASK_CONFIRMATION_ARM="$task_size"' in text
+            assert 'task_size=50000' in text
+            assert 'scripts/verify_typed_batch_confirmation.clj' in text
             assert text.index('> "$TASK_BATCH_BUDGET_FILE"') < text.index('for task_pair in ')
             assert text.count('> "$TASK_BATCH_BUDGET_FILE"') == 1
             assert 'for task_receipt_dir in target/typed-batch-research/*; do' in text
@@ -245,6 +271,8 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
                 text.replace('test ! -L "$task_receipt_dir"', 'true'),
                 text.replace('shopt -s dotglob', 'true'),
                 text.replace('/typed-window', '/batch-sweep'),
+                text.replace('1:baseline 2:candidate 3:candidate 4:baseline', '1:candidate'),
+                text.replace('task_size=50000', 'task_size=10000'),
             ])
         for mutant in mutants:
             rejected = False

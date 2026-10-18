@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read-only cloud preflight, or bounded short batch sweep
+        description: Read-only preflight, short size sweep, or matched 50k checksum comparison
         type: choice
-        options: [preflight, sweep]
+        options: [preflight, sweep, confirmation]
         default: preflight
 
 permissions:
@@ -34,6 +34,8 @@ jobs:
       QUALIFIED_RUNTIME_ARTIFACT_ID: '11921513712'
       QUALIFIED_RUNTIME_ARTIFACT_SHA256: 931dda8bf4e9d9beeaa92ad64b8a1c925d3ab670f87414ec9efee9af28cb3537
       QUALIFIED_RUNTIME_BINARY_SHA256: 06a2ccb858c072bfcd74ce94d96eb95f008d75e0fb1f46117728602572189811
+      TASK_BATCH_EXPERIMENT: ${{ inputs.mode }}
+      TASK_CONFIRMATION_ARM: ${{ inputs.mode == 'confirmation' && 'baseline' || '' }}
       SDK_STREAM_ARM: stream
       SDK_EXPORT_CALLERS: '1'
       CHDB_BENCH_OWNED_OUTPUT: 'true'
@@ -49,33 +51,33 @@ jobs:
           TASK_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
-          case "$TASK_MODE" in preflight|sweep) ;; *) exit 1 ;; esac
+          case "$TASK_MODE" in preflight|sweep|confirmation) ;; *) exit 1 ;; esac
           # Closed32sample derivative, not the immutable qualification gate.
-          # Six fixed S3 arms share a total6GiB/24k-request budget.
+          # Six size arms or four confirmation arms share6GiB/24k requests.
           mkdir -p target/typed-batch-research/preflight
       - uses: actions/checkout@v4
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         with:
           ref: 3fd96c4691c5db49ed4d3ef55622aaa6b9074127
           path: .qualification/benchmark
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@v4
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         with:
           repository: chucklehead-dev/jolt-otel-clickhouse
           ref: 67e28b59bfd215da982682dd9c59d51d52d460ed
           path: .qualification/exporter
           persist-credentials: false
       - uses: actions/checkout@v4
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         with:
           repository: casselc/data.json
           ref: 8d557cc18eb9526ed29ae5613089c3793d5973fa
           path: .qualification/json
           persist-credentials: false
       - name: Authenticate exact green compiler artifact
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,7 +104,7 @@ jobs:
           task_wrapper="$GITHUB_WORKSPACE/scripts/current_typed_jolt.sh"
           echo "BENCH_JOLT_WRAPPER=$task_wrapper" >> "$GITHUB_ENV"
       - name: Test real budget entry without cloud access
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         run: |
           set -euo pipefail
           bash scripts/test_typed_batch_failure_receipts.sh
@@ -111,7 +113,7 @@ jobs:
           export TASK_BATCH_BUDGET_FILE="$task_root/ledger.edn"
           "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro scripts/test_typed_batch_driver.clj "$task_root"
       - name: Install exact native26.9.0 asset without changing application defaults
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         run: |
           set -euo pipefail
           task_native_dir=$(mktemp -d "$RUNNER_TEMP/current-typed-native.XXXXXXXX")
@@ -126,14 +128,14 @@ jobs:
           rm -- "$task_archive"
           echo "JOLT_CHDB_LIB=$task_native_dir/libchdb.so" >> "$GITHUB_ENV"
       - name: Check actual frozen S3 prefix parser without cloud access
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         run: |
           set -euo pipefail
           "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro \
             -Sdeps '{:paths ["src" "resources" ".qualification/benchmark/bench"]}' \
             scripts/test_typed_batch_prefix.clj "$BENCH_EXPECT_BENCHMARK_ROOT"
       - name: Check short matched local baseline first
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         timeout-minutes: 10
         env:
           SDK_STORAGE_ARM: local
@@ -167,8 +169,8 @@ jobs:
           # No raw policy, bucket/role identifiers, headers, credentials or
           # CLI stderr are printed or uploaded. Unsupported policy shapes fail.
           python3 scripts/typed_s3_preflight.py | tee target/typed-batch-research/preflight/preflight.json
-      - name: Run fixed S3 forward and reverse sweep with full recovery
-        if: inputs.mode == 'sweep'
+      - name: Run fixed S3 size or confirmation comparison with full recovery
+        if: inputs.mode != 'preflight'
         timeout-minutes: 45
         env:
           SDK_STORAGE_ARM: s3
@@ -185,10 +187,20 @@ jobs:
           export JOLT_CHDB_S3_SESSION_TOKEN="$AWS_SESSION_TOKEN"
           export TASK_BATCH_BUDGET_FILE="$RUNNER_TEMP/typed-batch-budget.edn"
           printf '%s\n' '{:requests 0 :completed 0 :upload-bytes 0}' > "$TASK_BATCH_BUDGET_FILE"
-          for task_pair in 1:10000 2:20000 3:50000 4:50000 5:20000 6:10000; do
+          task_schedule='1:10000 2:20000 3:50000 4:50000 5:20000 6:10000'
+          if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+            task_schedule='1:baseline 2:candidate 3:candidate 4:baseline'
+          fi
+          for task_pair in $task_schedule; do
             (
               task_index=${task_pair%:*}
               task_size=${task_pair#*:}
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+                export TASK_CONFIRMATION_ARM="$task_size"
+                task_size=50000
+              else
+                unset TASK_CONFIRMATION_ARM
+              fi
               export JOLT_CHDB_S3_PREFIX="$TASK_BASE_PREFIX/$task_index"
               task_root=$(mktemp -d /tmp/typed-batch-s3.XXXXXXXX)
               trap '[[ "$task_root" =~ ^/tmp/typed-batch-s3\.[A-Za-z0-9]+$ ]] && rm -rf -- "$task_root"' EXIT
@@ -212,13 +224,19 @@ jobs:
               run_phase window 300
               cp "$task_root/writer.edn" "$task_report/s3-writer.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-writer-budget.edn"
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+                cp "$task_root/confirmation-selection.edn" "$task_report/s3-writer-confirmation.edn"
+              fi
               CHDB_BENCH_METADATA_READER=stock run_phase reader 120
               cp "$task_root/reader.edn" "$task_report/s3-reader.edn"
               cp "$task_root/http-budget.edn" "$task_report/s3-reader-budget.edn"
+              if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+                cp "$task_root/confirmation-selection.edn" "$task_report/s3-reader-confirmation.edn"
+              fi
             )
           done
       - name: Check local baseline again after the S3 sweep
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         timeout-minutes: 10
         env:
           SDK_STORAGE_ARM: local
@@ -233,7 +251,7 @@ jobs:
           cp "$task_root/writer.edn" target/typed-batch-research/local-after/local-writer.edn
           cp "$task_root/reader.edn" target/typed-batch-research/local-after/local-reader.edn
       - name: Validate exact research receipts, total budget and source parity
-        if: inputs.mode == 'sweep'
+        if: inputs.mode != 'preflight'
         run: |
           set -euo pipefail
           test "$(git -C .qualification/benchmark rev-parse HEAD)" = 3fd96c4691c5db49ed4d3ef55622aaa6b9074127
@@ -247,8 +265,11 @@ jobs:
           test "$(sha256sum "$JOLT_CHDB_LIB" | cut -d ' ' -f1)" = a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557
           task_receipts="$GITHUB_WORKSPACE/target/typed-batch-research"
           task_check="$GITHUB_WORKSPACE/scripts/verify_typed_batch_research.clj"
+          if [[ "$TASK_BATCH_EXPERIMENT" == confirmation ]]; then
+            task_check="$GITHUB_WORKSPACE/scripts/verify_typed_batch_confirmation.clj"
+          fi
           cd /tmp
-          "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro -Sdeps '{:paths [] :deps {}}' "$task_check" "$task_receipts"
+          "$BENCH_JOLT_WRAPPER" "$BENCH_JOLT_BIN" -Srepro -Sdeps "{:paths [\"$GITHUB_WORKSPACE/scripts\"] :deps {}}" "$task_check" "$task_receipts"
       - name: Reject identifiers and credentials from receipt uploads
         id: receipt_scan
         if: always()
