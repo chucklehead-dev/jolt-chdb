@@ -5,15 +5,24 @@ Production digests and source revisions remain unchanged. This checks routing
 and rejection logic, not authentication of the real compiler or native asset.
 """
 import hashlib
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
+from unittest.mock import patch
 
-source = pathlib.Path(__file__).with_name("run_current_typed_storage.sh").read_text()
+batch = sys.argv[1:] == ["--batch"]
+assert sys.argv[1:] in ([], ["--batch"])
+launcher_name = "run_typed_batch_research.sh" if batch else "run_current_typed_storage.sh"
+exporter_sha = "67e28b59bfd215da982682dd9c59d51d52d460ed" if batch else "5be78d565be0a7a929d108be929540c1b4f19524"
+source = pathlib.Path(__file__).with_name(launcher_name).read_text()
 checks = 0
 with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
     root = pathlib.Path(directory)
@@ -35,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
     native.write_bytes(b"synthetic-native-only")
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     native_digest = hashlib.sha256(native.read_bytes()).hexdigest()
-    launcher = scripts / "run_current_typed_storage.sh"
+    launcher = scripts / launcher_name
     synthetic = source.replace(
         "06a2ccb858c072bfcd74ce94d96eb95f008d75e0fb1f46117728602572189811", binary_digest
     ).replace("a7d22ade86e1de82b187adf572b569a6034600ce932c52b0acb8c97b82430557", native_digest)
@@ -49,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         name = pathlib.Path(sys.argv[2]).name
         command = sys.argv[3:]
         refs = {"benchmark": "3fd96c4691c5db49ed4d3ef55622aaa6b9074127",
-                "exporter": "5be78d565be0a7a929d108be929540c1b4f19524",
+                "exporter": os.environ["TEST_EXPORTER_SHA"],
                 "json": "8d557cc18eb9526ed29ae5613089c3793d5973fa"}
         mode = os.environ.get("TEST_DRIFT", "")
         if command == ["rev-parse", "HEAD"]:
@@ -68,13 +77,14 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
     '''))
     git.chmod(0o700)
     env = dict(os.environ, PATH=str(root / "bin") + os.pathsep + os.environ["PATH"],
-               TEST_CALLS=str(calls), TEST_DRIFT="", BENCH_EXPECT_BENCHMARK_ROOT=str(root / "benchmark"),
+               TEST_CALLS=str(calls), TEST_DRIFT="", TEST_EXPORTER_SHA=exporter_sha,
+               BENCH_EXPECT_BENCHMARK_ROOT=str(root / "benchmark"),
                BENCH_EXPECT_EXPORTER_ROOT=str(root / "exporter"),
                BENCH_EXPECT_JSON_ROOT=str(root / "json"), BENCH_JOLT_BIN=str(binary),
                BENCH_JOLT_WRAPPER=str(wrapper), BENCH_RUNTIME_BINARY_SHA256=binary_digest,
                QUALIFIED_RUNTIME_BINARY_SHA256=binary_digest,
                QUALIFIED_RUNTIME_PROFILE="current-0821-1ae7", JOLT_CHDB_LIB=str(native))
-    args = ["window", str(root / "store"), "10000", "256", "true", "wide16"]
+    args = ["window", str(root / "store"), "10000", "32" if batch else "256", "true", "wide16"]
 
     def run(arguments=args, **overrides):
         calls.unlink(missing_ok=True)
@@ -92,9 +102,42 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         assert ':local/root "' + str(root / "driver") + '"' in deps
         assert "d93846e40b837dcecb546fb59f6cb05ca639f054" in deps
         assert "19fc49d20b3a75906f0ccbb8b50c7e48b03e4813" not in deps
-        assert actual[3:] == [str(root / "benchmark" / "bench" / "typed-storage-window.clj"),
+        expected_driver = (root / "driver" / "scripts" / "typed_storage_batch_driver.clj") if batch else (root / "benchmark" / "bench" / "typed-storage-window.clj")
+        assert actual[3:] == [str(expected_driver),
                               phase, *args[1:]]
         assert len(calls.read_text().splitlines()) == 2
+        checks += 1
+    if batch:
+        # Compose the REAL unchanged S3 wrapper with this launcher. A fake
+        # executable records the selected budget entry; no cloud request runs.
+        expected_entry = str(root / "driver" / "scripts" / "typed_storage_batch_driver.clj")
+        expected_budget = str(root / "driver" / "scripts" / "typed_storage_batch_budget_driver.clj")
+        shared_wrapper = pathlib.Path(__file__).with_name("current_typed_jolt.sh").resolve()
+        routing = dict(SDK_STORAGE_ARM="s3", BENCH_JOLT_WRAPPER=str(shared_wrapper),
+                       TASK_ORIGINAL_TYPED_DRIVER=expected_entry, TASK_TYPED_BUDGET_DRIVER=expected_budget)
+        routed = run(**routing)
+        assert routed.returncode == 0, routed.stderr
+        actual = json.loads(routed.stdout)
+        assert actual[3] == expected_budget
+        assert str(shared_wrapper.parent) in actual[2]
+        checks += 1
+        rejected = run(**dict(routing, TASK_ORIGINAL_TYPED_DRIVER=expected_entry + ".wrong"))
+        assert rejected.returncode != 0
+        assert [json.loads(line) for line in calls.read_text().splitlines()] == [["--version"]]
+        checks += 1
+        for size in ["20000", "50000"]:
+            result = run([*args[:2], size, *args[3:]])
+            assert result.returncode == 0
+            assert json.loads(result.stdout)[-4:] == [size, "32", "true", "wide16"]
+            checks += 1
+        for size in ["0", "9999", "10001", "20001", "50001"]:
+            assert run([*args[:2], size, *args[3:]]).returncode != 0 and not calls.exists()
+            checks += 1
+        bounds = 'case "$3" in 10000|20000|50000) ;; *) exit 64 ;; esac\n'
+        assert synthetic.count(bounds) == 1
+        launcher.write_text(synthetic.replace(bounds, ""))
+        assert run([*args[:2], "10001", *args[3:]]).returncode == 0
+        launcher.write_text(synthetic)
         checks += 1
     for drift in ["head-benchmark", "head-exporter", "head-json", "dirty-benchmark",
                   "dirty-exporter", "dirty-json", "driver-ancestry", "driver-source"]:
@@ -163,25 +206,46 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
         assert marker in text
         assert "fetch-depth: 0" in text.split(marker, 1)[0]
         for sha in ["3fd96c4691c5db49ed4d3ef55622aaa6b9074127",
-                    "5be78d565be0a7a929d108be929540c1b4f19524",
+                    exporter_sha,
                     "8d557cc18eb9526ed29ae5613089c3793d5973fa"]:
             assert text.count(sha) == 2  # checkout and post-run check
-        assert text.count('driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"') == 2
+        assert text.count(f'driver="$GITHUB_WORKSPACE/scripts/{launcher_name}"') == (3 if batch else 2)
         assert 'BENCH_EXPECT_BENCHMARK_ROOT=$GITHUB_WORKSPACE/.qualification/benchmark' in text
         assert '.qualification/benchmark/bench/run-typed-storage-window.sh' not in text
         assert 'git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD' in text
         assert 'git diff --quiet 3d766fa295b0e98c30f275d0a334db92e6dd998c -- src resources deps.edn' in text
+        if batch:
+            assert "if: github.ref == 'refs/heads/main'" in text
+            assert 'TASK_ORIGINAL_TYPED_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_batch_driver.clj' in text
+            assert 'TASK_TYPED_BUDGET_DRIVER=$GITHUB_WORKSPACE/scripts/typed_storage_batch_budget_driver.clj' in text
+            prefix = 'ci/jolt-chdb/${{ github.run_id }}-${{ github.run_attempt }}/typed-window'
+            assert f'TASK_PREFIX: {prefix}' in text
+            assert f'TASK_BASE_PREFIX: {prefix}' in text
+            assert 'for task_pair in 1:10000 2:20000 3:50000 4:50000 5:20000 6:10000; do' in text
+            assert text.index('> "$TASK_BATCH_BUDGET_FILE"') < text.index('for task_pair in ')
+            assert text.count('> "$TASK_BATCH_BUDGET_FILE"') == 1
+            assert 'for task_receipt_dir in target/typed-batch-research/*; do' in text
+            assert 'shopt -s dotglob' in text
+            assert 'test ! -L "$task_receipt_dir"' in text
 
-    for name in ["current-typed-storage.yml", "s3-transport-profile.yml"]:
+    for name in (["typed-batch-research.yml"] if batch else ["current-typed-storage.yml", "s3-transport-profile.yml"]):
         workflow = pathlib.Path(__file__).parent.parent / ".github/workflows" / name
         text = workflow.read_text()
         validate_workflow(text)
         checks += 1
         mutants = [text.replace("fetch-depth: 0", "fetch-depth: 1", 1),
-                   text.replace("5be78d565be0a7a929d108be929540c1b4f19524", "0" * 40, 1),
+                   text.replace(exporter_sha, "0" * 40, 1),
                    text.replace('git merge-base --is-ancestor 3d766fa295b0e98c30f275d0a334db92e6dd998c HEAD', '', 1),
-                   text.replace('driver="$GITHUB_WORKSPACE/scripts/run_current_typed_storage.sh"',
+                   text.replace(f'driver="$GITHUB_WORKSPACE/scripts/{launcher_name}"',
                                 'driver="$GITHUB_WORKSPACE/.qualification/benchmark/bench/run-typed-storage-window.sh"', 1)]
+        if batch:
+            mutants.extend([
+                text.replace('scripts/typed_storage_batch_budget_driver.clj', 'scripts/typed_storage_batch_driver.clj'),
+                text.replace("if: github.ref == 'refs/heads/main'", "if: true"),
+                text.replace('test ! -L "$task_receipt_dir"', 'true'),
+                text.replace('shopt -s dotglob', 'true'),
+                text.replace('/typed-window', '/batch-sweep'),
+            ])
         for mutant in mutants:
             rejected = False
             try:
@@ -189,5 +253,55 @@ with tempfile.TemporaryDirectory(prefix="current-typed-launcher-") as directory:
             except AssertionError:
                 rejected = True
             assert rejected
+            checks += 1
+        if batch:
+            # Run the actual preflight main with synthetic metadata, not just
+            # duplicated prefix assertions. No AWS process/network is invoked.
+            preflight_path = pathlib.Path(__file__).with_name("typed_s3_preflight.py")
+            spec = importlib.util.spec_from_file_location("batch_preflight", preflight_path)
+            preflight = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(preflight)
+            selected_prefix = next(line.strip().split(": ", 1)[1] for line in text.splitlines()
+                                   if line.strip().startswith("TASK_PREFIX: "))
+            selected_prefix = selected_prefix.replace("${{ github.run_id }}", "123").replace("${{ github.run_attempt }}", "1")
+            role = "arn:aws:iam::123456789012:role/fixture-role"
+            metadata = {
+                ("sts", "get-caller-identity"): {"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/fixture-role/session"},
+                ("iam", "get-role"): {"Role": {"Arn": role}},
+                ("iam", "list-role-policies"): {"PolicyNames": ["fixture"]},
+                ("iam", "list-attached-role-policies"): {"AttachedPolicies": []},
+                ("iam", "get-role-policy"): {"PolicyDocument": {"Statement": [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": "arn:aws:s3:::fixture-bucket/ci/jolt-chdb/*"}]}},
+                ("s3api", "get-bucket-lifecycle-configuration"): {"Rules": [{"Status": "Enabled", "Filter": {"Prefix": "ci/jolt-chdb/"}, "Expiration": {"Days": 7}}]},
+                ("s3api", "get-bucket-versioning"): {},
+            }
+            with patch.dict(os.environ, TASK_ROLE_ARN=role, TASK_BUCKET="fixture-bucket", TASK_PREFIX=selected_prefix):
+                with patch.object(preflight, "aws", side_effect=lambda service, operation, *a: metadata[(service, operation)]) as cloud:
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        preflight.main()
+                    assert json.loads(output.getvalue())["preflight"] == "passed"
+                    assert cloud.call_count == 7
+            checks += 1
+            privacy = root / "privacy"
+            (privacy / "preflight").mkdir(parents=True)
+            (privacy / "preflight" / "preflight.json").write_text("{}")
+            step = text.split("- name: Reject identifiers and credentials from receipt uploads", 1)[1]
+            step = step.split("run: |\n", 1)[1].split("      - name: Upload only bounded scalar receipts", 1)[0]
+            script = textwrap.dedent(step).replace("target/typed-batch-research", str(privacy))
+
+            def privacy_run():
+                return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+
+            assert privacy_run().returncode == 0
+            for name in ["unexpected", ".hidden"]:
+                unexpected = privacy / name
+                unexpected.write_text("synthetic-private-marker")
+                assert privacy_run().returncode != 0
+                unexpected.unlink()
+                checks += 1
+            link = privacy / "local"
+            link.symlink_to(privacy / "preflight", target_is_directory=True)
+            assert privacy_run().returncode != 0
+            link.unlink()
             checks += 1
 print(f"current typed launcher: {checks} controls passed (includes real local Git history); no cloud requests")
