@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Run the protected S3 transport diagnostic against the same closed current
+  SDK/exporter/JSON/driver graph as ordinary storage qualification. Preserve
+  its immutable workload, request/upload limits, aggregate-only observation,
+  recovery and privacy gates. Add workflow pin/launcher drift controls; this
+  refresh does not change application defaults or claim a performance gain.
+
 - Refresh the protected current-stack local/S3 qualification to the landed SDK,
   exporter and optional native JSON checkpoints. Keep its immutable workload
   separate from current driver source; retain recovery checks, cloud budgets,
