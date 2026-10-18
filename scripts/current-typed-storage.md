@@ -22,6 +22,15 @@ Here, a stock reader means the stock JSON metadata decoder in a fresh process
 on the authenticated qualified runtime. It does not imply a released stock
 Jolt executable. Separate stock-runtime compatibility runs remain distinct.
 
+`s3-transport-profile.yml` uses this same closed current graph and workload,
+adding the existing aggregate native-transfer observer only for S3. It records
+GET/PUT size classes, request/perform counts and cumulative curl timing
+milestones, never URLs, headers, bodies or credentials. The ordinary correctness,
+budget and privacy checks remain required. Milestones are not exclusive phases;
+independent renewal requests can overlap data requests, so their summed times
+are not a decomposition of the measured export wall time. Older profile runs
+remain evidence for their own pinned graph, not for the current stack.
+
 ## Fixed S3 continue-wait comparison
 
 `expect-continue-ab.yml` is a separate manual protected-main workflow. It first

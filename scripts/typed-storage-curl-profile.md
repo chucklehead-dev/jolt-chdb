@@ -35,7 +35,9 @@ still required before using these counters to explain the real S3 deficit.
 
 `s3-transport-profile.yml` provides that wiring once reviewed and merged. Its
 default is read-only preflight; `mode=qualify` uses the original3fd96c4 benchmark
-with no wait override, the same1ae runtime/native26.9.0/exporter/JSON pins,
+with no wait override, the same1ae runtime/native26.9.0 and current closed
+driver/exporter/SDK/JSON graph as `current-typed-storage.yml`, selected by
+`run_current_typed_storage.sh` rather than the fixture's historical launcher,
 256x10k workload and independent stock recovery. `typed_storage_profile_driver`
 wraps the unchanged request-budget driver, not a replacement for it. Writer and
 reader processes each produce their own profile; receipt validation checks
