@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a closed 50k-row A/B/B/A checksum-confirmation mode to short S3 research.
+  Check actual native proof selection and full independent recovery for each
+  arm under one shared request/upload budget. Keep default readback, the fixed
+  qualification gate and application settings unchanged.
+
 - Add a protected, bounded AWS gate for the existing optional single-PUT WAL
   checksum contract: native proof selection, default/existing readback,
   client-injected lost-ack reconciliation and provider rejection of a changed

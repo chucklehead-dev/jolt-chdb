@@ -175,6 +175,8 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_current_typed_storage_launcher.py --batch
           bb scripts/test_typed_batch_research.clj
+          bb -cp scripts scripts/test_typed_batch_confirmation.clj
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_typed_batch_confirmation_verifier.py
           bb -cp scripts scripts/test_s3_checksum_fault_config.clj
           bb -cp scripts scripts/test_s3_checksum_fault_receipt.clj
           bash scripts/test_typed_batch_failure_receipts.sh

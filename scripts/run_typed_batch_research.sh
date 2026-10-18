@@ -8,6 +8,18 @@ case "$3" in 10000|20000|50000) ;; *) exit 64 ;; esac
 test "$4" = 32
 test "$5" = true
 test "$6" = wide16
+case "${TASK_BATCH_EXPERIMENT:-sweep}" in
+  sweep) test -z "${TASK_CONFIRMATION_ARM:-}" ;;
+  confirmation)
+    case "${TASK_CONFIRMATION_ARM:-}" in baseline|candidate) ;; *) exit 64 ;; esac
+    if [[ "${SDK_STORAGE_ARM:-local}" == s3 ]]; then
+      test "$3" = 50000
+    else
+      test "$3" = 10000 && test "$TASK_CONFIRMATION_ARM" = baseline
+    fi
+    ;;
+  *) exit 64 ;;
+esac
 task_benchmark=${BENCH_EXPECT_BENCHMARK_ROOT:?exact benchmark checkout required}
 task_exporter=${BENCH_EXPECT_EXPORTER_ROOT:?exact exporter checkout required}
 task_json=${BENCH_EXPECT_JSON_ROOT:?exact JSON checkout required}
