@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a separate manual, bounded S3 batch-size experiment with full typed
+  recovery, local bookends, shared request/upload budgets and scalar-only
+  artifacts. Preserve the fixed qualification workload and all library defaults.
+
 - Run the protected S3 transport diagnostic against the same closed current
   SDK/exporter/JSON/driver graph as ordinary storage qualification. Preserve
   its immutable workload, request/upload limits, aggregate-only observation,
