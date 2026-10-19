@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid a temporary managed bytevector when copying a byte-array prefix into
+  scoped native query and digest buffers. Use the existing synchronous runtime
+  block-copy primitive for admitted byte backings, with ordinary FFI fallback.
+  Keep source isolation, native ownership, exact hashes and WAL bytes unchanged.
+
 - Wrap freshly copied owned-statement and WAL buffers on stock Jolt without
   requiring a compiler-fork adoption helper. Preserve optional runtime pinning
   when available, caller isolation and scoped native copies; no WAL format or

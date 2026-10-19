@@ -1,7 +1,8 @@
 (ns jdbc.chdb-durable-digest-test
   (:require [jdbc.chdb.durable.digest :as digest]
             [jdbc.chdb-durable-local-test :as local]
-            #?(:jolt [jolt.ffi :as ffi]))
+            #?(:jolt [jolt.ffi :as ffi])
+            #?(:jolt [jdbc.chdb.byte-copy :as byte-copy]))
   (:import [java.io ByteArrayInputStream InputStream]
            [java.nio.file Files OpenOption]
            [java.nio.file.attribute FileAttribute]))
@@ -35,6 +36,13 @@
       (close [] (swap! closes inc)))))
 
 (defn- run-stream-checks! []
+  ;; External known answer, not another entry point sharing the same copier.
+  (let [payload (.getBytes "abc" "UTF-8")
+        expected "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
+    (check "SHA-256 abc byte known answer" expected (digest/sha256-bytes payload))
+    (with-open [input (ByteArrayInputStream. payload)]
+      (check "SHA-256 abc stream known answer" {:byte-count 3 :sha256 expected}
+             (digest/hash+count-input-stream input))))
   (doseq [n [0 1 65535 65536 65537 131089]]
     (let [payload (byte-array (map #(unchecked-byte (mod % 256)) (range n)))
           expected (if (zero? n)
@@ -82,13 +90,20 @@
           free-var (fn [p] (swap! freed conj p) (free-context p))
           #'ffi/confined-arena (fn [] (let [a (new-arena)] (swap! arenas conj a) a))}
          (fn []
-           (doseq [mode [:normal :zero :error]]
-             (with-open [input (scripted-input (byte-array [7]) mode (atom 0) (atom 0))]
-               (caught #(digest/hash+count-input-stream input))))))
-       (check "native contexts really allocated for all three routes" 3 (count @created))
-       (check "native context freed on success/zero/error" @created @freed)
-       (check "all three confined arenas were opened" 3 (count @arenas))
-       (check "native arenas closed on success/zero/error" [false false false]
+           (doseq [mode [:normal :zero :error :copy-error]]
+             (with-open [input (scripted-input (byte-array [7])
+                                               (if (= mode :copy-error) :normal mode)
+                                               (atom 0) (atom 0))]
+               (if (= mode :copy-error)
+                 (with-redefs [byte-copy/write-prefix!
+                               (fn [& _] (throw (ex-info "copy failure" {:type ::copy-failed})))]
+                   (check "copy failure propagates without a partial digest" ::copy-failed
+                          (:type (ex-data (caught #(digest/hash+count-input-stream input))))))
+                 (caught #(digest/hash+count-input-stream input)))))))
+       (check "native contexts really allocated for all four routes" 4 (count @created))
+       (check "native context freed on success/zero/error/copy-error" @created @freed)
+       (check "all four confined arenas were opened" 4 (count @arenas))
+       (check "native arenas closed on success/zero/error/copy-error" [false false false false]
               (mapv ffi/arena-open? @arenas)))))
 
 (defn run-checks! []

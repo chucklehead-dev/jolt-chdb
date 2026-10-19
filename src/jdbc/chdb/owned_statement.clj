@@ -2,7 +2,8 @@
   "Experimental internal owned ASCII statement for explicit owned requests.
   Ownership is enforced at the supported API, not against reflection, private
   Var access or unsafe FFI. Caller input must not race with snapshot creation."
-  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]))
+  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]
+            [jdbc.chdb.byte-copy :as byte-copy]))
 
 (def ^:private max-snapshot-bytes (* 64 1024 1024))
 (def ^:private statement-seal (Object.))
@@ -79,5 +80,5 @@
   (require-statement! statement)
   (let [size (.-size statement)]
     (ffi/with-alloc [pointer (max 1 size)]
-      (when (pos? size) (ffi/write-array pointer (.-payload statement)))
+      (when (pos? size) (byte-copy/write-prefix! pointer (.-payload statement) size))
       (f {:pointer pointer :length size}))))
