@@ -34,6 +34,20 @@
     (is (zero? @flushes))
     (is (zero? @closes))))
 
+(deftest private-prefix-never-lends-backing-to-custom-stream
+  (let [source (byte-array [1 2 3]) retained (atom nil)
+        out (proxy [OutputStream] []
+              (write
+                ([value] (throw (ex-info "unexpected scalar write" {})))
+                ([bytes start length]
+                 (is (= [0 2] [start length]))
+                 (reset! retained bytes)
+                 (aset-byte bytes 0 99))))]
+    (is (nil? (output/write-private-prefix! out source 2)))
+    (is (not (identical? source @retained)))
+    (is (= [1 2 3] (vec source)))
+    (is (thrown? clojure.lang.ExceptionInfo (output/write-private-prefix! out source 4)))))
+
 (deftest closed-file-and-invalid-range-retain-ordinary-error-order
   (let [path (Files/createTempFile "jchdb-output-" ".bin" (into-array FileAttribute []))
         out (FileOutputStream. (.toFile path)) bytes (byte-array [1 2])]

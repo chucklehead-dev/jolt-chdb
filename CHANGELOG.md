@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an internal opaque byte-record path for optionally precomputed owned WAL
+  data. Keep private chunks reusable for qualified file writes and copy them for
+  public chunk access or custom streams. Admission, byte limits, exact WAL
+  framing, partial-write recovery and persistence acknowledgements are unchanged.
+
 - Write prepared WAL chunks to qualified Jolt file streams without a temporary
   bytevector per write. Preserve custom-stream dispatch, pipe flushing, borrowed
   stream ownership, failure propagation and the legacy byte-array path. JVM and

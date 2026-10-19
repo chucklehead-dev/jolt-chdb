@@ -304,7 +304,7 @@
                 (fail! ::wal-sealed
                        "A sealed Durable WAL spool cannot accept another statement"))
             line (if (owned-statement/statement? sql)
-                   (owned-statement/prepared-wal sql) (wal-line sql))
+                   (owned-statement/prepared-wal-for-write sql) (wal-line sql))
             next-segment-bytes (+ (:byte-count @(:wal-state writer))
                                   (wal/prepared-size line))]
         (when (> next-segment-bytes max-wal-segment-bytes)

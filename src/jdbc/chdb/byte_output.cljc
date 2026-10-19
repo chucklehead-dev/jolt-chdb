@@ -28,3 +28,15 @@
              (.write ^OutputStream output bytes 0 length))
      :clj (.write ^OutputStream output bytes 0 length))
   nil)
+
+(defn write-private-prefix!
+  "Internal immutable-record write. Qualified native file ports borrow bytes
+  synchronously; every other stream receives a fresh copy, never private
+  backing storage. Invalid arguments are rejected before copying or output."
+  [output bytes length]
+  (when-not (and (bytes? bytes) (integer? length) (<= 0 length (alength bytes)))
+    (throw (ex-info "Invalid private byte-prefix range" {:type ::invalid-range})))
+  #?(:jolt (when-not (try-write! output bytes length)
+             (.write ^OutputStream output (aclone bytes) 0 length))
+     :clj (.write ^OutputStream output (aclone bytes) 0 length))
+  nil)

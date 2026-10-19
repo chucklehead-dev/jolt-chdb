@@ -8,6 +8,7 @@
   version or an advertised method name is not a correctness contract."
   (:require [clojure.data.json :as json]
             [jdbc.chdb.byte-output :as byte-output]
+            [jdbc.chdb.byte-record :as byte-record]
             #?(:jolt [jdbc.chdb.durable.wal-chunks :as chunks]))
   (:import [java.io StringWriter]))
 
@@ -100,15 +101,19 @@
 (defn prepared-size
   "Internal byte count for a complete prepared record or legacy byte array."
   [prepared]
-  (if (map? prepared) (:byte-count prepared) (alength prepared)))
+  (cond (satisfies? byte-record/ByteRecord prepared) (byte-record/byte-count prepared)
+        (map? prepared) (:byte-count prepared)
+        :else (alength prepared)))
 
 (defn write-prepared!
   "Internal spool write. Counters advance only after this entire call succeeds."
   [output prepared]
-  (if (map? prepared)
+  (cond
+    (satisfies? byte-record/ByteRecord prepared) (byte-record/write-to! prepared output)
+    (map? prepared)
     (doseq [[bytes used] (:chunks prepared)]
       (byte-output/write-prefix! output bytes used))
-    (.write ^java.io.OutputStream output prepared)))
+    :else (.write ^java.io.OutputStream output prepared)))
 
 #?(:jolt
    (defn- native-prepared-line [sql]
