@@ -1,6 +1,11 @@
 ;; Library-owned exact Durable V1 JSONL codec; fresh output chunks per request.
-;; Depends only on runtime-owned array adoption and ordinary Chez primitives.
-(let ((durable-wal-prefix (bytevector 123 34 115 113 108 34 58 34))
+;; Preserve optional runtime pinning; stock Jolt wraps only fresh private chunks.
+(let ((adopt
+       (if (and (top-level-bound? 'na-owned-bv->bytearray)
+                (procedure? (top-level-value 'na-owned-bv->bytearray)))
+           (top-level-value 'na-owned-bv->bytearray)
+           (lambda (bytes) (make-jolt-array bytes 'byte))))
+      (durable-wal-prefix (bytevector 123 34 115 113 108 34 58 34))
       (durable-wal-suffix (bytevector 34 125 10))
       (durable-wal-ascii-escape
         (let ((table (make-bytevector 128 0)))
@@ -27,7 +32,7 @@
          (n (bytevector-length input)) (capacity (min 65536 (max 256 (+ n 11))))
          (buffer (make-bytevector capacity)) (chunks '()) (total 0))
     (define (seal! at)
-      (set! chunks (cons (jolt-vector (na-owned-bv->bytearray buffer) at) chunks))
+      (set! chunks (cons (jolt-vector (adopt buffer) at) chunks))
       (set! total (fx+ total at)))
     (define (flush! at)
       (seal! at)

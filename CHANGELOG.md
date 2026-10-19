@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Wrap freshly copied owned-statement and WAL buffers on stock Jolt without
+  requiring a compiler-fork adoption helper. Preserve optional runtime pinning
+  when available, caller isolation and scoped native copies; no WAL format or
+  acknowledgement change.
+
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
   keep ordinary owned execution for other statement shapes. Reject conflicting
