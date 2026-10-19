@@ -21,3 +21,10 @@ official stock Jolt, an isolated dependency-free working directory and cleanup
 of its own temporary archive/executable. It runs the copy tests only, without
 chDB, credentials, S3, telemetry or model checking. Local actionlint and the
 same isolated test command pass. Full native/consumer CI is a separate gate.
+
+Final wiring review found one missing empty-test guard in the local runner.
+Added a positive copy-test count and exact two-test owned-boundary count. Hosted
+CI already had its positive-test guard. At exact41dc25c, stock-copy run39330172193
+completed successfully; its log confirms both checksums and actual5tests/64
+assertions. That workflow qualifies the isolated helper, not the whole consumer:
+https://github.com/chucklehead-dev/jolt-chdb/actions/runs/39330172193

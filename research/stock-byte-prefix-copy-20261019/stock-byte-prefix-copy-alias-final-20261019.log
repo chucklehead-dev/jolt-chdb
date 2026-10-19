@@ -1,0 +1,70 @@
+
+Ran 5 tests. 64 assertions passed, 0 failures, 0 errors.
+{:test 2, :pass 13, :fail 0, :error 0}
+  ok   SHA-256 abc byte known answer
+  ok   SHA-256 abc stream known answer
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   partial reads are counted and hashed through EOF
+  ok   partial-read control is nonvacuous
+  ok   borrowed input remains caller-owned
+  ok   caller closes its own input exactly once
+  ok   zero/error read cannot yield a successful partial digest
+  ok   failing borrowed input was actually read
+  ok   failing input still belongs to caller
+  ok   zero/error read cannot yield a successful partial digest
+  ok   failing borrowed input was actually read
+  ok   failing input still belongs to caller
+  ok   copy failure propagates without a partial digest
+  ok   native contexts really allocated for all four routes
+  ok   native context freed on success/zero/error/copy-error
+  ok   all four confined arenas were opened
+  ok   native arenas closed on success/zero/error/copy-error
+  ok   digest resolution occurs before lock
+  ok   digest executes under the provider lock
+  ok   direct verification reads stored body without copy/create/sync
+  ok   direct verification has no scratch materialization events
+  ok   backend closes the borrowed digest stream
+  ok   direct summary has independent size and consumed count
+  ok   digest resolution occurs before lock
+  ok   digest executes under the provider lock
+  ok   direct verification reads stored body without copy/create/sync
+  ok   direct verification has no scratch materialization events
+  ok   backend closes the borrowed digest stream
+  ok   direct summary has independent size and consumed count
+  ok   digest resolution occurs before lock
+  ok   digest executes under the provider lock
+  ok   direct verification reads stored body without copy/create/sync
+  ok   direct verification has no scratch materialization events
+  ok   backend closes the borrowed digest stream
+  ok   direct summary has independent size and consumed count
+  ok   same-sized stored corruption
+  ok   extra stored body byte
+  ok   truncated stored body
+  ok   resolution failure occurs without taking the provider lock
+  ok   digest error propagates without a successful result
+  ok   digest error releases the provider lock
+  ok   digest error closes its input
+  ok   verification works after a failed digest
+  ok   untyped digest I/O failure is sanitized
+  ok   digest failure does not disclose provider path
+  ok   direct digest rejects a truncated envelope
+  ok   direct digest validates envelope ETag
+  ok   scoped direct digest uses the prefixed object
+  ok   scoped digest cannot observe its sibling
+  ok   scoped unsupported backend stays explicit
+  ok   direct digest missing object is explicit
+  ok   direct digest rejects unsafe keys
+  ok   direct digest rejects symbolic links
+all Durable direct digest checks passed
+all Durable digest checks passed
