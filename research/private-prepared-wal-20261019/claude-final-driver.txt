@@ -1,0 +1,13 @@
+No defects found in the new additions; one hardening asymmetry worth noting in CI.
+
+**FINAL TEXT**
+
+1. **CI network-hardening asymmetry (minor).** The new `-M:prepared-record-test` step in `stock-byte-copy.yml` runs after the official jolt binary is downloaded with full hardening (`--retry 2 --connect-timeout 15 --max-time 90` + sha256 pins on both the tarball and extracted binary). That new step itself resolves the project's root `deps.edn` `:deps` — four pinned-SHA git dependencies (`jolt-lang/db`, `data.json`, `honeysql`, `jolt-crypto`) — via implicit git fetch with none of that retry/timeout protection, inside the same 8-minute job timeout. A transient GitHub hiccup fails the whole job slowly instead of failing fast or retrying. Not a correctness bug, just an inconsistency.
+
+2. **No defects in the new test bodies.** Both `custom-stream-mutation-and-retention-cannot-poison-private-record` (chdb_prepared_record_test.clj) and `cached-record-keeps-existing-sealed-and-budget-rejection-controls` correctly build on an already-verified guarantee — `write-private-prefix!` never hands its real backing array to a custom stream, confirmed independently by `private-prefix-never-lends-backing-to-custom-stream` in chdb_byte_output_test.cljc. The aliasing assertions are sound, not tautological.
+
+3. **Test count is not vacuous.** `((:test (meta #'support/...)))` bypasses `clojure.test/test-var`, which is where `inc-report-counter :test` actually fires, so inlining those two support test bodies does not inflate the `:test` counter. `-main`'s `(assert (= 5 (:test r)))` genuinely checks that 5 `deftest` forms ran. Minor cosmetic-only side effect: failures inside those two nested bodies won't carry the usual "FAIL in (var)" context since `*testing-vars*` isn't pushed for them — exit-code/failure detection is unaffected.
+
+4. **Docstring clarification is accurate.** `prepared-wal`'s "not to a process-global query cache" line matches the code — the three `kernel` delays are shared compiled functions, not a cache of per-input computed bytes; each call recomputes fresh chunks.
+
+5. **No other issues.** Temp-file cleanup (both in the shell script's `trap`-based `task_tmp` removal and the tests' `try/finally` + `deleteIfExists`) is safe. The `prepared-record-test` alias name, namespace, and all five CI-path-trigger entries are consistent with the actual file names.

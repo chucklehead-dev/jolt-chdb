@@ -1,0 +1,5 @@
+
+FAIL in () (chdb_prepared_record_test.clj:52)
+expected: (java.util.Arrays/equals (wal/portable-line-bytes sql) (bytes-from line))
+  actual: false
+{:safe-alias-mutant-detected true, :counts {:test 0, :pass 2, :fail 1, :error 0}}

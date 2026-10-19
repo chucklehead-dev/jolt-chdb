@@ -44,10 +44,19 @@ The matching experimental driver must be selected explicitly for this path.
 - Ordinary namespace loading succeeds with the old default driver and no new helper.
 - Claude source review and exporter compatibility follow-up found no defects.
 - Hosted driver guard CI39337777725 at6f854b0 verified both runtime checksums and
-  ran13tests/135assertions. It did not yet run the private record fixture suite;
-  the subsequent CI extension adds that explicit gate. Do not conflate it with
-  native/app integration. Exporter isolated stock codec CI39337942210 is likewise
+  ran13tests/135assertions. Expanded CI39339079465 at9eb66de separately ran the
+  same13/135 helper suite AND the private record suite5/77; both pass. Do not
+  conflate the fake-worker fixture with native/app integration. Exporter isolated
+  stock codec CI39337942210 is likewise
   not a full collector or Oscope gate.
+- Safe managed-memory red control replaces only the private-copy boundary with
+  the ordinary borrowed-array writer. The cached-WAL equality assertion then
+  fails exactly once (two passes, one intended failure, no errors). Production
+  code is unchanged. This demonstrates the mutation oracle detects the actual
+  alias bug rather than just an opaque marker/type. Green suite remains5/77.
+- Final driver review accepts the new test bodies/counts and CI cleanup. It
+  notes a minor Git dependency-fetch retry asymmetry under the8-minute job
+  bound; no new resolver/retry mechanism is added for this experiment.
 
 All seven actual SDK/local Durable stores passed independent old-stack physical
 field/type/multiplicity readback and lane/routing/settlement validation:1,225,000
