@@ -60,7 +60,8 @@
 
 (defn text
   "Materialize independent immutable text only for an explicit legacy consumer.
-  No text or query cache is retained by this module."
+  No decoded String is retained. Optional prepared WAL bytes belong only to
+  their opaque statement, not to a process-global query cache."
   [statement]
   (String. (.-payload (require-statement! statement)) "UTF-8"))
 

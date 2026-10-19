@@ -10,6 +10,11 @@ on:
       - src/jdbc/chdb/byte_output.cljc
       - resources/jdbc/chdb/output_prefix_write.ss
       - test/jdbc/chdb_byte_output_test.cljc
+      - src/jdbc/chdb/byte_record.cljc
+      - src/jdbc/chdb/owned_statement.clj
+      - src/jdbc/chdb/durable/wal.cljc
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_prepared_record_test.clj
   pull_request:
     paths:
       - .github/workflows/stock-byte-copy.yml
@@ -19,6 +24,11 @@ on:
       - src/jdbc/chdb/byte_output.cljc
       - resources/jdbc/chdb/output_prefix_write.ss
       - test/jdbc/chdb_byte_output_test.cljc
+      - src/jdbc/chdb/byte_record.cljc
+      - src/jdbc/chdb/owned_statement.clj
+      - src/jdbc/chdb/durable/wal.cljc
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_prepared_record_test.clj
   workflow_dispatch:
 
 permissions:
@@ -27,12 +37,12 @@ permissions:
 jobs:
   stock-copy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Check byte-copy guards on official stock Jolt
+      - name: Check byte guards and private records on official stock Jolt
         shell: bash
         env:
           JOLT_NO_USER_DEPS: '1'
@@ -58,3 +68,7 @@ jobs:
                 (let [r (clojure.test/run-tests 'jdbc.chdb-byte-copy-test 'jdbc.chdb-byte-output-test)]
                   (assert (pos? (:test r)))
                   (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))"
+          # Project dependencies supply the fake-worker fixtures. This suite
+          # does not install chDB, open S3, or qualify native persistence.
+          cd "$GITHUB_WORKSPACE"
+          "$task_bin" -Srepro -M:prepared-record-test
