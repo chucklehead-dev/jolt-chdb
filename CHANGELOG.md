@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Write prepared WAL chunks to qualified Jolt file streams without a temporary
+  bytevector per write. Preserve custom-stream dispatch, pipe flushing, borrowed
+  stream ownership, failure propagation and the legacy byte-array path. JVM and
+  Babashka keep ordinary stream writes; no WAL or acknowledgement change.
+
 - Avoid a temporary managed bytevector when copying a byte-array prefix into
   scoped native query and digest buffers. Use the existing synchronous runtime
   block-copy primitive for admitted byte backings, with ordinary FFI fallback.

@@ -7,12 +7,18 @@ on:
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
       - test/jdbc/chdb_byte_copy_test.clj
+      - src/jdbc/chdb/byte_output.cljc
+      - resources/jdbc/chdb/output_prefix_write.ss
+      - test/jdbc/chdb_byte_output_test.cljc
   pull_request:
     paths:
       - .github/workflows/stock-byte-copy.yml
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
       - test/jdbc/chdb_byte_copy_test.clj
+      - src/jdbc/chdb/byte_output.cljc
+      - resources/jdbc/chdb/output_prefix_write.ss
+      - test/jdbc/chdb_byte_output_test.cljc
   workflow_dispatch:
 
 permissions:
@@ -48,7 +54,7 @@ jobs:
           cd "$task_tmp"
           "$task_bin" -Srepro \
             -Sdeps "{:paths [\"$GITHUB_WORKSPACE/src\" \"$GITHUB_WORKSPACE/resources\" \"$GITHUB_WORKSPACE/test\"] :deps {}}" \
-            -e "(require 'jdbc.chdb-byte-copy-test 'clojure.test)
-                (let [r (clojure.test/run-tests 'jdbc.chdb-byte-copy-test)]
+            -e "(require 'jdbc.chdb-byte-copy-test 'jdbc.chdb-byte-output-test 'clojure.test)
+                (let [r (clojure.test/run-tests 'jdbc.chdb-byte-copy-test 'jdbc.chdb-byte-output-test)]
                   (assert (pos? (:test r)))
                   (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))"

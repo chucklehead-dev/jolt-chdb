@@ -18,6 +18,9 @@
  :aliases {:byte-copy-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-byte-copy-test-runner"]}
+           :byte-output-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-byte-output-test"]}
            :owned-stream-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-owned-stream-test-runner"]}

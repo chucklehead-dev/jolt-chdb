@@ -7,6 +7,7 @@
   Durable record corpus.  The probe is deliberately behavioral: a compiler
   version or an advertised method name is not a correctness contract."
   (:require [clojure.data.json :as json]
+            [jdbc.chdb.byte-output :as byte-output]
             #?(:jolt [jdbc.chdb.durable.wal-chunks :as chunks]))
   (:import [java.io StringWriter]))
 
@@ -106,7 +107,7 @@
   [output prepared]
   (if (map? prepared)
     (doseq [[bytes used] (:chunks prepared)]
-      (.write ^java.io.OutputStream output bytes 0 used))
+      (byte-output/write-prefix! output bytes used))
     (.write ^java.io.OutputStream output prepared)))
 
 #?(:jolt
