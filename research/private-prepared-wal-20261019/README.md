@@ -105,6 +105,23 @@ be multiplied by lane count. The25k p50/20k p99 goal remains unmet.
 
 ## Provenance and next action
 
+A subsequent single-lane phase diagnostic independently recovered another350k
+rows (ordinary and prepared), bringing this slice's verified total to1,575,000.
+It confirms median writer WAL preparation35.22→0.22ms; caller preparation adds
+33.34ms and execution/confirmation196.67→159.47ms. Projection/encoding remains
+~192ms per5k batch and~13.4KB/row of~19.9KB total managed allocation. These
+instrumented windows are not speedup qualification; per-phase CPU readings are
+coarse/non-atomic, and phase envelopes overlap. Both diagnostic stores were
+verified and removed; bounded events/summaries are in phase/.
+
+The previous SDK request-local scalar-map cache remains intact atc407d5f and
+its exporter consumer ateef5914. Its loader currently declines on stock Jolt
+because it requires the compiler-global pmap-fold-seq-order. Next reuse that
+cache via explicit library traversal injection, tracked in casselc/otel#64,
+preserving all policy/budget/lifetime guards and shared/unshared miss controls.
+Do not silently select the old cache: its previous miss-path regression and
+unwoven-policy qualification remain relevant. No global helper installation.
+
 The first comparison predates the exporter lookup fix. measured-exporter.clj
 reconstructs that exact source and its hash matches the initial manifest;
 final source is the committed exporter reference above. The driver runtime body
