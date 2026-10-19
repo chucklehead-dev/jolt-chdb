@@ -1,0 +1,1 @@
+{:passed true, :rows 350000, :groups 10000, :trace-count 1250, :full-physical-rows-equal true, :typed-values-status true, :per-record-multiplicity 35, :deterministic-tie-order true}
