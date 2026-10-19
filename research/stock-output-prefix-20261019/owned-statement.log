@@ -1,0 +1,3 @@
+
+Ran 14 tests. 15563 assertions passed, 0 failures, 0 errors.
+:real-native-owned-snapshot-green :rows 1 :wal-sql-equal true
