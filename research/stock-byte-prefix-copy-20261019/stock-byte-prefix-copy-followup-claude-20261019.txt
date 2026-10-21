@@ -1,0 +1,22 @@
+Closure: the fix holds, and the review's claims check out against the code as it stands.
+
+**sha256-bytes-jolt** (`digest.cljc:70-94`) now calls `ffi/write-array input-buffer bytes 0 (alength bytes)` directly on the public-caller `bytes` argument — no longer routed through `byte-copy/write-prefix!`. This resolves the prior race-contract concern: public callers only owe stock `ffi/write-array`'s existing contract, not the stricter no-race/no-move obligation of the private prefix-copy kernel.
+
+**write-prefix!** now has exactly two live call sites, both on internally-owned buffers:
+- `hash+count-input-stream-jolt` (`digest.cljc:55`) — `managed-buffer` is a local `byte-array` allocated and filled inside that function; its reference never escapes.
+- `owned_statement.clj:83` — `(.-payload statement)` is the *snapshot* produced once by `@snapshot-kernel` at statement-creation time (lines 41-42), i.e. an already-copied private buffer, not the live public-caller array.
+
+Both satisfy the "source must not race" contract because neither buffer is externally reachable during the call.
+
+**Runtime context** (`review/byte-prefix-copy-runtime/stock-0823-copy.ss`) matches the description: `memcpy`-based `sa-foreign-bytes-in/out`, synchronous, u8*-by-address (keeps the thread active for the collector during the call), explicitly never `__collect_safe`, with a scalar fallback loop. Consistent with "ordinary non-collect-safe u8* foreign memcpy, no managed pointer escapes."
+
+**Arity-mask check** (`byte_prefix_copy.ss:6`, `bitwise-bit-set? (procedure-arity-mask ...) 3`) tests whether the procedure *has* a 3-arg arity, not that it accepts *only* 3 args — confirms "accepts3args, not exactly3-only."
+
+**Correctness coverage**: `chdb_durable_digest_test.cljc:41` exercises `digest/sha256-bytes` (dispatches to `sha256-bytes-jolt`) against a known SHA-256("abc") answer, so the reverted staging path has a known-answer check, not just absence-of-crash.
+
+No remaining issues found in the inspected scope.
+
+**Limitations:**
+- Read-only — I did not run tests/commands; the reported 5 tests/64 assertions +2 owned/13 results and the in-progress two-lane SDK run weren't independently reproduced here, and no throughput endorsement is given or implied.
+- Took the provided `stock-0823-copy.ss` extraction at face value; did not byte-diff it against the external tag.
+- Did not audit the Scheme snapshot kernel (`owned_ascii_snapshot.ss`) itself — only its copy-once-at-creation property, which is what matters for the race contract, was checked.

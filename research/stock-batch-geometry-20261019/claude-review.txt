@@ -1,0 +1,31 @@
+## Findings — stock-batch-geometry screen correctness review
+
+**Overall: the scaling/patching logic is internally consistent; no scaling bug breaks the stated guarantees. One real vacuity gap and one fragility point are worth flagging.**
+
+### 1. Vacuity gap: negative-control test can "pass" for the wrong reason
+`stock-batch-geometry-validator-test-20261019.bb`'s `rejects?` helper is:
+```clj
+(rejects? [w r batch lanes] (try (check w r batch lanes) false (catch Throwable _ true)))
+```
+It only checks that *some* exception was thrown, not that the *intended* assertion was the one that fired. Each of the 9 mutations is narrowly scoped (one field), so in practice the first assert touching that field should be the one that trips — but this isn't verified. A future refactor that reorders or short-circuits an earlier, unrelated assertion (e.g., the `#{5000 10000}`/`#{1 2}` guard, or the EDN roundtrip itself) could make a negative control "pass" via the wrong code path while the intended check is silently dead. This is the one place in the nine files where "reject" is checked by effect rather than by cause.
+
+### 2. Substitution safety is actually sound (verified, not just assumed)
+Both staging wrappers (`stock-batch-geometry-writer`, `stock-batch-geometry-reader`) and the validator overlay (`validate-stock-batch-geometry`) guard every text substitution with:
+```clj
+(assert (= 2 (count (str/split text needle -1))))
+```
+This correctly enforces "needle occurs exactly once" (0 occurrences → 1 split part → fails; 2+ occurrences → 3+ parts → fails). I checked each needle against the frozen source files in this set and confirmed uniqueness holds, including the subtle case in the reader where `":rows 175000 :groups 5000 :trace-count 625"` (the final spit map) and `":fresh-affinity-reader-green :rows 175000"` (the trailing println) both contain literal `175000` but are deliberately scoped with enough surrounding context to not overlap or double-match. No silent no-op substitution risk found.
+
+### 3. Geometry values scale correctly and consistently across writer → reader → validator
+- Total queue capacity is held at a fixed 20000 regardless of batch/lane count (`(quot 20000 lanes)`, and `(* lanes queue-capacity)` reproduces 20000 for both lanes=1 and lanes=2) — matches the "fixed 20k total queues" requirement.
+- Trace/sibling geometry (`8` siblings, `(quot n 8)` traces) is patched identically in both the writer's own assertion and the reader's expected-output literal, so writer and reader can't drift against each other for batch=10000 (1250 traces) vs 5000 (625 traces).
+- Row/multiplicity accounting (`rows = batch*32` on the writer side, `rows = batch*35`, `per-record-multiplicity = 35` fixed on the reader side) is correctly parameterized — `35` is `3 + rounds(32)` and legitimately batch-independent, so leaving it unscaled is correct, not a missed substitution.
+- The validator's in-memory overlay (`with-redefs [slurp reader]` returning `w`/`r` via `pr-str`/`edn/read-string`) is a faithful roundtrip of plain EDN data (maps/vectors/strings/keywords/numbers/booleans), so it exercises the real frozen `validate-rich-sdk-scaling-20261019.clj` checks (routing, per-trace order, per-lane counts, serial-per-exporter ordering, stream-call accounting, empty-queue drain) rather than a stub.
+
+### 4. One boundary condition worth a flag, not a bug
+For batch=10000, lanes=2: `queue-capacity-per-lane = 10000` and `n = 10000`, so `(<= n queue-capacity)` holds only at exact equality. This is permitted by the `<=` guard and is consistent with the "fixed 20k total" design intent, but it means that combination runs with zero slack — a one-record off-by-one in queue accounting elsewhere would first surface here. Not a defect in the files reviewed, just the tightest geometry in the matrix.
+
+### 5. Cleanup in `run-stock-batch-geometry-20261019.sh`
+The temp-dir teardown is properly defensive: glob-pattern match on the exact `mktemp` template, `test ! -L` (no symlink), `realpath` self-equality (no symlink in any path component), `rm -rf --`, then `test ! -e` to confirm removal. No gap found; `exit 91` on pattern mismatch prevents `rm -rf` from ever running against an unexpected path.
+
+**Net: no silent-pass bug found in the geometry scaling/patch chain. The one substantive issue is the generic-`Throwable` catch in the validator's own self-test, which weakens (but doesn't eliminate) confidence that each negative control fails for its intended reason.**

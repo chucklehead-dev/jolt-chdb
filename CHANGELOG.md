@@ -52,6 +52,25 @@
   stale or modified sources before storage-capable processes start.
   Derive missing p90 from actual batch samples and reject reported percentile
   values that disagree with those samples; retain explicit performance misses.
+- Add an internal opaque byte-record path for optionally precomputed owned WAL
+  data. Keep private chunks reusable for qualified file writes and copy them for
+  public chunk access or custom streams. Admission, byte limits, exact WAL
+  framing, partial-write recovery and persistence acknowledgements are unchanged.
+
+- Write prepared WAL chunks to qualified Jolt file streams without a temporary
+  bytevector per write. Preserve custom-stream dispatch, pipe flushing, borrowed
+  stream ownership, failure propagation and the legacy byte-array path. JVM and
+  Babashka keep ordinary stream writes; no WAL or acknowledgement change.
+
+- Avoid a temporary managed bytevector when copying a byte-array prefix into
+  scoped native query and digest buffers. Use the existing synchronous runtime
+  block-copy primitive for admitted byte backings, with ordinary FFI fallback.
+  Keep source isolation, native ownership, exact hashes and WAL bytes unchanged.
+
+- Wrap freshly copied owned-statement and WAL buffers on stock Jolt without
+  requiring a compiler-fork adoption helper. Preserve optional runtime pinning
+  when available, caller isolation and scoped native copies; no WAL format or
+  acknowledgement change.
 
 - Add experimental writer-only `:owned-compact-stream? true` for native 26.9.0.
   Select compact streaming after normal full-buffer classification/admission;
@@ -67,8 +86,9 @@
   execution. Prepare exact V1 WAL chunks and classify/execute from one private
   copied snapshot without intermediate SQL text. Preserve policy, size limits,
   worker settlement, uncertain-mutation handling and ordinary reader replay.
-  Requires the qualified source runtime for owned output; configured encoding,
-  stock-Jolt text paths, native version and defaults are unchanged.
+  Owned output is qualified separately on stock Jolt 0.8.23 and the selected
+  native-buffer runtime; configured encoding, native version and defaults are
+  unchanged.
 
 - Add bounded prefix-aware JSONEachRow text encoding for callers constructing
   a statement header and row payload together. Prefix bytes stay outside the

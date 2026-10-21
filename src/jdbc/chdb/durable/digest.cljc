@@ -1,6 +1,6 @@
 (ns jdbc.chdb.durable.digest
   "Incremental file digests for Durable checkpoint publication and recovery."
-  #?(:jolt (:require [jolt.ffi :as ffi]))
+  #?(:jolt (:require [jolt.ffi :as ffi] [jdbc.chdb.byte-copy :as byte-copy]))
   (:import [java.io FileInputStream InputStream]
            [java.nio.file Path]
            [java.security MessageDigest]
@@ -52,7 +52,7 @@
                            (zero? n) (zero-read!)
                            :else
                            (do
-                             (ffi/write-array input-buffer managed-buffer 0 n)
+                             (byte-copy/write-prefix! input-buffer managed-buffer n)
                              (when-not (= 1 (evp-digest-update context input-buffer n))
                                (openssl-failure!))
                              (recur (+ total n))))))]
@@ -78,6 +78,8 @@
                    output-length (ffi/alloc arena :uint)]
                (when-not (= 1 (evp-digest-init context (evp-sha256) ffi/null))
                  (openssl-failure!))
+               ;; Public caller bytes are not our private scratch buffer.
+               ;; Retain the existing staging boundary for this entry point.
                (ffi/write-array input-buffer bytes 0 (alength bytes))
                (when-not (= 1 (evp-digest-update context input-buffer
                                                   (alength bytes)))

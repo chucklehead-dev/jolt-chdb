@@ -1,4 +1,11 @@
 ;; Copy first, then qualify the private snapshot. No caller backing is adopted.
+(let ((adopt
+       (if (and (top-level-bound? 'na-owned-bv->bytearray)
+                (procedure? (top-level-value 'na-owned-bv->bytearray)))
+           (top-level-value 'na-owned-bv->bytearray)
+           ;; Stock Jolt: this wraps ONLY the fresh private copy below. Native
+           ;; consumers still use scoped foreign copies, never a managed address.
+           (lambda (bytes) (make-jolt-array bytes 'byte)))))
 (lambda (input limit)
   (and (jolt-array? input) (eq? (jolt-array-kind input) 'byte)
        (fx<=? (ja-len input) limit)
@@ -10,6 +17,6 @@
            (cond ((and (fixnum? #x80808080) (fx<=? (fx+ i 4) n))
                   (and (fx=? (fxand (bytevector-u32-native-ref bytes i) #x80808080) 0)
                        (loop (fx+ i 4))))
-                 ((fx=? i n) (na-owned-bv->bytearray bytes))
+                 ((fx=? i n) (adopt bytes))
                  ((fx>? (bytevector-u8-ref bytes i) 127) #f)
-                 (else (loop (fx+ i 1))))))))
+                 (else (loop (fx+ i 1)))))))))

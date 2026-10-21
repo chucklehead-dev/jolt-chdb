@@ -1,0 +1,2 @@
+# Preserve the frozen reader source verbatim, including its blank EOF lines.
+nested-sorted-sdk-physical-reader-20261018.clj whitespace=-blank-at-eof

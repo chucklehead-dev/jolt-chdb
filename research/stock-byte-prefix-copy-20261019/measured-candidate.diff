@@ -1,0 +1,213 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2fd8d29..a6d29bd 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,11 @@
+ 
+ ## Unreleased
+ 
++- Avoid a temporary managed bytevector when copying a byte-array prefix into
++  scoped native query and digest buffers. Use the existing synchronous runtime
++  block-copy primitive for admitted byte backings, with ordinary FFI fallback.
++  Keep source isolation, native ownership, exact hashes and WAL bytes unchanged.
++
+ - Wrap freshly copied owned-statement and WAL buffers on stock Jolt without
+   requiring a compiler-fork adoption helper. Preserve optional runtime pinning
+   when available, caller isolation and scoped native copies; no WAL format or
+diff --git a/resources/jdbc/chdb/byte_prefix_copy.ss b/resources/jdbc/chdb/byte_prefix_copy.ss
+new file mode 100644
+index 0000000..2da3281
+--- /dev/null
++++ b/resources/jdbc/chdb/byte_prefix_copy.ss
+@@ -0,0 +1,19 @@
++;; Synchronous copy only. No managed address, owner or borrowed view escapes.
++;; Stock ffi/write-array currently copies into a temporary bytevector first.
++;; Reuse its SAME non-collect-safe adapter, but pass the existing byte backing.
++(if (and (top-level-bound? 'sa-foreign-bytes-set!)
++         (procedure? (top-level-value 'sa-foreign-bytes-set!))
++         (bitwise-bit-set? (procedure-arity-mask (top-level-value 'sa-foreign-bytes-set!)) 3))
++    (let ((copy! (top-level-value 'sa-foreign-bytes-set!)))
++      (lambda (pointer bytes n)
++        (and (jolt-array? bytes)
++             (eq? (record-type-uid (record-rtd bytes)) 'jolt-array-v1)
++             (eq? (jolt-array-kind bytes) 'byte)
++             (bytevector? (jolt-array-vec bytes))
++             (let ((backing (jolt-array-vec bytes)) (n (jnum->exact n)))
++               (unless (and (fixnum? n) (fx>=? n 0)
++                            (fx<=? n (bytevector-length backing)))
++                 (error 'byte-prefix-copy "invalid byte range"))
++               (unless (fx=? n 0) (copy! (jnum->exact pointer) backing n))
++               n))))
++    (lambda (pointer bytes n) #f))
+diff --git a/src/jdbc/chdb/byte_copy.clj b/src/jdbc/chdb/byte_copy.clj
+new file mode 100644
+index 0000000..0d9d3a2
+--- /dev/null
++++ b/src/jdbc/chdb/byte_copy.clj
+@@ -0,0 +1,25 @@
++(ns jdbc.chdb.byte-copy
++  "Internal synchronous byte-prefix copies into caller-owned foreign storage."
++  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]))
++
++(defmacro ^:private kernel-source []
++  (if-let [resource (io/resource "jdbc/chdb/byte_prefix_copy.ss")]
++    (slurp resource)
++    (throw (ex-info "Missing byte-copy resource" {}))))
++(def ^:private source (kernel-source))
++(def ^:private prefix-copy
++  ;; An unavailable private runtime adapter keeps the ordinary FFI path.
++  ;; Catch only loading/qualification, NEVER a copy that may already have run.
++  (delay (try (scheme/eval-string source) (catch Throwable _ (fn [& _] false)))))
++
++(defn write-prefix!
++  "Copy bytes[0,length) into valid caller-owned foreign storage. Return length.
++  No destination allocation/lifetime checks or source ownership transfer are
++  implied. Source must not race with this call. Unsupported runtime/backing
++  uses ordinary ffi/write-array."
++  [pointer bytes length]
++  (when-not (and (bytes? bytes) (integer? length) (<= 0 length (alength bytes)))
++    (throw (ex-info "Invalid byte-copy range" {:type ::invalid-range})))
++  (if (zero? length) 0
++    (let [result (@prefix-copy pointer bytes length)]
++      (if (false? result) (ffi/write-array pointer bytes 0 length) result))))
+diff --git a/src/jdbc/chdb/durable/digest.cljc b/src/jdbc/chdb/durable/digest.cljc
+index 21eac1d..9f1b0be 100644
+--- a/src/jdbc/chdb/durable/digest.cljc
++++ b/src/jdbc/chdb/durable/digest.cljc
+@@ -1,6 +1,6 @@
+ (ns jdbc.chdb.durable.digest
+   "Incremental file digests for Durable checkpoint publication and recovery."
+-  #?(:jolt (:require [jolt.ffi :as ffi]))
++  #?(:jolt (:require [jolt.ffi :as ffi] [jdbc.chdb.byte-copy :as byte-copy]))
+   (:import [java.io FileInputStream InputStream]
+            [java.nio.file Path]
+            [java.security MessageDigest]
+@@ -52,7 +52,7 @@
+                            (zero? n) (zero-read!)
+                            :else
+                            (do
+-                             (ffi/write-array input-buffer managed-buffer 0 n)
++                             (byte-copy/write-prefix! input-buffer managed-buffer n)
+                              (when-not (= 1 (evp-digest-update context input-buffer n))
+                                (openssl-failure!))
+                              (recur (+ total n))))))]
+@@ -78,7 +78,7 @@
+                    output-length (ffi/alloc arena :uint)]
+                (when-not (= 1 (evp-digest-init context (evp-sha256) ffi/null))
+                  (openssl-failure!))
+-               (ffi/write-array input-buffer bytes 0 (alength bytes))
++               (byte-copy/write-prefix! input-buffer bytes (alength bytes))
+                (when-not (= 1 (evp-digest-update context input-buffer
+                                                   (alength bytes)))
+                  (openssl-failure!))
+diff --git a/src/jdbc/chdb/owned_statement.clj b/src/jdbc/chdb/owned_statement.clj
+index 93f4faf..933c7f0 100644
+--- a/src/jdbc/chdb/owned_statement.clj
++++ b/src/jdbc/chdb/owned_statement.clj
+@@ -2,7 +2,8 @@
+   "Experimental internal owned ASCII statement for explicit owned requests.
+   Ownership is enforced at the supported API, not against reflection, private
+   Var access or unsafe FFI. Caller input must not race with snapshot creation."
+-  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]))
++  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]
++            [jdbc.chdb.byte-copy :as byte-copy]))
+ 
+ (def ^:private max-snapshot-bytes (* 64 1024 1024))
+ (def ^:private statement-seal (Object.))
+@@ -79,5 +80,5 @@
+   (require-statement! statement)
+   (let [size (.-size statement)]
+     (ffi/with-alloc [pointer (max 1 size)]
+-      (when (pos? size) (ffi/write-array pointer (.-payload statement)))
++      (when (pos? size) (byte-copy/write-prefix! pointer (.-payload statement) size))
+       (f {:pointer pointer :length size}))))
+diff --git a/test/jdbc/chdb_byte_copy_test.clj b/test/jdbc/chdb_byte_copy_test.clj
+new file mode 100644
+index 0000000..156004f
+--- /dev/null
++++ b/test/jdbc/chdb_byte_copy_test.clj
+@@ -0,0 +1,66 @@
++(ns jdbc.chdb-byte-copy-test
++  (:require [clojure.test :refer [deftest is]] [jolt.ffi :as ffi]
++            [jolt.scheme :as scheme] [jdbc.chdb.byte-copy :as copy]))
++
++(defn contents [pointer n] (vec (ffi/read-array pointer :byte n)))
++
++(deftest copy-failure-is-not-retried-through-fallback
++  (let [attempts (atom 0) fallbacks (atom 0)]
++    (ffi/with-alloc [pointer 1]
++      (with-redefs-fn
++        {#'copy/prefix-copy (delay (fn [& _] (swap! attempts inc)
++                                    (throw (ex-info "copy failure" {:type ::copy-failed}))))
++         #'ffi/write-array (fn [& _] (swap! fallbacks inc))}
++        (fn []
++          (is (= ::copy-failed
++                 (try (copy/write-prefix! pointer (byte-array [1]) 1) nil
++                      (catch Throwable error (:type (ex-data error))))))
++          (is (= 1 @attempts))
++          (is (zero? @fallbacks)))))))
++
++(deftest admitted-prefix-does-not-route-through-the-temporary-array-path
++  (let [input (byte-array [(byte 1) (byte 2) (byte 3) (byte 4)])]
++    (ffi/with-alloc [pointer 3]
++      (with-redefs [ffi/write-array (fn [& _] (throw (ex-info "fallback mutant" {})))]
++        (is (= 3 (copy/write-prefix! pointer input 3N)))
++        (is (= [1 2 3] (contents pointer 3))))
++      (aset-byte input 0 (byte 9))
++      (is (= [1 2 3] (contents pointer 3)))
++      (ffi/write pointer :byte 8 1)
++      (is (= [9 2 3 4] (vec input))))))
++
++(deftest prefix-copy-retains-guards-and-source-through-gc
++  (doseq [n [0 1 2 7 8 9 31 32 33 64 65 65535 65536 65537]]
++    (let [input (byte-array (map #(unchecked-byte (mod % 256)) (range (inc n))))
++          before (vec input)]
++      (ffi/with-alloc [pointer (+ n 6)]
++        (ffi/write-array pointer (byte-array (repeat (+ n 6) (byte 91))))
++        (is (= n (copy/write-prefix! (+ pointer 3) input n)))
++        (System/gc)
++        (is (= (vec (concat [91 91 91] (take n before) [91 91 91]))
++               (contents pointer (+ n 6))))
++        (is (= before (vec input)))))))
++
++(deftest invalid-range-declines-before-mutating-destination
++  (ffi/with-alloc [pointer 8]
++    (ffi/write-array pointer (byte-array (repeat 8 (byte 91))))
++    (doseq [length [-1 5 1.5 nil]]
++      (is (thrown? clojure.lang.ExceptionInfo
++                   (copy/write-prefix! pointer (byte-array 4) length)))
++      (is (= (vec (repeat 8 91)) (contents pointer 8)))))
++  (is (= 0 (copy/write-prefix! ffi/null (byte-array 0) 0))))
++
++(deftest fallback-and-boxed-byte-backing-are-correct
++  (let [input (byte-array [(byte 0) (byte -1) (byte 127) (byte -128) (byte 65)])
++        boxed ((scheme/eval-string "(lambda () (make-jolt-array (vector 0 -1 127 -128 65) 'byte))"))
++        ordinary ffi/write-array calls (atom 0)]
++    (ffi/with-alloc [pointer 5]
++      (with-redefs [ffi/write-array (fn [& args] (swap! calls inc) (apply ordinary args))]
++        (is (= 5 (copy/write-prefix! pointer boxed 5)))
++        (is (= (vec input) (contents pointer 5)))
++        (is (= 1 @calls))
++        (with-redefs-fn {#'copy/prefix-copy (delay (fn [& _] false))}
++          (fn []
++            (is (= 5 (copy/write-prefix! pointer input 5N)))
++            (is (= (vec input) (contents pointer 5)))
++            (is (= 2 @calls))))))))
+diff --git a/test/jdbc/chdb_durable_digest_test.cljc b/test/jdbc/chdb_durable_digest_test.cljc
+index 8bbcb3c..b28ba93 100644
+--- a/test/jdbc/chdb_durable_digest_test.cljc
++++ b/test/jdbc/chdb_durable_digest_test.cljc
+@@ -35,6 +35,13 @@
+       (close [] (swap! closes inc)))))
+ 
+ (defn- run-stream-checks! []
++  ;; External known answer, not another entry point sharing the same copier.
++  (let [payload (.getBytes "abc" "UTF-8")
++        expected "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
++    (check "SHA-256 abc byte known answer" expected (digest/sha256-bytes payload))
++    (with-open [input (ByteArrayInputStream. payload)]
++      (check "SHA-256 abc stream known answer" {:byte-count 3 :sha256 expected}
++             (digest/hash+count-input-stream input))))
+   (doseq [n [0 1 65535 65536 65537 131089]]
+     (let [payload (byte-array (map #(unchecked-byte (mod % 256)) (range n)))
+           expected (if (zero? n)

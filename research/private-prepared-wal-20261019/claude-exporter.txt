@@ -1,0 +1,18 @@
+I reviewed the compatibility fix. Writing up findings now.
+No plan/edit tools are needed or available here — delivering findings directly per your "no planning/edits" instruction.
+
+**FINAL TEXT**
+
+Yes, the fix preserves all three properties.
+
+**Ordinary loading (old driver):** `jdbc.chdb.owned-statement` is already required at file top for pre-existing functions (`statement?`, `try-snapshot`), so that require is unaffected by driver vintage. The new `precompute-wal` symbol is referenced only via `(ns-resolve 'jdbc.chdb.owned-statement 'precompute-wal)` inside `load-experimental-span-codec!` (line 1259) — no compiled `owned-statement/precompute-wal` var reference exists anywhere in the file (confirmed by grep). An old driver jar lacking that var therefore never fails to compile or load; `ns-resolve` simply returns `nil` at runtime, only when this function actually runs.
+
+**Opt-in-only execution path:** `load-experimental-span-codec!` is called only at `(when experimental-span-codec? (load-experimental-span-codec!))` (line 1851), itself gated behind a prior boolean/config validation (`:invalid-experimental-span-codec`) and placed before `(jdbc/connection db-spec)` (line 1897). So ordinary (non-opt-in) exporter construction never touches `precompute-wal` at all.
+
+**Reject-before-storage:** inside `load-experimental-span-codec!`, the `let` sequences `prepare-var`/`prepare` and the `(when-not (ifn? prepare) (throw ...))` check *before* `codec (open)` (native codec allocation). Any missing/non-callable helper throws before any resource is opened, and the outer `catch Throwable` rewraps it as `::experimental-span-codec-unavailable` without leaking details — matching test `missing-private-preparation-fails-opt-in-before-storage`, which asserts `jdbc/connection` is never invoked (0 opens) when `ns-resolve` is stubbed to omit `precompute-wal`.
+
+**Integration-site call + plan/callback order:** `execute-closed-compact-rows!` captures `:prepare-statement` from the codec map and calls it only at the integration point — after encoding (`(:encode codec) ...`) produces bytes and `owned-statement/try-snapshot` wraps them, never before. Test `private-preparation-precedes-final-plan-check-and-execution` confirms order `[:plan :prepare :plan :execute]`: a compact-plan check brackets the encode+prepare step both before and after (guarding against a plan changing mid-encode via custom callbacks), with `execute-durable-sql!` only called last. The captured statement stays an opaque `owned-statement` object (`owned/statement?` true, `prepared-wal-for-write` not a map), so WAL bytes are never re-materialized at this site.
+
+The `row-shape-and-post-encoding-plan-check-before-execute` test additionally confirms invalid rows and a plan gone stale mid-encode both abort before `:execute` fires, with the normal full-success path showing `[:plan :plan :execute]` (no `:prepare` entry, since that test doesn't instrument it) — consistent with the same ordering.
+
+No issues found; this closes the compatibility concern from the prior review round.
