@@ -113,6 +113,25 @@
   [statement]
   (or (.-prepared (require-statement! statement)) (encode-wal statement)))
 
+(defn precomputed-retained-byte-count
+  "Observe private SQL and cached WAL array capacities without copying bytes.
+  Return nil unless WAL was actually precomputed; this never starts encoding.
+  Includes unused chunk capacity, not only bytes that will be written. Object
+  metadata, projection temporaries, native query copies and total RSS are NOT
+  included. This observation can shrink an already acquired preparation budget;
+  it is not a substitute for reserving BEFORE encoding starts."
+  [statement]
+  (let [statement (require-statement! statement)]
+    (when-let [prepared (.-prepared statement)]
+      (reduce (fn [total chunk] (+ total (alength (first chunk))))
+              (.-size statement) (.-chunks prepared)))))
+
+(defn precomputed-input-byte-limit
+  "Largest snapshot eligible for cached WAL preparation under its worst-case
+  expansion guard. This is not a total heap/RSS limit."
+  []
+  max-precomputed-input-bytes)
+
 (defn with-query-buffer
   "Copy the same private snapshot into scoped native storage for f.
   The pointer is borrowed only during f, as in native/with-query-buffer. It must

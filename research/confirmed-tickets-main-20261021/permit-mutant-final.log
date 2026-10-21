@@ -1,0 +1,5 @@
+
+FAIL in (failed-queue-insertion-returns-permit-and-does-not-admit) (chdb_confirmed_request_test.clj:178)
+expected: (= before (.size permits))
+  actual: (not (= 64 63))
+:permit-return-mutant-detected {:test 1, :pass 5, :fail 1, :error 0, :fails (FAIL: (= before (.size permits)) expected: (= before (.size permits)) actual: (not (= 64 63)))}

@@ -52,6 +52,18 @@
   stale or modified sources before storage-capable processes start.
   Derive missing p90 from actual batch samples and reject reported percentile
   values that disagree with those samples; retain explicit performance misses.
+- Expose internal scalar observations for cached owned WAL capacity and its
+  input ceiling. Count retained SQL and WAL array capacities without encoding
+  or defensive buffer copies; exclude object/native overhead and total RSS.
+  Existing mutation, WAL framing and persistence behavior are unchanged.
+
+- Add an experimental owned Durable request admission/settled-await pair for
+  bounded preparation pipelines. Submission is not persistence; the existing
+  serialized atomic mutation/publication operation and synchronous APIs remain
+  unchanged. Only the separate confirmed wait returns the publication receipt.
+  The nonwaiting admission variant rejects full/contended/closed writers
+  without a ticket, allowing a short caller-owned publication fence.
+
 - Add an internal opaque byte-record path for optionally precomputed owned WAL
   data. Keep private chunks reusable for qualified file writes and copy them for
   public chunk access or custom streams. Admission, byte limits, exact WAL

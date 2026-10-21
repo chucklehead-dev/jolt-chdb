@@ -33,6 +33,19 @@
 
 (defrecord BufferedTicket [completion ordinal])
 
+(def ^:private confirmed-request-seal (Object.))
+;; Supported-API capability, like OwnedAsciiStatement, not an adversarial
+;; security boundary. Private field/constructor/Var access, reflection and
+;; redefinition are outside the contract; callers must not deliver completion.
+(deftype ^:private ConfirmedOwnedRequest [seal completion]
+  Object
+  (toString [_] "#<Durable confirmed request>"))
+
+(defmethod print-method ConfirmedOwnedRequest [_ output]
+  (.write ^java.io.Writer output "#<Durable confirmed request>"))
+(defmethod print-dup ConfirmedOwnedRequest [_ output]
+  (.write ^java.io.Writer output "#<Durable confirmed request>"))
+
 (defn- fail! [type message]
   (throw (ex-info message {:type type})))
 
@@ -1121,6 +1134,64 @@
   [writer statement]
   (enqueue-open-settled!
    writer {:op :execute-owned-and-flush :statement statement :result (promise)}))
+
+(defn submit-owned-and-flush!
+  "Experimental split submission of the SAME atomic owned mutation/publication
+  request as execute-owned-and-flush!. Return establishes admission ONLY.
+  Retain the opaque request and call await-confirmed! before releasing caller
+  resources. This is not a BufferedTicket or a local-execution receipt."
+  [writer statement]
+  (when-not (owned-statement/statement? statement)
+    (fail! ::invalid-options "Expected an owned ASCII statement"))
+  ;; Allocate the returned capability before admission: no post-admission
+  ;; constructor failure may strand a request that can still mutate/publish.
+  (let [result (promise)
+        ticket (ConfirmedOwnedRequest. confirmed-request-seal result)]
+    (enqueue-open-ticket!
+     writer {:op :execute-owned-and-flush :statement statement :result result})
+    ticket))
+
+(defn try-submit-owned-and-flush!
+  "Experimental nonwaiting admission of the SAME atomic confirmed request.
+  Return {:status :admitted :ticket opaque-request} only after queue insertion;
+  this is NOT confirmation. :full/:contended/:closed have no ticket and admit
+  nothing. A bounded publication fence can serialize with this operation
+  without waiting for queue capacity or native execution. Settle admitted
+  requests with await-confirmed!, never await-local-execution!."
+  [writer statement]
+  (when-not (owned-statement/statement? statement)
+    (fail! ::invalid-options "Expected an owned ASCII statement"))
+  (let [result (promise)
+        ticket (ConfirmedOwnedRequest. confirmed-request-seal result)
+        admitted-result {:status :admitted :ticket ticket}
+        request {:op :execute-owned-and-flush :statement statement :result result}
+        admitted? (atom false)
+        ^ReentrantLock lock (:admission-lock writer)]
+    (if-not (.tryLock lock)
+      {:status :contended}
+      (try
+        (cond
+          (not= :open @(:lifecycle writer)) {:status :closed}
+          (nil? (.poll ^ArrayBlockingQueue (:admission-permits writer))) {:status :full}
+          :else
+          (try
+            (offer-required! (:queue writer) request)
+            (reset! admitted? true)
+            admitted-result
+            (finally
+              (when-not @admitted? (return-admission-permit! writer)))))
+        (finally (.unlock lock))))))
+
+(defn await-confirmed!
+  "Settle an admitted confirmed request through interruption; return its exact
+  confirmed/reconciled receipt or rethrow its exact worker error, restoring the
+  interrupt flag on either outcome. Repeated waits observe the same completion
+  and never resubmit. A local-execution BufferedTicket is rejected."
+  [ticket]
+  (when-not (and (instance? ConfirmedOwnedRequest ticket)
+                 (identical? confirmed-request-seal (.-seal ticket)))
+    (fail! ::invalid-confirmed-request "Expected a confirmed publication request"))
+  (await-result-settled (.-completion ticket)))
 
 (defn sql! [writer sql params]
   (enqueue-open! writer {:op :sql :sql sql :params params :result (promise)}))

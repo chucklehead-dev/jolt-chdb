@@ -15,7 +15,13 @@
         jolt-lang/jolt-crypto
         {:git/url "https://github.com/casselc/jolt-crypto.git"
          :git/sha "649c993780a0f269938c9c6afa3bae7e9709bb48"}}
- :aliases {:prepared-record-test
+ :aliases {:confirmed-request-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-confirmed-request-test"]}
+           :owned-statement-budget-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "jdbc.chdb-owned-statement-budget-test"]}
+           :prepared-record-test
            {:extra-paths ["test"]
             :main-opts ["-m" "jdbc.chdb-prepared-record-test"]}
            :byte-copy-test

@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - .github/workflows/stock-byte-copy.yml
+      - deps.edn
+      - src/jdbc/chdb/durable.clj
+      - test/jdbc/chdb_confirmed_request_test.clj
+      - test/jdbc/chdb_owned_statement_budget_test.clj
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
       - resources/jdbc/chdb/owned_ascii_snapshot.ss
@@ -22,6 +26,10 @@ on:
   pull_request:
     paths:
       - .github/workflows/stock-byte-copy.yml
+      - deps.edn
+      - src/jdbc/chdb/durable.clj
+      - test/jdbc/chdb_confirmed_request_test.clj
+      - test/jdbc/chdb_owned_statement_budget_test.clj
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
       - resources/jdbc/chdb/owned_ascii_snapshot.ss
@@ -86,3 +94,5 @@ jobs:
           # does not install chDB, open S3, or qualify native persistence.
           cd "$GITHUB_WORKSPACE"
           "$task_bin" -Srepro -M:prepared-record-test
+          "$task_bin" -Srepro -M:confirmed-request-test
+          "$task_bin" -Srepro -M:owned-statement-budget-test

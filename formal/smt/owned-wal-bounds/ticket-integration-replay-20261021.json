@@ -1,0 +1,89 @@
+{
+  "scope": "unchanged WAL arithmetic after read-only capacity observers",
+  "qualifiedSource": "a752c0cd553fdce41087a261d081f390154f7b55",
+  "ticketOrderingAndPersistenceProved": false,
+  "queries": {
+    "access-bounds": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "inductive_loop_domain",
+        "trusted_private_ascii",
+        "exact_escape_table",
+        "emitted_width",
+        "source_body_guards",
+        "concrete_write_offset",
+        "concrete_index",
+        "backing_length",
+        "hexadecimal_digit",
+        "concrete_written_byte",
+        "queried_violation",
+        "current_guard_reservation",
+        "counterexample"
+      ]
+    },
+    "loop-induction": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "snapshot_domain",
+        "allocated_buffer",
+        "prior_loop_invariant",
+        "ascii_emission_widths",
+        "loop_actions",
+        "emit_guards",
+        "flush_guards",
+        "finish_guard",
+        "next_input_index",
+        "next_output_index",
+        "next_sealed_total",
+        "derived_violation",
+        "counterexample"
+      ]
+    },
+    "reservation-mutant": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "101",
+        "i": "100",
+        "at": "252",
+        "capacity": "256",
+        "index": "257",
+        "length": "256",
+        "violation": "true"
+      }
+    },
+    "small-control": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "allocated_capacity",
+        "trusted_private_ascii",
+        "exact_escape_table",
+        "emitted_width",
+        "access_kinds",
+        "concrete_write_offset",
+        "concrete_index",
+        "backing_length",
+        "hexadecimal_digit",
+        "concrete_written_byte",
+        "queried_violation",
+        "counterexample"
+      ]
+    },
+    "inclusive-boundary": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "101",
+        "i": "100",
+        "at": "244",
+        "capacity": "256",
+        "index": "249",
+        "length": "256",
+        "violation": "false"
+      }
+    }
+  }
+}
