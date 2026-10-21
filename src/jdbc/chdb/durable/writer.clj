@@ -34,6 +34,9 @@
 (defrecord BufferedTicket [completion ordinal])
 
 (def ^:private confirmed-request-seal (Object.))
+;; Supported-API capability, like OwnedAsciiStatement, not an adversarial
+;; security boundary. Private field/constructor/Var access, reflection and
+;; redefinition are outside the contract; callers must not deliver completion.
 (deftype ^:private ConfirmedOwnedRequest [seal completion]
   Object
   (toString [_] "#<Durable confirmed request>"))
