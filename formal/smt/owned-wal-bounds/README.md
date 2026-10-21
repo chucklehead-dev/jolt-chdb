@@ -56,6 +56,22 @@ counted as evidence. Named assertions produce interpretable UNSAT cores.
 
 ## Reproduce
 
+### Confirmed-ticket integration requalification (2026-10-21)
+
+The statement owner adds two read-only scalar observations: retained SQL/WAL
+array capacity and the existing precompute input ceiling. Neither modifies or
+creates a statement, invokes encoding, changes a limit, nor exposes backing
+arrays. The encoder/snapshot resources and all modeled arithmetic are unchanged.
+The owner-file digest was refreshed only after auditing that exact 19-line
+delta and replaying the same five queries with lint/verification and controls;
+see `ticket-integration-replay-20261021.json`.
+
+The budget tests separately check no preparation/public-copy call, padding
+capacity rather than used length, and invalid statements. The ticket queue,
+publication order, interruption and persistence semantics are NOT proved by
+these byte-access models; their runtime tests and the approved pipeline model
+remain separate evidence. No SMT logic or exhaustive Quint campaign was added.
+
 ### Stock-buffer integration requalification (2026-10-21)
 
 The main-integration CI correctly rejected the old three-file source digests

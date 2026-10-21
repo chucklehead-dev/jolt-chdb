@@ -1,3 +1,3 @@
 f910f642732bde2d73965d735c969176eac0b78a18a0e3222e9187b4672a6b22  resources/jdbc/chdb/owned_ascii_wal.ss
 a69d6403a430edf9e6ffde886743dad591674d064597b9b629d36201ee2e54f0  resources/jdbc/chdb/owned_ascii_snapshot.ss
-d81a000da2f1a112887be3b29187211d1e130d013c9b9310aac1148c2186b350  src/jdbc/chdb/owned_statement.clj
+4bc619e2cc15156ae496da09e119a652b19f9a7d5139be6f98e405aeb89c1515  src/jdbc/chdb/owned_statement.clj

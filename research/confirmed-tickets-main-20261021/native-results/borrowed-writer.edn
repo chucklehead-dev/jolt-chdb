@@ -1,0 +1,1 @@
+{:ownership "borrowed", :prepared 2, :submitted 1, :stats {:queue-size 0, :attempted-span-count 2, :exported-span-count 1, :failed-span-count 1, :dropped-count 0}, :shutdown-result false, :publisher-terminated true, :events [[:prepared 1] :wal-put-entered [:prepared 2] :publication-fenced :wal-put-released]}
