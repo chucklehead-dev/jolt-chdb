@@ -1,0 +1,26 @@
+----- Error --------------------------------------------------------------------
+Type:     clojure.lang.ExceptionInfo
+Message:  Unable to resolve symbol: definterface
+Data:     {:type :sci/error, :line 22, :column 1, :file "clojure/data/json.clj", :phase "analysis"}
+Location: clojure/data/json.clj:22:1
+Phase:    analysis
+
+----- Context ------------------------------------------------------------------
+18: ;; CUSTOM PUSHBACK READER
+19: 
+20: (set! *warn-on-reflection* true)
+21: 
+22: (definterface InternalPBR
+    ^--- Unable to resolve symbol: definterface
+23:   (^int readChar [])
+24:   (^long readChars [^chars buffer ^long start ^long bufflen])
+25:   (^void unreadChar [^int c])
+26:   (^void unreadChars [^chars buffer ^int off ^int bufflen])
+27:   (^java.io.Reader toReader []))
+
+----- Stack trace --------------------------------------------------------------
+clojure.data.json      - clojure/data/json.clj:22:1
+jdbc.chdb.durable.head - /home/chuck/ai-src/worktrees/chdb-stock-owned-byte-adoption-20261019/src/jdbc/chdb/durable/head.clj:6:3
+clojure.core/require   - clojure/core.clj:6070:1
+user                   - NO_SOURCE_PATH:1:1
+

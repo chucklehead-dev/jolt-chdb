@@ -2,9 +2,13 @@
   "Experimental internal owned ASCII statement for explicit owned requests.
   Ownership is enforced at the supported API, not against reflection, private
   Var access or unsafe FFI. Caller input must not race with snapshot creation."
-  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]))
+  (:require [clojure.java.io :as io] [jolt.scheme :as scheme] [jolt.ffi :as ffi]
+            [jdbc.chdb.byte-copy :as byte-copy]
+            [jdbc.chdb.byte-output :as byte-output]
+            [jdbc.chdb.byte-record :as byte-record]))
 
 (def ^:private max-snapshot-bytes (* 64 1024 1024))
+(def ^:private max-precomputed-input-bytes (quot (- (* 128 1024 1024) 11) 6))
 (def ^:private statement-seal (Object.))
 
 (defmacro ^:private kernel-source [resource]
@@ -17,7 +21,17 @@
 (def ^:private wal-kernel (delay (scheme/eval-string wal-source)))
 (def ^:private placeholder-kernel (delay (scheme/eval-string placeholder-source)))
 
-(deftype ^:private OwnedAsciiStatement [seal payload size]
+(deftype ^:private PreparedWalRecord [size chunks]
+  byte-record/ByteRecord
+  (byte-count [_] size)
+  (write-to! [_ output]
+    (doseq [[bytes used] chunks]
+      (byte-output/write-private-prefix! output bytes used))
+    nil)
+  Object
+  (toString [_] "#<prepared WAL record>"))
+
+(deftype ^:private OwnedAsciiStatement [seal payload size prepared]
   Object
   (toString [_] "#<owned ASCII SQL statement>"))
 
@@ -39,14 +53,15 @@
   (when (bytes? bytes)
     (let [snapshot (@snapshot-kernel bytes max-snapshot-bytes)]
       (when (bytes? snapshot)
-        (OwnedAsciiStatement. statement-seal snapshot (alength snapshot))))))
+        (OwnedAsciiStatement. statement-seal snapshot (alength snapshot) nil)))))
 
 (defn byte-count [statement]
   (.-size (require-statement! statement)))
 
 (defn text
   "Materialize independent immutable text only for an explicit legacy consumer.
-  No text or query cache is retained by this module."
+  No decoded String is retained. Optional prepared WAL bytes belong only to
+  their opaque statement, not to a process-global query cache."
   [statement]
   (String. (.-payload (require-statement! statement)) "UTF-8"))
 
@@ -56,9 +71,7 @@
   [statement]
   (@placeholder-kernel (.-payload (require-statement! statement))))
 
-(defn prepared-wal
-  "Prepare fresh, independent V1 JSONL chunks from the private ASCII snapshot.
-  This is encoding only, not permission to stage or publish recovery data."
+(defn- encode-wal
   [statement]
   (let [[total chunks] (@wal-kernel (.-payload (require-statement! statement)))
         valid? (and (integer? total) (pos? total) (vector? chunks) (seq chunks)
@@ -70,6 +83,36 @@
       (throw (ex-info "Invalid owned WAL chunks" {:type ::invalid-wal-chunks})))
     {:byte-count total :chunks chunks}))
 
+(defn prepared-wal
+  "Return fresh, independent V1 JSONL chunks from the private ASCII snapshot.
+  Cached records copy their bytes; no mutable backing alias is exposed."
+  [statement]
+  (if-let [prepared (.-prepared (require-statement! statement))]
+    {:byte-count (.-size prepared)
+     :chunks (mapv (fn [[bytes used]] [(aclone bytes) used]) (.-chunks prepared))}
+    (encode-wal statement)))
+
+(defn precompute-wal
+  "Return an opaque statement with private WAL preparation completed now.
+  No admission, native operation, storage, or acknowledgement occurs. The
+  snapshot is unchanged and the original statement remains usable. Repeated
+  preparation is idempotent. Requests whose worst-case encoded size exceeds
+  128MiB retain the ordinary path rather than creating a retained cache."
+  [statement]
+  (require-statement! statement)
+  (if (or (.-prepared statement)
+          (> (.-size statement) max-precomputed-input-bytes))
+    statement
+    (let [{:keys [byte-count chunks]} (encode-wal statement)]
+      (OwnedAsciiStatement. statement-seal (.-payload statement) (.-size statement)
+                            (PreparedWalRecord. byte-count chunks)))))
+
+(defn prepared-wal-for-write
+  "Internal writer view: an opaque immutable record when precomputed, or fresh
+  legacy chunks otherwise. Public prepared-wal always returns independent bytes."
+  [statement]
+  (or (.-prepared (require-statement! statement)) (encode-wal statement)))
+
 (defn with-query-buffer
   "Copy the same private snapshot into scoped native storage for f.
   The pointer is borrowed only during f, as in native/with-query-buffer. It must
@@ -79,5 +122,5 @@
   (require-statement! statement)
   (let [size (.-size statement)]
     (ffi/with-alloc [pointer (max 1 size)]
-      (when (pos? size) (ffi/write-array pointer (.-payload statement)))
+      (when (pos? size) (byte-copy/write-prefix! pointer (.-payload statement) size))
       (f {:pointer pointer :length size}))))

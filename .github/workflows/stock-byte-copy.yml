@@ -1,0 +1,88 @@
+name: stock-byte-copy
+
+on:
+  push:
+    paths:
+      - .github/workflows/stock-byte-copy.yml
+      - src/jdbc/chdb/byte_copy.clj
+      - resources/jdbc/chdb/byte_prefix_copy.ss
+      - resources/jdbc/chdb/owned_ascii_snapshot.ss
+      - resources/jdbc/chdb/owned_ascii_wal.ss
+      - formal/smt/owned-wal-bounds/**
+      - scripts/check-owned-wal-bounds.sh
+      - test/jdbc/chdb_byte_copy_test.clj
+      - src/jdbc/chdb/byte_output.cljc
+      - resources/jdbc/chdb/output_prefix_write.ss
+      - test/jdbc/chdb_byte_output_test.cljc
+      - src/jdbc/chdb/byte_record.cljc
+      - src/jdbc/chdb/owned_statement.clj
+      - src/jdbc/chdb/durable/wal.cljc
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_prepared_record_test.clj
+  pull_request:
+    paths:
+      - .github/workflows/stock-byte-copy.yml
+      - src/jdbc/chdb/byte_copy.clj
+      - resources/jdbc/chdb/byte_prefix_copy.ss
+      - resources/jdbc/chdb/owned_ascii_snapshot.ss
+      - resources/jdbc/chdb/owned_ascii_wal.ss
+      - formal/smt/owned-wal-bounds/**
+      - scripts/check-owned-wal-bounds.sh
+      - test/jdbc/chdb_byte_copy_test.clj
+      - src/jdbc/chdb/byte_output.cljc
+      - resources/jdbc/chdb/output_prefix_write.ss
+      - test/jdbc/chdb_byte_output_test.cljc
+      - src/jdbc/chdb/byte_record.cljc
+      - src/jdbc/chdb/owned_statement.clj
+      - src/jdbc/chdb/durable/wal.cljc
+      - src/jdbc/chdb/durable/writer.clj
+      - test/jdbc/chdb_prepared_record_test.clj
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stock-copy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Replay audited WAL source bounds before runtime qualification
+        run: |
+          sha256sum --check formal/smt/owned-wal-bounds/source-sha256.txt
+          sudo apt-get update
+          sudo apt-get install -y z3
+          bash scripts/check-owned-wal-bounds.sh
+      - name: Check byte guards and private records on official stock Jolt
+        shell: bash
+        env:
+          JOLT_NO_USER_DEPS: '1'
+          JOLT_AOT_CACHE: '0'
+        run: |
+          set -euo pipefail
+          task_tmp=$(mktemp -d "$RUNNER_TEMP/stock-byte-copy.XXXXXXXX")
+          case "$task_tmp" in "$RUNNER_TEMP"/stock-byte-copy.????????) ;; *) exit 91;; esac
+          trap 'rm -rf -- "$task_tmp"' EXIT
+          curl --fail --location --silent --show-error --retry 2 \
+            --connect-timeout 15 --max-time 90 \
+            https://github.com/jolt-lang/jolt/releases/download/v0.8.23/jolt-v0.8.23-x86_64-linux.tar.gz \
+            -o "$task_tmp/jolt.tar.gz"
+          printf '%s  %s\n' 90031be43241e61d0788a2f1bbd3da56d8f4324ae9fa87271f9637b43a6071f2 "$task_tmp/jolt.tar.gz" | sha256sum -c -
+          tar -xzf "$task_tmp/jolt.tar.gz" -C "$task_tmp"
+          task_bin="$task_tmp/jolt-v0.8.23-x86_64-linux/jolt"
+          printf '%s  %s\n' 7bf7acae4b4bcb5c27b3651fa4a94d2d4e6a7fc43b5b821def2f8be3d6f00e94 "$task_bin" | sha256sum -c -
+          test "$("$task_bin" --version)" = 'jolt v0.8.23'
+          cd "$task_tmp"
+          "$task_bin" -Srepro \
+            -Sdeps "{:paths [\"$GITHUB_WORKSPACE/src\" \"$GITHUB_WORKSPACE/resources\" \"$GITHUB_WORKSPACE/test\"] :deps {}}" \
+            -e "(require 'jdbc.chdb-byte-copy-test 'jdbc.chdb-byte-output-test 'clojure.test)
+                (let [r (clojure.test/run-tests 'jdbc.chdb-byte-copy-test 'jdbc.chdb-byte-output-test)]
+                  (assert (pos? (:test r)))
+                  (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))"
+          # Project dependencies supply the fake-worker fixtures. This suite
+          # does not install chDB, open S3, or qualify native persistence.
+          cd "$GITHUB_WORKSPACE"
+          "$task_bin" -Srepro -M:prepared-record-test

@@ -19,6 +19,27 @@
     (wal/write-prepared! out (owned/prepared-wal statement))
     (.toByteArray out)))
 
+(deftest private-buffer-adoption-works-with-stock-and-optional-helper
+  ;; Lexically simulate both runtime capabilities without installing globals.
+  (doseq [resource ["jdbc/chdb/owned_ascii_snapshot.ss" "jdbc/chdb/owned_ascii_wal.ss"]
+          helper? [false true]]
+    (let [factory (scheme/eval-string
+                    (str "(lambda () (let ((calls 0)) "
+                         "(let ((top-level-bound? (lambda (name) " (if helper? "#t" "#f") ")) "
+                         "(top-level-value (lambda (name) (lambda (bytes) "
+                         "(set! calls (+ calls 1)) (make-jolt-array bytes 'byte))))) "
+                         "(jolt-vector " (slurp (io/resource resource))
+                         " (lambda () calls)))))"))
+          [encode calls] (factory)
+          source (.getBytes "SELECT 1" "UTF-8")
+          snapshot? (string/includes? resource "snapshot")
+          output (if snapshot? (encode source 100) (encode source))]
+      (is (some? output))
+      (is (= (if helper? 1 0) (calls)))
+      (when snapshot?
+        (aset-byte source 0 (byte 88))
+        (is (= "SELECT 1" (String. output "UTF-8")))))))
+
 (deftest copied-input-is-not-an-alias-and-output-is-opaque
   (let [sql "INSERT INTO t VALUES ('ready?')"
         source (.getBytes sql "UTF-8") statement (owned/try-snapshot source)]

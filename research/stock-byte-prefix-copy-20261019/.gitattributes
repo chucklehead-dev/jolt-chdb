@@ -1,0 +1,3 @@
+# Preserve exact diagnostic output and valid unified-patch context lines.
+*.diff -whitespace
+*.log -whitespace

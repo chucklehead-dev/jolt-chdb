@@ -1,0 +1,19 @@
+No plan-file or ExitPlanMode tool is available in this session, so I'll deliver the review directly as the completed deliverable (read-only throughout — only `Read` was used).
+
+## Findings — stock-byte-copy CI wiring (commit `41dc25c`)
+
+**Clean:**
+- **Isolation**: `mktemp -d "$RUNNER_TEMP/..."` (pattern-validated), `cd`'d into before invoking `jolt`; `-Sdeps` passes explicit `:deps {}` + absolute `$GITHUB_WORKSPACE` paths, and no `deps.edn` exists in that temp cwd — project deps genuinely excluded.
+- **Checksums**: tarball and extracted binary both `sha256sum -c`'d, plus an explicit `--version` string check.
+- **Cleanup**: `trap 'rm -rf -- "$task_tmp"' EXIT` covers all exits.
+- **Permissions/credentials**: top-level `permissions: contents: read`, `checkout@v4` with `persist-credentials: false`, no secrets/env credentials.
+- **Exit propagation**: CI's inline `-e` form asserts `(pos? (:test r))` before deriving the exit code — guards against a vacuous empty-test "pass."
+- **`:copy-error` wiring** (`chdb_durable_digest_test.cljc`): drives the new mode through the real `:normal` read path while injecting failure only in `byte-copy/write-prefix!`, correctly isolating "native copy write fails" from "stream read fails." Created/freed/arena atoms accumulate across all 4 modes in one `doseq`, so the final checks (4 created, `@freed = @created`, 4 arenas, all closed) validate cleanup uniformly for success/zero/error/copy-error.
+- **`deps.edn` `:byte-copy-test` alias**: correctly targets `jdbc.chdb-byte-copy-test-runner`; unused by the CI workflow (which inlines its own narrower invocation) — no divergence to reconcile.
+
+**Actionable finding:**
+- `test/jdbc/chdb_byte_copy_test_runner.clj:8,15` — unlike the CI workflow's inline command, `-main` never asserts `(pos? (:test result))` for the `chdb-byte-copy-test` run before computing the exit code from fail/error counts. A namespace loading with zero registered `deftest`s would silently exit 0 via this runner (used by the local `:byte-copy-test` alias), while CI would correctly fail. Suggest mirroring the `pos?` guard here.
+
+**Minor:** `checkout@v4` pinned by tag, not SHA — optional hardening, not actionlint-flagged.
+
+**Scope limits:** no commands run; trusted your report that actionlint/isolated/full Jolt+JVM suites already passed. Didn't verify jolt's `-Sdeps`/`deps.edn` precedence against docs (inferred from no `deps.edn` in temp cwd). Didn't inspect `owned-statement-test`/`durable-local-test` internals, only their wiring. Native production code excluded per instructions.

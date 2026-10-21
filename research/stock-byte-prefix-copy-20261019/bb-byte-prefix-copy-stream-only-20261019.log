@@ -1,0 +1,24 @@
+  ok   SHA-256 abc byte known answer
+  ok   SHA-256 abc stream known answer
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   stream digest/count matches independent byte hashing
+  ok   file API still returns the same lowercase digest
+  ok   partial reads are counted and hashed through EOF
+  ok   partial-read control is nonvacuous
+  ok   borrowed input remains caller-owned
+  ok   caller closes its own input exactly once
+  ok   zero/error read cannot yield a successful partial digest
+  ok   failing borrowed input was actually read
+  ok   failing input still belongs to caller
+  ok   zero/error read cannot yield a successful partial digest
+  ok   failing borrowed input was actually read
+  ok   failing input still belongs to caller
