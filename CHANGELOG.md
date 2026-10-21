@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Expose internal scalar observations for cached owned WAL capacity and its
+  input ceiling. Count retained SQL and WAL array capacities without encoding
+  or defensive buffer copies; exclude object/native overhead and total RSS.
+  Existing mutation, WAL framing and persistence behavior are unchanged.
+
 - Add an experimental owned Durable request admission/settled-await pair for
   bounded preparation pipelines. Submission is not persistence; the existing
   serialized atomic mutation/publication operation and synchronous APIs remain
