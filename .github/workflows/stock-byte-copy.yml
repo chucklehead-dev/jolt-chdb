@@ -6,6 +6,10 @@ on:
       - .github/workflows/stock-byte-copy.yml
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
+      - resources/jdbc/chdb/owned_ascii_snapshot.ss
+      - resources/jdbc/chdb/owned_ascii_wal.ss
+      - formal/smt/owned-wal-bounds/**
+      - scripts/check-owned-wal-bounds.sh
       - test/jdbc/chdb_byte_copy_test.clj
       - src/jdbc/chdb/byte_output.cljc
       - resources/jdbc/chdb/output_prefix_write.ss
@@ -20,6 +24,10 @@ on:
       - .github/workflows/stock-byte-copy.yml
       - src/jdbc/chdb/byte_copy.clj
       - resources/jdbc/chdb/byte_prefix_copy.ss
+      - resources/jdbc/chdb/owned_ascii_snapshot.ss
+      - resources/jdbc/chdb/owned_ascii_wal.ss
+      - formal/smt/owned-wal-bounds/**
+      - scripts/check-owned-wal-bounds.sh
       - test/jdbc/chdb_byte_copy_test.clj
       - src/jdbc/chdb/byte_output.cljc
       - resources/jdbc/chdb/output_prefix_write.ss
@@ -42,6 +50,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Replay audited WAL source bounds before runtime qualification
+        run: |
+          sha256sum --check formal/smt/owned-wal-bounds/source-sha256.txt
+          sudo apt-get update
+          sudo apt-get install -y z3
+          bash scripts/check-owned-wal-bounds.sh
       - name: Check byte guards and private records on official stock Jolt
         shell: bash
         env:

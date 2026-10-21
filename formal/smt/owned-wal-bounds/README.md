@@ -56,6 +56,41 @@ counted as evidence. Named assertions produce interpretable UNSAT cores.
 
 ## Reproduce
 
+### Stock-buffer integration requalification (2026-10-21)
+
+The main-integration CI correctly rejected the old three-file source digests
+before running the solver. The source audit against main found these changes:
+
+- Snapshot and WAL buffers now use the selected runtime's adoption helper, or
+  wrap a **fresh private** backing on stock Jolt. Copy-before-ASCII-validation,
+  capacity, escape table, unchecked accesses, indices and flush guards are unchanged.
+- Owned statements can retain precomputed WAL chunks. The 64MiB snapshot limit,
+  sealed-statement check and encoder invocation are unchanged; the optional
+  cache's separate 128MiB worst-case-output guard only narrows cache eligibility.
+- Scoped native query copying and private record egress use separate byte-copy/
+  output helpers. Their aliasing, FFI lifetime and stream-dispatch behavior are
+  **not** proved by this arithmetic model. Fresh private buffer identity and
+  non-mutation remain explicit trusted premises, exercised by runtime controls.
+
+The five SMT queries are unchanged. Chiasmus lint/verification replayed the
+real access and induction queries, safe small control, violating reserve mutant
+and valid inclusive boundary. The recorded results and concrete true/false
+violation witnesses are in `stock-integration-replay-20261021.json`. The digest
+update follows that audit/replay; it does not expand the proof into ownership,
+cached-record lifetime, persistence or concurrency guarantees.
+
+The companion `bounded-wal-byte-access-control-positions-and-capacity-witness`
+test runs all ASCII bytes at eight padding positions, safely reconstructs the
+four-byte-reserve mutant with CHECKED accesses, and reaches the valid253-byte
+single-chunk boundary. The integration's full owned-statement gate passed
+14 tests/15,563 assertions including real native SQL/WAL equality; prepared
+record/output gates separately cover public-copy and custom-stream isolation.
+No unrelated exhaustive Quint run is required by this bounded requalification.
+The stock-byte-copy feature-branch workflow now replays this source-pinned gate
+before downloading its runtime, and watches the two kernels, proof directory
+and replay script as well as the statement owner. A green copy-only feature
+gate must no longer conceal stale arithmetic provenance until main integration.
+
 From the repository root, run `bash scripts/check-owned-wal-bounds.sh` with Z3
 installed. This source-pinned arithmetic check is fast and separate from the
 Durable exhaustive Quint checker. Its checks do not justify rerunning unrelated
