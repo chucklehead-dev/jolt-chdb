@@ -1399,6 +1399,15 @@
   [ticket]
   (shim/extension-operation #(writer/await-confirmed! ticket)))
 
+(defn try-submit-owned-and-flush!
+  "Experimental bounded admission for a caller-owned publication fence.
+  :admitted includes an opaque confirmed-request ticket, NOT confirmation;
+  :full/:contended/:closed contain no ticket and admit nothing. Await admitted
+  requests with await-confirmed!. Never a buffered-local execution ticket."
+  [connection statement]
+  (shim/extension-operation
+   #(writer/try-submit-owned-and-flush! (jdbc-writer-handle connection) statement)))
+
 (defn execute-and-flush-settled!
   "Compatibility seam for caller-owned submission contexts. Raw
   `execute-and-flush!` now provides the same post-admission settlement."

@@ -1151,6 +1151,37 @@
      writer {:op :execute-owned-and-flush :statement statement :result result})
     ticket))
 
+(defn try-submit-owned-and-flush!
+  "Experimental nonwaiting admission of the SAME atomic confirmed request.
+  Return {:status :admitted :ticket opaque-request} only after queue insertion;
+  this is NOT confirmation. :full/:contended/:closed have no ticket and admit
+  nothing. A bounded publication fence can serialize with this operation
+  without waiting for queue capacity or native execution. Settle admitted
+  requests with await-confirmed!, never await-local-execution!."
+  [writer statement]
+  (when-not (owned-statement/statement? statement)
+    (fail! ::invalid-options "Expected an owned ASCII statement"))
+  (let [result (promise)
+        ticket (ConfirmedOwnedRequest. confirmed-request-seal result)
+        admitted-result {:status :admitted :ticket ticket}
+        request {:op :execute-owned-and-flush :statement statement :result result}
+        admitted? (atom false)
+        ^ReentrantLock lock (:admission-lock writer)]
+    (if-not (.tryLock lock)
+      {:status :contended}
+      (try
+        (cond
+          (not= :open @(:lifecycle writer)) {:status :closed}
+          (nil? (.poll ^ArrayBlockingQueue (:admission-permits writer))) {:status :full}
+          :else
+          (try
+            (offer-required! (:queue writer) request)
+            (reset! admitted? true)
+            admitted-result
+            (finally
+              (when-not @admitted? (return-admission-permit! writer)))))
+        (finally (.unlock lock))))))
+
 (defn await-confirmed!
   "Settle an admitted confirmed request through interruption; return its exact
   confirmed/reconciled receipt or rethrow its exact worker error, restoring the

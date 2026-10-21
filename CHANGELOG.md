@@ -6,6 +6,8 @@
   bounded preparation pipelines. Submission is not persistence; the existing
   serialized atomic mutation/publication operation and synchronous APIs remain
   unchanged. Only the separate confirmed wait returns the publication receipt.
+  The nonwaiting admission variant rejects full/contended/closed writers
+  without a ticket, allowing a short caller-owned publication fence.
 
 - Add an internal opaque byte-record path for optionally precomputed owned WAL
   data. Keep private chunks reusable for qualified file writes and copy them for

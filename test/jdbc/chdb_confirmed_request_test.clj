@@ -1,6 +1,9 @@
 (ns jdbc.chdb-confirmed-request-test
   (:require [clojure.test :refer [deftest is run-tests]]
+            [jdbc.chdb.durable.backend :as backend]
+            [jdbc.chdb.durable.control :as control]
             [jdbc.chdb.durable.writer :as writer]
+            [jdbc.chdb-durable-writer-test-support :as support]
             [jdbc.chdb-owned-writer-test :as owned-test]))
 
 (deftest submission-is-not-completion-and-waits-never-resubmit
@@ -103,6 +106,54 @@
        (is (= ::writer/closed
               (try (writer/submit-owned-and-flush! instance (owned-test/snapshot a)) nil
                    (catch clojure.lang.ExceptionInfo error (:type (ex-data error))))))))))
+
+(deftest nonwaiting-confirmed-admission-rejects-full-without-a-hidden-ticket
+  (let [entered (promise) release (promise)
+        store (backend/memory-backend) calls (atom []) closes (atom 0)
+        acquired (control/acquire! store support/base-options)
+        base (support/model-checkpoint-operations calls closes)
+        execute (:execute-native! base)
+        instance (writer/start!
+                  {:store store :token (:token acquired) :handle :fake :database "default"
+                   :queue-capacity 1
+                   :engine-metadata {:version "26.7.3" :backup-format 1 :min-reader "26.7.3"}
+                   :operations (assoc base :execute-native!
+                                      (fn [& args] (deliver entered true) @release
+                                        (apply execute args)))})]
+    (try
+      (let [a "INSERT INTO t VALUES ('A')" b "INSERT INTO t VALUES ('B')"
+            first (writer/try-submit-owned-and-flush! instance (owned-test/snapshot a))]
+        (is (= :admitted (:status first)))
+        (is (= true (deref entered 5000 ::timeout)))
+        (let [second (writer/try-submit-owned-and-flush! instance (owned-test/snapshot b))
+              rejected (writer/try-submit-owned-and-flush! instance (owned-test/snapshot b))]
+          (is (= :admitted (:status second)))
+          (is (= {:status :full} rejected))
+          (is (= [] (owned-test/published-sql store)))
+          (deliver release true)
+          (is (= :committed (:status (writer/await-confirmed! (:ticket first)))))
+          (is (= :committed (:status (writer/await-confirmed! (:ticket second)))))
+          (is (= [a b] (owned-test/published-sql store)))))
+      (finally (deliver release true) (writer/close! instance)))
+    (is (= {:status :closed}
+           (writer/try-submit-owned-and-flush! instance
+             (owned-test/snapshot "INSERT INTO t VALUES (3)"))))))
+
+(deftest nonwaiting-confirmed-admission-rejects-lock-contention
+  (owned-test/fixture
+   (fn [base _] base)
+   (fn [instance store _ _]
+     (let [lock (:admission-lock instance) result (promise)
+           statement (owned-test/snapshot "INSERT INTO t VALUES (1)")
+           contender (Thread. #(deliver result (writer/try-submit-owned-and-flush! instance statement)))]
+       (.lock lock)
+       (try
+         (.start contender)
+         (is (= {:status :contended} (deref result 1000 ::timeout)))
+         (.join contender 1000)
+         (is (not (.isAlive contender)))
+         (is (= [] (owned-test/published-sql store)))
+         (finally (.unlock lock)))))))
 
 (defn -main [& _]
   (let [result (run-tests 'jdbc.chdb-confirmed-request-test)]
