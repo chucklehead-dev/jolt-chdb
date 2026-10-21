@@ -1383,6 +1383,22 @@
   (shim/extension-operation
    #(writer/execute-owned-and-flush! (jdbc-writer-handle connection) statement)))
 
+(defn submit-owned-and-flush!
+  "Experimental internal owned-request admission, NOT a persistence receipt.
+  Uses the same atomic writer operation as execute-owned-and-flush!. The caller
+  must retain the opaque request and settle it with await-confirmed! before
+  releasing its resources. Other drivers/read-only connections fail closed."
+  [connection statement]
+  (shim/extension-operation
+   #(writer/submit-owned-and-flush! (jdbc-writer-handle connection) statement)))
+
+(defn await-confirmed!
+  "Wait through interruption for an admitted atomic owned request's confirmed
+  receipt or exact failure. This does not accept buffered-local tickets and
+  does not resubmit the mutation. Restore interrupt status on return or error."
+  [ticket]
+  (shim/extension-operation #(writer/await-confirmed! ticket)))
+
 (defn execute-and-flush-settled!
   "Compatibility seam for caller-owned submission contexts. Raw
   `execute-and-flush!` now provides the same post-admission settlement."
