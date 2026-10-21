@@ -60,8 +60,19 @@
                             (#3%bytevector-u8-ref durable-wal-ascii-escape cp) 1)))
            (cond
              ((fx= escape 0)
-              (#3%bytevector-u8-set! buffer at cp)
-              (loop (fx+ i 1) (fx+ at 1)))
+              ;; Scan the next clean run once, then perform one checked block
+              ;; copy. Stop at the SAME at>capacity-12 flush boundary as the
+              ;; byte-at-a-time loop, preserving chunk geometry and padding.
+              (let ((limit (fxmin n (fx+ i (fx- (fx- capacity 11) at)))))
+                (let scan ((end (fx+ i 1)))
+                  (if (and (fx< end limit)
+                           (let ((next (bytevector-u8-ref input end)))
+                             (and (fx< next 128)
+                                  (fx= (bytevector-u8-ref durable-wal-ascii-escape next) 0))))
+                      (scan (fx+ end 1))
+                      (let ((length (fx- end i)))
+                        (bytevector-copy! input i buffer at length)
+                        (loop end (fx+ at length)))))))
              ((not (fx= escape 1))
               (#3%bytevector-u8-set! buffer at 92)
               (#3%bytevector-u8-set! buffer (fx+ at 1) escape)

@@ -1,0 +1,17 @@
+Write tool is disabled for this session, so I can't save the review to a plan file — presenting it directly here instead.
+
+## Findings
+
+1. **Numbers check out.** README's p50/p90/p95/p99 and "~18.4% worse" (44.16/37.30) are correctly derived from `screen.edn`. The "five GC samples per arm" claim is also verified exactly (baseline: 5 of 16 samples with `gc-count 1`; candidate: 5 of 16). The ABBA ordering and 16-samples-per-arm match the raw data (32 total post-warmup samples).
+
+2. **Sorted data supports a real, not noise-driven, slowdown.** Candidate's full sorted distribution sits above baseline's at essentially every decile (candidate min 34.5ms > baseline min 27.7ms), so the median gap isn't an artifact of one outlier sample — it reflects a consistent per-sample cost increase, not just the GC-inflated baseline max.
+
+3. **Boundary/byte/chunk parity controls are well-targeted.** `screen.clj`'s n-values (243–245, 65523–65537, 131080) deliberately straddle the `capacity-12` flush boundary and the 256/65536 capacity clamps; the three string patterns (plain ASCII, mixed-escape, full 0–127 range) exercise clean-run vs. escape-heavy vs. control-char paths. Reading `owned_ascii_wal.ss`, the new scan's `limit` computation (`capacity-11-at`) provably reproduces the same stopping point the old per-byte loop would hit before its `at > capacity-12` flush check — the parity logic is sound. The README's claim that "the new scan/copy uses checked primitives" is also correct: the branch uses plain `bytevector-u8-ref`/`bytevector-copy!`, no `#3%` unchecked accesses.
+
+4. **Minor misleading-inference risk (presentation, not substance).** With exactly 16 samples/arm, the `quantiles` function computes p95 and p99 as the *same* array element (`ceil(0.95·16) = ceil(0.99·16) = 16`), so those two columns are mechanically identical to the sample max, not independent tail estimates. The README doesn't flag this, so a reader could mistake the matching p95/p99 for a genuine tail signal. It doesn't affect the parking decision (which rests on the median), but is worth correcting if the report is reused.
+
+5. **No variance/significance statistic is reported** beyond point quantiles on n=16 — a limitation of the timing claim specifically, separate from the correctness-control caveats the README already states. Finding #2 suggests this doesn't undermine the conclusion, just leaves it less rigorously quantified than it could be.
+
+## Verdict
+
+The report honestly supports parking. Scope, sample size, single-input-shape, and correctness-control limitations are explicitly disclosed, the conclusion is appropriately narrow ("rejects this implementation" without generalizing to all block/vectorized scans), and the underlying data substantiates the regression rather than being an artifact of one outlier. The only worthwhile fix (not urgent) is flagging the p95=p99 quantile artifact and/or reporting sample spread alongside the point quantiles.
