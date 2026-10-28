@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid a payload-sized managed zero buffer when copying a private ASCII SQL
+  snapshot into scoped native memory on Jolt. Fill the complete logical buffer
+  before invoking its consumer; keep private-copy isolation and release on both
+  copy and consumer failures. Empty buffers retain their zero sentinel.
+
 - Retain sparse, scalar-only public-export progress when the long S3 research
   writer times out. Preserve original errors and limits; these observations are
   diagnostics, never settlement, recovery or performance qualification.

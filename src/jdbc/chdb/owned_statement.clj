@@ -139,7 +139,16 @@
   No managed payload alias escapes. This function does not execute anything."
   [statement f]
   (require-statement! statement)
-  (let [size (.-size statement)]
-    (ffi/with-alloc [pointer (max 1 size)]
-      (when (pos? size) (byte-copy/write-prefix! pointer (.-payload statement) size))
-      (f {:pointer pointer :length size}))))
+  (let [size (.-size statement)
+        ;; Reserved Jolt primitive paired with ffi/free, not ffi/alloc's
+        ;; zeroed public wrapper. Every logical byte is copied before f can
+        ;; observe the buffer; no managed pointer or backing alias is lent.
+        pointer (ffi/__alloc (max 1 size))]
+    (try
+      (if (pos? size)
+        (when-not (= size (byte-copy/write-prefix! pointer (.-payload statement) size))
+          (throw (ex-info "Private query copy did not complete" {:type ::incomplete-copy})))
+        ;; Preserve the earlier one-byte zeroed empty-buffer sentinel too.
+        (ffi/write pointer :uint8 0))
+      (f {:pointer pointer :length size})
+      (finally (ffi/free pointer)))))

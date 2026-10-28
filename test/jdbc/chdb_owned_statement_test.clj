@@ -4,6 +4,7 @@
             [clojure.string :as string]
             [jolt.scheme :as scheme]
             [jdbc.chdb.owned-statement :as owned]
+            [jdbc.chdb-owned-query-buffer-test]
             [jdbc.chdb.durable.wal :as wal]
             [jdbc.chdb :as chdb]
             [jdbc.chdb.native :as native]
@@ -316,7 +317,8 @@
       (finally (native/close! handle)))))
 
 (defn -main [& [mode]]
-  (let [{:keys [fail error]} (run-tests 'jdbc.chdb-owned-statement-test)]
+  (let [{:keys [fail error]} (run-tests 'jdbc.chdb-owned-statement-test
+                                     'jdbc.chdb-owned-query-buffer-test)]
     (when (and (= mode "native") (zero? (+ fail error)))
       (real-native-snapshot!))
     (System/exit (if (zero? (+ fail error)) 0 1))))
