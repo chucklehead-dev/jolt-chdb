@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid repeated overflow checks in private WAL cursor advances after the
+  existing input/output guards. Keep the scalar encoding, chunk boundaries,
+  byte limits and ownership rules; replay bounded arithmetic checks with an
+  overflowing-step control and valid inclusive-boundary witness.
+
 - Avoid a payload-sized managed zero buffer when copying a private ASCII SQL
   snapshot into scoped native memory on Jolt. Fill the complete logical buffer
   before invoking its consumer; keep private-copy isolation and release on both

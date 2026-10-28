@@ -22,7 +22,8 @@ necessary.
   is unreachable under the sealed ASCII premise, not a new accepted input.
 - Every fresh output buffer is allocated with that capacity; input/table/output
   identities and non-mutation remain runtime ownership assumptions. No global
-  optimization setting or unchecked arithmetic change is involved.
+  optimization setting changes. Guarded loop cursor advances alone use
+  unchecked addition under the bounds described below.
 
 The source digest file pins these three exact files. It is a drift alarm, not a
 semantic parser or a proof that all source behavior was extracted. A changed
@@ -133,7 +134,29 @@ witnesses. The full owned-statement gate passed 17 tests/15,606 assertions, and
 the four-arm native comparison independently recovered 700,000 rows. Those are
 separate runtime evidence, not an expansion of the bounded arithmetic claim.
 
+### Guarded cursor arithmetic (2026-10-27)
+
+The scalar algorithm and chunk boundaries are unchanged. Only the four emission
+branches' `i+1` and `at+width` updates omit repeated overflow checks. The existing
+loop theorem already derives these exact integer updates and rejects next-state
+overflow or invalid positions: `i<n<=67108864`, `at<=capacity-12`, capacity at most
+65536, public ASCII emission widths1/2/6. The unreachable surrogate branch's
+width12 is also below the explicit reserve; no unchecked aggregate-size or
+allocation arithmetic was added. Snapshot/alias/type premises remain trusted.
+
+The five original queries are unchanged and replay successfully. To exercise
+the induction query's own violation schema, the runner now also mutates the
+emission's output advance to536870911. It is SAT at n1/i0/at8/capacity256,
+next_at536870919 and violation=true. The unchanged one-byte induction step is
+UNSAT; the real inclusive at244/capacity256, width6 step is SAT with
+next_i101/next_at250 and violation=false. These controls supplement the existing
+unsafe-reservation mutant; the oversized advance is never executed in memory.
+See `guarded-arithmetic-replay-20261027.json` for named cores and witnesses.
+This requalification proves only the bounded arithmetic, not wire semantics,
+ownership, timing or persistence. Exact byte/chunk tests and native recovery
+remain separate gates; no Quint logic or exhaustive campaign changed.
+
 From the repository root, run `bash scripts/check-owned-wal-bounds.sh` with Z3
-installed. This source-pinned arithmetic check is fast and separate from the
+and Python3 installed. This source-pinned arithmetic check is fast and separate from the
 Durable exhaustive Quint checker. Its checks do not justify rerunning unrelated
 exhaustive models when no model-relevant source changed.

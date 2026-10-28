@@ -1,0 +1,132 @@
+{
+  "scope": "unchanged WAL induction/access queries after guarded cursor addition source audit; extra induction controls",
+  "sourceBase": "b1435fe9821a86947b37e0112542047560ae2754",
+  "sourceDigest": "a6681cc552deaa49d3eae46c655a0b522e79698cc2bcebfefe55daf076c25c26",
+  "ownershipAndPersistenceProved": false,
+  "queries": {
+    "access-bounds": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "inductive_loop_domain",
+        "trusted_private_ascii",
+        "exact_escape_table",
+        "emitted_width",
+        "source_body_guards",
+        "concrete_write_offset",
+        "concrete_index",
+        "backing_length",
+        "hexadecimal_digit",
+        "concrete_written_byte",
+        "queried_violation",
+        "current_guard_reservation",
+        "counterexample"
+      ]
+    },
+    "loop-induction": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "snapshot_domain",
+        "allocated_buffer",
+        "prior_loop_invariant",
+        "ascii_emission_widths",
+        "loop_actions",
+        "emit_guards",
+        "flush_guards",
+        "finish_guard",
+        "next_input_index",
+        "next_output_index",
+        "next_sealed_total",
+        "derived_violation",
+        "counterexample"
+      ]
+    },
+    "reservation-mutant": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "101",
+        "i": "100",
+        "at": "252",
+        "capacity": "256",
+        "width": "6",
+        "index": "257",
+        "length": "256",
+        "violation": "true"
+      }
+    },
+    "small-control": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "allocated_capacity",
+        "trusted_private_ascii",
+        "exact_escape_table",
+        "emitted_width",
+        "access_kinds",
+        "concrete_write_offset",
+        "concrete_index",
+        "backing_length",
+        "hexadecimal_digit",
+        "concrete_written_byte",
+        "queried_violation",
+        "counterexample"
+      ]
+    },
+    "inclusive-boundary": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "101",
+        "i": "100",
+        "at": "244",
+        "capacity": "256",
+        "width": "6",
+        "index": "249",
+        "length": "256",
+        "violation": "false"
+      }
+    },
+    "induction-step-mutant": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "1",
+        "i": "0",
+        "at": "8",
+        "capacity": "256",
+        "width": "1",
+        "next_i": "1",
+        "next_at": "536870919",
+        "violation": "true"
+      }
+    },
+    "induction-small": {
+      "lintErrors": [],
+      "status": "unsat",
+      "unsatCore": [
+        "allocated_buffer",
+        "next_input_index",
+        "next_output_index",
+        "next_sealed_total",
+        "derived_violation",
+        "counterexample"
+      ]
+    },
+    "induction-boundary": {
+      "lintErrors": [],
+      "status": "sat",
+      "witness": {
+        "n": "101",
+        "i": "100",
+        "at": "244",
+        "capacity": "256",
+        "width": "6",
+        "next_i": "101",
+        "next_at": "250",
+        "violation": "false"
+      }
+    }
+  }
+}

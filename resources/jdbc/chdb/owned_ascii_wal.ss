@@ -23,7 +23,9 @@
 ;; cp<128, and at<=capacity-12 before writes of at..at+11. Private snapshot
 ;; admission is capped at64MiB. See formal/smt/owned-wal-bounds for bounded
 ;; access/value safety, induction and violating/boundary controls. Global
-;; compiler optimization and all arithmetic/copy operations remain checked.
+;; compiler optimization is unchanged. Cursor advances omit overflow checks
+;; only after i<n<=64MiB and at<=capacity-12; widths are at most12 and capacity
+;; at most65536. Other arithmetic and copy operations remain checked.
 (lambda (s)
   ;; Small records must not pay for a 64 KiB backing. ASCII-heavy records
   ;; normally fit this capacity; escaped records seal additional owned chunks.
@@ -61,17 +63,17 @@
            (cond
              ((fx= escape 0)
               (#3%bytevector-u8-set! buffer at cp)
-              (loop (fx+ i 1) (fx+ at 1)))
+              (loop (#3%fx+ i 1) (#3%fx+ at 1)))
              ((not (fx= escape 1))
               (#3%bytevector-u8-set! buffer at 92)
               (#3%bytevector-u8-set! buffer (fx+ at 1) escape)
-              (loop (fx+ i 1) (fx+ at 2)))
+              (loop (#3%fx+ i 1) (#3%fx+ at 2)))
              ((fx<= cp #xffff)
-              (hex! at cp) (loop (fx+ i 1) (fx+ at 6)))
+              (hex! at cp) (loop (#3%fx+ i 1) (#3%fx+ at 6)))
              (else
               (let ((rest (fx- cp #x10000)))
                 (hex! at (fx+ #xd800 (fxquotient rest #x400)))
                 (hex! (fx+ at 6) (fx+ #xdc00 (fxmodulo rest #x400)))
-                (loop (fx+ i 1) (fx+ at 12)))))))))))
+                (loop (#3%fx+ i 1) (#3%fx+ at 12)))))))))))
 
 )
