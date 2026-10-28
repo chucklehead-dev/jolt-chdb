@@ -24,17 +24,23 @@
       (is (= (String. input "UTF-8") (owned/text statement))))))
 
 (deftest allocation-is-released-if-copy-fails-before-the-consumer
-  (let [statement (owned/try-snapshot (.getBytes "SELECT 1" "UTF-8"))
+  (doseq [partial? [false true]]
+   (let [statement (owned/try-snapshot (.getBytes "SELECT 1" "UTF-8"))
         failure (ex-info "controlled copy failure" {:fixture true})
+        original-copy copy/write-prefix!
         original-free ffi/free freed (atom 0) called (atom false)]
-    (with-redefs [copy/write-prefix! (fn [& _] (throw failure))
+    (with-redefs [copy/write-prefix! (fn [pointer bytes _]
+                                     (when partial?
+                                       (original-copy pointer bytes 1)
+                                       (is (= 83 (ffi/read pointer :uint8))))
+                                     (throw failure))
                   ffi/free (fn [pointer] (swap! freed inc) (original-free pointer))]
       (is (identical? failure
             (try (owned/with-query-buffer statement (fn [_] (reset! called true)))
                  (catch Throwable error error))))
       (is (false? @called))
       (is (= 1 @freed)))
-    (is (= "SELECT 1" (owned/text statement)))))
+    (is (= "SELECT 1" (owned/text statement))))))
 
 (deftest incomplete-copy-never-exposes-the-uninitialized-buffer
   (doseq [reported [0 nil -1]]
