@@ -107,6 +107,32 @@ before downloading its runtime, and watches the two kernels, proof directory
 and replay script as well as the statement owner. A green copy-only feature
 gate must no longer conceal stale arithmetic provenance until main integration.
 
+### Native query-buffer requalification (2026-10-27)
+
+Against main `312812f`, runtime change `7cbf433` modifies only
+`with-query-buffer`: raw private native allocation replaces zeroed allocation,
+the full logical SQL range is copied before the consumer runs, an empty buffer
+keeps its zero sentinel, and `finally` frees storage even after a partial copy
+throws. A reported incomplete copy rejects before invoking the consumer.
+
+The sealed managed snapshot and WAL buffers, 64MiB limit, encoder invocation,
+capacity, table, indices, escape widths, flush guards and arithmetic are unchanged.
+Both Scheme resource files and all five SMT queries are byte-for-byte unchanged.
+The outgoing native buffer is separate from the backing arrays modeled here.
+Its initialization and cleanup ordering are **outside this arithmetic theorem**;
+the query-buffer runtime tests cover complete/partial/short copies, consumer
+failure, empty input and release. Private identity and non-mutation remain trusted
+premises rather than new conclusions of the solver.
+
+The source digest was refreshed after this audit and successful Chiasmus
+lint/verification of the five unchanged queries. Access/induction/small control
+remain UNSAT; the four-byte-reserve mutant remains SAT with index257/length256
+and violation=true; the inclusive boundary remains SAT with index249/length256
+and violation=false. See `query-buffer-replay-20261027.json` for named cores and
+witnesses. The full owned-statement gate passed 17 tests/15,606 assertions, and
+the four-arm native comparison independently recovered 700,000 rows. Those are
+separate runtime evidence, not an expansion of the bounded arithmetic claim.
+
 From the repository root, run `bash scripts/check-owned-wal-bounds.sh` with Z3
 installed. This source-pinned arithmetic check is fast and separate from the
 Durable exhaustive Quint checker. Its checks do not justify rerunning unrelated
