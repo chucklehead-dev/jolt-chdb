@@ -32,7 +32,7 @@ never invokes the consumer and still frees the allocation.
   all-field/type/timestamp/multiplicity comparison against older ordinary JSON.
 - Claude read-only review of runtime commit 7cbf433 reported no blockers.
   The added partial-write test strengthens its noted error-path testing gap;
-  review follow-up for that test/documentation is pending at this checkpoint.
+  its bounded follow-up review of the test and report also found no blockers.
 
 The reserved primitive is present in immutable upstream 0.8.6 source as well
 as inspected current main. That source check is not an old-runtime execution
